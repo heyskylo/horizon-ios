@@ -116,6 +116,64 @@ fn a_shadow_map_stays_in_range_and_needs_a_stage_to_read_it() {
 }
 
 #[test]
+fn the_shadow_map_may_follow_options() {
+    let with = |keys: &str| {
+        let sizes = "[[options]]\nid = \"shadow_size\"\nname = \"Size\"\ntype = \"choice\"\n\
+                     values = [\"1024\", \"2048\", \"4096\"]\ndefault = \"2048\"\n\
+                     [[options]]\nid = \"shadow_reach\"\nname = \"Reach\"\ntype = \"int\"\n\
+                     default = 128\nmin = 64\nmax = 256\n";
+        let text = sample_text().replace("distance = 96.0", &format!("distance = 96.0\n{keys}"));
+        format!("{text}\n{sizes}")
+    };
+    let m = Manifest::parse(&with(
+        "option = \"reflections\"\nresolution_option = \"shadow_size\"\n\
+         distance_option = \"shadow_reach\"\n",
+    ))
+    .unwrap();
+    let s = m.shadow.unwrap();
+    assert_eq!(
+        (
+            s.option.as_deref(),
+            s.resolution_option.as_deref(),
+            s.distance_option.as_deref()
+        ),
+        (
+            Some("reflections"),
+            Some("shadow_size"),
+            Some("shadow_reach")
+        )
+    );
+    let cases = [
+        (
+            "option = \"shadows\"\n",
+            "shadow.option: `shadows` is no option",
+        ),
+        // An int below 256 texels, words, a float.
+        (
+            "resolution_option = \"samples\"\n",
+            "shadow.resolution_option: `samples`",
+        ),
+        (
+            "resolution_option = \"tonemap\"\n",
+            "shadow.resolution_option: `tonemap`",
+        ),
+        (
+            "resolution_option = \"saturation\"\n",
+            "shadow.resolution_option: `saturation`",
+        ),
+        // 1024 blocks and more.
+        (
+            "distance_option = \"shadow_size\"\n",
+            "shadow.distance_option: `shadow_size`",
+        ),
+    ];
+    for (keys, needle) in cases {
+        let e = refused(&with(keys));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+}
+
+#[test]
 fn material_ids_go_by_the_first_entry_and_may_cut_shadows_whole() {
     let manifest = |rest: &str| {
         Manifest::parse(&format!(
@@ -300,8 +358,8 @@ fn refuses_what_this_build_does_not_read() {
     assert!(refused(no_stage).contains("no stage"));
     let mirror = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[reflection]\n");
     assert!(refused(&mirror).contains("[reflection] needs [material]"));
-    let many = (0..9).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
-    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("9 post passes"));
+    let many = (0..13).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
+    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("13 post passes"));
 }
 
 #[test]
@@ -661,4 +719,45 @@ fn reads_particle_lights_and_refuses_bad_ones() {
     assert_eq!(m.particle_lights[0].reach, 4.0);
     assert!(refused(&entry("color = [2.0, 0.0, 0.0]\nreach = 4.0")).contains("0..=1"));
     assert!(refused(&entry("color = [1.0, 1.0, 1.0]\nreach = 40.0")).contains("reach"));
+}
+
+#[test]
+fn displacement_needs_the_material_stage_and_stays_in_range() {
+    let with = |section: &str| format!("{}\n[displacement]\n{section}", sample_text());
+    let d = Manifest::parse(&with(
+        "option = \"reflections\"\ncells_option = \"tonemap\"\n",
+    ));
+    // The sample's `tonemap` choice names no cell counts.
+    assert!(
+        d.unwrap_err()
+            .contains("displacement.cells_option: `tonemap` is no choice of cell counts")
+    );
+    let m = Manifest::parse(&with("distance = 16.0\noption = \"reflections\"\n")).unwrap();
+    let d = m.displacement.unwrap();
+    assert_eq!(
+        (d.distance, d.cells, d.option.as_deref()),
+        (16.0, 16, Some("reflections"))
+    );
+    let cases = [
+        (
+            "distance = 40.0\n",
+            "displacement.distance 40 is not in 4.0..=32.0",
+        ),
+        ("cells = 2\n", "displacement.cells 2 is not in 4..=64"),
+        (
+            "option = \"saturation\"\n",
+            "displacement.option: `saturation` is no bool option",
+        ),
+        (
+            "steps_option = \"samples\"\n",
+            "displacement.steps_option: `samples` is no bool option",
+        ),
+    ];
+    for (section, needle) in cases {
+        let e = refused(&with(section));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+    let no_stage = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.1\"\n";
+    let sky_only = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[displacement]\n");
+    assert!(refused(&sky_only).contains("[displacement] needs [material]"));
 }

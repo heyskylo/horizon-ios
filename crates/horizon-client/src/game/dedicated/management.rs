@@ -127,8 +127,25 @@ impl Game<'_> {
                     auto_save(state),
                     enabled
                 ));
-                set_auto_save(state, enabled);
+                set_auto_save(&state.lists, enabled);
                 return json!({ "value": auto_save(state) });
+            }
+            "serversettings/pause_when_empty_seconds" => {
+                return json!({ "value": state.pause_when_empty_seconds });
+            }
+            "serversettings/pause_when_empty_seconds/set" => {
+                let Some(seconds) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "pause when empty seconds must be an integer" });
+                };
+                rpc(format!(
+                    "Update pause when empty from {} seconds to {} seconds",
+                    state.pause_when_empty_seconds, seconds
+                ));
+                self.set_pause_when_empty_seconds(state, seconds);
+                return json!({ "value": state.pause_when_empty_seconds });
             }
             "serversettings/motd" => {
                 return json!({
@@ -170,6 +187,120 @@ impl Game<'_> {
                 self.set_default_game_mode(state.game_mode);
                 return json!({ "value": GAME_MODES[state.game_mode as usize] });
             }
+            "serversettings/entity_broadcast_range" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
+            "serversettings/entity_broadcast_range/set" => {
+                let Some(percentage) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({
+                        "error": "entity broadcast range percentage must be an integer"
+                    });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(100, |host| host.hub.entity_range_percent);
+                // MinecraftServerSettingsServiceImpl logs the value asked for; the
+                // DedicatedServerProperties deserializer clamps what is applied and saved.
+                rpc(format!(
+                    "Update entity broadcast range percentage from {current}% to {percentage}%"
+                ));
+                let percentage = percentage.clamp(10, 1000);
+                self.set_entity_broadcast_range_percentage(percentage);
+                self.store_property("entity-broadcast-range-percentage", percentage.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
+            "serversettings/simulation_distance" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(0, |host| host.hub.config.simulation_distance)
+                });
+            }
+            "serversettings/simulation_distance/set" => {
+                let Some(distance) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "simulation distance must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.config.simulation_distance);
+                rpc(format!(
+                    "Update simulation distance from {current} to {distance}"
+                ));
+                self.set_simulation_distance(distance);
+                state.view.1 = distance.max(0) as u32;
+                self.store_property("simulation-distance", distance.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(0, |host| host.hub.config.simulation_distance)
+                });
+            }
+            "serversettings/view_distance" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
+            "serversettings/view_distance/set" => {
+                let Some(distance) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "view distance must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.config.view_distance);
+                rpc(format!("Update view distance from {current} to {distance}"));
+                self.set_view_distance(distance);
+                state.view.0 = distance.max(0) as u32;
+                self.store_property("view-distance", distance.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
+            "serversettings/operator_user_permission_level" => {
+                return json!({ "value": state.op_level });
+            }
+            "serversettings/operator_user_permission_level/set" => {
+                let Some(level) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .filter(|level| (0..=4).contains(level))
+                else {
+                    return json!({
+                        "error": "operator user permission level must be an integer between 0 and 4"
+                    });
+                };
+                rpc(format!(
+                    "Update operator user permission level from {} to {}",
+                    state.op_level, level
+                ));
+                state.op_level = level;
+                state.lists.lock().unwrap().op_level = level;
+                self.store_property("op-permission-level", level.to_string());
+                return json!({ "value": state.op_level });
+            }
             "serversettings/force_game_mode" => {
                 return json!({ "value": state.force_game_mode });
             }
@@ -185,6 +316,150 @@ impl Game<'_> {
                 state.force_game_mode = force;
                 self.set_force_game_mode(force);
                 return json!({ "value": state.force_game_mode });
+            }
+            "serversettings/spawn_protection_radius" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
+            }
+            "serversettings/spawn_protection_radius/set" => {
+                let Some(radius) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "spawn protection radius must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.spawn_protection);
+                rpc(format!(
+                    "Update spawn protection radius from {current} to {radius}"
+                ));
+                self.set_spawn_protection(radius);
+                self.store_property("spawn-protection", radius.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
+            }
+            "serversettings/allow_flight" => {
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/allow_flight/set" => {
+                let Some(allow) = body["value"].as_bool() else {
+                    return json!({ "error": "allow flight must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.config.allow_flight);
+                rpc(format!("Update allow flight from {current} to {allow}"));
+                self.set_allow_flight(allow);
+                self.store_property("allow-flight", allow.to_string());
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/hide_online_players" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/hide_online_players/set" => {
+                let Some(hide) = body["value"].as_bool() else {
+                    return json!({ "error": "hide online players must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.hide_online_players());
+                rpc(format!(
+                    "Update hide online players from {current} to {hide}"
+                ));
+                self.set_hide_online_players(hide);
+                self.store_property("hide-online-players", hide.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/status_replies" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
+                });
+            }
+            "serversettings/status_replies/set" => {
+                let Some(enable) = body["value"].as_bool() else {
+                    return json!({ "error": "status replies must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.enable_status());
+                rpc(format!("Update status replies from {current} to {enable}"));
+                self.set_status_replies(enable);
+                self.store_property("enable-status", enable.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
+                });
+            }
+            "serversettings/accept_transfers" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.accepts_transfers())
+                });
+            }
+            "serversettings/accept_transfers/set" => {
+                let Some(accept) = body["value"].as_bool() else {
+                    return json!({ "error": "accepts transfers must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.accepts_transfers());
+                rpc(format!(
+                    "Update accepts transfers from {current} to {accept}"
+                ));
+                self.set_accepts_transfers(accept);
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.accepts_transfers())
+                });
+            }
+            "serversettings/player_idle_timeout" => {
+                return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
+            }
+            "serversettings/player_idle_timeout/set" => {
+                let Some(minutes) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "player idle timeout must be an integer" });
+                };
+                rpc(format!(
+                    "Update player idle timeout from {} minutes to {} minutes",
+                    state.lists.lock().unwrap().player_idle_timeout,
+                    minutes
+                ));
+                self.set_player_idle_timeout(&state.lists.clone(), minutes);
+                return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }
             "serversettings/max_players" => {
                 return json!({ "value": state.max_players });

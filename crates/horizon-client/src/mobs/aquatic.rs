@@ -64,16 +64,18 @@ pub fn spawn_ink(m: &mut Mob) {
         let dir = rotate(Vec3::new(x, -1.0, z));
         let d = dir.scale(f64::from(offset_scale + m.random.next_float() * 2.0));
         // ServerLevel.sendParticles with a count of 0 and speed 0.1: one
-        // particle moving at the float offset times the float speed.
-        let speed = f64::from(0.1f32);
-        m.outbox.push(MobEvent::ParticleAt {
+        // particle moving at the float offset times the float speed, sent to
+        // the players within 32 blocks.
+        m.outbox.push(MobEvent::LevelParticles {
             kind,
             at: [pos.x, pos.y + 0.5, pos.z],
-            velocity: [
-                speed * f64::from(d.x as f32),
-                speed * f64::from(d.y as f32),
-                speed * f64::from(d.z as f32),
+            spread: [
+                f64::from(d.x as f32),
+                f64::from(d.y as f32),
+                f64::from(d.z as f32),
             ],
+            speed: f64::from(0.1f32),
+            count: 0,
         });
     }
 }
@@ -233,6 +235,14 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     }
 }
 /// Pufferfish.getScale by puff state (the dimensions scale with it).
+/// `Salmon.Variant.boundingBoxScale`: SMALL 0.5, MEDIUM 1.0, LARGE 1.5.
+pub fn salmon_scale(variant: u8) -> f32 {
+    match variant {
+        0 => 0.5,
+        2 => 1.5,
+        _ => 1.0,
+    }
+}
 pub fn puff_scale(state: i32) -> f64 {
     match state {
         0 => 0.5,
@@ -1111,6 +1121,81 @@ mod school_tests {
         k.id = "minecraft:cod".into();
         k.species = Species::Cod;
         Mob::new(id, kind, Vec3::ZERO, 0.0)
+    }
+    /// `Salmon.getDefaultDimensions` is `getSalmonScale()` applied to the whole
+    /// fish box: small 0.5, medium 1.0, large 1.5.
+    #[test]
+    fn a_salmon_box_follows_its_variant() {
+        let mut k = kind();
+        Arc::make_mut(&mut k).species = Species::Salmon;
+        let mut m = Mob::new(1, k, Vec3::ZERO, 0.0);
+        m.extra.variant = 1;
+        let (w, h, e) = m.dims();
+        let (bw, bh, be) = (w as f32, h as f32, e as f32);
+        m.extra.variant = 0;
+        assert_eq!(
+            m.dims(),
+            (
+                f64::from(bw * 0.5),
+                f64::from(bh * 0.5),
+                f64::from(be * 0.5)
+            ),
+            "a small salmon is half the medium box"
+        );
+        m.extra.variant = 2;
+        assert_eq!(
+            m.dims(),
+            (
+                f64::from(bw * 1.5),
+                f64::from(bh * 1.5),
+                f64::from(be * 1.5)
+            ),
+            "a large salmon is half again"
+        );
+        // The medium variant is the type's box, unchanged.
+        m.extra.variant = 1;
+        assert_eq!(m.dims(), (w, h, e));
+        // Salmon.Variant.DEFAULT: a salmon finalizeSpawn never sized is medium.
+        let mut k = kind();
+        Arc::make_mut(&mut k).species = Species::Salmon;
+        assert_eq!(Mob::new(2, k, Vec3::ZERO, 0.0).dims(), (w, h, e));
+    }
+    /// `Squid.spawnInk`: 30 `sendParticles` calls with a count of 0 and a
+    /// speed of 0.1, so the server sends them (the clients scale the offset
+    /// by the speed). A client-only `ParticleAt` would never leave the server.
+    #[test]
+    fn a_squid_sends_its_ink_as_server_particles() {
+        let mut k = kind();
+        let k2 = Arc::make_mut(&mut k);
+        k2.id = "minecraft:squid".into();
+        k2.species = Species::Squid;
+        let mut m = Mob::new(1, k, Vec3::new(0.0, 60.0, 0.0), 0.0);
+        m.silent = true;
+        spawn_ink(&mut m);
+        let ink: Vec<_> = m
+            .outbox
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::LevelParticles {
+                    kind: "squid_ink",
+                    spread,
+                    speed,
+                    count: 0,
+                    ..
+                } => Some((*spread, *speed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ink.len(), 30);
+        assert!(ink.iter().all(|(_, speed)| *speed == f64::from(0.1f32)));
+        // The offset is the unscaled direction: `0.3 + nextFloat * 2` long
+        // for an adult, mostly downward, never already multiplied by 0.1.
+        assert!(ink.iter().any(|(d, _)| d[1] < -0.3));
+        assert!(
+            !m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ParticleAt { .. }))
+        );
     }
     #[test]
     fn school_sizes() {

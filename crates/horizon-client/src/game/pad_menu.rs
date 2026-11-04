@@ -1,20 +1,19 @@
 //! A controller in menus, screens and inventories (Horizon's own;
-//! docs/controllers.md). Two ways to drive them, picked in the controller
-//! options:
+//! docs/controllers.md). Each screen is driven one way:
 //!
-//! - **Focus** (console-style): a highlight steps between the widgets, list
-//!   rows, fields and slots each screen registers (`widgets::target_as`)
-//!   with vanilla's arrow-key navigation; A presses the focused one, the
-//!   bumpers switch tabs, left/right move a focused slider, A on a text field
-//!   opens the on-screen keyboard (`osk`).
-//! - **Pointer**: a virtual cursor the left stick moves and the D-pad steps
-//!   between slots and buttons.
+//! - **Focus** (menus): a highlight steps between the widgets, list rows and
+//!   fields each screen registers (`widgets::target_as`) with vanilla's
+//!   arrow-key navigation; A presses the focused one, the bumpers switch tabs,
+//!   left/right move a focused slider, A on a text field opens the on-screen
+//!   keyboard (`osk`).
+//! - **Crosshair** (inventories, containers and the screens whose clickable
+//!   parts register no target): a pointer the left stick moves and the D-pad
+//!   steps between slots and buttons.
 //!
 //! Both feed the screens the same pointer events a mouse sends (the pointer
 //! sits on the focused widget, hidden), so every screen keeps its mouse
 //! behaviour (drags, sliders, scrollbars, hover highlights) with no pad code
-//! of its own. A screen with nothing registered falls back to the pointer,
-//! and a right stick click swaps modes for the open screen.
+//! of its own.
 use super::event_loop::EventLoopCtl;
 use super::{
     Game, Screen,
@@ -23,13 +22,14 @@ use super::{
 use horizon_client::{
     Result,
     creative::Creative,
-    gamepad::{self, Button, MenuNav, Rect},
-    hud::{HudBatch, rgba},
+    gamepad::{self, Button, Rect},
+    hud::HudBatch,
     options_ui::{Event, Page},
     osk::{self, Keyboard},
     screen_narrator::InputType,
     widgets::{self, Kind, Target},
 };
+use horizon_client_input::snap;
 use std::time::Instant;
 use winit::{
     dpi::PhysicalPosition,
@@ -38,11 +38,6 @@ use winit::{
     window::WindowId,
 };
 
-/// D-pad auto-repeat: the first step at once, the next after a pause.
-const REPEAT_DELAY: f32 = 0.35;
-const REPEAT_EVERY: f32 = 0.09;
-/// Lines per second the right stick scrolls at full tilt.
-const SCROLL_SPEED: f32 = 12.0;
 /// How far the stick must lean to step focus.
 const STICK_STEP: f32 = 0.55;
 /// Scrolls a step may try to reveal the next row of a list.
@@ -69,6 +64,10 @@ pub(super) struct MenuCursor {
     last_poll: Option<Instant>,
     /// The stick moved the cursor last poll (it settles when let go).
     moving: bool,
+    /// Gliding onto a slot or control: from, to, since.
+    glide: Option<((f32, f32), (f32, f32), Instant)>,
+    /// Where the stick's current movement started.
+    gesture: Option<(f32, f32)>,
     wheel: [f32; 2],
     /// The held D-pad direction and when it last stepped.
     repeat: Option<(Button, Instant, bool)>,
@@ -82,8 +81,6 @@ pub(super) struct MenuCursor {
     focus: Option<Target>,
     /// The left stick's step direction last poll.
     stick: Option<Button>,
-    /// A right stick click swapped modes for this screen.
-    swapped: bool,
     pending: Option<Pending>,
     /// The focused slider being nudged and where the pad put its handle.
     nudge: Option<(Rect, f32)>,
@@ -110,6 +107,20 @@ pub(super) struct MenuCursor {
     /// new screen's first drawn frame.
     key_screen: u64,
     key_restart: Option<u64>,
+    /// The pad's focus on each screen it left (`Game::key_screen`), so coming
+    /// back lands where it was, as vanilla keeps a screen's focused widget.
+    remembered: std::collections::HashMap<u64, Rect>,
+}
+
+impl MenuCursor {
+    /// `Screen.clearFocus`: nothing is focused any more, and no click focus
+    /// is kept for the next Tab (`ComponentPath.applyFocus(false)`).
+    fn clear_focus(&mut self) {
+        self.focus = None;
+        self.origin = None;
+        self.slider_edit = false;
+        self.pending = None;
+    }
 }
 
 impl Game<'_> {
@@ -128,10 +139,21 @@ impl Game<'_> {
             .map(|r| HudBatch::new([r.config.width, r.config.height]))
     }
 
-    /// Focus mode is on for the open screen (the keyboard always focuses).
+    /// Focus drives the open screen: every menu but inventories and
+    /// containers, and the screens whose clickable parts register no focus
+    /// target (the advancements map, the statistics lists, the pack rows, a
+    /// book's page text), where the pointer does (the keyboard always focuses).
+    pub(super) fn pad_navigation_mode(&self) -> bool {
+        let pointer = matches!(
+            self.screen,
+            Screen::Inventory | Screen::Creative | Screen::Stats | Screen::Advancements
+        ) || self.book.is_some()
+            || (self.screen == Screen::Options && self.ui.options.page() == Page::Packs);
+        !pointer
+    }
+
     fn pad_focus_mode(&self) -> bool {
-        self.pad.menu.keyboard
-            || (self.settings.controller.menu_nav == MenuNav::Focus) != self.pad.menu.swapped
+        self.pad.menu.keyboard || self.pad_navigation_mode()
     }
 
     /// Where focus can land: buttons drawn last frame, every registered
@@ -235,6 +257,18 @@ impl Game<'_> {
             // Screen.setInitialFocus: a forward Tab from nothing.
             return key_focus::tab_step(targets, None, true).map(|i| targets[i]);
         }
+        // Back on a screen the pad left: where it was, as vanilla keeps a
+        // screen's focused widget (Options, after its Done).
+        let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
+        if let Some(i) = self
+            .pad
+            .menu
+            .remembered
+            .get(&self.key_screen())
+            .and_then(|r| gamepad::refind(*r, &rects, 2.0))
+        {
+            return Some(targets[i]);
+        }
         let batch = self.gui_scale()?;
         let at = |x: f32, y: f32| {
             targets
@@ -260,12 +294,32 @@ impl Game<'_> {
                 _ => {}
             }
         }
-        targets
-            .iter()
-            .find(|t| t.kind == Kind::Button)
-            .or_else(|| targets.iter().find(|t| !matches!(t.kind, Kind::Tab(_))))
-            .or(targets.first())
-            .copied()
+        // Screen.setInitialFocus, as the keyboard's: the first control in tab
+        // order (Singleplayer on the title, the first option row), not
+        // whatever happened to register first.
+        key_focus::tab_step(targets, None, true)
+            .map(|i| targets[i])
+            .or_else(|| {
+                targets
+                    .iter()
+                    .find(|t| !matches!(t.kind, Kind::Tab(_)))
+                    .copied()
+            })
+            .or(targets.first().copied())
+    }
+
+    /// The pointer is over a slot or control.
+    fn pad_over_target(&self) -> bool {
+        let (x, y) = self.cursor;
+        self.pad_targets().iter().any(|t| {
+            let [tx, ty, w, h] = t.rect;
+            (tx..tx + w).contains(&x) && (ty..ty + h).contains(&y)
+        })
+    }
+
+    /// Start the cursor's glide onto `to` (GUI pixels), from wherever it is.
+    fn pad_glide_to(&mut self, to: (f32, f32)) {
+        self.pad.menu.glide = Some((self.cursor, to, Instant::now()));
     }
 
     /// Send the window a pointer move to `at` (GUI pixels), as the mouse would.
@@ -376,6 +430,25 @@ impl Game<'_> {
         self.pad_pointer_to(event_loop, at);
     }
 
+    /// Run `f` with `key` held as a keyboard holds it, in the modifier word
+    /// screens read as well as the physical keys, then put both back. The
+    /// pad's only way to send Shift or Ctrl, so it can't fall out of step
+    /// with what the keyboard sends.
+    fn pad_with_modifier<T>(&mut self, key: KeyCode, f: impl FnOnce(&mut Self) -> T) -> T {
+        let held = horizon_client_input::modifiers::hold(
+            &mut self.modifiers,
+            &mut self.physical_keys,
+            key,
+        );
+        let result = f(self);
+        horizon_client_input::modifiers::restore(
+            &mut self.modifiers,
+            &mut self.physical_keys,
+            held,
+        );
+        result
+    }
+
     /// Focus mode with something to focus on this screen.
     fn pad_focusing(&self) -> bool {
         self.pad_focus_mode() && self.pad.menu.focus.is_some()
@@ -448,15 +521,6 @@ impl Game<'_> {
         }
         match button {
             Button::East | Button::Start => return self.pad_back(),
-            Button::RightStick => {
-                // Swap focus and pointer for this screen.
-                self.pad.menu.swapped = !self.pad.menu.swapped;
-                self.pad.menu.focus = None;
-                self.pad.menu.pending = None;
-                self.pad.menu.nudge = None;
-                self.pad.menu.pos = None;
-                self.pad_take_pointer(event_loop);
-            }
             Button::South if self.pad_focusing() => {
                 let focus = self.pad.menu.focus.expect("focusing");
                 match focus.kind {
@@ -489,21 +553,13 @@ impl Game<'_> {
                 self.pad_take_pointer(event_loop);
                 let in_keys = self.keys.contains(&KeyCode::ShiftLeft);
                 self.keys.insert(KeyCode::ShiftLeft);
-                let held = horizon_client_input::modifiers::hold(
-                    &mut self.modifiers,
-                    &mut self.physical_keys,
-                    KeyCode::ShiftLeft,
-                );
-                self.pad_pointer_button(event_loop, false, true);
-                self.pad_pointer_button(event_loop, false, false);
+                self.pad_with_modifier(KeyCode::ShiftLeft, |game| {
+                    game.pad_pointer_button(event_loop, false, true);
+                    game.pad_pointer_button(event_loop, false, false);
+                });
                 if !in_keys {
                     self.keys.remove(&KeyCode::ShiftLeft);
                 }
-                horizon_client_input::modifiers::restore(
-                    &mut self.modifiers,
-                    &mut self.physical_keys,
-                    held,
-                );
             }
             // View / left stick in an inventory: throw one / the stack from
             // the slot under focus (Q / Ctrl+Q).
@@ -512,16 +568,13 @@ impl Game<'_> {
                     && self.title.is_none() =>
             {
                 self.pad_take_pointer(event_loop);
-                let all = button == Button::LeftStick;
-                let ctrl = self.physical_keys.contains(&KeyCode::ControlLeft);
-                if all {
-                    self.physical_keys.insert(KeyCode::ControlLeft);
+                if button == Button::LeftStick {
+                    self.pad_with_modifier(KeyCode::ControlLeft, |game| {
+                        game.key_pressed(KeyCode::KeyQ, KeyCode::KeyQ)
+                    })?;
+                } else {
+                    self.key_pressed(KeyCode::KeyQ, KeyCode::KeyQ)?;
                 }
-                let result = self.key_pressed(KeyCode::KeyQ);
-                if all && !ctrl {
-                    self.physical_keys.remove(&KeyCode::ControlLeft);
-                }
-                result?;
             }
             Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight => {
                 self.pad.menu.repeats = 0;
@@ -582,7 +635,7 @@ impl Game<'_> {
         let from = self.cursor;
         let centres: Vec<(f32, f32)> = self.pad_targets().iter().map(Target::center).collect();
         if let Some(i) = gamepad::focus_step(from, button, &centres) {
-            self.pad_pointer_to(event_loop, centres[i]);
+            self.pad_glide_to(centres[i]);
         }
     }
 
@@ -666,6 +719,9 @@ impl Game<'_> {
 
     fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
         let left = self.pad.menu.focus.replace(target);
+        if left.is_some_and(|l| l.rect != target.rect) {
+            self.clear_screen_click_focus();
+        }
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
         if !self.pad.menu.held[0] {
@@ -679,6 +735,38 @@ impl Game<'_> {
         // The screen's narration hears it as an arrow key moving the focus.
         self.narration.set_input(InputType::KeyboardArrow);
         self.narration.keyboard_action();
+    }
+
+    /// The pad leaves screen `screen`: remember its focus there for when it
+    /// comes back. Called before the new screen's targets are read, so the
+    /// focus is still the left screen's.
+    pub(super) fn pad_remember_focus(&mut self, screen: u64) {
+        let Some(focus) = self.pad.menu.focus else {
+            return;
+        };
+        let remembered = &mut self.pad.menu.remembered;
+        if remembered.len() > 32 && !remembered.contains_key(&screen) {
+            remembered.clear();
+        }
+        remembered.insert(screen, focus.rect);
+    }
+
+    /// Vanilla's arrow navigation moves a screen's focus off the widget a
+    /// click focused: the screens that draw that click focus themselves drop
+    /// it, so only the pad's focus shows.
+    fn clear_screen_click_focus(&mut self) {
+        if let Some(title) = self.title.as_mut() {
+            title.focused_button = None;
+        }
+        match self.screen {
+            Screen::Paused => self.pause_focus = None,
+            Screen::Dead => self.death_focus = None,
+            Screen::Options => self.ui.options.clear_click_focus(),
+            _ => {}
+        }
+        if let Some(options) = self.world_options.as_mut() {
+            options.clear_click_focus();
+        }
     }
 
     /// The controller's focus ring in focus mode, for the screen's narration:
@@ -772,7 +860,6 @@ impl Game<'_> {
             menu.repeat = None;
             menu.held = [false; 2];
             menu.focus = None;
-            menu.swapped = false;
             menu.pending = None;
             menu.nudge = None;
             menu.osk = None;
@@ -791,11 +878,15 @@ impl Game<'_> {
             if std::mem::take(&mut self.pad.menu.keyboard) {
                 self.pad.menu.origin = focus.map(|t| t.rect);
             }
-            self.pad.in_use = false;
+            self.pad_yield_input(event_loop);
         }
         // Focus lands on the menu as it opens when the pad was in use.
         if self.pad.in_use && self.pad.menu.pos.is_none() && self.pad.menu.open_polls == 3 {
             self.pad_take_pointer(event_loop);
+        }
+        if !self.pad.in_use && !self.pad.menu.keyboard {
+            self.pad_show_os_pointer(true);
+            return;
         }
         let focus_mode = self.pad_focus_mode();
         let targets = if focus_mode {
@@ -835,26 +926,40 @@ impl Game<'_> {
             }
         } else {
             self.pad.menu.stick = None;
-            let (dx, dy) = gamepad::cursor_delta(state.left, move_deadzone, seconds);
+            let tuning = &snap::TUNING;
+            let mut speed = seconds * self.settings.controller.pointer_speed;
+            if tuning.over_target_speed != 1.0 && self.pad_over_target() {
+                speed *= tuning.over_target_speed;
+            }
+            let (dx, dy) = gamepad::cursor_delta(state.left, move_deadzone, speed);
             if dx != 0.0 || dy != 0.0 {
+                self.pad.menu.glide = None;
                 self.pad_take_pointer(event_loop);
                 let at = self.cursor;
+                self.pad.menu.gesture.get_or_insert(at);
                 self.pad_pointer_to(event_loop, (at.0 + dx, at.1 + dy));
                 self.pad.menu.moving = true;
             } else if self.pad.menu.moving {
-                // Let go: settle onto a slot or button close by.
+                // Let go: the snapping engine picks where it settles.
                 self.pad.menu.moving = false;
+                let start = self.pad.menu.gesture.take().unwrap_or(self.cursor);
                 let centres: Vec<(f32, f32)> =
                     self.pad_targets().iter().map(Target::center).collect();
-                if let Some(i) = gamepad::nearest(self.cursor, &centres, 10.0) {
-                    self.pad_pointer_to(event_loop, centres[i]);
+                if let Some(i) = snap::settle(start, self.cursor, &centres, tuning) {
+                    self.pad_glide_to(centres[i]);
+                }
+            } else if let Some((from, to, since)) = self.pad.menu.glide {
+                let elapsed = now.duration_since(since).as_secs_f32();
+                self.pad_pointer_to(event_loop, snap::glide(from, to, elapsed, tuning));
+                if elapsed >= tuning.glide_seconds {
+                    self.pad.menu.glide = None;
                 }
             }
         }
         let scroll = gamepad::radial(state.right, look_deadzone);
         let wheel = &mut self.pad.menu.wheel;
-        wheel[0] += scroll[0] * SCROLL_SPEED * seconds;
-        wheel[1] += scroll[1] * SCROLL_SPEED * seconds;
+        wheel[0] += scroll[0] * self.settings.controller.scroll_speed * seconds;
+        wheel[1] += scroll[1] * self.settings.controller.scroll_speed * seconds;
         if scroll == [0.0, 0.0] {
             *wheel = [0.0, 0.0];
         }
@@ -867,9 +972,9 @@ impl Game<'_> {
         }
         if let Some((button, since, repeating)) = self.pad.menu.repeat {
             let wait = if repeating {
-                REPEAT_EVERY
+                self.settings.controller.repeat_interval
             } else {
-                REPEAT_DELAY
+                self.settings.controller.repeat_delay
             };
             if now.duration_since(since).as_secs_f32() >= wait {
                 self.pad.menu.repeat = Some((button, now, true));
@@ -1002,10 +1107,34 @@ impl Game<'_> {
             "focus": self.pad.menu.focus.as_ref().map(target),
             "keyboard": self.pad.menu.osk.is_some(),
             "targets": self.pad_targets().iter().map(target).collect::<Vec<_>>(),
+            "screen_key": format!("{:016x}", self.key_screen()),
+            "remembered": self
+                .pad
+                .menu
+                .remembered
+                .iter()
+                .map(|(k, r)| (format!("{k:016x}"), serde_json::json!(r)))
+                .collect::<serde_json::Map<_, _>>(),
         })
     }
 
     // ---- the keyboard: vanilla's focus navigation (`key_focus`) ----
+
+    pub(super) fn pad_cancel_menu(&mut self, event_loop: &dyn EventLoopCtl) {
+        for right in [false, true] {
+            if self.pad.menu.held[usize::from(right)] {
+                self.pad_pointer_button(event_loop, right, false);
+            }
+        }
+        self.pad.menu.repeat = None;
+        self.pad.menu.stick = None;
+        self.pad.menu.wheel = [0.0; 2];
+        self.pad.menu.moving = false;
+        self.pad.menu.glide = None;
+        self.pad.menu.gesture = None;
+        self.pad.menu.pending = None;
+        self.pad.menu.nudge = None;
+    }
 
     /// The keyboard drives the open menu's focus.
     pub(super) fn key_focus_driving(&self) -> bool {
@@ -1039,6 +1168,15 @@ impl Game<'_> {
             || (self.screen == Screen::Options
                 && (self.options_waiting_for_key()
                     || self.ui.options.selected_pad_action.is_some()))
+    }
+
+    /// `Screen.clearFocus`, which `Gui.setScreen` runs on the screen it takes
+    /// down: the keyboard's focus belongs to that screen. A key bound to the
+    /// container's own close key can move the focus and close the screen in
+    /// one press (Tab bound to the inventory), and vanilla clears the focus
+    /// before the next frame, so nothing stays highlighted.
+    pub(super) fn pad_clear_focus(&mut self) {
+        self.pad.menu.clear_focus();
     }
 
     /// A key pressed in a menu, before the screen takes it
@@ -1137,10 +1275,11 @@ impl Game<'_> {
     }
 
     /// Which screen is open, as far as the keyboard's focus cares.
-    fn key_screen(&self) -> u64 {
+    pub(super) fn key_screen(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::mem::discriminant(&self.screen).hash(&mut hasher);
+        self.remote_menu_id().hash(&mut hasher);
         if self.screen == Screen::Options {
             std::mem::discriminant(&self.ui.options.page()).hash(&mut hasher);
         }
@@ -1226,6 +1365,18 @@ impl Game<'_> {
     pub(super) fn key_focus_mouse(&mut self, event_loop: &dyn EventLoopCtl, event: &WindowEvent) {
         if self.pad.menu.synthetic {
             return;
+        }
+        let takeover = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pad.menu.real_pointer != Some(*position)
+            }
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            WindowEvent::MouseWheel { .. } => true,
+            _ => false,
+        };
+        if takeover {
+            self.pad_yield_input(event_loop);
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1460,6 +1611,9 @@ impl Game<'_> {
             ui.finish();
             return;
         }
+        if !self.pad.in_use && !self.pad.menu.keyboard {
+            return;
+        }
         let Some((x, y)) = self.pad.menu.pos else {
             return;
         };
@@ -1469,33 +1623,19 @@ impl Game<'_> {
             self.draw_pad_focus(batch, focus);
             return;
         }
-        // An arrow, outlined, pointing up-left at (x, y).
-        let atlas = &self.gui.atlas;
-        let (x, y) = (x.floor(), y.floor());
-        const ROWS: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 4, 2, 1];
-        for (i, &w) in ROWS.iter().enumerate() {
-            let row = y + i as f32;
-            batch.fill(
-                atlas,
-                x - 1.0,
-                row,
-                f32::from(w) + 2.0,
-                1.0,
-                rgba(0, 0, 0, 255),
-            );
-        }
-        batch.fill(atlas, x - 1.0, y + 10.0, 2.0, 1.0, rgba(0, 0, 0, 255));
-        for (i, &w) in ROWS.iter().enumerate().skip(1).take(8) {
-            let row = y + i as f32;
-            batch.fill(
-                atlas,
-                x,
-                row,
-                f32::from(w) - 1.0,
-                1.0,
-                rgba(255, 255, 255, 255),
-            );
-        }
+        // A crosshair centred on the point it clicks: inventories, and a
+        // screen with nothing to focus.
+        use horizon_client::pad_cursor;
+        let (left, top) = pad_cursor::origin((x, y));
+        batch.sprite_scaled(
+            &self.gui.atlas,
+            pad_cursor::SPRITE,
+            left,
+            top,
+            pad_cursor::DRAWN,
+            pad_cursor::DRAWN,
+            u32::MAX,
+        );
     }
 
     /// The focus highlight, as vanilla's keyboard focus looks: buttons,
@@ -1541,6 +1681,23 @@ mod tests {
         assert!(!osk_auto_opens(false, true, true, 5, true));
         assert!(!osk_auto_opens(true, false, true, 5, true));
         assert!(!osk_auto_opens(false, false, true, 5, false));
+    }
+
+    #[test]
+    fn clear_focus_leaves_nothing_focused() {
+        let mut menu = MenuCursor {
+            focus: Some(Target {
+                rect: [229.0, 98.0, 20.0, 18.0],
+                kind: Kind::Button,
+            }),
+            origin: Some([229.0, 98.0, 20.0, 18.0]),
+            slider_edit: true,
+            ..MenuCursor::default()
+        };
+        menu.clear_focus();
+        assert!(menu.focus.is_none());
+        assert!(menu.origin.is_none());
+        assert!(!menu.slider_edit);
     }
 
     #[test]

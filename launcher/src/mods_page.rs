@@ -1,5 +1,7 @@
-//! The Mods page: search Horizon's own registry for mods and shader packs made for Horizon, or
-//! Modrinth for resource packs (a Java instance's mods too), see where each comes
+//! The Mods page: its tabs are the kinds (mods, modpacks, resource packs, shader packs, data
+//! packs). Search Horizon's own registry for what was made for Horizon, or Modrinth (CurseForge:
+//! coming soon) for Java mods, modpacks, resource packs and data packs (a Java instance's files
+//! always come from Modrinth, for its version), see where each comes
 //! from and how well it runs (a Java mod's jar is checked first; a Horizon mod says whether it is
 //! signed and what it may do), install it with its checksum checked, turn Horizon mods on and
 //! off, and update or remove what was installed (`horizon_launcher::browser`). Imported modpacks
@@ -17,7 +19,7 @@ use java_instance::Target;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The kinds, as the Mods page's tabs: name and icon. Only [`SHOWN`]'s have a tab.
+/// The kinds, as the Mods page's tabs: name and icon.
 const KINDS: [(PackKind, &str, &str); 5] = [
     (PackKind::Mod, "Mods", "box"),
     (PackKind::Modpack, "Modpacks", "archive"),
@@ -25,17 +27,18 @@ const KINDS: [(PackKind, &str, &str); 5] = [
     (PackKind::Shader, "Shader packs", "zap"),
     (PackKind::DataPack, "Data packs", "notes"),
 ];
-/// The kinds with a tab: Horizon's registry's, and Modrinth's resource packs. Modrinth's mods and
-/// data packs aren't usable yet; the Modpacks tab shows while the sidebar has it open.
-const SHOWN: [PackKind; 3] = [PackKind::Mod, PackKind::ResourcePack, PackKind::Shader];
 /// Java mods checked at once.
 const CHECKING: usize = 2;
-/// The sources to pick from on the Resource packs and Modpacks tabs; CurseForge is shown beside them as coming soon.
-const SOURCES: [(SourceId, &str); 2] = [
-    (SourceId::Modrinth, "Modrinth"),
+/// The sources to pick from on the tabs that have both ([`switches`]); CurseForge is shown
+/// beside them as coming soon.
+pub(super) const SOURCES: [(SourceId, &str); 2] = [
     (SourceId::Horizon, "Horizon"),
+    (SourceId::Modrinth, "Modrinth"),
 ];
 const PAGE: usize = 20;
+
+#[path = "glass_mods.rs"]
+mod glass_mods;
 
 pub(super) enum Event {
     /// A search's answer, for the search it was (stale answers are dropped) at that offset.
@@ -51,6 +54,8 @@ pub(super) enum Event {
     TakenDown(Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
+    /// The palette's registry mods for its search of that number.
+    Palette(u64, Vec<Project>),
 }
 
 /// Where a Java mod's check is.
@@ -94,11 +99,17 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// The project the glass look's detail card shows; the first result when none is.
+    pub(super) picked: Option<String>,
+    /// The project the glass detail card showed last.
+    pub(super) shown: Option<Project>,
     /// A native mod's Install waiting for the one-time trust notice (`native_status::NOTICE`).
     native_notice: Option<(SourceId, String, Option<Project>)>,
     /// The selected instance's native build state, and the `native_status::fingerprint` it was
     /// read for: read again only when that changes.
-    native_state: std::cell::RefCell<Option<(String, native_status::State)>>,
+    /// With it, the mods turned on that pin the commit an older build compiled
+    /// (`native_status::pinning`, for builds that didn't record it).
+    native_state: std::cell::RefCell<Option<(String, native_status::State, Vec<String>)>>,
     native_files: std::cell::RefCell<Option<(String, Vec<native_status::Installed>)>>,
     /// Java mods' checks, by source and project.
     pub(super) checks: HashMap<(SourceId, String), Checking>,
@@ -150,6 +161,7 @@ impl Mods {
             Ok("modpacks") => PackKind::Modpack,
             Ok("resourcepacks") => PackKind::ResourcePack,
             Ok("shaders") => PackKind::Shader,
+            Ok("datapacks") => PackKind::DataPack,
             _ => PackKind::Mod,
         };
         Self {
@@ -182,6 +194,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            picked: None,
+            shown: None,
             checks: HashMap::new(),
             about: HashMap::new(),
             browse: Default::default(),
@@ -313,6 +327,11 @@ impl Launcher {
             changed = true;
             let m = &mut self.mods;
             match event {
+                Event::Palette(search, found) => {
+                    if let Some(p) = self.palette.as_mut().filter(|p| p.search == search) {
+                        p.mods = found;
+                    }
+                }
                 Event::Found(search, offset, result) if search == m.search => {
                     m.searching = false;
                     m.searched = true;
@@ -347,6 +366,9 @@ impl Launcher {
                 Event::Done(result, modpack) => {
                     done = true;
                     m.busy = None;
+                    if let Ok(said) = &result {
+                        crate::glass_toast::say(said.clone());
+                    }
                     m.message = Some(result);
                     m.installed = installed::Installed::load(&m.home()).entries;
                     m.installed_list.reset();
@@ -680,6 +702,9 @@ impl Launcher {
             && horizon::is_native_mod(&id);
         if first_native {
             self.mods.native_notice = Some((source, id, known));
+            self.content_scroll
+                .handle
+                .set_offset(gpui::point(px(0.), px(0.)));
             return;
         }
         self.mods.native_notice = None;
@@ -820,10 +845,15 @@ impl Launcher {
         });
     }
 
-    fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let m = &self.mods;
         let focused = m.focused;
+        let placeholder = if t.glass {
+            self.mods_placeholder()
+        } else {
+            tr("Search, then Enter").into()
+        };
         let field = div()
             .id("mods-search")
             .track_focus(&m.focus)
@@ -839,14 +869,19 @@ impl Launcher {
             .bg(t.well)
             .text_size(px(theme::UI.px))
             .cursor_text()
-            .child(blocks::icon("search", 18., t.muted))
-            .child(line_edit::content(
+            .child(if t.glass {
+                crate::glass_ui::icon("search-01", 17., crate::glass_ui::white(0.55))
+                    .into_any_element()
+            } else {
+                blocks::icon("search", 18., t.muted).into_any_element()
+            })
+            .child(line_edit::content_with(
                 &m.text,
                 &t,
                 focused,
                 false,
                 false,
-                tr("Search, then Enter"),
+                placeholder,
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.mods.focus, cx);
@@ -862,6 +897,20 @@ impl Launcher {
                 cx.stop_propagation();
                 cx.notify();
             }));
+        // The glass look's: `rounded-[12px] h-11 bg-white/[0.07] px-3.5`, a 17 px search icon.
+        let field = if t.glass {
+            field
+                .w_full()
+                .h(px(44.))
+                .px(px(14.))
+                .border_0()
+                .rounded(px(12.))
+                .bg(crate::glass_ui::white(if focused { 0.11 } else { 0.07 }))
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+        } else {
+            field
+        };
         line_edit::mouse(field, cx, |this| &mut this.mods.text)
     }
 
@@ -892,12 +941,86 @@ impl Launcher {
         }
     }
 
+    /// Opens a kind's tab: its first source, its own filters, a new search.
+    pub(super) fn mods_set_kind(&mut self, kind: PackKind) {
+        if self.mods.kind != kind {
+            self.mods.kind = kind;
+            self.mods.source = source_for(kind);
+            // A data pack goes into a world: one may have been made since.
+            if kind == PackKind::DataPack {
+                self.mods.read_worlds();
+            }
+            // Categories and loaders differ by kind.
+            self.mods.browse.filters = Default::default();
+            self.mods.browse.open = None;
+            self.mods.picked = None;
+            self.mods_search(0);
+        }
+    }
+
+    /// Remove, then Remove for good: an installed project leaves the instance on the second
+    /// click.
+    pub(super) fn mods_remove_click(&mut self, id: String) {
+        if self.mods.confirm_remove.as_ref() == Some(&id) {
+            let _ = self.mods_remove(&id);
+        } else {
+            self.mods.confirm_remove = Some(id);
+        }
+    }
+
+    /// The project `id` leaves the selected instance now; what happened, for the page's notice.
+    pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
+        let home = self.mods.home();
+        let removed = match self.mods.java {
+            Some(_) => java_instance::remove(&home, id),
+            None => installed::remove(&home, id),
+        }
+        .map(|e| trf("Removed {name}.", &[("name", &e.title)]));
+        if let Ok(said) = &removed {
+            crate::glass_toast::say(said.clone());
+        }
+        self.mods.message = Some(removed.clone());
+        self.mods.installed = installed::Installed::load(&home).entries;
+        self.mods.installed_list.reset();
+        self.mods.confirm_remove = None;
+        removed
+    }
+
+    /// The palette's search (`glass_palette`): up to four of Horizon's registry mods for `text`,
+    /// answered as [`Event::Palette`]. None for a Java instance, which takes Modrinth's files.
+    pub(super) fn palette_mods(&mut self, text: &str, search: u64) {
+        self.mods_load();
+        if self.mods.java.is_some() {
+            return;
+        }
+        let tx = self.mods.tx.clone();
+        let query = Query {
+            limit: 4,
+            ..Query::new(text, PackKind::Mod)
+        };
+        std::thread::spawn(move || {
+            let found = browser::source(SourceId::Horizon)
+                .ok_or_else(|| "not set up".to_string())
+                .and_then(|s| s.search(&query))
+                .unwrap_or_default();
+            let _ = tx.send(Event::Palette(search, found));
+        });
+    }
+
+    /// Whether the selected instance has `p` (the palette's Install or Remove).
+    pub(super) fn mods_has(&self, p: &Project) -> bool {
+        self.mods.entry(p).is_some()
+    }
+
     pub(super) fn mods_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         self.mods_load();
         if !self.mods.asked {
             self.mods.asked = true;
             self.mods_search(0);
+        }
+        if t.glass {
+            return self.glass_mods_page(cx);
         }
         let header = page_header(
             "Mods",
@@ -908,22 +1031,11 @@ impl Launcher {
         );
         let this = cx.entity().downgrade();
         let open = self.mods.kind;
-        let shown: Vec<_> = KINDS
-            .into_iter()
-            .filter(|&(kind, ..)| SHOWN.contains(&kind) || kind == open)
-            .collect();
-        let kinds = blocks::tabs("mods-kind", &shown, open, &t, {
+        let kinds = blocks::tabs("mods-kind", &KINDS, open, &t, {
             let this = this.clone();
             move |kind, _, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    if this.mods.kind != kind {
-                        this.mods.kind = kind;
-                        this.mods.source = source_for(kind);
-                        // Categories and loaders differ by kind.
-                        this.mods.browse.filters = Default::default();
-                        this.mods.browse.open = None;
-                        this.mods_search(0);
-                    }
+                    this.mods_set_kind(kind);
                     cx.notify();
                 });
             }
@@ -946,11 +1058,11 @@ impl Launcher {
                 this.mods_search(0);
                 cx.notify();
             }));
-        // Only the kinds Modrinth serves pick their source: CurseForge is coming soon there,
-        // shown, inert, never searched (like the Microsoft account's "Coming soon").
-        // A Java instance's mods and resource packs come from Modrinth, for its version.
+        // The kinds both sources serve pick theirs: CurseForge is coming soon there, shown,
+        // inert, never searched (like the Microsoft account's "Coming soon").
+        // A Java instance's files come from Modrinth, for its version.
         let java = self.mods.java_for(self.mods.kind).is_some();
-        let source_note = (source_for(self.mods.kind) == SourceId::Modrinth && !java)
+        let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
         // The registry lists only what was made for Horizon: no "everything", no Modrinth filters,
         // only its sort.
@@ -1092,7 +1204,7 @@ impl Launcher {
                             button("native-notice-install", "Install", Kind::Primary, &t).on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.settings.native_mods_noticed = true;
-                                    this.settings.save();
+                                    this.save_settings();
                                     if let Some((source, id, known)) =
                                         this.mods.native_notice.take()
                                     {
@@ -1250,20 +1362,7 @@ impl Launcher {
             )
             .when(confirming, |b| b.text_color(t.danger))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if this.mods.confirm_remove.as_ref() == Some(&id) {
-                    let home = this.mods.home();
-                    let removed = match this.mods.java {
-                        Some(_) => java_instance::remove(&home, &id),
-                        None => installed::remove(&home, &id),
-                    };
-                    this.mods.message =
-                        Some(removed.map(|e| trf("Removed {name}.", &[("name", &e.title)])));
-                    this.mods.installed = installed::Installed::load(&home).entries;
-                    this.mods.installed_list.reset();
-                    this.mods.confirm_remove = None;
-                } else {
-                    this.mods.confirm_remove = Some(id.clone());
-                }
+                this.mods_remove_click(id.clone());
                 cx.notify();
             }));
             let on = match &self.mods.java {
@@ -1307,7 +1406,7 @@ impl Launcher {
                     )
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&folder);
-                        cx.open_with_system(&folder);
+                        crate::glass_toast::open(cx, &folder);
                     }),
                 );
             }
@@ -1418,21 +1517,35 @@ impl Launcher {
         let version = self.version_of(instance).cloned();
         let home = self.mods.home();
         let key = native_status::fingerprint(&home, version.as_deref());
+        let build = version.as_deref().and_then(|v| self.native_build_of(v));
         let mut memo = self.mods.native_state.borrow_mut();
-        let state = match memo.as_ref() {
-            Some((k, state)) if *k == key => *state,
+        let (state, pinned) = match memo.as_ref() {
+            Some((k, state, pinned)) if *k == key => (*state, pinned.clone()),
             _ => {
                 let built = version.as_deref().and_then(native_status::built);
                 let state = native_status::state(&native_status::enabled(&home), built.as_deref());
-                *memo = Some((key, state));
-                state
+                let pinned = match &build {
+                    Some(b) if b.pinned_unknown => native_status::pinning(&home, &b.horizon),
+                    _ => Vec::new(),
+                };
+                *memo = Some((key, state, pinned.clone()));
+                (state, pinned)
             }
         };
-        let build = version.as_deref().and_then(|v| self.native_build_of(v));
+        let pinned = match &build {
+            Some(b) if !b.pinned_by.is_empty() => b.pinned_by.clone(),
+            _ => pinned,
+        };
+        // Rebuilding on a newer Horizon, or on the build's own one when mods pinned another
+        // commit, builds every mod on that Horizon's commit (`on_base`).
         let update = build
             .as_ref()
             .filter(|_| state != State::NoMods)
-            .and_then(|b| native_mods::newer_than(&b.base, &self.installed));
+            .and_then(|b| {
+                native_mods::newer_than(&b.base, &self.installed).or_else(|| {
+                    (!pinned.is_empty() && self.installed.contains(&b.base)).then(|| b.base.clone())
+                })
+            });
         let mine = self.native_for.as_deref() == Some(instance.id.as_str());
         let step = self.native_step.as_ref().filter(|_| mine);
         let error = self.native_error.as_ref().filter(|_| mine);
@@ -1475,10 +1588,22 @@ impl Launcher {
             detail = detail.child(div().text_color(t.muted).child(done.clone()));
         }
         if let (Some(tag), Some(build)) = (&version, &build) {
-            detail = detail.child(div().text_color(t.muted).child(trf(
-                "Plays {build}, built on Horizon {version}.",
-                &[("build", tag), ("version", &build.horizon())],
-            )));
+            let said = match pinned.is_empty() {
+                true => trf(
+                    "Plays {build}, built on Horizon {version}.",
+                    &[("build", tag), ("version", &build.horizon())],
+                ),
+                false => trf(
+                    "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.",
+                    &[
+                        ("build", tag),
+                        ("commit", &build.horizon[..build.horizon.len().min(7)]),
+                        ("mods", &pinned.join(", ")),
+                        ("version", &build.horizon()),
+                    ],
+                ),
+            };
+            detail = detail.child(div().text_color(t.muted).child(said));
         }
         if self.native_step.is_some() && !mine {
             let other = self
@@ -1517,6 +1642,7 @@ impl Launcher {
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.native_update = Some(newer.clone());
+                    this.native_on_base = true;
                     this.native_confirm = Some(this.native_mods_to_build().map(|(_, b)| b));
                     cx.notify();
                 })),
@@ -1526,6 +1652,7 @@ impl Launcher {
             right = right.child(button("native-build", "Build", Kind::Primary, &t).on_click(
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.native_update = None;
+                    this.native_on_base = false;
                     this.native_confirm = Some(this.native_mods_to_build().map(|(_, b)| b));
                     cx.notify();
                 }),
@@ -1548,7 +1675,7 @@ impl Launcher {
                         this.settings.native_profile = Some(choice);
                         this.settings.native_release = false;
                         this.native_done = None;
-                        this.settings.save();
+                        this.save_settings();
                         cx.notify();
                     });
                 }
@@ -1745,13 +1872,23 @@ impl Launcher {
     }
 }
 
-/// Where a kind's tab searches first: Horizon's registry, but Modrinth for resource packs and
-/// modpacks.
+/// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
+/// the rest (data packs are only there).
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
-        PackKind::ResourcePack | PackKind::Modpack => SourceId::Modrinth,
-        _ => SourceId::Horizon,
+        PackKind::Mod | PackKind::Shader => SourceId::Horizon,
+        PackKind::ResourcePack | PackKind::Modpack | PackKind::DataPack => SourceId::Modrinth,
     }
+}
+
+/// Whether a kind's tab picks its source: mods, modpacks and resource packs are on both Horizon's
+/// registry and Modrinth; Horizon's shader packs are on its registry only, data packs on Modrinth
+/// only.
+pub(super) fn switches(kind: PackKind) -> bool {
+    matches!(
+        kind,
+        PackKind::Mod | PackKind::ResourcePack | PackKind::Modpack
+    )
 }
 
 impl Launcher {

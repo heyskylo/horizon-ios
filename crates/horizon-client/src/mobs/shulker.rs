@@ -21,9 +21,33 @@ use std::f32::consts::PI;
 
 // Shulker state: `variant3` the attach face (3D data value), `counter` the
 // raw peek (0..100), `color` the shell colour (16 none). AnimState slot 0
-// the current peek amount.
+// the current peek amount. On the client, `scratch[0]` is
+// `clientSideTeleportInterpolation` and `scratch[1..3]` is
+// `clientOldAttachPosition`.
 pub const PEEK: usize = 0;
 pub const NO_COLOR: u8 = 16;
+/// `Direction.DOWN`'s 3D data value.
+const DOWN: u8 = 0;
+
+/// `Shulker.startRiding`: a shulker that boards a vehicle puts its attach face
+/// back to `DOWN`, so it rides lid up whatever block face it was stuck to.
+/// The client half clears the teleport slide (`clientOldAttachPosition` and
+/// `clientSideTeleportInterpolation`).
+pub fn on_start_riding(m: &mut Mob) {
+    if m.species() == Species::Shulker {
+        m.extra.variant3 = DOWN;
+        m.extra.scratch[0] = 0;
+    }
+}
+
+/// `Shulker.getDefaultDimensions`: a shell attached to the block below it
+/// (attach face `DOWN`, its lid opening upward) grows `1 + currentPeekAmount`
+/// tall as the lid opens. Width is
+/// untouched, and so is every other attach face.
+pub fn peek_height_scale(m: &Mob) -> Option<f32> {
+    let peek = m.anim.v[PEEK];
+    (m.extra.variant3 == DOWN && peek > 0.0).then_some(1.0 + peek)
+}
 
 pub fn register(m: &mut Mob) {
     m.no_gravity = true;
@@ -325,12 +349,71 @@ pub fn look_yaw(m: &Mob, at: [f64; 3]) -> Option<f32> {
         f64::from(delta_forward),
     ))
 }
-/// `Shulker.tick` on a client that is not the server: the lid eases to the
-/// peek it was sent, and its body stays square (`ShulkerBodyRotationControl`).
+/// `Shulker.tick` on a client that is not the server: the teleport slide
+/// counts down (`setPos` armed it when the move packet arrived), the lid
+/// eases to the peek it was sent, and the body stays square
+/// (`ShulkerBodyRotationControl`).
 pub fn client_tick(m: &mut Mob) {
+    if m.extra.scratch[0] > 0 {
+        m.extra.scratch[0] -= 1;
+    }
     m.anim.vo = m.anim.v;
     ease_peek(m);
     m.body_yaw = 0.0;
+}
+/// `Shulker.setPos`. A shulker's interpolation handler is `NO_OP`, so a move
+/// packet lands here instead of being stepped. Not a passenger: the position
+/// snaps to the block centre. A block change after the first tick closes the
+/// lid, and, off a vehicle and other than toward the block the current slide
+/// remembers, starts the 6-tick slide from the block it was in before the
+/// packet and snaps `previous` so ordinary interpolation does not also run.
+pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
+    let old = block_pos(m);
+    m.position = if m.extra.passenger {
+        Vec3::new(x, y, z)
+    } else {
+        Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5)
+    };
+    // `setPos` sees `tickCount == 0` and starts nothing.
+    if m.age == 0 {
+        return;
+    }
+    let pos = block_pos(m);
+    if pos == old {
+        return;
+    }
+    m.extra.counter = 0;
+    if m.extra.passenger {
+        return;
+    }
+    let remembered = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    if m.extra.scratch[0] > 0 && pos == remembered {
+        return;
+    }
+    m.extra.scratch[1] = old[0];
+    m.extra.scratch[2] = old[1];
+    m.extra.scratch[3] = old[2];
+    m.extra.scratch[0] = 6;
+    m.previous = m.position;
+}
+/// `Shulker.getRenderPosition`: while the slide has ticks left, the model is
+/// pulled back toward the block it left by `((ticks - partial) / 6)^2`,
+/// times `getScale`. Vanilla's `null` is no offset.
+pub fn render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
+    let ticks = m.extra.scratch[0];
+    if m.species() != Species::Shulker || ticks <= 0 {
+        return glam::DVec3::ZERO;
+    }
+    let mut scale = (f64::from(ticks) - f64::from(alpha)) / 6.0;
+    scale *= scale;
+    scale *= f64::from(m.model_scale());
+    let current = block_pos(m);
+    let old = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    glam::DVec3::new(
+        -f64::from(current[0] - old[0]) * scale,
+        -f64::from(current[1] - old[1]) * scale,
+        -f64::from(current[2] - old[2]) * scale,
+    )
 }
 /// `Shulker.hurtServer` before the damage: arrows bounce off a closed shell.
 pub fn accepts(m: &Mob, source: &Damage) -> bool {
@@ -607,9 +690,70 @@ mod tests {
         k.id = "minecraft:shulker".into();
         k.species = Species::Shulker;
         k.max_head_y_rot = 180.0;
+        // EntityTypes.SHULKER: sized(1.0F, 1.0F).eyeHeight(0.5F).
+        k.width = 1.0;
+        k.height = 1.0;
+        k.eye_height = 0.5;
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
         m.extra.variant3 = 2;
         m
+    }
+
+    /// `Shulker.hurtServer` returns false for an `AbstractArrow` while
+    /// `isClosed` (raw peek 0). An open shell takes the same arrow.
+    #[test]
+    fn a_closed_shell_refuses_an_arrow() {
+        let source = Damage::of(DamageKind::Arrow);
+        let mut closed = shulker();
+        closed.extra.counter = 0;
+        let health = closed.health;
+        assert!(
+            !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
+            "a closed shell rejects the arrow"
+        );
+        assert_eq!(closed.health, health);
+        let mut open = shulker();
+        open.extra.counter = 30;
+        assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
+        assert!(open.health < health);
+    }
+
+    #[test]
+    fn a_move_packet_starts_the_teleport_slide() {
+        // Shulker.createInterpolationHandler is NO_OP, so the packet's end
+        // position is setPos. The slide is armed there, from the block before
+        // the packet, and client_tick only counts it down.
+        let mut m = shulker();
+        m.age = 10;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        m.previous = m.position;
+        client_set_pos(&mut m, 3.2, 1.0, 0.4);
+        assert_eq!(m.position, Vec3::new(3.5, 1.0, 0.5));
+        assert_eq!(m.previous, m.position);
+        assert_eq!(m.extra.scratch[0], 6);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::new(-3.0, -1.0, 0.0));
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 5);
+        // A tick with no new packet does not look at previous and re-arm.
+        m.previous = Vec3::new(80.0, 0.0, 0.0);
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 4);
+    }
+
+    #[test]
+    fn a_riding_shulker_closes_its_lid_but_does_not_slide() {
+        // Shulker.setPos on a passenger: the exact position, the peek set to
+        // 0 on a block change, and no clientSideTeleportInterpolation.
+        let mut m = shulker();
+        m.age = 10;
+        m.extra.passenger = true;
+        m.extra.counter = 30;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        client_set_pos(&mut m, 2.25, 0.4, 0.5);
+        assert_eq!(m.position, Vec3::new(2.25, 0.4, 0.5));
+        assert_eq!(m.extra.counter, 0);
+        assert_eq!(m.extra.scratch[0], 0);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::ZERO);
     }
 
     #[test]
@@ -653,5 +797,53 @@ mod tests {
             "the head turns to the target, not back to the square body"
         );
         assert_eq!(m.body_yaw, 0.0);
+    }
+
+    #[test]
+    fn an_open_shell_on_the_floor_stands_taller() {
+        // Shulker.getDefaultDimensions: a shell on Direction.DOWN (attach
+        // face 0) with currentPeekAmount p is `scale(1, 1 + p)` of its
+        // 1 x 1 x 0.5 box — the width is untouched, the height and the eyes
+        // grow. A client eases the peek 0.05 a tick towards the synced raw
+        // peek, 100 while ShulkerAttackGoal holds the lid open.
+        let mut m = shulker();
+        m.extra.variant3 = DOWN;
+        m.extra.counter = 100;
+        for _ in 0..10 {
+            client_tick(&mut m);
+        }
+        assert!((m.anim.v[PEEK] - 0.5).abs() < 1e-6, "{}", m.anim.v[PEEK]);
+        let (w, h, e) = m.dims();
+        assert!(
+            (w - 1.0).abs() < 1e-9 && (h - 1.5).abs() < 1e-5 && (e - 0.75).abs() < 1e-5,
+            "a half open shell is 1 x 1.5 with its eyes at 0.75: {w} x {h} x {e}"
+        );
+        // The same box `Mob::bounds_at` and the culling build from `height`.
+        assert!((f64::from(m.height()) - 1.5).abs() < 1e-5, "{}", m.height());
+    }
+
+    #[test]
+    fn only_a_shell_on_the_floor_grows() {
+        // Every other attach face keeps the plain 1 x 1 x 0.5 box, however
+        // far the lid opens.
+        for face in [1u8, 2, 3, 4, 5] {
+            let mut m = shulker();
+            m.extra.variant3 = face;
+            m.extra.counter = 100;
+            for _ in 0..20 {
+                client_tick(&mut m);
+            }
+            assert_eq!(m.anim.v[PEEK], 1.0);
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 1.0).abs() < 1e-9 && (h - 1.0).abs() < 1e-9 && (e - 0.5).abs() < 1e-9,
+                "a shell on face {face} stays 1 x 1: {w} x {h} x {e}"
+            );
+        }
+        // A closed one on the floor does not grow either.
+        let mut m = shulker();
+        m.extra.variant3 = DOWN;
+        let (_, h, _) = m.dims();
+        assert!((h - 1.0).abs() < 1e-9, "{h}");
     }
 }

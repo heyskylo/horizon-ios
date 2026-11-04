@@ -7,15 +7,23 @@ use std::collections::BTreeMap;
 /// `at_midBlock.w` is the light its block gives. `SEPARATE_HARDWARE_SAMPLERS` (ShaderDoc,
 /// "Separate Hardware Shadow Samplers"): `shadowtex0`/`shadowtex1` stay plain depth samplers when
 /// hardware filtering is on, `shadowtex0HW`/`shadowtex1HW` compare; Horizon picks a comparison
-/// sampler by the declared type (`sampler2DShadow`), so they always are.
-const FEATURES: [&str; 6] = [
+/// sampler by the declared type (`sampler2DShadow`), so they always are. `HIGHER_SHADOWCOLOR`:
+/// `shadowcolor2` to `shadowcolor7` beside the first two.
+const FEATURES: [&str; 8] = [
     "BLOCK_EMISSION_ATTRIBUTE",
     "COMPUTE_SHADERS",
     "CUSTOM_IMAGES",
     "ENTITY_TRANSLUCENT",
+    "HIGHER_SHADOWCOLOR",
+    "REVERSED_CULLING",
     "SEPARATE_HARDWARE_SAMPLERS",
     "SSBO",
 ];
+
+/// Whether `name` is one of [`FEATURES`], in any case.
+fn is_feature(name: &str) -> bool {
+    FEATURES.iter().any(|f| f.eq_ignore_ascii_case(name))
+}
 
 /// `MC_VERSION` of the version Horizon plays: 26.3 → 260300.
 pub const MC_VERSION: u32 = mc_version(horizon_core::version::VERSION_ID);
@@ -135,8 +143,20 @@ impl Macros {
         self.define("MC_MIPMAP_LEVEL", mipmap_levels.to_string());
     }
 
+    /// Every feature Horizon has, as `IRIS_FEATURE_<name>`: what `shaders.properties` itself is
+    /// read with. Iris 1.11.7 defines a feature it has there whether the pack lists it as
+    /// optional, as required or not at all (probe pack), while its programs see only the optional
+    /// ones (`define_features`).
+    pub fn define_every_feature(&mut self) {
+        for feature in FEATURES {
+            self.define(format!("IRIS_FEATURE_{feature}"), "");
+        }
+    }
+
     /// `iris.features.optional`'s features Horizon has, as `IRIS_FEATURE_<name>`; a note for
-    /// each feature `iris.features.required` names that it lacks.
+    /// each feature `iris.features.required` names that it lacks. As in Iris 1.11.7, a name
+    /// matches in any case, and the macro keeps the name as the pack wrote it (`ssbo` defines
+    /// `IRIS_FEATURE_ssbo`).
     pub fn define_features(&mut self, properties: &crate::Properties) -> Vec<String> {
         let words = |key: &str| {
             properties
@@ -145,13 +165,13 @@ impl Macros {
                 .unwrap_or_default()
         };
         for feature in words("iris.features.optional") {
-            if FEATURES.contains(&feature.as_str()) {
+            if is_feature(&feature) {
                 self.define(format!("IRIS_FEATURE_{feature}"), "");
             }
         }
         words("iris.features.required")
             .into_iter()
-            .filter(|f| !FEATURES.contains(&f.as_str()))
+            .filter(|f| !is_feature(f))
             .map(|f| format!("the pack requires `{f}`, which is not supported yet"))
             .collect()
     }
@@ -159,6 +179,32 @@ impl Macros {
     pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let body = value.into();
         self.0.insert(name.into(), Macro { params: None, body });
+    }
+
+    /// The rest of a `#define` line: `NAME body`, or `NAME(a, b) body` (no space before the `(`)
+    /// for a function-like macro.
+    pub(crate) fn define_line(&mut self, rest: &str) -> Result<(), String> {
+        let len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (name, tail) = rest.split_at(len);
+        if name.is_empty() {
+            return Err("`#define` without a name".into());
+        }
+        if let Some(params) = tail.strip_prefix('(') {
+            let Some((params, body)) = params.split_once(')') else {
+                return Err(format!("`#define {name}(` without `)`"));
+            };
+            let params = params
+                .split(',')
+                .map(|p| p.trim().to_owned())
+                .filter(|p| !p.is_empty())
+                .collect();
+            self.define_function(name, params, body.trim());
+        } else {
+            self.define(name, tail.trim());
+        }
+        Ok(())
     }
 
     pub fn define_function(&mut self, name: &str, params: Vec<String>, body: &str) {
@@ -445,6 +491,40 @@ mod tests {
         assert_eq!(
             notes,
             ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
+        );
+        // HIGHER_SHADOWCOLOR: Iris 1.11.7 defines it for `iris.features.optional` (probe p7951c).
+        let mut m = Macros::default();
+        let notes = m.define_features(&crate::Properties::parse(
+            "iris.features.optional = HIGHER_SHADOWCOLOR\n\
+             iris.features.required = HIGHER_SHADOWCOLOR\n",
+            &Macros::default(),
+        ));
+        assert!(m.is_defined("IRIS_FEATURE_HIGHER_SHADOWCOLOR") && notes.is_empty());
+    }
+
+    /// Iris 1.11.7, with probe packs of our own (#8996): a feature name matches in any case, and
+    /// an optional one defines the macro with the name as written, not in upper case.
+    #[test]
+    fn feature_names_match_in_any_case() {
+        let mut m = Macros::standard();
+        let notes = m.define_features(&crate::Properties::parse(
+            "iris.features.optional = ssbo Custom_Images\n\
+             iris.features.required = compute_shaders ssbo custom_images Not_A_Feature\n",
+            &Macros::standard(),
+        ));
+        assert!(m.is_defined("IRIS_FEATURE_ssbo"));
+        assert!(m.is_defined("IRIS_FEATURE_Custom_Images"));
+        for absent in [
+            "IRIS_FEATURE_SSBO",
+            "IRIS_FEATURE_CUSTOM_IMAGES",
+            "IRIS_FEATURE_compute_shaders",
+            "IRIS_FEATURE_COMPUTE_SHADERS",
+        ] {
+            assert!(!m.is_defined(absent), "{absent}");
+        }
+        assert_eq!(
+            notes,
+            ["the pack requires `Not_A_Feature`, which is not supported yet"]
         );
     }
 

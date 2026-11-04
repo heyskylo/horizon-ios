@@ -7,7 +7,7 @@
 use super::{Game, lan::LanHost};
 use horizon_client::{
     blocks::{Fluid, MAP_COLORS},
-    hud::{MAP_SLOTS, Rect},
+    hud::{MAP_SLOTS, Rect, map_slot_sprite},
     items::ItemStack,
     mesher::Vertex,
 };
@@ -548,30 +548,40 @@ impl MapData {
             patch,
         })
     }
+    /// `MapItemSavedData.<clinit>`: the CODEC save arm omits optional defaults.
     fn to_nbt(&self) -> Tag {
-        let flag = |b: bool| Tag::Byte(i8::from(b));
+        let mut data = vec![
+            ("dimension", Tag::String(self.dimension.as_str().into())),
+            ("xCenter", Tag::Int(self.center[0])),
+            ("zCenter", Tag::Int(self.center[1])),
+            ("colors", Tag::ByteArray(self.colors.clone())),
+        ];
+        if self.scale != 0 {
+            data.push(("scale", Tag::Byte(self.scale as i8)));
+        }
+        for (key, value, default) in [
+            ("locked", self.locked, false),
+            ("trackingPosition", self.tracking, true),
+            ("unlimitedTracking", self.unlimited, false),
+        ] {
+            if value != default {
+                data.push((key, Tag::Byte(i8::from(value))));
+            }
+        }
+        if !self.banners.is_empty() {
+            data.push((
+                "banners",
+                Tag::List(self.banners.iter().map(MapBanner::to_nbt).collect()),
+            ));
+        }
+        if !self.frames.is_empty() {
+            data.push((
+                "frames",
+                Tag::List(self.frames.iter().copied().map(MapFrame::to_nbt).collect()),
+            ));
+        }
         Tag::compound([
-            (
-                "data",
-                Tag::compound([
-                    ("dimension", Tag::String(self.dimension.as_str().into())),
-                    ("xCenter", Tag::Int(self.center[0])),
-                    ("zCenter", Tag::Int(self.center[1])),
-                    ("scale", Tag::Byte(self.scale as i8)),
-                    ("locked", flag(self.locked)),
-                    ("trackingPosition", flag(self.tracking)),
-                    ("unlimitedTracking", flag(self.unlimited)),
-                    ("colors", Tag::ByteArray(self.colors.clone())),
-                    (
-                        "banners",
-                        Tag::List(self.banners.iter().map(MapBanner::to_nbt).collect()),
-                    ),
-                    (
-                        "frames",
-                        Tag::List(self.frames.iter().copied().map(MapFrame::to_nbt).collect()),
-                    ),
-                ]),
-            ),
+            ("data", Tag::compound(data)),
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
         ])
     }
@@ -1497,7 +1507,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
-        let nether = self.dim == super::Dim::Nether;
+        let has_ceiling = self.world.shape.has_ceiling;
         let Some(m) = self.maps.data.get_mut(&id) else {
             return;
         };
@@ -1509,7 +1519,7 @@ impl Game<'_> {
         let px = (p.x - f64::from(cx)).floor() as i32 / scale + 64;
         let pz = (p.z - f64::from(cz)).floor() as i32 / scale + 64;
         let mut radius = 128 / scale;
-        if nether {
+        if has_ceiling {
             radius /= 2;
         }
         let h = m.holder(self.lan_acting.unwrap_or(HOST));
@@ -1541,7 +1551,7 @@ impl Game<'_> {
                 };
                 let mut water_depth = 0i32;
                 let mut height = 0.0f64;
-                if nether {
+                if has_ceiling {
                     let mut noise = min_x.wrapping_add(min_z.wrapping_mul(231_871));
                     noise = noise
                         .wrapping_mul(noise)
@@ -1682,7 +1692,7 @@ impl Game<'_> {
             .gui
             .atlas
             .sprites
-            .get(&format!("horizon/map{slot}"))
+            .get(map_slot_sprite(slot)?)
             .copied()?;
         let m = self.maps.data.get_mut(&id)?;
         if m.texture_dirty {
@@ -1744,14 +1754,9 @@ impl Game<'_> {
             ],
             out,
         );
-        let decorations = self
-            .maps
-            .data
-            .get(&id)
-            .map(|m| m.decorations.clone())
-            .unwrap_or_default();
+        let decorations = self.maps.data.get(&id).map_or(&[][..], |m| &m.decorations);
         let mut count = 0;
-        for d in &decorations {
+        for d in decorations {
             if show_only_frame && !shown_on_frame(d.sprite) {
                 continue;
             }
@@ -1890,6 +1895,9 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod save_tests;
 
 #[cfg(test)]
 mod tests {

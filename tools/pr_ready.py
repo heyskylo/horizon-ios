@@ -32,6 +32,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 if os.name == "nt":
@@ -75,14 +76,8 @@ in_shell() { if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon 2>/dev
   nix-shell shell.nix --run "$1"; else bash -c "$1"; fi; }"""
 
 
-# What `cargo run -p xtask -- mod-api` reads: the catalog, the hook points and helpers (every file of
-# the game), the mod API's own types, and the free hook points of other crates.
-MOD_API_INPUTS = (
-    "xtask/", "native-hooks.json", "crates/horizon-client/src/game/",
-    "crates/horizon-client/src/mod_api", "crates/horizon-world/src/loot.rs",
-    "crates/horizon-world/src/item_defaults.rs",
-    "crates/horizon-client-render/src/gfx/native_render",
-)
+# Build-script inputs outside the crates: catalog-only edits still need to build and test their consumers.
+MOD_API_INPUTS = ("native-hooks.json", "tools/native-hook-fragments/")
 
 def is_doc(path):
     return path.endswith(".md")
@@ -90,7 +85,8 @@ def is_doc(path):
 
 def workspace_rust(path):
     """Whether a change to path is built by the main Cargo workspace."""
-    return not is_doc(path) and (path.startswith(("crates/", "xtask/", ".cargo/")) or path in ROOT_RUST)
+    return not is_doc(path) and (path.startswith(("crates/", "xtask/", ".cargo/", *MOD_API_INPUTS))
+                                 or path in ROOT_RUST)
 
 
 def launcher_rust(path):
@@ -105,6 +101,9 @@ def touched_crates(paths, packages):
     crates = set()
     for path in paths:
         if is_doc(path):
+            continue
+        if path.startswith(MOD_API_INPUTS):
+            crates.update({"horizon-client", "horizon-client-render", "horizon-mod-api-gen"})
             continue
         if "horizon-client-lib" in packages and path.startswith("crates/horizon-client/"):
             relative = path.removeprefix("crates/horizon-client/")
@@ -383,9 +382,6 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
         Step("content root tests", CONTENT_ROOT_TESTS, summary=tests_passed,
              skip=None if crates is None or any(p.startswith(CONTENT_ROOT) for p in changed)
              else "content root untouched"),
-        Step("mod API up to date", "cargo test --locked -p xtask mod_api",
-             skip=None if any(p.startswith(MOD_API_INPUTS) for p in changed)
-             else "native hooks untouched"),
         Step("tokens.css up to date", "cargo test --locked -p horizon-theme --lib tokens_css_is_up_to_date",
              skip=None if any(p.startswith(("crates/horizon-theme/", "xtask/")) for p in changed)
              else "theme untouched"),
@@ -483,7 +479,7 @@ def run_windows(steps, verbose):
             command = shlex.split(CI_CLIPPY)  # the server build's clippy runs in CI (Linux)
         elif step.name.startswith("tests"):
             command = shlex.split(step.command)
-        elif step.name in ("tokens.css up to date", "mod API up to date"):
+        elif step.name == "tokens.css up to date":
             command = shlex.split(step.command)
         elif step.name == "launcher rustfmt":
             command = ["cargo", "fmt", "--check"]
@@ -519,6 +515,31 @@ def run_windows(steps, verbose):
             step.status, step.detail = "fail", str(error)
         step.seconds = int(time.monotonic() - started)
         finish(step, verbose)
+
+
+def run_checks(steps, host, verbose):
+    """Runs the checks: the Python ones here beside the cargo ones on host, then the harnesses.
+
+    The Python tests and the public-tree check only read files, and they took about two minutes of a warm run that
+    waited for them before cargo started (114 of 213 s, 2026-11-03). Side by side, the run takes about as long as the
+    longer of the two. The harnesses build with cargo, so they still come after it. With --verbose, every check's
+    output is shown, and the checks run one after another so that it doesn't interleave.
+    """
+    here = [step for step in steps if step.where == "here" and step.status is None]
+    beside = [step for step in here if step.name != "Parity"]
+    after = [step for step in here if step.name == "Parity"]
+    on_host = [step for step in steps if step.where == "host" and step.status is None]
+    if verbose:
+        run_script(beside + after, "local", verbose)
+        run_script(on_host, host, verbose)
+        return
+    python = threading.Thread(target=run_script, args=(beside, "local", verbose))
+    python.start()
+    try:
+        run_script(on_host, host, verbose)
+    finally:
+        python.join()
+    run_script(after, "local", verbose)
 
 
 def finish(step, verbose):
@@ -577,8 +598,7 @@ def main():
     problem = lock_problem(changed)
     lock.status, lock.detail = ("fail", problem) if problem else ("pass", "unchanged" if not any(
         p.endswith("Cargo.lock") for p in changed) else "changes with a Cargo.toml")
-    run_script([step for step in steps if step.where == "here" and step.status is None], "local", args.verbose)
-    run_script([step for step in steps if step.where == "host" and step.status is None], args.host, args.verbose)
+    run_checks(steps, args.host, args.verbose)
     warning = old_rust(rust_version(), datetime.date.today()) if args.host == "local" else None
     if warning and any(step.name.endswith("clippy") and step.skip is None for step in steps):
         print(f"pr_ready: Rust {warning}", file=sys.stderr)

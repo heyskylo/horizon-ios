@@ -319,3 +319,27 @@ fn a_message_costs_little() {
     }
     assert!(start.elapsed().as_millis() < 2000, "{:?}", start.elapsed());
 }
+
+#[test]
+fn an_allow_line_without_letters_allows_nothing() {
+    for line in ["!*", "!-*", "!", "!-"] {
+        let f = Filter::new(&format!("nigger\n{line}\n"));
+        assert!(f.matches("nigger"), "{line}");
+    }
+}
+
+#[test]
+fn duration_parts_preserve_rounding_without_overflow() {
+    for (millis, expected) in [
+        (1, (1, DurationUnit::Minute)),
+        (60_000, (1, DurationUnit::Minute)),
+        (61_000, (2, DurationUnit::Minute)),
+        (3_600_000, (60, DurationUnit::Minute)),
+        (3_600_001, (2, DurationUnit::Hour)),
+        (172_800_000, (48, DurationUnit::Hour)),
+        (172_800_001, (3, DurationUnit::Day)),
+        (i64::MAX, (106_751_991_168, DurationUnit::Day)),
+    ] {
+        assert_eq!(duration_parts(millis), expected);
+    }
+}

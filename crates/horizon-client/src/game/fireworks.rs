@@ -29,6 +29,10 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
     /// a client.
     pub id: u32,
@@ -62,6 +66,8 @@ impl Rocket {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
             id,
             position,
             previous: position,
@@ -87,6 +93,7 @@ impl Rocket {
     ) -> horizon_world::nbt::Tag {
         horizon_client::entity_nbt::firework_rocket_to_nbt(
             &horizon_client::entity_nbt::RocketSave {
+                rotation: self.rotation,
                 position: self.position,
                 motion: self.velocity,
                 life: self.life,
@@ -111,6 +118,8 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
             id: 0,
             position: r.position,
             previous: r.position,
@@ -227,6 +236,8 @@ impl Game<'_> {
         // Entity.<init>: the id comes from the one counter at construction.
         let id = self.take_entity_id();
         Rocket {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
             id,
             position: at,
             previous: at,
@@ -303,16 +314,19 @@ impl Game<'_> {
     /// hand with the player's motion.
     pub(super) fn follow_own_player(&mut self, r: &mut Rocket) {
         let hand = self.rocket_hand_angle();
-        let look = view_vector(self.yaw, self.pitch);
+        // getLookAngle reads Mth's float sine table, as the server does; the
+        // f64 sin/cos of super::view_vector drift the boost off the server's
+        // path and trip the movement check while gliding under a rocket.
+        let look = horizon_world::view_direction::view_vector(self.pitch, self.yaw);
         let Some(p) = self.player.as_mut() else {
             return;
         };
         if p.fall_flying {
             let m = p.velocity;
             p.velocity = Vec3::new(
-                m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
+                m.x + look.x * 0.1 + (look.x * 1.5 - m.x) * 0.5,
+                m.y + look.y * 0.1 + (look.y * 1.5 - m.y) * 0.5,
+                m.z + look.z * 0.1 + (look.z * 1.5 - m.z) * 0.5,
             );
         }
         r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
@@ -404,6 +418,13 @@ impl Game<'_> {
                 };
                 r.free_flight(&mut scene);
             }
+            self.entity_powder_snow_particles(
+                r.previous,
+                r.position,
+                r.bounds(),
+                r.velocity,
+                false,
+            );
             // hitTargetOrDeflectSelf on an entity: a breeze turns it back
             // (ProjectileDeflection.REVERSE), anything else sets it off.
             // onHitBlock: only a rocket with explosions (hasExplosion) goes
@@ -525,6 +546,11 @@ impl Game<'_> {
         self.native_firework_explode(r.id, at, r.explosions.len());
     }
     fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
+        let _attacker = self.knockback_scope(if attacker == Some(Who::Player) {
+            self.player.as_ref().map_or(0, |p| p.entity_id)
+        } else {
+            0
+        });
         for &(id, amount) in hits {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                 let hurt = m.damage(amount, Damage::fireworks(attacker, at));
@@ -734,3 +760,4 @@ mod tests {
         assert!(!super::use_on_passes(false));
     }
 }
+horizon_client::impl_joined!(Rocket);

@@ -969,7 +969,16 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     };
     let mut entity = BlockEntity::for_block(block)?;
     match &mut entity {
-        BlockEntity::Chest(items) => *items = decode_items(tag.get("Items"), items.len()),
+        BlockEntity::Chest(items) => {
+            // Randomizable containers reset their inventory, then load Items only
+            // when tryLoadLootTable did not read a valid loot-table key.
+            let has_table = text(tag.get("LootTable"))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                .is_some();
+            if !has_table {
+                *items = decode_items(tag.get("Items"), items.len());
+            }
+        }
         BlockEntity::Furnace(f) => {
             let items = decode_items(tag.get("Items"), 3);
             f.items = [items[0].clone(), items[1].clone(), items[2].clone()];
@@ -2100,8 +2109,8 @@ fn compress_records(
             .map(|tag| ChunkRecord::from_nbt(&tag, Compression::Zlib, timestamp, Limits::saved()))
             .transpose()
     };
-    let helpers = std::thread::available_parallelism()
-        .map_or(1, |n| n.get().div_ceil(2))
+    let helpers = horizon_threads::worker_count()
+        .div_ceil(2)
         .min(records.len() / CHUNKS_PER_HELPER);
     if helpers <= 1 {
         return records.iter().map(|(_, r)| compress(r)).collect();
@@ -2562,16 +2571,18 @@ impl SaveDir {
             let Some(root) = self.read_record_raw("region", pos.x, pos.z) else {
                 continue;
             };
-            let old = match root.tag.get("DataVersion") {
-                Some(Tag::Int(version)) => *version < 4997,
-                _ => true,
-            } || root.tag.get("blending_data").is_some();
-            if old {
+            if record_is_old(&root) {
                 let index = ((pos.x & 31) + (pos.z & 31) * 32) as usize;
                 bits[index / 64] |= 1 << (index % 64);
             }
         }
         bits
+    }
+    /// Whether the saved chunk at `x, z` is old ([`Self::old_chunk_bits`]'s test), from its
+    /// record alone: false for a chunk not saved.
+    pub fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        self.read_record_raw("region", x, z)
+            .is_some_and(|root| record_is_old(&root))
     }
     /// A saved chunk brought to the current version, for the readers of its
     /// fields that `load` does not decode (`blending_data`).
@@ -3985,10 +3996,19 @@ impl Level {
                 .filter_map(|e| {
                     let id = text(e.get("id"))?;
                     let get = |k: &str| number(e.get(k));
+                    // `MobEffectInstance.Details` stores `amplifier` as
+                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
+                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
+                    // sign-extend turns 255 (byte -1) into -1, which
+                    // `EffectInstance::new` then clamps to the lowest level.
+                    let amplifier = match e.get("amplifier") {
+                        Some(Tag::Byte(v)) => i32::from(*v as u8),
+                        other => number(other).unwrap_or(0) as i32,
+                    };
                     Some((
                         id,
                         get("duration").unwrap_or(0) as i32,
-                        get("amplifier").unwrap_or(0) as i32,
+                        amplifier,
                         get("ambient").unwrap_or(0) != 0,
                         get("show_particles").is_none_or(|v| v != 0),
                     ))
@@ -4107,7 +4127,12 @@ impl Level {
                             Tag::compound([
                                 ("id", string(id)),
                                 ("duration", Tag::Int(*duration)),
-                                ("amplifier", Tag::Byte(*amplifier as i8)),
+                                // Same unsigned byte the codec writes:
+                                // `Mth.clamp` to 0..=255, then `byteValue`.
+                                (
+                                    "amplifier",
+                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
+                                ),
                                 ("ambient", Tag::Byte(i8::from(*ambient))),
                                 ("show_particles", Tag::Byte(i8::from(*particles))),
                                 ("show_icon", Tag::Byte(i8::from(*particles))),
@@ -4846,6 +4871,9 @@ fn decode_lod_surfaces(
             }
         }
     }
+    // Spans are pushed top down, so the reverse puts the topmost last, as
+    // `Column::from_chunk` leaves them. Water keeps the chunk's own light,
+    // a level less per block, as the generator's far columns shade it.
     for column in &mut *columns {
         column.spans.reverse();
     }
@@ -4963,6 +4991,9 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     fn prepare_loaded(&self, worker: &mut G::Worker, chunk: &Chunk) {
         self.inner.prepare_loaded(worker, chunk);
     }
+    fn all_idle(&self) {
+        self.inner.all_idle();
+    }
     fn idle(&self, worker: &mut G::Worker) {
         self.inner.idle(worker);
     }
@@ -4987,6 +5018,12 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         proto: &crate::streaming::Proto,
     ) -> Option<crate::section_mask::SectionMask> {
         self.inner.non_air_sections(proto)
+    }
+    fn cache_census(&self) -> Vec<(&'static str, usize, Option<usize>)> {
+        self.inner.cache_census()
+    }
+    fn proto_heap_bytes(&self, proto: &crate::streaming::Proto) -> ([usize; 6], [usize; 16]) {
+        self.inner.proto_heap_bytes(proto)
     }
     fn save_protos(&self, protos: &[&crate::streaming::Proto]) {
         self.save
@@ -5052,6 +5089,15 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
 }
 
+/// `IOWorker.createOldDataForRegion`'s test of one record: saved before DataVersion 4997, or
+/// with `blending_data`.
+fn record_is_old(root: &NamedTag) -> bool {
+    let before_blending = match root.tag.get("DataVersion") {
+        Some(Tag::Int(version)) => *version < 4997,
+        _ => true,
+    };
+    before_blending || root.tag.get("blending_data").is_some()
+}
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -5389,7 +5435,7 @@ mod tests {
         let tables = SaveTables::new(&assets);
         let stone = assets.registry.default_state("minecraft:stone").unwrap();
         // To The Max's Overworld: -64..2032, 131 sections.
-        let shape = LevelShape::new(-64, 2096, 2096, true).unwrap();
+        let shape = LevelShape::new(-64, 2096, 2096, true, false).unwrap();
         let mut chunk = Chunk::with_layout(0, 0, shape.column());
         chunk.set(0, -64, 0, stone.0);
         chunk.set(0, 2000, 0, stone.0);
@@ -6105,6 +6151,46 @@ mod tests {
                 .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
+    #[test]
+    fn a_chest_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:chest",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut chest) = decode_block_entity(&saved).expect("chest");
+        assert!(
+            chest.slots().iter().all(Option::is_none),
+            "ChestBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        // The command path rolls an empty inventory and keeps the table/seed
+        // for data get and saving. No loot resources are needed to keep that state.
+        let rolled = crate::structure_blocks::roll_container(
+            chest.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &chest, "minecraft:chest", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, chest) = decode_block_entity(&saved).expect("chest without table");
+        let item = chest.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`
     /// takes it from the tag the block entity was loaded (or set) with.
     #[test]
@@ -6802,6 +6888,40 @@ mod tests {
     }
 
     #[test]
+    fn effect_amplifier_255_reloads_as_an_unsigned_byte() {
+        // `MobEffectInstance.MAX_AMPLIFIER` is 255. `Details.MAP_CODEC` writes
+        // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
+        // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
+        let effects = vec![
+            ("minecraft:strength".into(), -1, 255, false, true),
+            ("minecraft:regeneration".into(), -1, 128, false, true),
+            ("minecraft:speed".into(), 40, 1, false, true),
+        ];
+        let level = Level {
+            active_effects: effects.clone(),
+            ..Level::default()
+        };
+        let tag = level.player_tag();
+        let Tag::List(saved) = tag.get("active_effects").expect("active_effects") else {
+            panic!("active_effects list");
+        };
+        assert_eq!(
+            saved
+                .iter()
+                .map(|e| e.get("amplifier").cloned())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(Tag::Byte(-1)),
+                Some(Tag::Byte(-128)),
+                Some(Tag::Byte(1)),
+            ]
+        );
+        let mut loaded = Level::default();
+        loaded.read_player(&tag);
+        assert_eq!(loaded.active_effects, effects);
+    }
+
+    #[test]
     fn creative_flight_status_persists_in_save_and_resets_for_survival() {
         let mut level = Level {
             creative: true,
@@ -7428,6 +7548,30 @@ mod tests {
         let upgraded = nether.raw_chunk(0, 0).expect("the chunk reads");
         assert!(upgraded.tag.get("blending_data").is_none());
         assert_ne!(nether.old_chunk_bits(0, 0)[0] & 1, 0);
+        // One chunk's record tells the same, without the region's other chunks; a chunk this
+        // version saved, and one not saved, are not old.
+        let current = Record::Tag(Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                ("xPos", Tag::Int(1)),
+                ("zPos", Tag::Int(0)),
+                ("yPos", Tag::Int(0)),
+                ("Status", string("minecraft:full")),
+                ("sections", Tag::List(Vec::new())),
+            ]),
+        }));
+        super::write_region_records(
+            &nether.root,
+            &nether.regions,
+            "region",
+            &[((1, 0), &current)],
+        )
+        .unwrap();
+        assert!(nether.is_old_chunk(0, 0));
+        assert!(!nether.is_old_chunk(1, 0));
+        assert!(!nether.is_old_chunk(2, 0));
+        assert_eq!(nether.old_chunk_bits(0, 0)[0] & 0b110, 0);
         // A POI record of before 1.14.4 (no DataVersion, read as 1945): its
         // sections at the root, which 1946 moved under `Sections`.
         let overworld = SaveDir::new(
@@ -7674,6 +7818,248 @@ mod tests {
                 "{address} {seed}: chunks read with a surface"
             );
             let _ = fs::remove_dir_all(&own);
+        }
+    }
+}
+
+/// Far-terrain floating-cell census on a real save: `HORIZON_TEST_RESOURCES`
+/// (prepared data), `HORIZON_FAR_SAVE` (a world folder), `HORIZON_FAR_SEED`
+/// and `HORIZON_FAR_AT` ("x,z", the camera). Samples the tiles each level
+/// draws around the camera as the far sampler gives them (saved chunks up to
+/// 16 blocks a cell, the seed beyond) and counts components of drawn cells
+/// that touch neither the world's bottom nor the tile's halo.
+#[cfg(test)]
+mod far_census {
+    use super::*;
+    use crate::lod::Column;
+    use crate::streaming::ChunkGenerator;
+
+    #[derive(Default, Debug)]
+    struct Census {
+        tiles: usize,
+        floating: usize,
+        cells: usize,
+        kinds: std::collections::BTreeMap<&'static str, usize>,
+        water_over_air: usize,
+    }
+
+    fn kind(name: &str) -> &'static str {
+        if name.ends_with("_leaves") {
+            "leaves"
+        } else if name.ends_with("_log") || name.ends_with("_wood") || name.contains("stem") {
+            "log"
+        } else if name == "minecraft:water" || name == "minecraft:lava" {
+            "fluid"
+        } else if name.contains("snow") || name.contains("ice") {
+            "snow/ice"
+        } else {
+            "ground"
+        }
+    }
+
+    /// `columns`: `side` x `side`, the outer ring a halo.
+    fn count(
+        columns: &[Column],
+        side: usize,
+        name: &dyn Fn(horizon_world::registry::BlockStateId) -> String,
+        out: &mut Census,
+        origin: (i32, i32, i32),
+    ) {
+        // Runs of touching spans, per column: (min, max, top state).
+        let runs: Vec<Vec<(i16, i16, horizon_world::registry::BlockStateId)>> = columns
+            .iter()
+            .map(|column| {
+                let mut runs: Vec<(i16, i16, _)> = Vec::new();
+                for span in column.spans.iter().filter(|s| s.min < s.max) {
+                    match runs.last_mut() {
+                        Some(run) if run.1 == span.min => {
+                            run.1 = span.max;
+                            run.2 = span.state;
+                        }
+                        _ => runs.push((span.min, span.max, span.state)),
+                    }
+                }
+                runs
+            })
+            .collect();
+        let mut first = Vec::with_capacity(runs.len());
+        let mut total = 0;
+        for column in &runs {
+            first.push(total);
+            total += column.len();
+        }
+        let mut parent: Vec<usize> = (0..total).collect();
+        fn find(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let union = |parent: &mut Vec<usize>, a: usize, b: usize| {
+            let (a, b) = (find(parent, a), find(parent, b));
+            if a != b {
+                parent[a] = b;
+            }
+        };
+        for z in 0..side {
+            for x in 0..side {
+                let i = z * side + x;
+                for j in [
+                    (x + 1 < side).then(|| i + 1),
+                    (z + 1 < side).then(|| i + side),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for (a, &(lo, hi, _)) in runs[i].iter().enumerate() {
+                        for (b, &(other_lo, other_hi, _)) in runs[j].iter().enumerate() {
+                            // Cells meeting at an edge (an acacia's
+                            // diagonal branch) look joined too.
+                            if lo <= other_hi && other_lo <= hi {
+                                union(&mut parent, first[i] + a, first[j] + b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Per component: grounded, touches the halo, cells, top state.
+        let mut grounded = vec![false; total];
+        let mut halo = vec![false; total];
+        let mut cells = vec![0usize; total];
+        let mut top = vec![None; total];
+        let mut at = vec![(0, 0); total];
+        for z in 0..side {
+            for x in 0..side {
+                let i = z * side + x;
+                let ring = x == 0 || z == 0 || x + 1 == side || z + 1 == side;
+                for (a, &(lo, hi, state)) in runs[i].iter().enumerate() {
+                    let root = find(&mut parent, first[i] + a);
+                    grounded[root] |= i32::from(lo) <= crate::chunk::MIN_Y;
+                    halo[root] |= ring;
+                    cells[root] += 1;
+                    if top[root].is_none_or(|(y, _)| hi > y) {
+                        top[root] = Some((hi, state));
+                        at[root] = (
+                            origin.0 + x as i32 * origin.2,
+                            origin.1 + z as i32 * origin.2,
+                        );
+                    }
+                }
+                if !ring {
+                    let spans = &columns[i].spans;
+                    for (k, span) in spans.iter().enumerate() {
+                        let n = name(span.state);
+                        if kind(&n) == "fluid" && (k == 0 || spans[k - 1].max < span.min) {
+                            out.water_over_air += 1;
+                            if std::env::var_os("HORIZON_FAR_DEBUG").is_some() {
+                                println!(
+                                    "  fluid over air at {} {} y {}..{} {n}",
+                                    origin.0 + x as i32 * origin.2,
+                                    origin.1 + z as i32 * origin.2,
+                                    span.min,
+                                    span.max
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for root in 0..total {
+            if find(&mut parent, root) != root || grounded[root] || halo[root] {
+                continue;
+            }
+            out.floating += 1;
+            out.cells += cells[root];
+            let (y, state) = top[root].unwrap();
+            *out.kinds.entry(kind(&name(state))).or_default() += 1;
+            if std::env::var_os("HORIZON_FAR_DEBUG").is_some() {
+                println!(
+                    "  floating at {:?} top {y} {} ({} cells)",
+                    at[root],
+                    name(state),
+                    cells[root]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires prepared data and a save (see the module docs)"]
+    fn far_floating_cells_per_level() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+        let root = PathBuf::from(var("HORIZON_TEST_RESOURCES"));
+        let world = PathBuf::from(var("HORIZON_FAR_SAVE"));
+        let seed: i64 = var("HORIZON_FAR_SEED").parse().unwrap();
+        let at: Vec<i32> = var("HORIZON_FAR_AT")
+            .split(',')
+            .map(|n| n.trim().parse().unwrap())
+            .collect();
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let registry = assets.registry;
+        let terrain = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(&root.join("worldgen"), registry, &biomes, seed)
+                .expect("terrain"),
+        );
+        let save = Arc::new(SaveDir::new(
+            world.join("dimensions/minecraft/overworld"),
+            LevelShape::OVERWORLD,
+        ));
+        let generator = Arc::new(Persistent {
+            inner: terrain,
+            save: save.clone(),
+            registry: assets.clone(),
+            biomes: biomes.clone(),
+        });
+        let mut sampler = ChunkGenerator::lod_sampler(generator);
+        let name = |state| {
+            registry
+                .state(state)
+                .map_or_else(String::new, |s| s.name.to_string())
+        };
+        let limit: usize = std::env::var("HORIZON_FAR_TILES")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(48);
+        for level in 1..=6u8 {
+            let size = 16 << level;
+            let width = size / 16;
+            // The ring this level is drawn in (`Plan::visit` splits a tile
+            // closer than 8 of its widths).
+            let (near, far) = (8 * size, 16 * size);
+            let mut tiles = Vec::new();
+            for tz in (at[1] - far).div_euclid(size)..=(at[1] + far).div_euclid(size) {
+                for tx in (at[0] - far).div_euclid(size)..=(at[0] + far).div_euclid(size) {
+                    let (cx, cz) = (tx * size + size / 2, tz * size + size / 2);
+                    let d = (((cx - at[0]) as f64).powi(2) + ((cz - at[1]) as f64).powi(2)).sqrt();
+                    if d >= f64::from(near) && d < f64::from(far) {
+                        tiles.push((tx, tz));
+                    }
+                }
+            }
+            let step = tiles.len().div_ceil(limit).max(1);
+            let mut saved = Census::default();
+            let mut seeded = Census::default();
+            let started = std::time::Instant::now();
+            for &(tx, tz) in tiles.iter().step_by(step) {
+                let (x, z) = (tx * size - width, tz * size - width);
+                let columns = sampler.grid(x, z, width, 18);
+                let all_saved = width <= SAVED_LOD_STRIDE
+                    && (x.div_euclid(16)..=(x + 18 * width - 1).div_euclid(16)).all(|cx| {
+                        (z.div_euclid(16)..=(z + 18 * width - 1).div_euclid(16))
+                            .all(|cz| save.lod_surfaces_shared(cx, cz, &assets, &biomes).is_some())
+                    });
+                let out = if all_saved { &mut saved } else { &mut seeded };
+                out.tiles += 1;
+                count(&columns, 18, &name, out, (x, z, width));
+            }
+            println!(
+                "level {level} (cells {width}, {near}..{far} blocks, {:.1}s): saved {saved:?} | seed {seeded:?}",
+                started.elapsed().as_secs_f32()
+            );
         }
     }
 }

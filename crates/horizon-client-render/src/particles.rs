@@ -19,12 +19,15 @@ use horizon_core::{
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
+    array,
     collections::{HashMap, HashSet},
     path::Path,
 };
 
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
+mod native;
+pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
@@ -47,6 +50,9 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
+    /// `VibrationParticleOption`: the listener the signal flies to and its
+    /// arrival time in ticks (`ParticleEngine::vibration` is the same particle).
+    pub vibration: Option<([f64; 3], i32)>,
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
@@ -62,6 +68,7 @@ impl ParticleOptions {
             trail: None,
             item: None,
             geyser: None,
+            vibration: None,
             mod_particle: None,
         }
     }
@@ -85,6 +92,13 @@ impl ParticleOptions {
         Self {
             geyser: Some((water_blocks, burst_impulse_base)),
             ..Self::simple(ty)
+        }
+    }
+    /// `VibrationParticleOption(destination, arrivalInTicks)`.
+    pub fn vibration(dest: [f64; 3], ticks: i32) -> Self {
+        Self {
+            vibration: Some((dest, ticks)),
+            ..Self::simple(ParticleType::Vibration)
         }
     }
     /// `ItemParticleOption`: the stack's layer particle sprites (`BreakingItemParticle`).
@@ -200,6 +214,13 @@ enum Light {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
     Base,
+    Controlled {
+        translucent: bool,
+    },
+    Mod {
+        size: [f32; 2],
+        alpha: [f32; 2],
+    },
     /// BaseAshSmokeParticle / Explode / Dust / Snowflake / EmissiveRising: base tick, sprite from age.
     Animated,
     Lava,
@@ -339,6 +360,115 @@ enum DripStage {
     Land,
 }
 
+/// How a mod particle walks through its sprite set.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ModAnimation {
+    /// Over its lifetime, first to last sprite.
+    Age,
+    /// Cycles the sprites every `frame_ticks`.
+    Loop,
+    /// One random sprite, kept (what a particle without `animation` does).
+    Random,
+    /// The first sprite, kept.
+    First,
+}
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ModBehaviour {
+    velocity: Option<[f64; 3]>,
+    /// Random extra velocity, each axis uniform in `-jitter..=jitter`.
+    velocity_jitter: Option<[f64; 3]>,
+    animation: Option<ModAnimation>,
+    /// Ticks per frame of the `loop` animation.
+    frame_ticks: Option<u16>,
+    gravity: Option<f32>,
+    friction: Option<f32>,
+    lifetime: Option<i32>,
+    size: Option<[f32; 2]>,
+    alpha: Option<[f32; 2]>,
+}
+impl ModBehaviour {
+    fn parse(json: &serde_json::Value) -> Option<Self> {
+        let behaviour: Self = serde_json::from_value(json.clone()).ok()?;
+        if behaviour
+            .velocity
+            .is_some_and(|v| v.iter().any(|c| !c.is_finite() || c.abs() > 16.0))
+            || behaviour
+                .velocity_jitter
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=16.0).contains(c)))
+            || behaviour.frame_ticks.is_some_and(|v| {
+                !(1..=200).contains(&v) || behaviour.animation != Some(ModAnimation::Loop)
+            })
+            || behaviour
+                .gravity
+                .is_some_and(|v| !v.is_finite() || v.abs() > 100.0)
+            || behaviour
+                .friction
+                .is_some_and(|v| !(0.0..=1.0).contains(&v))
+            || behaviour
+                .lifetime
+                .is_some_and(|v| !(1..=12000).contains(&v))
+            || behaviour
+                .size
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=16.0).contains(c)))
+            || behaviour
+                .alpha
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=1.0).contains(c)))
+        {
+            return None;
+        }
+        Some(behaviour)
+    }
+
+    /// `spawn` is the velocity the spawn call passed; a declared velocity is added to it,
+    /// with the jitter drawn from `random`.
+    fn apply(self, particle: &mut Particle, spawn: [f64; 3], random: &mut LegacyRandom) {
+        if self.velocity.is_some() || self.velocity_jitter.is_some() {
+            let base = self.velocity.unwrap_or([0.0; 3]);
+            let jitter = self.velocity_jitter.unwrap_or([0.0; 3]);
+            for axis in 0..3 {
+                let spread = if jitter[axis] > 0.0 {
+                    f64::from(random.next_float() * 2.0 - 1.0) * jitter[axis]
+                } else {
+                    0.0
+                };
+                particle.velocity[axis] = base[axis] + spawn[axis] + spread;
+            }
+        }
+        if let Some(gravity) = self.gravity {
+            particle.gravity = gravity;
+        }
+        if let Some(friction) = self.friction {
+            particle.friction = friction;
+        }
+        if let Some(lifetime) = self.lifetime {
+            particle.lifetime = lifetime;
+        }
+        match self.animation {
+            Some(ModAnimation::Loop) => particle.frame_ticks = self.frame_ticks.unwrap_or(2),
+            Some(ModAnimation::Age) => {}
+            // No `animation`, `random` or `first`: the sprite chosen at spawn is kept.
+            Some(ModAnimation::Random | ModAnimation::First) | None => particle.set = None,
+        }
+        if self.size.is_some() || self.alpha.is_some() {
+            let size = self.size.unwrap_or([particle.size; 2]);
+            let alpha = self.alpha.unwrap_or([particle.rgba[3]; 2]);
+            particle.size = size[0];
+            particle.rgba[3] = alpha[0];
+            particle.behaviour = Behaviour::Mod { size, alpha };
+        } else if matches!(self.animation, Some(ModAnimation::Age | ModAnimation::Loop)) {
+            // The tick that walks the sprite set (base tick, then `sprite_from_age`).
+            particle.behaviour = Behaviour::Animated;
+        }
+    }
+}
+
+fn mod_curve([start, end]: [f32; 2], age: i32, lifetime: i32) -> f32 {
+    let progress = (age as f32 / lifetime.max(1) as f32).clamp(0.0, 1.0);
+    start + (end - start) * progress
+}
+
 /// One live particle (`Particle` + `SingleQuadParticle` state).
 #[derive(Clone, Debug)]
 pub struct Particle {
@@ -368,6 +498,8 @@ pub struct Particle {
     sprite: Sprite,
     /// Age-driven sprite set (`setSpriteFromAge`).
     set: Option<u32>,
+    /// A mod particle's `loop` animation: ticks per sprite, 0 for none.
+    frame_ticks: u16,
     /// Sub-rectangle of the sprite (u0, v0, u1, v1) in 0..1.
     pub uv: [f32; 4],
     size_curve: Size,
@@ -378,6 +510,7 @@ pub struct Particle {
     pre_tick: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
+    controller: Option<Box<dyn native::Controller>>,
 }
 fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
@@ -401,7 +534,7 @@ pub fn breaking_position(
         }
     }
     // Vanilla consumes all three doubles before replacing the hit-face coordinate.
-    let mut p = std::array::from_fn(|i| {
+    let mut p = array::from_fn(|i| {
         f64::from(pos[i])
             + random.next_double() * (bounds[i + 3] - bounds[i] - f64::from(0.2f32))
             + f64::from(0.1f32)
@@ -526,6 +659,30 @@ pub fn around_self(
     }
 }
 
+/// `LivingEntity.handleEntityEvent(46)`: 128 `ParticleTypes.PORTAL` samples
+/// from the entity's old position (`xo`, `yo`, `zo`) to its current one,
+/// spread across the bounding box (`getBbWidth() * 2` on x and z, `getBbHeight`
+/// on y). The speeds are `(nextFloat() - 0.5) * 0.2`.
+pub fn living_teleport_particles(
+    random: &mut impl RandomSource,
+    from: [f64; 3],
+    to: [f64; 3],
+    width: f64,
+    height: f64,
+    mut emit: impl FnMut([f64; 3], [f64; 3]),
+) {
+    for i in 0..128 {
+        let d = i as f64 / 127.0;
+        let velocity = [0; 3].map(|_| f64::from((random.next_float() - 0.5) * 0.2));
+        let position = [
+            from[0] + d * (to[0] - from[0]) + (random.next_double() - 0.5) * width * 2.0,
+            from[1] + d * (to[1] - from[1]) + random.next_double() * height,
+            from[2] + d * (to[2] - from[2]) + (random.next_double() - 0.5) * width * 2.0,
+        ];
+        emit(position, velocity);
+    }
+}
+
 /// ClientLevel.addDestroyBlockEffect placement and pre-constructor velocities.
 pub fn destroy_positions(
     pos: [i32; 3],
@@ -533,18 +690,16 @@ pub fn destroy_positions(
     mut emit: impl FnMut([f64; 3], [f64; 3]),
 ) {
     for b in boxes {
-        let widths: [f64; 3] = std::array::from_fn(|i| (b[i + 3] - b[i]).min(1.0));
+        let widths: [f64; 3] = array::from_fn(|i| (b[i + 3] - b[i]).min(1.0));
         let counts: [usize; 3] = widths.map(|w| ((w / 0.25).ceil() as usize).max(2));
         for x in 0..counts[0] {
             for y in 0..counts[1] {
                 for z in 0..counts[2] {
                     let cells = [x, y, z];
                     let relative: [f64; 3] =
-                        std::array::from_fn(|i| (cells[i] as f64 + 0.5) / counts[i] as f64);
+                        array::from_fn(|i| (cells[i] as f64 + 0.5) / counts[i] as f64);
                     emit(
-                        std::array::from_fn(|i| {
-                            f64::from(pos[i]) + (relative[i] * widths[i] + b[i])
-                        }),
+                        array::from_fn(|i| f64::from(pos[i]) + (relative[i] * widths[i] + b[i])),
                         relative.map(|v| v - 0.5),
                     );
                 }
@@ -625,7 +780,7 @@ pub fn on_block_faces_between(
         let count = random.next_int_bound(max - min + 1).unwrap_or(0) + min;
         for _ in 0..count {
             // getRandomSpeedRanges, then spawnParticleOnFace with step factor 0.55.
-            let speed: [f64; 3] = std::array::from_fn(|_| next_double_between(random, -0.5, 0.5));
+            let speed: [f64; 3] = array::from_fn(|_| next_double_between(random, -0.5, 0.5));
             let mut p = [0.0; 3];
             let mut v = [0.0; 3];
             for i in 0..3 {
@@ -654,12 +809,12 @@ pub fn along_axis(
 ) {
     let count = random.next_int_bound(max - min + 1).unwrap_or(0) + min;
     for _ in 0..count {
-        let p: [f64; 3] = std::array::from_fn(|i| {
+        let p: [f64; 3] = array::from_fn(|i| {
             f64::from(pos[i])
                 + 0.5
                 + next_double_between(random, -1.0, 1.0) * if i == axis { 0.5 } else { 0.125 }
         });
-        let v: [f64; 3] = std::array::from_fn(|i| {
+        let v: [f64; 3] = array::from_fn(|i| {
             if i == axis {
                 next_double_between(random, -1.0, 1.0)
             } else {
@@ -714,8 +869,38 @@ impl Particle {
             behaviour: Behaviour::Base,
             no_render: false,
             pre_tick: false,
+            frame_ticks: 0,
             random: LegacyRandom::new(0),
+            controller: None,
         }
+    }
+    /// The normal age/removal test and previous pose, without vanilla motion.
+    /// Returns false when this tick expires the particle.
+    pub fn advance_age(&mut self) -> bool {
+        self.previous = self.position;
+        self.o_roll = self.roll;
+        let alive = self.age < self.lifetime;
+        self.age = self.age.saturating_add(1);
+        self.removed |= !alive;
+        alive
+    }
+    pub fn remove(&mut self) {
+        self.removed = true;
+    }
+    /// Hide geometry while retaining the particle's lifetime and controller.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.no_render = !visible;
+    }
+    /// The particle's own random, distinct from the engine and level generators.
+    pub fn random(&mut self) -> &mut LegacyRandom {
+        &mut self.random
+    }
+    pub fn set_full_bright(&mut self, full_bright: bool) {
+        self.light = if full_bright {
+            Light::FullBright
+        } else {
+            Light::World
+        };
     }
     /// `Particle(level, x, y, z, xa, ya, za)`: jittered, normalized initial velocity.
     fn moving(random: &mut LegacyRandom, ty: ParticleType, p: [f64; 3], v: [f64; 3]) -> Self {
@@ -1068,6 +1253,10 @@ pub struct ParticleEngine {
     /// When set, particles ask the level for other particles here instead
     /// (type, position, velocity), as the parity probe's stand-in level does.
     pub requested: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
+    /// When set, `create` records every particle the level is asked for here and
+    /// makes none: no particle's own random is drawn and no sprite is picked, so a
+    /// parity probe compares exactly what a block, fluid or entity asked for.
+    pub created_requests: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     names: Vec<String>,
     rects: Vec<Option<Rect>>,
     /// Each named sprite, and whether `SingleQuadParticle.Layer.bySprite` puts
@@ -1075,7 +1264,7 @@ pub struct ParticleEngine {
     atlas: HashMap<String, (Rect, bool)>,
     sets: HashMap<ParticleType, u32>,
     /// A native mod's sprite sets, by namespaced particle name.
-    mod_sets: HashMap<String, u32>,
+    mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
@@ -1085,6 +1274,8 @@ pub struct ParticleEngine {
     pub particle_level: u8,
     /// FireworkParticles.Starter instances.
     starters: Vec<Starter>,
+    /// `ClientExplosionTracker` tracked explosions pending debris generation.
+    tracked_explosions: Vec<TrackedExplosion>,
     /// Local sounds requested by particles (dripstone drips, firework bursts):
     /// (event, position, volume, pitch, distanceDelay).
     pub sounds: Vec<(&'static str, [f64; 3], f32, f32, bool)>,
@@ -1098,6 +1289,157 @@ pub struct ParticleEngine {
 const MAX_PARTICLES: usize = 16384;
 /// `ParticleLimit.SPORE_BLOSSOM`, the only limited particle.
 const SPORE_BLOSSOM_LIMIT: usize = 1000;
+const PARTICLE_LIGHT_CACHE_SIZE: usize = 64;
+
+#[derive(Clone, Copy)]
+struct CachedParticleLight {
+    block: [i32; 3],
+    packed: u8,
+}
+
+struct ParticleLightCache {
+    entries: [Option<CachedParticleLight>; PARTICLE_LIGHT_CACHE_SIZE],
+}
+
+impl Default for ParticleLightCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; PARTICLE_LIGHT_CACHE_SIZE],
+        }
+    }
+}
+
+impl ParticleLightCache {
+    fn get(&mut self, block: [i32; 3], light_at: &dyn Fn([i32; 3]) -> u8) -> u8 {
+        let hash = (block[0] as u32).wrapping_mul(73_856_093)
+            ^ (block[1] as u32).wrapping_mul(19_349_663)
+            ^ (block[2] as u32).wrapping_mul(83_492_791);
+        let slot = hash as usize & (PARTICLE_LIGHT_CACHE_SIZE - 1);
+        if let Some(entry) = self.entries[slot]
+            && entry.block == block
+        {
+            return entry.packed;
+        }
+        let packed = light_at(block);
+        self.entries[slot] = Some(CachedParticleLight { block, packed });
+        packed
+    }
+}
+
+const PARTICLE_SECTION_CACHE_SIZE: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionFrustumResult {
+    Outside,
+    Intersects,
+    Inside,
+}
+
+#[derive(Clone, Copy)]
+struct CachedSectionFrustum {
+    section: [i32; 3],
+    radius_quarters: i32,
+    result: SectionFrustumResult,
+}
+
+struct ParticleSectionFrustumCache {
+    entries: [Option<CachedSectionFrustum>; PARTICLE_SECTION_CACHE_SIZE],
+}
+
+impl Default for ParticleSectionFrustumCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; PARTICLE_SECTION_CACHE_SIZE],
+        }
+    }
+}
+
+impl ParticleSectionFrustumCache {
+    fn result(
+        &mut self,
+        world: [f64; 3],
+        camera: DVec3,
+        radius: f64,
+        frustum: &crate::gfx::Frustum,
+    ) -> SectionFrustumResult {
+        let Some(section) = world_section(world) else {
+            return SectionFrustumResult::Intersects;
+        };
+        if !radius.is_finite() || radius < 0.0 || radius * 4.0 > f64::from(i32::MAX) {
+            return SectionFrustumResult::Intersects;
+        }
+        let radius_quarters = (radius * 4.0).ceil() as i32;
+        let hash = (section[0] as u32).wrapping_mul(73_856_093)
+            ^ (section[1] as u32).wrapping_mul(19_349_663)
+            ^ (section[2] as u32).wrapping_mul(83_492_791)
+            ^ (radius_quarters as u32).wrapping_mul(2_654_435_761);
+        let slot = hash as usize & (PARTICLE_SECTION_CACHE_SIZE - 1);
+        if let Some(entry) = self.entries[slot]
+            && entry.section == section
+            && entry.radius_quarters == radius_quarters
+        {
+            return entry.result;
+        }
+
+        let pad = f64::from(radius_quarters) * 0.25;
+        let camera = camera.to_array();
+        let min = array::from_fn(|axis| f64::from(section[axis]) * 16.0 - pad - camera[axis]);
+        let max = array::from_fn(|axis| min[axis] + 16.0 + 2.0 * pad);
+        let result = if min.into_iter().chain(max).any(|v| !v.is_finite()) {
+            SectionFrustumResult::Intersects
+        } else {
+            let min = FVec3::from_array(min.map(|v| v as f32));
+            let max = FVec3::from_array(max.map(|v| v as f32));
+            if !min.is_finite() || !max.is_finite() {
+                SectionFrustumResult::Intersects
+            } else if frustum.contains(min, max) {
+                SectionFrustumResult::Inside
+            } else if frustum.intersects(min, max) {
+                SectionFrustumResult::Intersects
+            } else {
+                SectionFrustumResult::Outside
+            }
+        };
+        self.entries[slot] = Some(CachedSectionFrustum {
+            section,
+            radius_quarters,
+            result,
+        });
+        result
+    }
+}
+
+fn world_section(position: [f64; 3]) -> Option<[i32; 3]> {
+    let mut block = [0; 3];
+    for axis in 0..3 {
+        let value = position[axis].floor();
+        if !value.is_finite() || value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
+            return None;
+        }
+        block[axis] = value as i32;
+    }
+    Some([block[0] >> 4, block[1] >> 4, block[2] >> 4])
+}
+
+fn below_half_pixel(radius: f64, distance_squared: f64, pixel_focal_length: f32) -> bool {
+    let projected_limit = 4.0 * radius * f64::from(pixel_focal_length);
+    radius.is_finite()
+        && radius >= 0.0
+        && distance_squared.is_finite()
+        && distance_squared > 0.0
+        && pixel_focal_length.is_finite()
+        && pixel_focal_length > 0.0
+        && projected_limit.is_finite()
+        && projected_limit * projected_limit < distance_squared
+}
+
+/// `ClientExplosionTracker.ExplosionInfo`.
+#[derive(Clone, Copy, Debug)]
+struct TrackedExplosion {
+    center: [f64; 3],
+    radius: f32,
+    block_count: usize,
+}
 impl ParticleEngine {
     pub fn new(root: &Path, atlas: &HashMap<String, Rect>, translucent: &HashSet<String>) -> Self {
         let mut engine = Self {
@@ -1109,6 +1451,7 @@ impl ParticleEngine {
             scope_eye: None,
             seeds: LegacyRandom::new(0x7365_6564),
             requested: None,
+            created_requests: None,
             names: Vec::new(),
             rects: Vec::new(),
             atlas: HashMap::new(),
@@ -1117,6 +1460,7 @@ impl ParticleEngine {
             set_sprites: Vec::new(),
             emitters: Vec::new(),
             starters: Vec::new(),
+            tracked_explosions: Vec::new(),
             camera: [0.0; 3],
             particle_level: 0,
             sounds: Vec::new(),
@@ -1135,6 +1479,10 @@ impl ParticleEngine {
         atlas: &HashMap<String, Rect>,
         translucent: &HashSet<String>,
     ) {
+        // Controllers' numeric sprite-set handles belong to this resource
+        // generation. Discard them rather than selecting another set after reload.
+        self.particles.retain(|p| p.controller.is_none());
+        self.pending.retain(|p| p.controller.is_none());
         self.atlas = atlas
             .iter()
             .map(|(name, &rect)| (name.clone(), (rect, translucent.contains(name))))
@@ -1214,6 +1562,13 @@ impl ParticleEngine {
             let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
                 continue;
             };
+            let behaviour = json.get("horizon:behaviour").and_then(|value| {
+                let behaviour = ModBehaviour::parse(value);
+                if behaviour.is_none() {
+                    log::warn!("Invalid particle behaviour in {}", path.display());
+                }
+                behaviour
+            });
             let sprites: Vec<u32> = json["textures"]
                 .as_array()
                 .map(|a| {
@@ -1235,7 +1590,8 @@ impl ParticleEngine {
                 })
                 .unwrap_or_default();
             if !sprites.is_empty() {
-                self.mod_sets.insert(key, self.set_sprites.len() as u32);
+                self.mod_sets
+                    .insert(key, (self.set_sprites.len() as u32, behaviour));
                 self.set_sprites.push(sprites);
             }
         }
@@ -1259,15 +1615,14 @@ impl ParticleEngine {
         self.particles.clear();
         self.pending.clear();
     }
-    /// A vibration signal flying from `from` to `to` in `ticks`
-    /// (`VibrationParticleOption`).
-    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+    /// `VibrationSignalParticle`'s body: the signal leaves `from` aimed at the
+    /// listener at `to` and lands there in `ticks`.
+    fn vibration_particle(from: [f64; 3], to: [f64; 3], ticks: i32) -> Particle {
         let mut q = Particle::blank(ParticleType::Vibration, from);
         q.size = 0.3;
         q.lifetime = ticks;
         q.has_physics = false;
         q.light = Light::Block15;
-        q.set = self.set_of(ParticleType::Vibration);
         let d = [from[0] - to[0], from[1] - to[1], from[2] - to[2]];
         let rot = d[0].atan2(d[2]) as f32;
         let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
@@ -1278,11 +1633,58 @@ impl ParticleEngine {
             pitch,
             pitch_o: pitch,
         };
+        q
+    }
+    /// A vibration signal flying from `from` to `to` in `ticks`
+    /// (`VibrationParticleOption`), as the client's own vibration system
+    /// (`VibrationSystem.Ticker`) spawns one.
+    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+        let mut q = Self::vibration_particle(from, to, ticks);
+        q.set = self.set_of(ParticleType::Vibration);
         self.pending.push(q);
     }
     /// `ParticleEngine.add` (via `particlesToAdd`, applied on the next tick).
     pub fn push(&mut self, particle: Particle) {
         self.pending.push(particle);
+    }
+    /// Create a named billboard with custom compiled behavior and no vanilla
+    /// motion. Like `add`, respects camera distance and the Particles setting.
+    /// Configure its public fields, then `push` it to the ordinary engine queue.
+    /// Missing sprite sets return None. The constructor has the ordinary
+    /// stationary SingleQuadParticle random size/lifetime and no velocity draws.
+    pub fn controlled<C: ParticleController>(
+        &mut self,
+        name: &str,
+        position: [f64; 3],
+        translucent: bool,
+        controller: C,
+    ) -> Option<Particle> {
+        let minimal = self.calculate_particle_level(false) == 2;
+        let distance: f64 = position
+            .iter()
+            .zip(self.camera)
+            .map(|(p, c)| (p - c).powi(2))
+            .sum();
+        if minimal || !distance.is_finite() || distance > 1024.0 {
+            return None;
+        }
+        let (set, _) = *self.mod_sets.get(name)?;
+        let mut random = LegacyRandom::new(self.seeds.next_long());
+        let mut particle = Particle::at(&mut random, ParticleType::Smoke, position);
+        particle.random = random;
+        particle.set = Some(set);
+        particle.sprite = Sprite::Index(*self.set_sprites.get(set as usize)?.first()?);
+        particle.behaviour = Behaviour::Controlled { translucent };
+        particle.controller = Some(Box::new(controller));
+        Some(particle)
+    }
+    /// Choose a frame from this particle's declared sprite set.
+    pub fn set_sprite_frame(&self, particle: &mut Particle, frame: usize) {
+        if let Some(sprites) = particle.set.and_then(|s| self.set_sprites.get(s as usize))
+            && !sprites.is_empty()
+        {
+            particle.sprite = Sprite::Index(sprites[frame.min(sprites.len() - 1)]);
+        }
     }
     /// Random generator shared by particle constructors and spawners.
     pub fn random(&mut self) -> &mut LegacyRandom {
@@ -1357,7 +1759,7 @@ impl ParticleEngine {
         for _ in 0..128 {
             let r = &mut self.level_random;
             let t = r.next_double();
-            let velocity = std::array::from_fn(|_| f64::from((r.next_float() - 0.5) * 0.2));
+            let velocity = array::from_fn(|_| f64::from((r.next_float() - 0.5) * 0.2));
             let position = [
                 to[0] + t * (from[0] - to[0]) + (r.next_double() - 0.5) + 0.5,
                 to[1] + t * (from[1] - to[1]) + r.next_double() - 0.5,
@@ -1385,7 +1787,7 @@ impl ParticleEngine {
         for _ in 0..128 {
             let r = &mut self.level_random;
             let t = r.next_double();
-            let velocity = std::array::from_fn(|_| f64::from((r.next_float() - 0.5) * 0.2));
+            let velocity = array::from_fn(|_| f64::from((r.next_float() - 0.5) * 0.2));
             // Mth.lerp(t, to, from).
             let position = [
                 to[0] + t * (from[0] - to[0]) + (r.next_double() - 0.5) * WIDTH * 2.0,
@@ -1403,16 +1805,27 @@ impl ParticleEngine {
             }
         }
     }
+    /// `ClientExplosionTracker.track`: queue an explosion's block count and position
+    /// for debris generation during `ClientLevel.tick`.
+    pub fn track_explosion(&mut self, center: [f64; 3], radius: f32, block_count: usize) {
+        if block_count > 0 {
+            self.tracked_explosions.push(TrackedExplosion {
+                center,
+                radius,
+                block_count,
+            });
+        }
+    }
     /// `ClientPacketListener.handleExplosion` + `ClientExplosionTracker`: the
-    /// explosion particle (the emitter unless `ServerExplosion.isSmall`) and up
-    /// to 512 poof/smoke particles thrown from air inside the radius.
+    /// explosion particle (the emitter unless `ServerExplosion.isSmall`) and
+    /// debris tracked for `tick`.
     pub fn explosion(
         &mut self,
         center: [f64; 3],
         small: bool,
         block_count: usize,
         radius: f32,
-        is_air: &dyn Fn([i32; 3]) -> bool,
+        _is_air: &dyn Fn([i32; 3]) -> bool,
     ) {
         let ty = if small {
             ParticleType::Explosion
@@ -1420,7 +1833,7 @@ impl ParticleEngine {
             ParticleType::ExplosionEmitter
         };
         self.add(&ParticleOptions::simple(ty), center, [1.0, 0.0, 0.0]);
-        self.explosion_blocks(center, radius, block_count, is_air);
+        self.track_explosion(center, radius, block_count);
     }
     /// `LlamaSpit.recreateFromPacket`: seven spit particles thrown ahead of a
     /// new spit, each faster than the last along x and z.
@@ -1432,60 +1845,6 @@ impl ParticleEngine {
                 at,
                 [movement[0] * k, movement[1], movement[2] * k],
             );
-        }
-    }
-    /// `ClientExplosionTracker` with `Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES`.
-    pub fn explosion_blocks(
-        &mut self,
-        center: [f64; 3],
-        radius: f32,
-        block_count: usize,
-        is_air: &dyn Fn([i32; 3]) -> bool,
-    ) {
-        // ClientExplosionTracker.tick: only the All option throws the debris.
-        if self.particle_level != 0 {
-            return;
-        }
-        for _ in 0..block_count.min(512) {
-            let r = &mut self.random;
-            let d = Vec3::new(
-                f64::from(r.next_float() * 2.0 - 1.0),
-                f64::from(r.next_float() * 2.0 - 1.0),
-                f64::from(r.next_float() * 2.0 - 1.0),
-            )
-            .normalize();
-            let distance = r.next_float().cbrt() * radius;
-            let local = [
-                d.x * f64::from(distance),
-                d.y * f64::from(distance),
-                d.z * f64::from(distance),
-            ];
-            let at = [
-                center[0] + local[0],
-                center[1] + local[1],
-                center[2] + local[2],
-            ];
-            if !is_air(ParticleLevel::block_at(at)) {
-                continue;
-            }
-            let speed = 0.5 / (distance / radius + 0.1) * r.next_float() * r.next_float() + 0.3;
-            // Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES: poof (scaling 0.5) or smoke, equally weighted.
-            let (ty, scaling) = if r.next_int_bound(2).unwrap_or(0) == 0 {
-                (ParticleType::Poof, 0.5)
-            } else {
-                (ParticleType::Smoke, 1.0)
-            };
-            let p = [
-                center[0] + local[0] * scaling,
-                center[1] + local[1] * scaling,
-                center[2] + local[2] * scaling,
-            ];
-            let v = [
-                d.x * f64::from(speed),
-                d.y * f64::from(speed),
-                d.z * f64::from(speed),
-            ];
-            self.add(&ParticleOptions::simple(ty), p, v);
         }
     }
     /// `ParticleEngine.createTrackingEmitter` (crits): 16 tries per tick for
@@ -1571,6 +1930,10 @@ impl ParticleEngine {
     /// `ParticleEngine.createParticle`: always spawned, but `ParticleEngine.add`
     /// drops a spore blossom air particle once `ParticleLimit.SPORE_BLOSSOM` is full.
     pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
+        if let Some(requests) = &mut self.created_requests {
+            requests.push((options.clone(), p, v));
+            return;
+        }
         let seed = self.seeds.next_long();
         if let Some(particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
@@ -1695,8 +2058,12 @@ impl ParticleEngine {
                 return;
             };
             let lifetime = p.lifetime.max(1);
-            let index = (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
-                .clamp(0, sprites.len() as i64 - 1);
+            let index = if p.frame_ticks > 0 {
+                (p.age.max(0) as i64 / i64::from(p.frame_ticks)) % sprites.len() as i64
+            } else {
+                (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
+                    .clamp(0, sprites.len() as i64 - 1)
+            };
             p.sprite = Sprite::Index(sprites[index as usize]);
         }
     }
@@ -1715,7 +2082,7 @@ impl ParticleEngine {
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
         if let Some(name) = &o.mod_particle {
-            let set = *self.mod_sets.get(name)?;
+            let (set, behaviour) = *self.mod_sets.get(name)?;
             let mut r = LegacyRandom::new(seed);
             let mut q = Particle::moving(&mut r, ParticleType::Smoke, p, v);
             q.ty = ParticleType::Smoke;
@@ -1727,6 +2094,12 @@ impl ParticleEngine {
             q.sprite = Sprite::Index(
                 sprites[r.next_int_bound(sprites.len() as i32).unwrap_or(0) as usize],
             );
+            if let Some(behaviour) = behaviour {
+                behaviour.apply(&mut q, v, &mut r);
+                if behaviour.animation == Some(ModAnimation::First) {
+                    q.sprite = Sprite::Index(sprites[0]);
+                }
+            }
             return Some(q);
         }
         let set = self.set_of(ty);
@@ -2611,8 +2984,16 @@ impl ParticleEngine {
                 }
                 q
             }
-            // Vibration signals are created by `vibration`, aimed at a listener.
-            T::Vibration => return None,
+            // VibrationSignalParticle.Provider: `VibrationParticleOption` carries
+            // the listener the signal flies to and its arrival time; the sprite
+            // is the set's own draw from the engine's random.
+            T::Vibration => {
+                let (dest, ticks) = o.vibration?;
+                let mut q = Self::vibration_particle(p, dest, ticks);
+                q.set = set;
+                q.sprite = self.sprite_from_set(ty);
+                q
+            }
             // ShriekParticle.
             T::Shriek => {
                 let mut q = Particle::moving(r, ty, p, [0.0; 3]);
@@ -3318,6 +3699,7 @@ impl ParticleEngine {
     }
     pub fn tick(&mut self, level: &ParticleLevel) {
         self.tick_starters();
+        self.tick_explosions(level);
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
             self.emit(&options, feet, width, height);
             if life > 1 {
@@ -3351,10 +3733,105 @@ impl ParticleEngine {
             self.particles.push(p);
         }
     }
+    /// `ClientExplosionTracker.tick`: throws up to 512 debris particles across all
+    /// explosions tracked in this tick, weighted by each explosion's block count.
+    fn tick_explosions(&mut self, level: &ParticleLevel) {
+        self.tick_explosions_with(&|b| level.facts.is_air(level.world.block(b[0], b[1], b[2])));
+    }
+    fn tick_explosions_with(&mut self, is_air: &dyn Fn([i32; 3]) -> bool) {
+        if self.tracked_explosions.is_empty() {
+            return;
+        }
+        let explosions = std::mem::take(&mut self.tracked_explosions);
+        if self.particle_level != 0 {
+            return;
+        }
+        let total_blocks: usize = explosions.iter().map(|e| e.block_count).sum();
+        if total_blocks == 0 {
+            return;
+        }
+        let total_particles = total_blocks.min(512);
+        for _ in 0..total_particles {
+            // `WeightedRandom.getRandomItem` draws its `nextInt(totalWeight)`
+            // even when one explosion is tracked.
+            let mut pick = self.random.next_int_bound(total_blocks as i32).unwrap_or(0) as usize;
+            let mut explosion = &explosions[0];
+            for exp in &explosions {
+                if pick < exp.block_count {
+                    explosion = exp;
+                    break;
+                }
+                pick -= exp.block_count;
+            }
+            let r = &mut self.random;
+            let d = Vec3::new(
+                f64::from(r.next_float() * 2.0 - 1.0),
+                f64::from(r.next_float() * 2.0 - 1.0),
+                f64::from(r.next_float() * 2.0 - 1.0),
+            )
+            .normalize();
+            let distance = r.next_float().cbrt() * explosion.radius;
+            let local = [
+                d.x * f64::from(distance),
+                d.y * f64::from(distance),
+                d.z * f64::from(distance),
+            ];
+            let at = [
+                explosion.center[0] + local[0],
+                explosion.center[1] + local[1],
+                explosion.center[2] + local[2],
+            ];
+            if !is_air(ParticleLevel::block_at(at)) {
+                continue;
+            }
+            let speed =
+                0.5 / (distance / explosion.radius + 0.1) * r.next_float() * r.next_float() + 0.3;
+            // Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES: poof (scaling 0.5) or smoke, equally weighted.
+            let (ty, scaling) = if r.next_int_bound(2).unwrap_or(0) == 0 {
+                (ParticleType::Poof, 0.5)
+            } else {
+                (ParticleType::Smoke, 1.0)
+            };
+            let p = [
+                explosion.center[0] + local[0] * scaling,
+                explosion.center[1] + local[1] * scaling,
+                explosion.center[2] + local[2] * scaling,
+            ];
+            self.add(
+                &ParticleOptions::simple(ty),
+                p,
+                [
+                    d.x * f64::from(speed),
+                    d.y * f64::from(speed),
+                    d.z * f64::from(speed),
+                ],
+            );
+        }
+    }
     #[allow(clippy::too_many_lines)]
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
             Behaviour::Base => p.base_tick(level),
+            Behaviour::Controlled { .. } => {
+                if let Some(mut controller) = p.controller.take() {
+                    let update = controller.tick(p, level);
+                    p.controller = Some(controller);
+                    if let Some(frame) = update.frame {
+                        self.set_sprite_frame(p, frame);
+                    }
+                    for (options, pos, velocity) in update.spawned {
+                        self.add(&options, pos, velocity);
+                    }
+                } else {
+                    p.remove();
+                }
+            }
+            Behaviour::Mod { size, alpha } => {
+                p.base_tick(level);
+                p.size = mod_curve(size, p.age, p.lifetime);
+                p.rgba[3] = mod_curve(alpha, p.age, p.lifetime);
+                self.sprite_from_age(p);
+            }
             Behaviour::Animated => {
                 p.base_tick(level);
                 self.sprite_from_age(p);
@@ -4136,8 +4613,7 @@ impl ParticleEngine {
             .filter(|p| p.rgba[3] > 0.0)
             .filter_map(|p| {
                 let (_, rgb, reach) = shining.iter().find(|(ty, ..)| *ty == p.ty)?;
-                let at =
-                    std::array::from_fn(|i| p.previous[i] + (p.position[i] - p.previous[i]) * f);
+                let at = array::from_fn(|i| p.previous[i] + (p.position[i] - p.previous[i]) * f);
                 Some((at, *rgb, *reach, p.rgba[3].clamp(0.0, 1.0)))
             })
             .collect()
@@ -4153,9 +4629,69 @@ impl ParticleEngine {
         light_at: &dyn Fn([i32; 3]) -> u8,
         out: &mut Vec<Vertex>,
     ) {
+        self.render_inner::<false>(
+            camera,
+            yaw,
+            pitch,
+            partial,
+            0.0,
+            None,
+            &mut |_, _| false,
+            light_at,
+            out,
+        );
+    }
+
+    /// Render particles after rejecting view-frustum misses and any particles
+    /// the caller proves hidden behind opaque terrain.
+    pub fn render_culled(
+        &self,
+        camera: DVec3,
+        yaw: f32,
+        pitch: f32,
+        partial: f32,
+        pixel_focal_length: f32,
+        culling_enabled: bool,
+        frustum: Option<&crate::gfx::Frustum>,
+        mut occluded: impl FnMut([f64; 3], [f64; 3]) -> bool,
+        light_at: &dyn Fn([i32; 3]) -> u8,
+        out: &mut Vec<Vertex>,
+    ) {
+        if !culling_enabled {
+            self.render(camera, yaw, pitch, partial, light_at, out);
+            return;
+        }
+        self.render_inner::<true>(
+            camera,
+            yaw,
+            pitch,
+            partial,
+            pixel_focal_length,
+            frustum,
+            &mut occluded,
+            light_at,
+            out,
+        );
+    }
+
+    fn render_inner<const CULL: bool>(
+        &self,
+        camera: DVec3,
+        yaw: f32,
+        pitch: f32,
+        partial: f32,
+        pixel_focal_length: f32,
+        frustum: Option<&crate::gfx::Frustum>,
+        occluded: &mut dyn FnMut([f64; 3], [f64; 3]) -> bool,
+        light_at: &dyn Fn([i32; 3]) -> u8,
+        out: &mut Vec<Vertex>,
+    ) {
         // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
         let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
             * Quat::from_rotation_x(-pitch.to_radians());
+        let mut light_cache = ParticleLightCache::default();
+        let mut section_cache =
+            (CULL && frustum.is_some()).then(ParticleSectionFrustumCache::default);
         for p in &self.particles {
             if p.no_render {
                 continue;
@@ -4167,13 +4703,48 @@ impl ParticleEngine {
             {
                 continue;
             }
+            if CULL && matches!(p.behaviour, Behaviour::Shriek { delay } if delay > 0) {
+                continue;
+            }
+            let culled_geometry = if CULL {
+                let a = f64::from(partial);
+                let world = array::from_fn(|i| p.previous[i] + (p.position[i] - p.previous[i]) * a);
+                let center = (DVec3::from_array(world) - camera).as_vec3();
+                let size = p.quad_size(partial);
+                // Every generated quad vertex is sqrt(2) * size from its center,
+                // including the rotated two-quad particle types.
+                let radius = f64::from(size.abs()) * std::f64::consts::SQRT_2 + 0.05;
+                if let (Some(frustum), Some(section_cache)) = (frustum, section_cache.as_mut()) {
+                    match section_cache.result(world, camera, radius, frustum) {
+                        SectionFrustumResult::Outside => continue,
+                        SectionFrustumResult::Intersects
+                            if !frustum.intersects_sphere(center, radius as f32) =>
+                        {
+                            continue;
+                        }
+                        SectionFrustumResult::Inside | SectionFrustumResult::Intersects => {}
+                    }
+                }
+                let distance_squared = f64::from(center.length_squared());
+                if below_half_pixel(radius, distance_squared, pixel_focal_length) {
+                    continue;
+                }
+                if occluded(world.map(|v| v - radius), world.map(|v| v + radius)) {
+                    continue;
+                }
+                Some((center, size))
+            } else {
+                None
+            };
             // `SubmitNodeCollection.submitQuadParticleGroup`: the translucent
             // layer draws after translucent terrain, so a crumb of stained
             // glass cannot hide the glass behind it (`getLayer`).
             let (rect, layer) = match &p.sprite {
                 Sprite::Index(i) => (
                     self.rects.get(*i as usize).copied().flatten(),
-                    p.ty.translucent_layer(),
+                    p.ty.translucent_layer()
+                        || matches!(p.behaviour, Behaviour::Controlled { translucent: true })
+                        || matches!(p.behaviour, Behaviour::Mod { alpha, .. } if alpha != [1.0; 2]),
                 ),
                 Sprite::Named(name) => match self.atlas.get(name) {
                     Some(&(rect, translucent)) => (Some(rect), translucent),
@@ -4181,19 +4752,20 @@ impl ParticleEngine {
                 },
             };
             let Some(r) = rect else { continue };
-            let a = f64::from(partial);
-            let pos = DVec3::new(
-                p.previous[0] + (p.position[0] - p.previous[0]) * a,
-                p.previous[1] + (p.position[1] - p.previous[1]) * a,
-                p.previous[2] + (p.position[2] - p.previous[2]) * a,
-            ) - camera;
-            let center = pos.as_vec3();
+            let (center, size) = culled_geometry.unwrap_or_else(|| {
+                let a = f64::from(partial);
+                let pos = DVec3::new(
+                    p.previous[0] + (p.position[0] - p.previous[0]) * a,
+                    p.previous[1] + (p.position[1] - p.previous[1]) * a,
+                    p.previous[2] + (p.position[2] - p.previous[2]) * a,
+                ) - camera;
+                (pos.as_vec3(), p.quad_size(partial))
+            });
             let rotation = if p.roll != 0.0 {
                 base * Quat::from_rotation_z(p.o_roll + (p.roll - p.o_roll) * partial)
             } else {
                 base
             };
-            let size = p.quad_size(partial);
             let mut alpha = p.rgba[3];
             // OverlayParticle.extract: the flash fades as it pulses.
             if p.ty == ParticleType::Flash {
@@ -4207,7 +4779,7 @@ impl ParticleEngine {
             match p.behaviour {
                 // ShriekParticle.extract: two tilted quads, fading out.
                 Behaviour::Shriek { delay } => {
-                    if delay > 0 {
+                    if !CULL && delay > 0 {
                         continue;
                     }
                     alpha = 1.0 - ((p.age as f32 + partial) / p.lifetime as f32).clamp(0.0, 1.0);
@@ -4250,12 +4822,12 @@ impl ParticleEngine {
                 // DustColorTransitionParticle.lerpColors.
                 Behaviour::Transition { from, to } => {
                     let t = (p.age as f32 + partial) / (p.lifetime as f32 + 1.0);
-                    rgb = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
+                    rgb = array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
                 }
                 _ => {}
             }
             let block = ParticleLevel::block_at(p.position);
-            let packed = light_at(block);
+            let packed = light_cache.get(block, light_at);
             let (sky_light, block_light) = p.light_coords(
                 partial,
                 u32::from(packed >> 4) * 16,
@@ -4367,6 +4939,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn particle_light_cache_reuses_exact_blocks_and_fails_open_on_collisions() {
+        let reads = std::cell::Cell::new(0);
+        let light_at = |block: [i32; 3]| {
+            reads.set(reads.get() + 1);
+            block[0] as u8
+        };
+        let mut cache = ParticleLightCache::default();
+        let first = [0, 0, 0];
+        let colliding = [64, 0, 0];
+
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(reads.get(), 1);
+        assert_eq!(cache.get(colliding, &light_at), 64);
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[test]
+    fn subpixel_culling_uses_the_frame_projection_and_fails_open() {
+        assert!(below_half_pixel(0.01, 41.0_f64.powi(2), 1_000.0));
+        assert!(!below_half_pixel(0.01, 40.0_f64.powi(2), 1_000.0));
+        assert!(!below_half_pixel(0.01, 41.0_f64.powi(2), 0.0));
+        assert!(!below_half_pixel(0.01, f64::NAN, 1_000.0));
+        assert!(!below_half_pixel(f64::NAN, 41.0_f64.powi(2), 1_000.0));
+
+        for distance in [0.25_f32, 1.0, 8.0, 40.0, 128.0] {
+            for radius in [0.01, 0.05, 0.2] {
+                let center = FVec3::new(distance, distance * 0.3, -distance * 0.8);
+                let old = 2.0 * radius * 900.0 / f64::from(center.length()) < 0.5;
+                assert_eq!(
+                    below_half_pixel(radius, f64::from(center.length_squared()), 900.0),
+                    old
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_culled_render_matches_the_regular_particle_path() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let sprite = "test:smoke".to_owned();
+        engine.atlas.insert(
+            sprite.clone(),
+            (
+                Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 16,
+                    h: 16,
+                },
+                false,
+            ),
+        );
+        let mut random = LegacyRandom::new(7);
+        let mut particle =
+            Particle::moving(&mut random, ParticleType::Smoke, [0.0, 0.0, -3.0], [0.0; 3]);
+        particle.sprite = Sprite::Named(sprite);
+        engine.particles.push(particle);
+
+        let light_at = |_: [i32; 3]| 0xf0;
+        let mut regular = Vec::new();
+        engine.render(DVec3::ZERO, 0.0, 0.0, 0.5, &light_at, &mut regular);
+        let mut disabled = Vec::new();
+        engine.render_culled(
+            DVec3::ZERO,
+            0.0,
+            0.0,
+            0.5,
+            900.0,
+            false,
+            None,
+            |_, _| panic!("disabled culling must not query particle visibility"),
+            &light_at,
+            &mut disabled,
+        );
+
+        let attributes = |vertices: &[Vertex]| {
+            vertices
+                .iter()
+                .map(|vertex| {
+                    (
+                        vertex.pos,
+                        vertex.uv,
+                        vertex.layer,
+                        vertex.color,
+                        vertex.light,
+                        vertex.normal,
+                        vertex.glint_uv,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(attributes(&disabled), attributes(&regular));
+    }
+
+    #[test]
     fn a_mod_particles_json_becomes_its_sprite_set() {
         let dir =
             std::env::temp_dir().join(format!("horizon-mod-particles-{}", std::process::id()));
@@ -4379,7 +5050,7 @@ mod tests {
         .unwrap();
         assert!(particles.join("spark.json").exists());
         let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        let set = *engine
+        let (set, _) = *engine
             .mod_sets
             .get("mymod:spark")
             .expect("the set is loaded");
@@ -4405,7 +5076,404 @@ mod tests {
                 )
                 .is_none()
         );
+        std::fs::write(
+            particles.join("spark.json"),
+            br#"{"textures":["mymod:spark/1"],"horizon:behaviour":{
+                "velocity":[0,0.5,0],"gravity":-1,"friction":0.5,
+                "lifetime":4,"size":[0.25,0.5],"alpha":[0.75,0]
+            }}"#,
+        )
+        .unwrap();
+        engine.reload(&dir, &HashMap::new(), &HashSet::new());
+        let custom = engine
+            .make(
+                &ParticleOptions::named("mymod:spark"),
+                [0.0; 3],
+                [0.0; 3],
+                7,
+            )
+            .unwrap();
+        assert_eq!(custom.velocity, [0.0, 0.5, 0.0]);
+        assert_eq!(custom.gravity, -1.0);
+        assert_eq!(custom.friction, 0.5);
+        assert_eq!(custom.lifetime, 4);
+        assert_eq!(custom.size, 0.25);
+        assert_eq!(custom.rgba[3], 0.75);
+        for suffix in [r#", "horizon:behaviour": {"lifetime":0}"#, ""] {
+            std::fs::write(
+                particles.join("spark.json"),
+                format!(r#"{{"textures":["mymod:spark/1","mymod:spark/2"]{suffix}}}"#,),
+            )
+            .unwrap();
+            engine.reload(&dir, &HashMap::new(), &HashSet::new());
+            let fallback = engine
+                .make(
+                    &ParticleOptions::named("mymod:spark"),
+                    [0.0; 3],
+                    [0.0; 3],
+                    7,
+                )
+                .unwrap();
+            assert_eq!(fallback.velocity, made.velocity);
+            assert_eq!(fallback.gravity, made.gravity);
+            assert_eq!(fallback.friction, made.friction);
+            assert_eq!(fallback.size, made.size);
+            assert_eq!(fallback.rgba, made.rgba);
+            assert_eq!(fallback.lifetime, made.lifetime);
+            assert_eq!(fallback.behaviour, made.behaviour);
+        }
+        assert_eq!(custom.lifetime, 4);
+        assert_eq!(custom.size, 0.25);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_behaviour_validates_declarations() {
+        use serde_json::json;
+        for invalid in [
+            json!({"velocity": [0, 0]}),
+            json!({"velocity": [17, 0, 0]}),
+            json!({"gravity": 101}),
+            json!({"gravity": 1e100}),
+            json!({"friction": -0.1}),
+            json!({"friction": 1.1}),
+            json!({"lifetime": 0}),
+            json!({"lifetime": 12001}),
+            json!({"lifetime": 2.5}),
+            json!({"size": [-1, 1]}),
+            json!({"size": [0, 17]}),
+            json!({"alpha": [0, 1.1]}),
+            json!({"alpha": [-0.1, 1]}),
+            json!({"fricton": 0.9}),
+            json!(null),
+        ] {
+            assert!(ModBehaviour::parse(&invalid).is_none(), "{invalid}");
+        }
+        assert!(
+            ModBehaviour::parse(&json!({
+                "velocity": [-16, 0, 16], "gravity": -100, "friction": 0,
+                "lifetime": 12000, "size": [0, 16], "alpha": [0, 1]
+            }))
+            .is_some()
+        );
+        let mut particle = Particle::moving(
+            &mut LegacyRandom::new(7),
+            ParticleType::Smoke,
+            [0.0; 3],
+            [0.0; 3],
+        );
+        let original = particle.clone();
+        ModBehaviour::parse(&json!({})).unwrap().apply(
+            &mut particle,
+            [0.0; 3],
+            &mut LegacyRandom::new(1),
+        );
+        assert_eq!(particle.velocity, original.velocity);
+        assert_eq!(particle.lifetime, original.lifetime);
+        assert_eq!(particle.gravity, original.gravity);
+        assert_eq!(particle.friction, original.friction);
+        assert_eq!(particle.size, original.size);
+        assert_eq!(particle.rgba, original.rgba);
+        assert_eq!(particle.behaviour, original.behaviour);
+    }
+
+    #[test]
+    fn mod_velocity_adds_the_spawn_velocity_and_jitters_deterministically() {
+        use serde_json::json;
+        let mut base = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        ModBehaviour::parse(&json!({"velocity": [0.5, 0.0, 0.0]}))
+            .unwrap()
+            .apply(&mut base, [0.25, 1.0, -1.0], &mut LegacyRandom::new(1));
+        assert_eq!(base.velocity, [0.75, 1.0, -1.0]);
+        let jitter = ModBehaviour::parse(&json!({"velocity_jitter": [0.5, 0.0, 0.25]})).unwrap();
+        let mut first = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        let mut second = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        jitter.apply(&mut first, [1.0, 2.0, 3.0], &mut LegacyRandom::new(9));
+        jitter.apply(&mut second, [1.0, 2.0, 3.0], &mut LegacyRandom::new(9));
+        assert_eq!(first.velocity, second.velocity);
+        assert!((0.5..=1.5).contains(&first.velocity[0]));
+        assert_eq!(first.velocity[1], 2.0);
+        assert!((2.75..=3.25).contains(&first.velocity[2]));
+        for invalid in [
+            json!({"velocity_jitter": [-0.1, 0, 0]}),
+            json!({"velocity_jitter": [17, 0, 0]}),
+            json!({"frame_ticks": 2}),
+            json!({"animation": "age", "frame_ticks": 2}),
+            json!({"animation": "loop", "frame_ticks": 0}),
+            json!({"animation": "loop", "frame_ticks": 201}),
+            json!({"animation": "spin"}),
+        ] {
+            assert!(ModBehaviour::parse(&invalid).is_none(), "{invalid}");
+        }
+        assert!(ModBehaviour::parse(&json!({"animation": "loop", "frame_ticks": 3})).is_some());
+    }
+
+    #[test]
+    fn mod_animation_modes_pick_their_sprites() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.set_sprites.push(vec![10, 11, 12]);
+        let mut looping = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        looping.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "loop", "frame_ticks": 2}))
+            .unwrap()
+            .apply(&mut looping, [0.0; 3], &mut LegacyRandom::new(1));
+        let mut seen = Vec::new();
+        for age in 0..8 {
+            looping.age = age;
+            engine.sprite_from_age(&mut looping);
+            seen.push(match looping.sprite {
+                Sprite::Index(i) => i,
+                Sprite::Named(_) => u32::MAX,
+            });
+        }
+        assert_eq!(seen, [10, 10, 11, 11, 12, 12, 10, 10]);
+        let mut kept = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        kept.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "first"}))
+            .unwrap()
+            .apply(&mut kept, [0.0; 3], &mut LegacyRandom::new(1));
+        assert_eq!(kept.set, None);
+    }
+
+    #[test]
+    fn mod_curves_clamp_and_interpolate_over_lifetime() {
+        assert_eq!(mod_curve([0.0, 2.0], -1, 4), 0.0);
+        assert_eq!(mod_curve([0.0, 2.0], 0, 4), 0.0);
+        assert_eq!(mod_curve([0.0, 2.0], 1, 4), 0.5);
+        assert_eq!(mod_curve([0.0, 2.0], 4, 4), 2.0);
+        assert_eq!(mod_curve([0.0, 2.0], 5, 4), 2.0);
+        assert_eq!(mod_curve([1.0, 0.0], 1, 4), 0.75);
+        assert_eq!(mod_curve([0.5, 0.5], 2, 4), 0.5);
+        assert_eq!(mod_curve([0.0, 1.0], 1, 1), 1.0);
+    }
+
+    #[test]
+    fn mod_animation_advances_in_the_tick_with_and_without_curves() {
+        use horizon_world::{
+            DATA_VERSION,
+            collision::CachedCollisionRegistry,
+            nbt::Tag,
+            registry::{BlockRegistry, BlockStateId},
+        };
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![Tag::String("minecraft:air".into())]),
+            ),
+            ("defaults", Tag::compound([("minecraft:air", Tag::Int(0))])),
+        ]))
+        .unwrap();
+        let cached = CachedCollisionRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                (
+                    "states",
+                    Tag::List(vec![Tag::String("minecraft:air".into())]),
+                ),
+                ("shapes", Tag::List(vec![])),
+                ("cached_shapes", Tag::IntArray(vec![-1])),
+            ]),
+            &registry,
+        )
+        .unwrap();
+        let collision = BlockCollisionRegistry::new(std::sync::Arc::new(cached)).unwrap();
+        let facts = BlockFacts {
+            states: vec![],
+            air: BlockStateId(0),
+            woods: HashMap::new(),
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let level = ParticleLevel {
+            world: &world,
+            facts: &facts,
+            collision: &collision,
+            player: None,
+        };
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.set_sprites.push(vec![10, 11, 12]);
+        let sprite = |p: &Particle| match p.sprite {
+            Sprite::Index(i) => i,
+            Sprite::Named(_) => u32::MAX,
+        };
+        for declaration in [
+            serde_json::json!({"animation": "loop", "frame_ticks": 2, "alpha": [1, 0], "lifetime": 100}),
+            serde_json::json!({"animation": "loop", "frame_ticks": 2, "lifetime": 100}),
+        ] {
+            let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+            particle.has_physics = false;
+            particle.set = Some(0);
+            ModBehaviour::parse(&declaration).unwrap().apply(
+                &mut particle,
+                [0.0; 3],
+                &mut LegacyRandom::new(1),
+            );
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                engine.tick_particle(&mut particle, &level);
+                seen.push(sprite(&particle));
+            }
+            assert_eq!(seen, [10, 11, 11, 12, 12, 10], "{declaration}");
+        }
+        let mut aged = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        aged.has_physics = false;
+        aged.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "age", "lifetime": 4}))
+            .unwrap()
+            .apply(&mut aged, [0.0; 3], &mut LegacyRandom::new(1));
+        for _ in 0..4 {
+            engine.tick_particle(&mut aged, &level);
+        }
+        assert_eq!(sprite(&aged), 12);
+        let mut kept = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        kept.has_physics = false;
+        kept.set = Some(0);
+        kept.sprite = Sprite::Index(11);
+        ModBehaviour::parse(&serde_json::json!({"alpha": [1, 0], "lifetime": 4}))
+            .unwrap()
+            .apply(&mut kept, [0.0; 3], &mut LegacyRandom::new(1));
+        for _ in 0..4 {
+            engine.tick_particle(&mut kept, &level);
+        }
+        assert_eq!(sprite(&kept), 11, "no animation keeps the spawn sprite");
+    }
+
+    #[test]
+    fn mod_particle_ticks_motion_curves_and_removal() {
+        use horizon_world::{
+            DATA_VERSION,
+            collision::CachedCollisionRegistry,
+            nbt::Tag,
+            registry::{BlockRegistry, BlockStateId},
+        };
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![Tag::String("minecraft:air".into())]),
+            ),
+            ("defaults", Tag::compound([("minecraft:air", Tag::Int(0))])),
+        ]))
+        .unwrap();
+        let cached = CachedCollisionRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                (
+                    "states",
+                    Tag::List(vec![Tag::String("minecraft:air".into())]),
+                ),
+                ("shapes", Tag::List(vec![])),
+                ("cached_shapes", Tag::IntArray(vec![-1])),
+            ]),
+            &registry,
+        )
+        .unwrap();
+        let collision = BlockCollisionRegistry::new(std::sync::Arc::new(cached)).unwrap();
+        let facts = BlockFacts {
+            states: vec![],
+            air: BlockStateId(0),
+            woods: HashMap::new(),
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let level = ParticleLevel {
+            world: &world,
+            facts: &facts,
+            collision: &collision,
+            player: None,
+        };
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        particle.has_physics = false;
+        ModBehaviour::parse(&serde_json::json!({
+            "velocity": [1, 2, -1], "gravity": 1, "friction": 0.5,
+            "lifetime": 2, "size": [0.25, 0.75], "alpha": [1, 0]
+        }))
+        .unwrap()
+        .apply(&mut particle, [0.0; 3], &mut LegacyRandom::new(1));
+        assert_eq!(particle.size, 0.25);
+        assert_eq!(particle.rgba[3], 1.0);
+        engine.tick_particle(&mut particle, &level);
+        assert_eq!(particle.age, 1);
+        assert_eq!(particle.previous, [0.0; 3]);
+        assert_eq!(particle.position, [1.0, 1.96, -1.0]);
+        assert_eq!(particle.velocity, [0.5, 0.98, -0.5]);
+        assert_eq!(particle.size, 0.5);
+        assert_eq!(particle.rgba[3], 0.5);
+        engine.tick_particle(&mut particle, &level);
+        assert_eq!(particle.position, [1.5, 2.9, -1.5]);
+        assert_eq!(particle.velocity, [0.25, 0.47, -0.25]);
+        assert_eq!(particle.size, 0.75);
+        assert_eq!(particle.rgba[3], 0.0);
+        assert!(!particle.removed);
+        engine.tick_particle(&mut particle, &level);
+        assert!(particle.removed);
+        assert_eq!(particle.position, [1.5, 2.9, -1.5]);
+    }
+
+    #[test]
+    fn fading_mod_particles_use_the_blended_layer() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.rects.push(Some(Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        }));
+        let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        ModBehaviour::parse(&serde_json::json!({"alpha": [0.5, 0]}))
+            .unwrap()
+            .apply(&mut particle, [0.0; 3], &mut LegacyRandom::new(1));
+        particle.sprite = Sprite::Index(0);
+        engine.particles.push(particle);
+        let mut vertices = Vec::new();
+        engine.render(DVec3::ZERO, 0.0, 0.0, 0.0, &|_| 0, &mut vertices);
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.iter().all(
+            |v| v.color >> 24 == 127 && v.layer & crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY != 0
+        ));
+    }
+
+    /// `LivingEntity.handleEntityEvent(46)`: 128 samples, the first on the old
+    /// box and the last on the new one, with speeds inside ±0.1.
+    #[test]
+    fn living_teleport_particles_span_the_old_and_new_boxes() {
+        let mut random = LegacyRandom::new(1);
+        let mut samples = Vec::new();
+        living_teleport_particles(
+            &mut random,
+            [0.0, 1.0, 0.0],
+            [8.0, 1.0, 0.0],
+            0.6,
+            1.8,
+            |p, v| samples.push((p, v)),
+        );
+        assert_eq!(samples.len(), 128);
+        let first = samples[0].0;
+        let last = samples[127].0;
+        assert!(first[0].abs() <= 0.6, "{first:?}");
+        assert!((1.0..2.8).contains(&first[1]), "{first:?}");
+        assert!(first[2].abs() <= 0.6, "{first:?}");
+        assert!((7.4..8.6).contains(&last[0]), "{last:?}");
+        assert!((1.0..2.8).contains(&last[1]), "{last:?}");
+        assert!(last[2].abs() <= 0.6, "{last:?}");
+        // `(nextDouble - 0.5) * width * 2` reaches ±width. A spread of only
+        // `width` (the factor of 2 dropped) stays inside 0.3 of the line.
+        let edge = samples
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| {
+                let along = (i as f64 / 127.0) * 8.0;
+                (p[0] - along).abs()
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(edge > 0.45, "box spread reached only {edge}");
+        for (_, v) in &samples {
+            for c in v {
+                assert!((-0.1..0.1).contains(c), "{v:?}");
+            }
+        }
     }
 
     #[test]
@@ -4570,6 +5638,41 @@ mod tests {
         }
         assert_eq!(engine.pending.len(), 1010);
     }
+    /// `VibrationSignalParticle.Provider.createParticle`: the provider path
+    /// the client's packet handler reaches (`add_with`) makes the signal from
+    /// the option's destination and arrival time, where it used to refuse it.
+    #[test]
+    fn a_vibration_option_makes_the_signal_its_provider_draws() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        // Within the camera's 32 blocks, so only the provider decides.
+        engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
+        assert_eq!(engine.made().get("vibration"), Some(&1));
+        let q = engine.pending.first().expect("the signal is made");
+        assert_eq!(q.ty, ParticleType::Vibration);
+        assert_eq!(q.lifetime, 20);
+        assert!((q.size - 0.3).abs() < 1e-6);
+        assert!(!q.has_physics);
+        match &q.behaviour {
+            Behaviour::Vibration {
+                dest, rot, pitch, ..
+            } => {
+                assert_eq!(*dest, [10.5, 70.5, -3.5]);
+                // The constructor aims it from where it starts at the listener.
+                let d: [f64; 3] = [0.5 - 10.5, 1.5 - 70.5, 0.5 + 3.5];
+                assert!((*rot - d[0].atan2(d[2]) as f32).abs() < 1e-6);
+                let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
+                assert!((*pitch - d[1].atan2(flat) as f32).abs() < 1e-6);
+            }
+            _ => panic!("a vibration signal"),
+        }
+        // Only `VibrationParticleOption` carries a listener; a bare type has none.
+        let bare = ParticleOptions::simple(ParticleType::Vibration);
+        assert!(
+            engine.make(&bare, [0.0; 3], [0.0; 3], 1).is_none(),
+            "no destination, no signal"
+        );
+    }
     #[test]
     fn particle_names_round_trip() {
         for &ty in ParticleType::ALL {
@@ -4610,5 +5713,42 @@ mod tests {
         let a = [0.0, 0.6, 0.25, 1.0];
         assert_eq!(lifetime_alpha(a, 0, 40, 0.0), 0.0);
         assert!((lifetime_alpha(a, 40, 40, 0.0) - 0.6).abs() < 1e-6);
+    }
+    #[test]
+    fn explosion_tracker_tracks_and_ignores_zero_blocks() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        assert!(engine.tracked_explosions.is_empty());
+        engine.track_explosion([1.0, 2.0, 3.0], 4.0, 100);
+        engine.track_explosion([5.0, 6.0, 7.0], 2.0, 50);
+        assert_eq!(engine.tracked_explosions.len(), 2);
+        assert_eq!(engine.tracked_explosions[0].block_count, 100);
+        assert_eq!(engine.tracked_explosions[1].block_count, 50);
+
+        // Zero block count explosions are not queued.
+        engine.track_explosion([0.0; 3], 1.0, 0);
+        assert_eq!(engine.tracked_explosions.len(), 2);
+    }
+    #[test]
+    fn explosion_tracker_caps_debris_at_512_across_multiple_explosions() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        // Queue two explosions near camera: 400 blocks and 300 blocks (total 700).
+        engine.track_explosion([0.0, 0.0, 0.0], 4.0, 400);
+        engine.track_explosion([2.0, 0.0, 2.0], 5.0, 300);
+        assert_eq!(engine.tracked_explosions.len(), 2);
+
+        // In pure air, total particles spawned must be capped at 512.
+        engine.tick_explosions_with(&|_| true);
+        assert_eq!(engine.pending.len(), 512);
+        assert!(engine.tracked_explosions.is_empty());
+    }
+    #[test]
+    fn explosion_tracker_emits_debris_only_in_air() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.track_explosion([0.0, 64.0, 0.0], 4.0, 100);
+
+        // When no blocks are air, zero debris particles are emitted.
+        engine.tick_explosions_with(&|_| false);
+        assert_eq!(engine.pending.len(), 0);
+        assert!(engine.tracked_explosions.is_empty());
     }
 }

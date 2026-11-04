@@ -19,6 +19,59 @@ use std::sync::Arc;
 mod bundle;
 pub mod place;
 
+/// `ServerPlayer.getRecipeBook`: whether the player knows a recipe.
+pub trait KnownRecipes {
+    fn knows(&self, recipe_id: &str) -> bool;
+}
+
+impl KnownRecipes for crate::recipe_book::Settings {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.recipes.contains(&q) || self.recipes.contains(recipe_id)
+    }
+}
+
+impl KnownRecipes for std::collections::BTreeSet<String> {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.contains(&q) || self.contains(recipe_id)
+    }
+}
+
+impl KnownRecipes for std::collections::HashSet<String> {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.contains(&q) || self.contains(recipe_id)
+    }
+}
+
+impl KnownRecipes for [String] {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.iter().any(|r| r == &q || r == recipe_id)
+    }
+}
+
+impl KnownRecipes for Vec<String> {
+    fn knows(&self, recipe_id: &str) -> bool {
+        self.as_slice().knows(recipe_id)
+    }
+}
+
+impl<const N: usize> KnownRecipes for [&str; N] {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.iter().any(|r| *r == q.as_str() || *r == recipe_id)
+    }
+}
+
+impl KnownRecipes for &[&str] {
+    fn knows(&self, recipe_id: &str) -> bool {
+        let q = crate::crafting::qualified(recipe_id);
+        self.iter().any(|r| *r == q.as_str() || *r == recipe_id)
+    }
+}
+
 /// What a menu needs to know about items and recipes.
 pub struct Env<'a> {
     pub items: &'a Items,
@@ -38,6 +91,10 @@ pub struct Env<'a> {
     /// and makes them. None is a client's menu (`ContainerLevelAccess.NULL`):
     /// it makes no result, and a taken result keeps its map id.
     pub maps: Option<&'a dyn Maps>,
+    /// `GameRules.LIMITED_CRAFTING`: when true, only known or special recipes craft.
+    pub limited_crafting: bool,
+    /// The recipes the player knows (`ServerPlayer.getRecipeBook().contains(id)`).
+    pub known_recipes: Option<&'a dyn KnownRecipes>,
 }
 
 /// The maps of the level a menu is in.
@@ -1285,7 +1342,18 @@ impl Menu {
     // ---- item helpers ----
 
     fn max_stack(env: &Env, stack: &ItemStack) -> u32 {
-        env.items.get(&stack.item).map_or(64, |i| i.max_stack)
+        // `ItemStack.getMaxStackSize`: the stack's component, else the item's.
+        // A removed component falls back to the item (`!minecraft:max_stack_size`).
+        let patched = stack.data().and_then(|d| {
+            if d.other("!minecraft:max_stack_size").is_some() {
+                return None;
+            }
+            match d.other("minecraft:max_stack_size") {
+                Some(horizon_world::nbt::Tag::Int(n)) if (1..=99).contains(n) => Some(*n as u32),
+                _ => None,
+            }
+        });
+        patched.unwrap_or_else(|| env.items.get(&stack.item).map_or(64, |i| i.max_stack))
     }
 
     fn damageable(env: &Env, stack: &ItemStack) -> bool {
@@ -1687,7 +1755,17 @@ impl Menu {
         let result = env
             .recipes
             .find(&self.containers[GRID], self.grid_size)
-            .map(|(_, stack)| stack);
+            .and_then(|(id, stack)| {
+                if env.limited_crafting {
+                    // `RecipeCraftingHolder.setRecipeUsed`: special recipes or known recipes craft.
+                    let is_special = env.recipes.recipe(id).is_some_and(|r| r.is_special());
+                    let known = env.known_recipes.is_some_and(|book| book.knows(id));
+                    if !is_special && !known {
+                        return None;
+                    }
+                }
+                Some(stack)
+            });
         self.containers[RESULT][0] = result;
     }
 
@@ -3293,6 +3371,8 @@ pub(crate) mod tests {
             names: &names,
             trade: None,
             maps: None,
+            limited_crafting: false,
+            known_recipes: None,
         };
         let mut menu = Menu::new(kind);
         menu.creative = true;
@@ -3540,12 +3620,14 @@ pub(crate) mod tests {
                         *max_stack = 7;
                     }
                 },
+                player_chat: |_, _, _, _, _| {},
                 living_heal: |_, _, _| {},
                 living_breathe: |_, _, _, _, _| {},
                 living_drown: |_, _, _, _, _, _| {},
                 living_fall: |_, _, _, _, _| {},
                 living_jump: |_, _| {},
                 ingredient: |_, _, _| {},
+                ingredient_test: |_, _, _, _| {},
             });
         assert!(installed.is_ok());
         let kind = Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
@@ -3583,6 +3665,8 @@ pub(crate) mod tests {
             names: &names,
             trade: None,
             maps: None,
+            limited_crafting: false,
+            known_recipes: None,
         };
         // Both a pick-up onto the cursor and a shift-click into the inventory.
         for input in [Input::Pickup, Input::QuickMove] {
@@ -3658,6 +3742,8 @@ pub(crate) mod tests {
             names: &names,
             trade: None,
             maps: None,
+            limited_crafting: false,
+            known_recipes: None,
         };
         let menu = &mut Menu::new(mod_menu());
         {
@@ -3858,5 +3944,205 @@ pub(crate) mod tests {
             assert_eq!(in_hand.potion(), Some("minecraft:swiftness"));
             assert_eq!(&*in_hand.item, "minecraft:potion");
         });
+    }
+
+    /// `RecipeCraftingHolder.setRecipeUsed`: when `limited_crafting` is false,
+    /// crafting works even if the recipe is not known by the player.
+    #[test]
+    fn limited_crafting_disabled_allows_crafting_unknown_recipe() {
+        use crate::crafting::{Ingredient, Recipe, Template};
+        let mut recipes = Recipes::empty();
+        recipes.crafting.push((
+            "oak_planks".into(),
+            Recipe::Shapeless {
+                ingredients: vec![Ingredient::of(vec!["minecraft:oak_log".into()])],
+                result: Template {
+                    item: Some("minecraft:oak_planks".into()),
+                    count: 4,
+                    damage: 0,
+                    extra: None,
+                },
+            },
+        ));
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing::load(&std::path::PathBuf::new(), &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            known_recipes: None,
+        };
+
+        let mut menu = Menu::new(Kind::Inventory);
+        menu.set_slot(&env, 1, stack("oak_log", 1));
+        assert_eq!(
+            menu.slot(0).map(|s| (&*s.item, s.count)),
+            Some(("minecraft:oak_planks", 4)),
+            "when limited_crafting is false, unlearned recipe should craft"
+        );
+    }
+
+    /// `RecipeCraftingHolder.setRecipeUsed`: when `limited_crafting` is true,
+    /// an unlearned recipe is blocked (result slot is None).
+    #[test]
+    fn limited_crafting_enabled_blocks_unknown_recipe() {
+        use crate::crafting::{Ingredient, Recipe, Template};
+        let mut recipes = Recipes::empty();
+        recipes.crafting.push((
+            "oak_planks".into(),
+            Recipe::Shapeless {
+                ingredients: vec![Ingredient::of(vec!["minecraft:oak_log".into()])],
+                result: Template {
+                    item: Some("minecraft:oak_planks".into()),
+                    count: 4,
+                    damage: 0,
+                    extra: None,
+                },
+            },
+        ));
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing::load(&std::path::PathBuf::new(), &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+
+        let known = ["minecraft:stick"];
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: true,
+            known_recipes: Some(&known),
+        };
+
+        let mut menu = Menu::new(Kind::Inventory);
+        menu.set_slot(&env, 1, stack("oak_log", 1));
+        assert_eq!(
+            menu.slot(0),
+            None,
+            "when limited_crafting is true, unknown recipe must produce None in result slot"
+        );
+    }
+
+    /// `RecipeCraftingHolder.setRecipeUsed`: when `limited_crafting` is true,
+    /// a learned recipe (present in `known_recipes`) crafts successfully.
+    #[test]
+    fn limited_crafting_enabled_allows_known_recipe() {
+        use crate::crafting::{Ingredient, Recipe, Template};
+        let mut recipes = Recipes::empty();
+        recipes.crafting.push((
+            "oak_planks".into(),
+            Recipe::Shapeless {
+                ingredients: vec![Ingredient::of(vec!["minecraft:oak_log".into()])],
+                result: Template {
+                    item: Some("minecraft:oak_planks".into()),
+                    count: 4,
+                    damage: 0,
+                    extra: None,
+                },
+            },
+        ));
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing::load(&std::path::PathBuf::new(), &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+
+        let known = ["minecraft:oak_planks"];
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: true,
+            known_recipes: Some(&known),
+        };
+
+        let mut menu = Menu::new(Kind::Inventory);
+        menu.set_slot(&env, 1, stack("oak_log", 1));
+        assert_eq!(
+            menu.slot(0).map(|s| (&*s.item, s.count)),
+            Some(("minecraft:oak_planks", 4)),
+            "when limited_crafting is true, learned recipe in known_recipes must craft"
+        );
+    }
+
+    /// `RecipeCraftingHolder.setRecipeUsed`: special recipes bypass the `known_recipes` check
+    /// (`recipe.value().isSpecial()`) and craft even when limited crafting is enabled.
+    #[test]
+    fn limited_crafting_enabled_allows_special_recipe() {
+        use crate::crafting::{Ingredient, Recipe, Special, Template};
+        let mut recipes = Recipes::empty();
+        recipes.crafting.push((
+            "dye_shulker_box".into(),
+            Recipe::Special(Special::Transmute {
+                input: Ingredient::of(vec!["minecraft:shulker_box".into()]),
+                material: Ingredient::of(vec!["minecraft:red_dye".into()]),
+                min: 1,
+                max: 1,
+                add_count: false,
+                result: Template {
+                    item: Some("minecraft:red_shulker_box".into()),
+                    count: 1,
+                    damage: 0,
+                    extra: None,
+                },
+            }),
+        ));
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing::load(&std::path::PathBuf::new(), &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+
+        let known: [&str; 0] = [];
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: true,
+            known_recipes: Some(&known),
+        };
+
+        let mut menu = Menu::new(Kind::Inventory);
+        menu.set_slot(&env, 1, stack("shulker_box", 1));
+        menu.set_slot(&env, 2, stack("red_dye", 1));
+        assert_eq!(
+            menu.slot(0).map(|s| (&*s.item, s.count)),
+            Some(("minecraft:red_shulker_box", 1)),
+            "special recipe must craft with limited_crafting: true without being in known_recipes"
+        );
     }
 }

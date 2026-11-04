@@ -8,8 +8,8 @@
 //! and the player's own in third person with the `ownNameTag` extra.
 use super::{Game, view_vector};
 use horizon_client::{
-    block_entity_render::vertex_light, hud::HudBatch, mesher::Vertex, mobs::Mob, save::uuid_text,
-    scoreboard as sb, text::Text,
+    block_entity_render::vertex_light, hud::HudBatch, mesher::Vertex, mobs::Mob, mod_api,
+    save::uuid_text, scoreboard as sb, text::Text,
 };
 
 /// The world size of one text pixel in a name tag: `Matrix4f.scale(0.025F, -0.025F, 0.025F)`.
@@ -103,15 +103,24 @@ impl Game<'_> {
     }
     /// Each name tag this frame.
     fn name_tags(&self, camera: glam::DVec3, alpha: f64) -> Vec<NameTag> {
+        let hooks = !mod_api::mods().is_empty();
         let target = self.mob_hit().map(|(i, _)| self.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
+        let player_ids = named_by_player_list(&players);
         let named = self.mobs.iter().filter_map(|m| {
+            // Already named by the player list: a second tag would sit on the
+            // first (`named_by_player_list`).
+            if player_ids.contains(&m.id) {
+                return None;
+            }
             // A mannequin with no name still shows its description.
             let name = match &m.custom_name {
                 Some(name) => name.clone(),
-                None if m.species() == horizon_client::mobs::Species::Mannequin => String::new(),
+                None if hooks || m.species() == horizon_client::mobs::Species::Mannequin => {
+                    String::new()
+                }
                 None => return None,
             };
             // The tag's 64 block distance is measured to the entity: copy the
@@ -119,6 +128,7 @@ impl Game<'_> {
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
             (at.distance_squared(camera) < 64.0 * 64.0).then_some((m, name, false))
         });
+        let own = self.own_name_tag().map(|(m, _)| m.id);
         let players = players
             .into_iter()
             .chain(self.own_name_tag())
@@ -180,7 +190,22 @@ impl Game<'_> {
             let name_shown = sb::name_shown(team, viewer, view)
                 && (player || m.name_visible || Some(m.id) == target)
                 && (player || m.custom_name.is_some());
-            if !name_shown {
+            let mut visible = name_shown;
+            let mut text = None;
+            if hooks {
+                self.native_render_name_tag(
+                    m.id,
+                    if player {
+                        "minecraft:player"
+                    } else {
+                        &m.kind.id
+                    },
+                    name_shown,
+                    &mut visible,
+                    &mut text,
+                );
+            }
+            if !visible {
                 if let Some(text) = description {
                     let l = self.world.light(
                         m.position.x.floor() as i32,
@@ -192,6 +217,7 @@ impl Game<'_> {
                         lines: vec![(text, 0.0)],
                         light: l,
                         discrete,
+                        style: None,
                     });
                 }
                 continue;
@@ -211,6 +237,9 @@ impl Game<'_> {
                 None => member,
             }
             .resolve_legacy();
+            let shown = text
+                .map(|text| Text::literal(text).resolve_legacy())
+                .unwrap_or(shown);
             let mut lines = Vec::new();
             // EntityRenderer.extractNameTags: the score shows within the
             // below-name distance (10), under the name.
@@ -232,21 +261,31 @@ impl Game<'_> {
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
             );
+            // A Horizon player's name tag style (cosmetics), beside the name.
+            let style = if player && horizon_cosmetics::enabled() {
+                self.cosmetics_tag(m, Some(m.id) == own)
+            } else {
+                None
+            };
             tags.push(NameTag {
                 at: p,
                 lines,
                 light: l,
                 discrete,
+                style,
             });
         }
+        drop(player_ids);
         // Armor stands name themselves: an invisible one with a visible name
         // is a hologram (its model is skipped, its name tag is not).
         for a in &self.armor_stands {
-            let Some(name) = &a.custom_name else {
-                continue;
-            };
-            if !a.name_visible {
-                continue;
+            if !hooks {
+                let Some(_) = &a.custom_name else {
+                    continue;
+                };
+                if !a.name_visible {
+                    continue;
+                }
             }
             let height = match (a.marker, a.small) {
                 (true, _) => 0.0,
@@ -268,14 +307,31 @@ impl Game<'_> {
                 is_camera: false,
                 is_vehicle: false,
             };
-            if !sb::name_shown(team, viewer, view) {
+            let name_shown =
+                a.custom_name.is_some() && a.name_visible && sb::name_shown(team, viewer, view);
+            let mut visible = name_shown;
+            let mut text = None;
+            if hooks {
+                self.native_render_name_tag(
+                    a.id,
+                    "minecraft:armor_stand",
+                    name_shown,
+                    &mut visible,
+                    &mut text,
+                );
+            }
+            if !visible {
                 continue;
             }
+            let name = a.custom_name.clone().unwrap_or_else(Text::empty);
             let shown = match team {
                 Some(t) => t.formatted_name(name.clone()),
                 None => name.clone(),
             }
             .resolve_legacy();
+            let shown = text
+                .map(|text| Text::literal(text).resolve_legacy())
+                .unwrap_or(shown);
             let mut lines = Vec::new();
             let mut lift = 0.0;
             let holder = self.persist.uuids.get(&a.id).map(|u| uuid_text(*u));
@@ -298,23 +354,48 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete: false,
+                style: None,
             });
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
         // frame's custom-named item, with the HUD visible (also glow frames).
-        if !self.ui.hide_gui
-            && let Some((i, distance)) = self.frame_hit()
-            && self.before_block(distance)
-            && self.mob_hit().is_none_or(|(_, d)| d > distance)
-            && let Some(name) = self.item_frames[i]
-                .item
-                .as_ref()
-                .and_then(|item| item.custom_name())
-        {
-            let frame = &self.item_frames[i];
+        let targeted_frame = (hooks || !self.ui.hide_gui)
+            .then(|| self.frame_hit())
+            .flatten()
+            .filter(|(_, distance)| {
+                self.before_block(*distance) && self.mob_hit().is_none_or(|(_, d)| d > *distance)
+            })
+            .map(|(index, _)| index);
+        let frames = if hooks {
+            0..self.item_frames.len()
+        } else {
+            targeted_frame.map_or(0..0, |index| index..index + 1)
+        };
+        for index in frames {
+            let frame = &self.item_frames[index];
+            let name = frame.item.as_ref().and_then(|item| item.custom_name());
+            if !hooks && name.is_none() {
+                continue;
+            }
             let (lo, hi) = frame.bounds();
             let center = glam::DVec3::from_array(std::array::from_fn(|a| (lo[a] + hi[a]) / 2.0));
             if center.distance_squared(camera) < 64.0 * 64.0 {
+                let name_shown =
+                    !self.ui.hide_gui && targeted_frame == Some(index) && name.is_some();
+                let mut visible = name_shown;
+                let mut text = None;
+                if hooks {
+                    self.native_render_name_tag(
+                        frame.id,
+                        frame.kind(),
+                        name_shown,
+                        &mut visible,
+                        &mut text,
+                    );
+                }
+                if !visible {
+                    continue;
+                }
                 // NAME_TAG is at the entity height (0.5), then the name
                 // submitter lifts it 0.5. ItemFrameRenderer offsets rendering
                 // 0.3 toward its facing and -0.25 vertically.
@@ -326,13 +407,17 @@ impl Game<'_> {
                             0.75,
                             f64::from(step[2] as f32 * 0.3),
                         ),
-                    lines: vec![(Text::literal(name).resolve_legacy(), 0.0)],
+                    lines: vec![(
+                        Text::literal(text.or(name).unwrap_or_default()).resolve_legacy(),
+                        0.0,
+                    )],
                     light: self.world.light(
                         center.x.floor() as i32,
                         center.y.floor() as i32,
                         center.z.floor() as i32,
                     ),
                     discrete: false,
+                    style: None,
                 });
             }
         }
@@ -359,7 +444,7 @@ impl Game<'_> {
             if tag.discrete {
                 self.mark_translucent_entity(out.len(), "minecraft:name_tag");
                 let light = vertex_light(tag.light);
-                patches.extend(self.name_tag_quads(
+                patches.extend(self.styled_name_tag_quads(
                     o,
                     &tag.lines,
                     FADED,
@@ -368,6 +453,7 @@ impl Game<'_> {
                     light,
                     NAME_TAG_UNIT,
                     out,
+                    tag.style,
                 ));
                 continue;
             }
@@ -375,7 +461,7 @@ impl Game<'_> {
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
             self.mark_entity(out.len(), "minecraft:name_tag");
             let light = vertex_light(lit);
-            patches.extend(self.name_tag_quads(
+            patches.extend(self.styled_name_tag_quads(
                 o,
                 &tag.lines,
                 0xFF,
@@ -384,9 +470,10 @@ impl Game<'_> {
                 light,
                 NAME_TAG_UNIT,
                 out,
+                tag.style,
             ));
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            patches.extend(self.name_tag_quads(
+            patches.extend(self.styled_name_tag_quads(
                 o,
                 &tag.lines,
                 FADED,
@@ -395,6 +482,7 @@ impl Game<'_> {
                 0,
                 NAME_TAG_UNIT,
                 see_through,
+                tag.style,
             ));
         }
         self.map_patches.extend(patches);
@@ -415,6 +503,26 @@ impl Game<'_> {
         unit: f32,
         out: &mut Vec<Vertex>,
     ) -> Vec<horizon_client::font::Patch> {
+        self.styled_name_tag_quads(
+            o, lines, text_alpha, background, text_layer, light, unit, out, None,
+        )
+    }
+
+    /// [`Self::name_tag_quads`], with a cosmetic style on the last line (the name): its mark
+    /// before the text and its line under the background.
+    #[allow(clippy::too_many_arguments)]
+    fn styled_name_tag_quads(
+        &self,
+        o: glam::DVec3,
+        lines: &[(Text, f64)],
+        text_alpha: u32,
+        background: bool,
+        text_layer: u32,
+        light: u32,
+        unit: f32,
+        out: &mut Vec<Vertex>,
+        style: Option<TagStyle>,
+    ) -> Vec<horizon_client::font::Patch> {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
         // The camera's facing (Camera.rotation()), turned round in third-person
@@ -430,7 +538,8 @@ impl Game<'_> {
         let up = right.cross(forward).normalize_or_zero();
         let away = forward.as_vec3() * 0.002;
         let mut batch = HudBatch::new([1, 1]);
-        for (text, lift) in lines {
+        let last = lines.len().saturating_sub(1);
+        for (n, (text, lift)) in lines.iter().enumerate() {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
             let (r, u) = (right.as_vec3() * unit, up.as_vec3() * unit);
             // Text space: x right, y down (scale 0.025, -0.025).
@@ -450,6 +559,22 @@ impl Game<'_> {
                 text_alpha << 24 | 0xFF_FFFF,
                 if background { BACKGROUND } else { 0 },
             );
+            if let Some(style) = style.filter(|_| n == last) {
+                let x = -self.gui.atlas.font.width_text(text) / 2.0;
+                let alpha = text_alpha << 24;
+                // The mark, 8 text pixels square, a pixel left of the background.
+                batch.rect_uv(x - 10.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
+                // The line, a pixel tall, under the background (which runs from -1 to 9).
+                let width = self.gui.atlas.font.width_text(text);
+                batch.fill(
+                    &self.gui.atlas,
+                    x - 1.0,
+                    y0 + 9.0,
+                    width + 1.0,
+                    1.0,
+                    alpha | style.line,
+                );
+            }
             for (i, quad) in batch.vertices.as_chunks::<6>().0.iter().enumerate() {
                 let shift = if i * 6 < behind {
                     away
@@ -480,6 +605,23 @@ impl Game<'_> {
 /// positions. The player box is `Pose::dimensions(1.0)`.
 /// shortcut: the scale attribute is not in the tag height, add `model_scale`
 /// when tags on scaled players matter.
+/// The entity ids the player-list pass names, which the custom-name pass must
+/// therefore skip.
+///
+/// Vanilla draws one tag per entity, and names a player from its profile:
+/// `Player.getName` overrides `Entity.getName` and ignores `customName`. So a
+/// server that sets a custom name on a player entity -- a rank, a nickname, a
+/// prefix -- must not get a tag of its own drawn over the one the player list
+/// already draws.
+///
+/// Built whether or not native mods are loaded. It was briefly built only with
+/// them, as a fast path, and without them both tags were drawn on top of each
+/// other on every server that names its players this way. The set is small --
+/// the players in view -- and `other_players` has already allocated a name
+/// string for each, so skipping it saved very little.
+fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
+    players.iter().map(|(player, _)| player.id).collect()
+}
 fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
@@ -495,6 +637,16 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
+    style: Option<TagStyle>,
+}
+
+/// A cosmetic name tag style: a mark before the name and a line under it.
+#[derive(Clone, Copy)]
+pub(super) struct TagStyle {
+    /// The mark's place in the GUI atlas.
+    pub mark: horizon_client::hud::Rect,
+    /// The line's colour, `0xrrggbb`.
+    pub line: u32,
 }
 
 #[cfg(test)]
@@ -533,6 +685,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Default::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -560,6 +713,36 @@ mod tests {
             tempt: Default::default(),
         };
         Mob::new(0, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    /// A server that names its players -- a rank prefix, a nickname -- sets a
+    /// custom name on the player entity. The player list already names that
+    /// player, so the custom-name pass has to skip it or the two tags are drawn
+    /// on top of each other. The set of already-named players was briefly built
+    /// only when native mods were loaded, so without mods every such server
+    /// showed the pair overlapping.
+    ///
+    /// An entity the player list does not name keeps its own tag: that is how a
+    /// shopkeeper NPC spawned as a player entity is named at all.
+    #[test]
+    fn a_listed_player_is_named_once_whatever_custom_name_a_server_sets() {
+        let mut listed = player_mob();
+        listed.id = 7;
+        listed.custom_name = Some("[MVP+] Steve".to_owned());
+        let mut unlisted = player_mob();
+        unlisted.id = 9;
+        unlisted.custom_name = Some("Shopkeeper".to_owned());
+        // The player list names 7 and knows nothing of 9.
+        let players = vec![(&listed, "Steve".to_owned())];
+        let named = named_by_player_list(&players);
+        assert!(
+            named.contains(&listed.id),
+            "the player list names 7, so its custom name must not add a second tag"
+        );
+        assert!(
+            !named.contains(&unlisted.id),
+            "9 is named by nothing else, so its custom name is its only tag"
+        );
     }
 
     /// #4129: the tag hangs from the box of the pose (0.6 swimming, 1.5

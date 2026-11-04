@@ -122,7 +122,7 @@ pub struct NativeFrame {
     pub opaque_color: wgpu::Texture,
     /// The resource packs' LabPBR maps (bindings 12 and 13: normals, specular), a blank 1x1
     /// without them.
-    pbr: [wgpu::TextureView; 2],
+    pub(super) pbr: [wgpu::TextureView; 2],
     /// The material stage's `reflection` (binding 1): this frame's water mirror, else
     /// `blank`; and its sampler (binding 2).
     reflection: wgpu::TextureView,
@@ -366,6 +366,7 @@ impl NativeFrame {
             // the sun's azimuth while the sun is low.
             distance: None,
             unculled: None,
+            every_face: false,
         })
     }
 
@@ -623,7 +624,8 @@ fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::Bi
 fn pbr_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        // `[displacement]`'s grid moves its corners by the heights (gfx/displace.rs).
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2Array,

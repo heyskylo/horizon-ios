@@ -7,6 +7,9 @@
 //! them: [`gui`] into the HUD batch with the GUI item lighting, [`WorldSink`]
 //! into entity vertices with the level's lighting.
 pub mod cit;
+mod glint_atlas;
+#[cfg(test)]
+mod glint_tests;
 pub mod gui;
 mod special;
 
@@ -45,6 +48,8 @@ pub struct ItemQuad {
     /// The model UVs `GLINT_TEXTURING` scrolls for the glint (vanilla's UV0,
     /// or UV3 for a special model).
     pub foil_uv: [[f32; 2]; 4],
+    /// Standard GUI glint uses the vanilla items atlas; CIT keeps sprite-local UVs.
+    pub gui_glint_uv: Option<[[f32; 2]; 4]>,
     pub normal: Vec3,
     pub color: u32,
     pub foil: Foil,
@@ -422,7 +427,10 @@ fn submit_quads(
         FoilType::Standard => Foil::Standard,
         FoilType::Special => Foil::Special,
     };
-    let _ = display;
+    let atlas = renderer
+        .glint_atlas
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut normals = FaceNormals::new(m);
     // Quads of one layer mostly share a sprite: look its rect and its
     // translucency up once.
@@ -480,6 +488,12 @@ fn submit_quads(
             pos,
             uv,
             foil_uv: q.uv,
+            gui_glint_uv: (display == DisplayContext::Gui && foil == Foil::Standard)
+                .then(|| atlas.get(sprite_name(&q.material.sprite)))
+                .flatten()
+                .map(|r| {
+                    q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
+                }),
             normal: normals.face(q.facing),
             color: argb(color),
             foil,
@@ -631,6 +645,7 @@ pub struct ItemRenderer {
     /// The enabled packs' OptiFine CIT rules and their swapped bakes; `None`
     /// without rules.
     pub cit: Option<cit::CitModels>,
+    glint_atlas: Mutex<HashMap<String, Rect>>,
 }
 
 /// Every `items/**/*.json` client item definition, by identifier. Through
@@ -646,20 +661,43 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
         };
         let namespace = ns.file_name().to_string_lossy().into_owned();
         for file in &folder.files {
-            if let Some(item) = file
-                .bytes()
-                .ok()
-                .and_then(|b| std::str::from_utf8(b).ok())
-                .and_then(|t| ClientItem::from_json(t).ok())
-            {
-                out.insert(format!("{namespace}:{}", file.name), item);
+            let Some(text) = file.bytes().ok().and_then(|b| std::str::from_utf8(b).ok()) else {
+                continue;
+            };
+            match ClientItem::from_json(text) {
+                Ok(item) => {
+                    out.insert(format!("{namespace}:{}", file.name), item);
+                }
+                Err(e) => log::warn!(
+                    "Horizon: item definition {namespace}:{} not loaded: {e}",
+                    file.name
+                ),
             }
         }
     }
     out
 }
 
+fn glint_padding(filtering: i32, bit: i32) -> usize {
+    if filtering == 2 {
+        bit.wrapping_sub(1).clamp(0, 4) as usize
+    } else {
+        0
+    }
+}
+
 impl ItemRenderer {
+    /// Prepare GUI glint after the device exists; propagate packing failures to pack rollback.
+    pub fn prepare_glint_atlas(&self, maximum: u32, filtering: (i32, i32)) -> crate::Result<()> {
+        let padding = glint_padding(filtering.0, filtering.1);
+        let sprites = glint_atlas::load(&self.sprites.root, 1 << padding, maximum)?;
+        *self
+            .glint_atlas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sprites;
+        Ok(())
+    }
+
     /// Load item definitions, item prototypes (`items.json`), every model,
     /// the special renderers' entity models and the grass colormap.
     pub fn load(root: &Path) -> crate::Result<Self> {
@@ -691,9 +729,11 @@ impl ItemRenderer {
         library: std::result::Result<Arc<ModelLibrary>, String>,
         drawn: bool,
     ) -> crate::Result<Self> {
-        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
-            .into_iter()
-            .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
+        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::shared(root)?
+            .iter()
+            .map(|(item, components)| {
+                Ok((item.clone(), serde::Deserialize::deserialize(components)?))
+            })
             .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
             definitions: if drawn {
@@ -703,7 +743,13 @@ impl ItemRenderer {
             },
             prototypes,
         };
-        let (library, cit) = cit::load(root, library?);
+        // CIT models and glint textures only affect drawing. A server still
+        // needs item prototypes and ids, but never these resource-pack assets.
+        let (library, cit) = if drawn {
+            cit::load(root, library?)
+        } else {
+            (library?, None)
+        };
         let permutations = PalettedPermutations::from_atlas(
             &fs::read_to_string(root.join("assets/minecraft/atlases/items.json"))
                 .unwrap_or_default(),
@@ -733,6 +779,7 @@ impl ItemRenderer {
             })
             .unwrap_or_default();
         Ok(Self {
+            glint_atlas: Mutex::default(),
             item_ids,
             models,
             library,
@@ -1199,12 +1246,17 @@ mod tests {
             root.join("items.json"),
             r#"{"horizon:top":{"minecraft:max_stack_size":16}}"#,
         )?;
+        let cit = root.join("assets/minecraft/optifine");
+        fs::create_dir_all(&cit)?;
+        fs::write(cit.join("cit.properties"), "useGlint=false\n")?;
         let library = crate::model_library::ParsedModels::load(&root).into_item_library();
         let client = ItemRenderer::load_with_library(&root, library.clone())?;
         let server = ItemRenderer::load_for_server(&root, library)?;
         let _ = fs::remove_dir_all(&root);
         assert!(client.models.definitions.contains_key("horizon:top"));
         assert!(server.models.definitions.is_empty());
+        assert!(client.cit.is_some());
+        assert!(server.cit.is_none());
         assert_eq!(server.models.prototypes, client.models.prototypes);
         Ok(())
     }
@@ -1342,11 +1394,7 @@ mod tests {
                 };
                 state.submit(&r, &sprites, &NoHost, pose, &mut sink);
                 frame.clear_draws();
-                let mut skin = Skin {
-                    models: &mut models,
-                    frame: &mut frame,
-                    bounds: None,
-                };
+                let mut skin = Skin::new(&mut models, &mut frame);
                 if !state.submit_skinned(&r, &sprites, pose, (0x50_a0, lights, 1), &mut skin) {
                     assert!(frame.jobs.is_empty(), "{id}: left to the CPU after drawing");
                     left += 1;
@@ -1388,11 +1436,7 @@ mod tests {
             "torch",
         ] {
             frame.clear_draws();
-            let mut skin = Skin {
-                models: &mut models,
-                frame: &mut frame,
-                bounds: None,
-            };
+            let mut skin = Skin::new(&mut models, &mut frame);
             let state = resolve(&format!("minecraft:{id}"));
             assert!(
                 state.submit_skinned(&r, &sprites, pose, (0, None, 0), &mut skin),

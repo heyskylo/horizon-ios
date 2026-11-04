@@ -215,27 +215,9 @@ impl Run<'_> {
         }
     }
 
-    /// `#define NAME body` or `#define NAME(a, b) body` (no space before the `(`).
     fn define(&mut self, rest: &str, origin: Origin) {
-        let len = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        let (name, tail) = rest.split_at(len);
-        if name.is_empty() {
-            return self.diagnose(origin, "`#define` without a name");
-        }
-        if let Some(params) = tail.strip_prefix('(') {
-            let Some((params, body)) = params.split_once(')') else {
-                return self.diagnose(origin, &format!("`#define {name}(` without `)`"));
-            };
-            let params = params
-                .split(',')
-                .map(|p| p.trim().to_owned())
-                .filter(|p| !p.is_empty())
-                .collect();
-            self.macros.define_function(name, params, body.trim());
-        } else {
-            self.macros.define(name, tail.trim());
+        if let Err(e) = self.macros.define_line(rest) {
+            self.diagnose(origin, &e);
         }
     }
 
@@ -275,7 +257,18 @@ fn strip_comments(text: &str) -> (String, Vec<(usize, String)>) {
         out.push_str(before);
         line += before.matches('\n').count();
         if let Some(body) = from.strip_prefix("//") {
-            let end = body.find('\n').unwrap_or(body.len());
+            // A line comment ending in a backslash includes the next line (GLSL 4.60, 3.4; Iris
+            // does so too): such a comment runs on. Its line breaks stay.
+            let mut end = body.len();
+            for (at, _) in body.match_indices('\n') {
+                if !body[..at].trim_end_matches('\r').ends_with('\\') {
+                    end = at;
+                    break;
+                }
+            }
+            let joined = body[..end].matches('\n').count();
+            line += joined;
+            out.extend(std::iter::repeat_n('\n', joined));
             rest = &body[end..];
         } else if let Some(body) = from.strip_prefix("/*") {
             let end = body.find("*/").unwrap_or(body.len());
@@ -420,6 +413,25 @@ mod tests {
         assert_eq!(code_lines(&p), [("float x;", "program/final.fsh:9".into())]);
         let messages: Vec<&str> = p.diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert_eq!(messages, ["#error live", "unknown directive `#bogus`"]);
+    }
+
+    /// A line comment ending in a backslash runs on to the next line, as in Iris: the line it
+    /// takes is not code and not a directive, and later lines keep their numbers.
+    #[test]
+    fn a_line_comment_runs_on_after_a_backslash() {
+        let p = run(&[(
+            "program/final.fsh",
+            "#version 330\n#if 1\nfloat a; // ends in a backslash \\\n#endif\n\
+             // alone \\\r\n#define HIDDEN\n#ifdef HIDDEN\nfloat b;\n#endif\nfloat c;\n#endif\n",
+        )]);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        assert_eq!(
+            code_lines(&p),
+            [
+                ("float a;", "program/final.fsh:3".into()),
+                ("float c;", "program/final.fsh:10".into()),
+            ]
+        );
     }
 
     /// A stray `#endif` and an `#if` left open are warnings, as in Iris 1.11.7 (which draws such

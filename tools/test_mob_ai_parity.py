@@ -68,6 +68,14 @@ def scenarios():
     add('skeleton_day_burn', 120, ['mob minecraft:skeleton 0.5 -60 0.5 0 32 persistent'])
     # NoAI only skips serverAiStep: Mob.aiStep's burnUndead still sets a NoAI zombie alight (#3430).
     add('zombie_noai_day_burn', 120, ['mob minecraft:zombie 0.5 -60 0.5 0 33 persistent noai'])
+    # AgeableMob.aiStep runs with NoAI, including both signs and age-lock controls.
+    for species in ('pig', 'cow', 'horse', 'turtle'):
+        for age in (-2, 2):
+            for noai in (False, True):
+                for locked in (False, True):
+                    flags = (' noai' if noai else '') + (' agelocked' if locked else '')
+                    add(f'{species}_age_{age}_noai_{noai}_locked_{locked}', 4,
+                        [f'mob minecraft:{species} 0.5 -60 0.5 0 34 persistent age={age}{flags}'])
     # The wither (summoned, not built: no invulnerable spawn phase).
     add('wither_player', 200, ['player 10.5 -60 0.5', 'mob minecraft:wither 0.5 -58 0.5 0 41 persistent'])
     # A villager with a job site, a bed and a bell.
@@ -110,6 +118,15 @@ def scenarios():
     add('warden_creative', 300, ['player 4.5 -60 0.5 creative', 'mob minecraft:warden 0.5 -60 0.5 0 64 digcooldown'])
     add('warden_persistent', 400, ['player 7.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 65 persistent digcooldown'])
     add('warden_emerging', 300, ['player 6.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'])
+    # #8832: overlapping entities must not displace a warden while it emerges.
+    # Reverse tick order to cover the other mob's pushability query. The
+    # fixture has no flag that starts a dig, so digging is covered by
+    # `warden_push_tests` in mobs/ai.rs.
+    warden = 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'
+    cow = 'mob minecraft:cow 1.0 -60 0.5 0 68 persistent noai'
+    add('warden_emerging_push_first', 5, [warden, cow])
+    add('warden_emerging_push_second', 5, [cow, warden])
+    add('warden_emerging_push_player', 5, ['player 1.0 -60 0.5 creative', warden])
     add('warden_cow', 176, ['mob minecraft:warden 0.5 -60 0.5 0 67 digcooldown', 'mob minecraft:cow 4.5 -60 0.5 0 68 persistent'])
     # Two villagers gossip (TradeWithVillager): what one heard of the player
     # passes to the other, weakened, once in 1200 ticks; idle and at the bell.

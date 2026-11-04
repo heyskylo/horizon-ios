@@ -4,9 +4,13 @@
 use super::{Game, lan::LanHost};
 use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 use horizon_protocol::{
-    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData, PositionSource},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -18,10 +22,20 @@ pub(super) struct QueuedParticle {
     pub state: Option<BlockStateId>,
     pub at: [f64; 3],
     pub spread: [f64; 3],
-    pub speed: f64,
+    /// Per-axis maximum speed used by the packet's ALTERNATIVE randomization.
+    pub speed: [f64; 3],
     pub count: i32,
     /// The packet's `RandomizationType` (0 DEFAULT, 1 ALTERNATIVE).
     pub randomization: i32,
+}
+
+/// `PowderSnowBlock.entityInside`'s server roll. The branch and both float
+/// draws follow Java's `getKnownMovement`/`randomBetween` order.
+pub(super) fn powder_snow_velocity(
+    known: Vec3,
+    random: &mut impl RandomSource,
+) -> Option<[f64; 3]> {
+    horizon_client::powder_snow::particle_velocity(known, random)
 }
 
 fn send_native_nearby(
@@ -117,6 +131,15 @@ pub(super) fn send_soul_particle(host: &super::lan::LanHost, at: [f64; 3], veloc
             .sum();
         if distance < 32.0 * 32.0 {
             g.send(&packet);
+        }
+    }
+}
+
+impl Game<'_> {
+    /// A snowflake from a vehicle (`PowderSnowBlock.entityInside`), to every player around.
+    pub(super) fn lan_snowflake(&self, at: [f64; 3], velocity: [f64; 3]) {
+        if let Some(host) = self.lan.as_ref() {
+            send_snowflake_particle(host, at, velocity);
         }
     }
 }
@@ -300,6 +323,62 @@ impl Game<'_> {
         }
     }
 
+    /// Shared block callback for any entity family that applies block effects.
+    pub(super) fn entity_powder_snow_particles(
+        &mut self,
+        previous: Vec3,
+        position: Vec3,
+        bounds: Aabb,
+        known_movement: Vec3,
+        living: bool,
+    ) {
+        // `particle_velocity` refuses no horizontal movement before any draw,
+        // so a resting entity skips the sweep (most items, orbs and carts).
+        if self.remote.is_some() || (known_movement.x == 0.0 && known_movement.z == 0.0) {
+            return;
+        }
+        let snow = horizon_client::powder_snow::contacts(previous, position, bounds, living, |p| {
+            &*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name == "minecraft:powder_snow"
+        });
+        for block in snow {
+            self.powder_snow_particle(block, position, known_movement);
+        }
+    }
+
+    /// `PowderSnowBlock.entityInside` for an entity with known movement.
+    pub(super) fn powder_snow_particle(
+        &mut self,
+        block: BlockPos,
+        position: Vec3,
+        known_movement: Vec3,
+    ) {
+        if self.remote.is_some() {
+            return;
+        }
+        let Some(velocity) = powder_snow_velocity(known_movement, &mut self.world.random) else {
+            return;
+        };
+        self.snowflake_particle([position.x, f64::from(block.y + 1), position.z], velocity);
+    }
+
+    /// Locally draw the level's own particle, then send it to LAN players.
+    pub(super) fn snowflake_particle(&mut self, at: [f64; 3], velocity: [f64; 3]) {
+        let options = ParticleOptions::simple(ParticleType::Snowflake);
+        if self.options.execution_role.is_client() {
+            self.particles.add(&options, at, velocity);
+        }
+        self.lan_send_particles(QueuedParticle {
+            dimension: self.dim.id(),
+            options,
+            state: None,
+            at,
+            spread: [0.0; 3],
+            speed: velocity,
+            count: 1,
+            randomization: 1,
+        });
+    }
+
     /// `ParticleTypes.STREAM_CODEC`'s value for `options`: the type's
     /// network id and the data it carries (`state` for the block particles).
     /// None while not serving, or for a particle whose data isn't sent from
@@ -414,8 +493,38 @@ impl Game<'_> {
             Some(ParticleData::Trail(target, color, duration)) => {
                 ParticleOptions::trail(*target, *color as u32 & 0xFF_FFFF, *duration)
             }
+            Some(ParticleData::Vibration { source, ticks }) => {
+                ParticleOptions::vibration(self.vibration_destination(source)?, *ticks)
+            }
             Some(_) => return None,
         })
+    }
+
+    /// `PositionSource.getPosition`: a block's centre, or an entity's feet
+    /// raised by the option's offset. An entity this client does not have is
+    /// no destination at all: vanilla makes the particle and removes it on its
+    /// first tick, so nothing of it is ever drawn.
+    fn vibration_destination(&self, source: &PositionSource) -> Option<[f64; 3]> {
+        match source {
+            PositionSource::Block([x, y, z]) => Some([
+                f64::from(*x) + 0.5,
+                f64::from(*y) + 0.5,
+                f64::from(*z) + 0.5,
+            ]),
+            PositionSource::Entity { id, y_offset } => {
+                let id = u32::try_from(*id).ok()?;
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+                    .map(|m| {
+                        [
+                            m.position.x,
+                            m.position.y + f64::from(*y_offset),
+                            m.position.z,
+                        ]
+                    })
+            }
+        }
     }
 
     /// `ClientPacketListener.handleParticleEvent`: no count is one particle
@@ -465,13 +574,8 @@ impl Game<'_> {
         }
         // A wind charge's burst throws none.
         if !p.block_particles.is_empty() {
-            let (world, facts) = (&self.world, self.res.facts());
-            self.particles.explosion_blocks(
-                p.center,
-                p.radius,
-                p.block_count.max(0) as usize,
-                &|b| facts.is_air(world.block(b[0], b[1], b[2])),
-            );
+            self.particles
+                .track_explosion(p.center, p.radius, p.block_count.max(0) as usize);
         }
         // Entity.pushFromExplosion.
         if let (Some(push), Some(player)) = (p.knockback, self.player.as_mut()) {
@@ -520,7 +624,7 @@ impl Game<'_> {
             always_show: false,
             pos: at,
             dist: spread.map(|d| d as f32),
-            max_speed: [speed as f32; 3],
+            max_speed: speed.map(|v| v as f32),
             count,
             randomization,
         })
@@ -588,7 +692,7 @@ impl Game<'_> {
             state: None,
             at,
             spread: [1.0; 3],
-            speed: 0.0,
+            speed: [0.0; 3],
             count: 8,
             randomization: 1,
         });
@@ -775,6 +879,36 @@ mod tests {
             below |= at.iter().any(|&c| c < 0.0);
         }
         assert!(below, "DEFAULT is a Gaussian around the position");
+    }
+
+    /// `PowderSnowBlock.entityInside`: vertical-only movement skips the roll;
+    /// horizontal movement uses nextBoolean, then X and Z floats in order.
+    #[test]
+    fn powder_snow_snowflakes_use_the_vanilla_movement_gate_and_random_order() {
+        let mut stationary = LegacyRandom::new(1);
+        let mut untouched = LegacyRandom::new(1);
+        assert_eq!(
+            powder_snow_velocity(Vec3::new(0.0, 1.0, 0.0), &mut stationary),
+            None
+        );
+        assert_eq!(stationary.next_int(), untouched.next_int());
+
+        let seed = (0..1000)
+            .find(|seed| {
+                let mut random = LegacyRandom::new(*seed);
+                random.next_boolean()
+            })
+            .unwrap();
+        let mut vanilla = LegacyRandom::new(seed);
+        assert!(vanilla.next_boolean());
+        let x = (vanilla.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+        let z = (vanilla.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+        let expected = [f64::from(x), f64::from(0.05_f32), f64::from(z)];
+        let mut random = LegacyRandom::new(seed);
+        assert_eq!(
+            powder_snow_velocity(Vec3::new(-0.2, 0.0, 0.0), &mut random),
+            Some(expected)
+        );
     }
 
     /// `ShulkerBullet.hurtServer`: fifteen crit particles (spread 0.2, speed 0.0)

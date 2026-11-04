@@ -128,6 +128,13 @@ pub fn teleport_to(
     m.previous = m.position;
     m.velocity = Vec3::ZERO;
     m.ai.nav.stop();
+    // `LivingEntity.randomTeleport(..., true)` broadcasts entity event 46
+    // before the trail and the teleport sounds.
+    events.push(MobEvent::EntityEvent {
+        mob: m.id,
+        event: 46,
+        at: [m.position.x, m.position.y, m.position.z],
+    });
     if !m.silent {
         // Level event 2018: the portal trail, from the old block to the new
         // one, packed as `BlockUtil.clampedPackDifferenceInPosition` does.
@@ -570,7 +577,12 @@ mod tests {
             let mut events = Vec::new();
             let mut free = enderman();
             assert!((0..64).any(|_| teleport_random(&mut free, w, &mut events)));
-            assert!(!events.is_empty());
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                "entity event 46: {events:?}"
+            );
 
             let mut seated = enderman();
             seated.extra.passenger = true;
@@ -679,7 +691,12 @@ mod tests {
         ] {
             let mut m = enderman();
             m.extra.carried = registry.default_state(block);
-            let (out, _) = drops::die(&mut m, &death(true), &mut sequences);
+            let (out, _) = drops::die(
+                &mut m,
+                &death(true),
+                &mut sequences,
+                &mut horizon_core::random::LegacyRandom::new(0),
+            );
             let dropped: Vec<String> = out
                 .into_iter()
                 .flat_map(|d| match d {
@@ -699,7 +716,12 @@ mod tests {
         // doMobLoot off: no dropCustomDeathLoot, so no block either.
         let mut m = enderman();
         m.extra.carried = registry.default_state("minecraft:grass_block");
-        let (out, _) = drops::die(&mut m, &death(false), &mut sequences);
+        let (out, _) = drops::die(
+            &mut m,
+            &death(false),
+            &mut sequences,
+            &mut horizon_core::random::LegacyRandom::new(0),
+        );
         assert!(
             !out.iter()
                 .any(|d| matches!(d, drops::Drop::CarriedBlock(_))),

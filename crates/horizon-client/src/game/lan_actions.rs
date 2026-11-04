@@ -166,7 +166,7 @@ pub(super) struct GuestSwap {
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
-    host_keys: std::collections::HashSet<KeyCode>,
+    host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
     host_book: Option<super::books::BookScreen>,
@@ -191,6 +191,7 @@ pub(super) struct GuestSwap {
     left: bool,
     right: bool,
     riding: Option<u32>,
+    host_boarding: (i32, Option<u32>),
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -522,6 +523,11 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
+        // The guest's boarding cooldown for its turn; `guest_server_tick`
+        // counts it down once per tick (Entity.baseTick), not per turn.
+        let host_boarding = (self.boarding_cooldown, self.riding_at_tick);
+        self.boarding_cooldown = g.boarding_cooldown;
+        self.riding_at_tick = g.vehicle;
         // `Entity.isPassenger()` for that turn, from the same vehicle: the
         // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
         // Taken from `g.vehicle` each turn, so boarding and getting out land.
@@ -635,6 +641,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -734,6 +741,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -912,6 +920,11 @@ impl Game<'_> {
             self.guest_attachments.entry(g.uuid).or_default(),
         );
         let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
+        // Entity.removePassenger: 60 ticks before it may board again.
+        let guest_boarding =
+            super::boarding::after_leaving(self.boarding_cooldown, g.vehicle, guest_vehicle);
+        (self.boarding_cooldown, self.riding_at_tick) = host_boarding;
+        g.boarding_cooldown = guest_boarding;
         if guest_vehicle.is_none() {
             g.vehicle_good = None;
         }
@@ -967,9 +980,19 @@ impl Game<'_> {
         std::mem::swap(&mut self.armor, &mut g.armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
-        // A teleport with a rotation (commands) turns the guest.
-        let turned = [self.yaw, self.pitch] != [g.yaw, g.pitch];
+        // A teleport with a rotation (commands) turns the guest. `/rotate`
+        // (ServerPlayer.forceSetRotation) sends the rotation alone, rider or not.
+        let forced = std::mem::take(&mut self.rotation_forced);
+        let turned = !forced && [self.yaw, self.pitch] != [g.yaw, g.pitch];
         [g.yaw, g.pitch] = [self.yaw, self.pitch];
+        if forced {
+            g.send(&C::PlayerRotation(play::PlayerRotation {
+                yaw: g.yaw,
+                relative_yaw: false,
+                pitch: g.pitch,
+                relative_pitch: false,
+            }));
+        }
         self.yaw = yaw;
         self.pitch = pitch;
         self.eye = eye.1;
@@ -997,14 +1020,8 @@ impl Game<'_> {
             let teleported = std::mem::take(&mut m.teleported);
             let moved: f64 = (0..3).map(|k| (at[k] - g.position[k]).powi(2)).sum();
             g.motion = Some(Box::new(m));
-            // Entity.teleportTo takes a rider out of its vehicle.
-            let left_vehicle = match g.vehicle.filter(|_| teleported) {
-                Some(v) => {
-                    (g.vehicle, g.vehicle_good) = (None, None);
-                    Some(v)
-                }
-                None => left_vehicle,
-            };
+            // The pearl and the bed took the rider out of its vehicle at their
+            // source (`stop_riding`), so `left_vehicle` already says so.
             // ServerPlayer.dismountTo: the client hears it is out of the
             // vehicle before the teleport beside it. A rider sits where its
             // vehicle puts it (lan_vehicles.rs), with no teleport.
@@ -1199,6 +1216,7 @@ impl Game<'_> {
             .facts()
             .get(self.world.block(pos.0, pos.1, pos.2))
             .name;
+        let block = name.to_string();
         let (menu, slots) = if &**name == "minecraft:ender_chest" {
             // EnderChestBlock.useWithoutItem: the player's own inventory.
             ("minecraft:generic_9x3", Slots::Ender)
@@ -1349,11 +1367,47 @@ impl Game<'_> {
         }
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
+        // A block's or a double chest's menu counts among the openers of its
+        // lid (a vehicle keeps its own `Container`, an ender chest has none).
+        let counts_openers = matches!(slots, Slots::Block(_) | Slots::Double(_, _));
         let hidden = self.native_hidden_slots(pos, items.len());
+        // A mod menu type's block tells the client where it is, with what its
+        // mod writes (`openMenu` with an extra-data writer); a stock menu
+        // sends nothing more.
+        let extra = match slots {
+            Slots::Block(k) if self.mod_menu_at(k).is_some() => {
+                let mut data = None;
+                self.native_menu_extra_data(uuid, menu, &block, [k.0, k.1, k.2], &mut data);
+                let mut data = data.unwrap_or_default();
+                if data.len() > horizon_protocol::menu_extra::MAX_DATA {
+                    log::warn!(
+                        "Horizon: {block}'s menu extra data ({} bytes) is past {} bytes; sent without it",
+                        data.len(),
+                        horizon_protocol::menu_extra::MAX_DATA
+                    );
+                    data.clear();
+                }
+                Some(data)
+            }
+            _ => None,
+        };
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, extra);
         if !hidden.is_empty() {
             host.hub.hide_menu_slots(conn, hidden);
+        }
+        // `ContainerOpenersCounter.incrementOpeners` (`ChestBlockEntity.startOpen`,
+        // `ShulkerBoxBlockEntity.startOpen`): the lid opens for the guest, and
+        // when this is the first opener the open sound plays for everyone
+        // around, the opener included (`playSound(null, …)`, which the capture
+        // relay sends on to the guests). Without it the host's copy never
+        // learned of the open, so a guest's box opened silently.
+        // A spectator never joins the openers (`startOpen` returns on
+        // `player.isSpectator()`): its menu opens but the lid stays shut, no
+        // sound plays, and `stopOpen` has nothing to decrement, which is why
+        // the count must not be raised here either (#8517).
+        if counts_openers && !spectator && self.container_openers_changed(pos, true) {
+            self.container_edge_sound(pos, true);
         }
         true
     }
@@ -1402,7 +1456,7 @@ impl Game<'_> {
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, None);
         true
     }
 
@@ -2073,14 +2127,19 @@ impl Game<'_> {
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
-                        let consumed = matches!(g.use_item(), Ok(Some(_)));
+                        // InteractionResult.consumesAction: a FAIL (`use_failed`,
+                        // as BlockItem.place's failed placement) does not count,
+                        // even though the click ended on it.
+                        let consumed = matches!(g.use_item(), Ok(Some(_))) && !g.use_failed;
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
-                        if consumed && !g.use_failed {
+                        if consumed {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                            g.trigger_any_block_use(p.pos, &stack);
+                            horizon_client::spans::time("use_advancements", || {
+                                g.trigger_any_block_use(p.pos, &stack);
+                            });
                         }
                         g.forced_hit = None;
                         g.guest_use = None;
@@ -2172,6 +2231,17 @@ impl Game<'_> {
                             g.within_entity_interaction_range(&target, 3.0)
                         }) != Some(true))
                 {
+                    return;
+                }
+                // LeashFenceKnotEntity.interact: a knot has no entity here, only its fence.
+                if let Some(knot) = self.knot_at_id(p.id) {
+                    let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                    let swung = self.as_guest(host, conn, |g| {
+                        let swings = g.swings_started;
+                        g.with_hand(hand, |g| g.use_knot(knot, true));
+                        g.swings_started != swings
+                    });
+                    self.lan_swing_back(host, conn, swung);
                     return;
                 }
                 let before = host.hub.guests[gi].vehicle;
@@ -2285,6 +2355,13 @@ impl Game<'_> {
                 });
             }
             S::PlayerCommand(p) if p.action == 6 => self.lan_start_gliding(host, conn),
+            // START_RIDING_JUMP: the mount's handleStartJump.
+            S::PlayerCommand(p) if p.action == 3 => {
+                self.lan_start_riding_jump(host, conn, p.data);
+            }
+            // STOP_RIDING_JUMP: AbstractHorse and Camel handleStopJump do
+            // nothing, and a nautilus' dash is not stopped this way.
+            S::PlayerCommand(p) if p.action == 4 => {}
             // ServerboundResourcePackPacket in play: the server has nothing to
             // do with it (a declined required pack is handled on the connection).
             S::ResourcePack(r) => {
@@ -2797,19 +2874,12 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         let eye = [
             g.position[0],
-            g.position[1] + g.eye_height() - 0.3,
+            g.position[1] + g.eye_height() - f64::from(0.3f32),
             g.position[2],
         ];
-        let (yaw, pitch) = (
-            f64::from(g.yaw).to_radians(),
-            f64::from(g.pitch).to_radians(),
-        );
         for stack in stacks {
-            let v = [
-                -yaw.sin() * pitch.cos() * 0.3,
-                -pitch.sin() * 0.3 + 0.1,
-                yaw.cos() * pitch.cos() * 0.3,
-            ];
+            let r = &mut self.world.random;
+            let v = horizon_client::entities::drop_motion(r, g.yaw, g.pitch, false);
             self.spawn_item(stack, eye, v, 40);
         }
     }
@@ -2958,11 +3028,28 @@ impl Game<'_> {
         if let Some(b) = self.tracked_special_box(id) {
             return Some(b);
         }
+        if let Some(knot) = self.knot_at_id(id) {
+            let knot = horizon_client::mobs::leash::knot_state(knot);
+            let p = knot.position;
+            let half = knot.width / 2.0;
+            return Some(Aabb::new(
+                Vec3::new(p.x - half, p.y, p.z - half),
+                Vec3::new(p.x + half, p.y + knot.height, p.z + half),
+            ));
+        }
         self.creatures
             .projectiles
             .iter()
             .find(|p| p.id != 0 && p.id as i32 == id)
             .map(|p| p.bounds())
+    }
+
+    /// The fence of the knot whose entity id is `id` (`lan_assign_ids`).
+    fn knot_at_id(&self, id: i32) -> Option<[i32; 3]> {
+        self.knot_ids
+            .iter()
+            .find(|&(_, &knot)| knot as i32 == id)
+            .map(|(&fence, _)| fence)
     }
 
     fn guest_attack(&mut self, host: &mut LanHost, conn: u32, id: i32) {
@@ -3158,6 +3245,11 @@ impl Game<'_> {
             self.guest_mute_command(host, conn, &words);
             return;
         }
+        // Horizon's `/tempban` (game/tempban.rs), on dedicated servers.
+        if super::tempban::TEMPBAN_COMMANDS.contains(&words[0]) && self.server_lists.is_some() {
+            self.guest_tempban_command(host, conn, &words);
+            return;
+        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/native_server.rs).
         let integrated = host.hub.config.integrated;
@@ -3239,9 +3331,14 @@ impl Game<'_> {
             self.run_command(&c.command)
         };
         self.ui.registries.permission = level;
-        let lines = self.chat_capture.take().unwrap_or_default();
+        let mut lines = self.chat_capture.take().unwrap_or_default();
         let mut host = self.lan.take().expect("a command puts the hub back");
         self.leave_guest(&mut host, swap);
+        if std::mem::take(&mut self.save_after_guest_turn) {
+            self.lan = Some(host);
+            lines.push(self.save_all_reply());
+            host = self.lan.take().expect("saving puts the hub back");
+        }
         host.hub.sync_all_effects();
         if !c.integrated {
             // A teleport into another level happens before its feedback is sent.
@@ -3745,6 +3842,34 @@ impl Game<'_> {
     /// `ServerPlayer.die` for a guest whose health has run out: the death
     /// message, the loot and experience, the death screen.
     fn guest_die(&mut self, host: &mut LanHost, gi: usize, conn: u32) {
+        if host.hub.guests[gi].health <= 0.0
+            && !host.hub.guests[gi].dead
+            && !horizon_client::mod_api::mods().is_empty()
+        {
+            // LivingDeathEvent: a canceled death keeps the player at 1 health.
+            let (damage_type, attacker) =
+                match host.play.get(&conn).and_then(|p| p.death_cause.as_deref()) {
+                    Some("death.attack.genericKill") => ("minecraft:generic_kill", 0),
+                    _ => self
+                        .guest_combat
+                        .get(&conn)
+                        .and_then(|tracker| tracker.last_blow())
+                        .unwrap_or(("minecraft:generic", 0)),
+                };
+            let (damage_type, entity) = (damage_type.to_owned(), host.hub.guests[gi].entity_id);
+            let mut cancel = false;
+            self.native_living_death(
+                entity as u32,
+                "minecraft:player",
+                &damage_type,
+                attacker,
+                &mut cancel,
+            );
+            if cancel {
+                host.hub.guests[gi].health = 1.0;
+                return;
+            }
+        }
         if host.hub.guests[gi].health <= 0.0 && !host.hub.guests[gi].dead {
             self.guest_forget_digging(host, conn);
             // FishingHook.shouldStopFishing: its owner is dead.
@@ -3766,8 +3891,8 @@ impl Game<'_> {
             .death_reward(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
             let (name, uuid) = (g.name.clone(), g.uuid);
             // ServerPlayer.die: dropAllDeathLoot unless a spectator, from the eyes less 0.3.
-            let drops =
-                (g.game_mode != SPECTATOR).then(|| [at[0], at[1] + g.eye_height() - 0.3, at[2]]);
+            let drops = (g.game_mode != SPECTATOR)
+                .then(|| [at[0], at[1] + g.eye_height() - f64::from(0.3f32), at[2]]);
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
             self.native_player_died(uuid, cause.as_deref());
             // ServerPlayer.die: the neutral mobs near a guest in this level
@@ -3824,10 +3949,146 @@ impl Game<'_> {
             );
             // LivingEntity.die: the death animation, the dying player included.
             host.hub.entity_event(id, 3, at);
-            if let Some(eyes) = drops {
-                self.as_guest(host, conn, |game| game.drop_inventory(eyes));
+            // LivingEntity.die: the death is heard, and a sculk catalyst
+            // nearby takes the experience (before the loot is dropped), as it
+            // does for a mob.
+            let mut catalyst_xp = 0;
+            let consumed = self.catalyst_takes_experience(at, |_| {
+                catalyst_xp = reward;
+                catalyst_xp
+            });
+            // CatalystListener: with experience to take, the player who last
+            // hurt them gets KILL_MOB_NEAR_SCULK_CATALYST.
+            if consumed && catalyst_xp > 0 {
+                self.guest_catalyst_trigger(host, gi, conn, at);
             }
-            self.spawn_orbs(at, reward);
+            // ServerPlayer.die: the drops, then the deathCount objectives, then
+            // the `deaths` statistic and the two timers it resets.
+            self.as_guest(host, conn, |game| {
+                if let Some(eyes) = drops {
+                    game.drop_inventory(eyes, (uuid, id));
+                }
+                game.score_player_died();
+                game.award_custom_stat("deaths", 1);
+                game.stats.reset_death_timers();
+            });
+            // The experience the catalyst took does not drop (`Player.
+            // skipDropExperience`).
+            if !consumed {
+                self.spawn_orbs(at, reward);
+            }
+        }
+    }
+
+    /// `SculkCatalystBlockEntity.CatalystListener`'s trigger on a player's
+    /// death: for the player the dying guest's combat record credits
+    /// (`LivingEntity.getKillCredit`), with the death's `killing_blow`.
+    fn guest_catalyst_trigger(&mut self, host: &mut LanHost, gi: usize, conn: u32, at: [f64; 3]) {
+        let now = self.world.game_time;
+        let combat = self.guest_combat.get(&conn);
+        let who = combat.and_then(|c| c.kill_credit(now)).and_then(|id| {
+            if self.lan_acting.is_none()
+                && self
+                    .player
+                    .as_ref()
+                    .is_some_and(|p| p.entity_id as u32 == id)
+            {
+                Some(None)
+            } else {
+                host.hub
+                    .guests
+                    .iter()
+                    .find(|g| g.entity_id as u32 == id)
+                    .map(|g| Some(g.conn))
+            }
+        });
+        let Some(who) = who else { return };
+        let (damage, attacker) = combat
+            .and_then(|c| c.killing_blow())
+            .unwrap_or_else(|| ("minecraft:player_attack".into(), None));
+        let g = &host.hub.guests[gi];
+        let view = horizon_client::advancements::EntityView {
+            kind: "minecraft:player".into(),
+            position: at,
+            sneaking: g.sneaking,
+            input_sneak: g.input & 32 != 0,
+            gamemode: Some(
+                match g.game_mode {
+                    1 => "creative",
+                    2 => "adventure",
+                    3 => "spectator",
+                    _ => "survival",
+                }
+                .into(),
+            ),
+            ..Default::default()
+        };
+        // The damage's causing entity: the player in place, another guest, or
+        // a mob (`DamageSource.getEntity`).
+        let source = attacker.and_then(|id| {
+            if self.lan_acting.is_none()
+                && self
+                    .player
+                    .as_ref()
+                    .is_some_and(|p| p.entity_id as u32 == id)
+            {
+                Some(self.player_entity())
+            } else {
+                host.hub
+                    .guests
+                    .iter()
+                    .find(|g| g.entity_id as u32 == id)
+                    .map(|g| horizon_client::advancements::EntityView {
+                        kind: "minecraft:player".into(),
+                        position: g.position,
+                        sneaking: g.sneaking,
+                        input_sneak: g.input & 32 != 0,
+                        ..Default::default()
+                    })
+                    .or_else(|| {
+                        self.mobs
+                            .iter()
+                            .find(|m| m.id == id)
+                            .map(|m| self.mob_entity(m))
+                    })
+            }
+        });
+        let projectile = match damage.as_str() {
+            "minecraft:arrow" => Some("minecraft:arrow"),
+            "minecraft:fireball" | "minecraft:small_fireball" => Some("minecraft:fireball"),
+            "minecraft:wither_skull" => Some("minecraft:wither_skull"),
+            "minecraft:fireworks" => Some("minecraft:firework_rocket"),
+            _ => None,
+        };
+        let blow = horizon_client::advancements::DamageView {
+            kind: damage,
+            // DamageSource.isDirect: the causing entity is the direct one.
+            is_direct: projectile.is_none(),
+            direct: match projectile {
+                Some(kind) => Some(horizon_client::advancements::EntityView {
+                    kind: kind.into(),
+                    position: at,
+                    ..Default::default()
+                }),
+                None => source.clone(),
+            },
+            source,
+            ..Default::default()
+        };
+        // CatalystListener: trigger(player, killedEntity, damageSource).
+        match who {
+            None => {
+                self.trigger_killed_as("minecraft:kill_mob_near_sculk_catalyst", &view, Some(&blow))
+            }
+            Some(kconn) => {
+                self.as_guest(host, kconn, |g| {
+                    g.trigger_killed_as(
+                        "minecraft:kill_mob_near_sculk_catalyst",
+                        &view,
+                        Some(&blow),
+                    );
+                });
+            }
         }
     }
 
@@ -4031,6 +4292,36 @@ impl Game<'_> {
         }
     }
 
+    /// `LivingEntity.checkAutoSpinAttack` for a server's copy of a Riptide
+    /// spinner (it runs before `aiStep`'s countdown clears the damage): the
+    /// first mob touching the player's box takes `Player.attack` with the
+    /// spin's damage and the spin ends. A `ServerPlayer` is client
+    /// authoritative, so its `aiStep` does not travel and both boxes vanilla
+    /// passes are the current one: no sweep over the tick's moves.
+    pub(super) fn server_spin_attack(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        if p.auto_spin_attack_ticks <= 0 {
+            return;
+        }
+        let swept = p.bounds();
+        let riding = self.riding;
+        let Some(index) = first_spin_target(
+            swept,
+            riding,
+            self.mobs.iter().map(|m| (m.id, m.removed, m.bounds())),
+        ) else {
+            return;
+        };
+        self.attack_mob(index);
+        if let Some(p) = self.player.as_mut() {
+            p.auto_spin_attack_ticks = 0;
+            p.auto_spin_attack_dmg = 0.0;
+            p.velocity = p.velocity.scale(-0.2);
+        }
+    }
+
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
     /// clock and Entity.baseTick's fluid phase (burning), then for each move
     /// the guest made ServerGamePacketListenerImpl.handleMovePlayer's jump
@@ -4043,6 +4334,10 @@ impl Game<'_> {
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
     fn guest_server_tick(&mut self, host: &mut LanHost, conn: u32) {
+        // Entity.baseTick: the boarding cooldown counts down once a tick.
+        if let Some(g) = host.hub.guest_mut(conn) {
+            g.boarding_cooldown = super::boarding::tick_down(g.boarding_cooldown);
+        }
         self.guest_replay(host, conn);
         self.guest_vehicle_tick(host, conn);
         // The last move's fall stands in for the server's delta movement.
@@ -4073,6 +4368,12 @@ impl Game<'_> {
         let at = g.position;
         let (sneaking, sleeping) = (g.sneaking, g.sleeping);
         let riding = g.vehicle.is_some();
+        if g.motion
+            .as_ref()
+            .is_some_and(|m| m.auto_spin_attack_ticks > 0)
+        {
+            self.as_guest(host, conn, |game| game.server_spin_attack());
+        }
         let mut soul = None;
         let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
@@ -4378,6 +4679,35 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
+    }
+
+    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
+    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
+    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
+    /// server plays is broadcast to the players near the mount, the rider
+    /// included (their own client plays none).
+    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
+        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
+            return;
+        };
+        let m = &mut self.mobs[index];
+        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
+            return;
+        };
+        let at = m.center();
+        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
+        let neutral = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "neutral")
+            .unwrap_or(0) as i32;
+        host.hub.sound(
+            &format!("minecraft:{sound}"),
+            at,
+            volume,
+            1.0,
+            neutral,
+            None,
+        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
@@ -5325,6 +5655,51 @@ mod aim_point_tests {
         assert_eq!(
             visible_aim_point(EYE, LO, HI, behind_top_slab),
             visible_aim_point(EYE, LO, HI, behind_top_slab)
+        );
+    }
+}
+
+/// The first target `(id, removed, bounds)` whose box meets the swept box,
+/// skipping removed ones and the vehicle the player rides.
+fn first_spin_target(
+    swept: Aabb,
+    riding: Option<u32>,
+    mut targets: impl Iterator<Item = (u32, bool, Aabb)>,
+) -> Option<usize> {
+    targets.position(|(id, removed, b)| !removed && Some(id) != riding && b.intersects(swept))
+}
+
+#[cfg(test)]
+mod spin_target_tests {
+    use super::first_spin_target;
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    fn cube(x: f64) -> Aabb {
+        Aabb::new(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0))
+    }
+
+    /// The spin hits the first mob in the swept box, not a removed one, the
+    /// vehicle, or one out of reach.
+    #[test]
+    fn the_spin_picks_the_first_live_mob_in_the_sweep() {
+        let swept = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0));
+        let targets = [
+            (1, false, cube(10.0)),
+            (2, true, cube(1.0)),
+            (3, false, cube(1.5)),
+            (4, false, cube(2.0)),
+        ];
+        assert_eq!(
+            first_spin_target(swept, None, targets.iter().copied()),
+            Some(2)
+        );
+        assert_eq!(
+            first_spin_target(swept, Some(3), targets.iter().copied()),
+            Some(3)
+        );
+        assert_eq!(
+            first_spin_target(swept, None, targets[..2].iter().copied()),
+            None
         );
     }
 }

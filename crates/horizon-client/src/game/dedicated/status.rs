@@ -1,6 +1,6 @@
 //! What `horizon-server` asks the dedicated server on its control endpoint (`--control-socket`, docs/server.md
 //! section 2): `server-status` answers with the tick rate, the tick times `/tick query` reports, the players
-//! and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
+//! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
 //! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
 use super::{ServerState, capture_log};
@@ -76,6 +76,48 @@ impl Game<'_> {
         }
     }
 
+    /// Each level's loaded chunks and entities (players and block entities apart), the level in place
+    /// first: what the Prometheus text reports by dimension.
+    fn status_levels(&self) -> Value {
+        let mut levels = vec![json!({
+            "dimension": self.dim.id(),
+            "chunks": self.world.chunks.len(),
+            "entities": self.entity_count(),
+        })];
+        for dim in self.levels.parked_dims() {
+            if let (Some(world), Some(entities)) = (
+                self.levels.parked_world(dim),
+                self.levels.parked_entity_count(dim),
+            ) {
+                levels.push(json!({
+                    "dimension": dim.id(),
+                    "chunks": world.chunks.len(),
+                    "entities": entities,
+                }));
+            }
+        }
+        Value::Array(levels)
+    }
+
+    /// The entities of the level in place: mobs, items, orbs, projectiles, vehicles, falling blocks,
+    /// hangings, armor stands, cushions, tridents, rockets and primed TNT.
+    fn entity_count(&self) -> usize {
+        self.mobs.iter().filter(|m| !m.removed).count()
+            + self.dropped.len()
+            + self.orbs.len()
+            + self.creatures.projectiles.len()
+            + self.carts.len()
+            + self.boats.len()
+            + self.falling.len()
+            + self.paintings.len()
+            + self.item_frames.len()
+            + self.armor_stands.len()
+            + self.cushions.len()
+            + self.tridents.len()
+            + self.rockets.len()
+            + self.tnts.len()
+    }
+
     fn server_status(&self, state: &ServerState) -> Value {
         let millis = |nanos: u64| nanos as f64 / 1e6;
         let samples = self.clock.sorted_samples();
@@ -90,12 +132,14 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .map(|g| {
-                    json!({
-                        "name": g.name,
-                        "uuid": horizon_protocol::crypto::uuid_string(g.uuid),
-                        "address": g.address.ip().to_string(),
-                        "ping_ms": g.latency.load(Ordering::Relaxed),
-                    })
+                    player_status(
+                        &g.name,
+                        g.uuid,
+                        &g.address.ip().to_string(),
+                        g.latency.load(Ordering::Relaxed),
+                        &g.dimension,
+                        g.position,
+                    )
                 })
                 .collect();
             (players, h.hub.lan.shared.max_players())
@@ -112,7 +156,54 @@ impl Game<'_> {
             "players": players,
             "max_players": max_players,
             "chunks": self.world.chunks.len(),
+            "levels": self.status_levels(),
             "paused": state.paused,
         })
+    }
+}
+
+fn player_status(
+    name: &str,
+    uuid: u128,
+    address: &str,
+    ping_ms: i32,
+    dimension: &str,
+    position: [f64; 3],
+) -> Value {
+    json!({
+        "name": name,
+        "uuid": horizon_protocol::crypto::uuid_string(uuid),
+        "address": address,
+        "ping_ms": ping_ms,
+        "dimension": dimension,
+        "position": position,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::player_status;
+    use serde_json::json;
+
+    #[test]
+    fn player_status_includes_coordinates() {
+        assert_eq!(
+            player_status(
+                "Alex",
+                1,
+                "203.0.113.7",
+                42,
+                "minecraft:the_nether",
+                [1.5, 64.0, -2.25]
+            ),
+            json!({
+                "name": "Alex",
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "address": "203.0.113.7",
+                "ping_ms": 42,
+                "dimension": "minecraft:the_nether",
+                "position": [1.5, 64.0, -2.25],
+            })
+        );
     }
 }

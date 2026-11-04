@@ -5,9 +5,74 @@
 use super::{Game, dedicated, lan::LanHost};
 use horizon_chat_filter::Action;
 use horizon_client::lan::hub::{HostEvent, chat_filter::Place};
+use horizon_client::text::Text;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_protocol::text::{literal, translatable};
 use horizon_server_files::user_lists::{BanEntry, NameAndId};
+use horizon_world::nbt::Tag;
+
+/// A moderation reply retains its translation component for each client's language.
+#[derive(Debug, PartialEq)]
+pub(super) struct Reply(Text);
+
+impl Reply {
+    pub(super) fn translated(key: &str, args: &[Text]) -> Self {
+        Self(Self::translation(key, args))
+    }
+
+    /// Vanilla clients lack Horizon's keys, so preserve a readable fallback too.
+    pub(super) fn translation(key: &str, args: &[Text]) -> Text {
+        if key.starts_with("horizon.") {
+            static ENGLISH: std::sync::OnceLock<horizon_client::lang::Language> =
+                std::sync::OnceLock::new();
+            let english =
+                ENGLISH.get_or_init(|| horizon_client::lang::Language::load(&[], "en_us"));
+            Text::translate_with_fallback(key, english.get(key).unwrap_or(key), args)
+        } else {
+            Text::translate(key, args)
+        }
+    }
+
+    pub(super) fn no_player() -> Self {
+        Self::translated("argument.entity.notfound.player", &[])
+    }
+
+    pub(super) fn already_banned() -> Self {
+        Self::translated("commands.ban.failed", &[])
+    }
+
+    pub(super) fn duration(millis: i64) -> Text {
+        use horizon_chat_filter::DurationUnit;
+        let (count, unit) = horizon_chat_filter::duration_parts(millis);
+        let key = match (unit, count == 1) {
+            (DurationUnit::Minute, true) => "horizon.moderation.duration.minute",
+            (DurationUnit::Minute, false) => "horizon.moderation.duration.minutes",
+            (DurationUnit::Hour, true) => "horizon.moderation.duration.hour",
+            (DurationUnit::Hour, false) => "horizon.moderation.duration.hours",
+            (DurationUnit::Day, true) => "horizon.moderation.duration.day",
+            (DurationUnit::Day, false) => "horizon.moderation.duration.days",
+        };
+        Self::translation(key, &[Text::literal(count.to_string())])
+    }
+
+    pub(super) fn with_reason(self, reason: Option<&str>) -> Self {
+        match reason {
+            Some(reason) => Self::translated(
+                "horizon.moderation.reason",
+                &[self.0, Text::literal(reason)],
+            ),
+            None => self,
+        }
+    }
+
+    pub(super) fn tag(&self) -> Tag {
+        horizon_client::lan::data::component_nbt(&self.0.component())
+    }
+
+    pub(super) fn text(&self) -> Text {
+        self.0.clone()
+    }
+}
 
 /// The operator level the mute commands need, as `/ban`'s.
 const MUTE_LEVEL: u8 = 3;
@@ -171,7 +236,7 @@ impl Game<'_> {
             let words: Vec<&str> = words.iter().copied().filter(|w| !w.is_empty()).collect();
             self.mute_command(host, &words, &by)
                 .iter()
-                .map(|line| literal(line))
+                .map(Reply::tag)
                 .collect()
         };
         for content in replies {
@@ -192,27 +257,40 @@ impl Game<'_> {
         host: &mut LanHost,
         words: &[&str],
         by: &str,
-    ) -> Vec<String> {
+    ) -> Vec<Reply> {
         let reason = |from: usize| (words.len() > from).then(|| words[from..].join(" "));
         match words {
             ["mutelist"] => {
                 let now = horizon_chat_filter::now_millis();
                 let mutes = host.hub.mutes();
                 if mutes.is_empty() {
-                    return vec!["There are no mutes".into()];
+                    return vec![Reply::translated("horizon.moderation.mutelist.empty", &[])];
                 }
-                let mut lines = vec![format!("There are {} mute(s):", mutes.len())];
+                let mut lines = vec![Reply::translated(
+                    "horizon.moderation.mutelist.count",
+                    &[Text::literal(mutes.len().to_string())],
+                )];
                 for m in mutes {
-                    let by = m.by.as_deref().unwrap_or("the chat filter");
+                    let by = m.by.as_deref().map_or_else(
+                        || Reply::translation("horizon.moderation.chat_filter", &[]),
+                        Text::literal,
+                    );
                     let until = m.until.map_or_else(
-                        || "until unmuted".into(),
+                        || Reply::translation("horizon.moderation.until_unmuted", &[]),
                         |u| {
-                            let left = horizon_chat_filter::duration_text(u - now);
-                            format!("for {}", left.replacen(' ', " more ", 1))
+                            Reply::translation(
+                                "horizon.moderation.remaining",
+                                &[Reply::duration(u - now)],
+                            )
                         },
                     );
-                    let why = m.reason.map(|r| format!(": {r}")).unwrap_or_default();
-                    lines.push(format!("{} was muted by {by} {until}{why}", m.name));
+                    lines.push(
+                        Reply::translated(
+                            "horizon.moderation.mutelist.entry",
+                            &[Text::literal(m.name), by, until],
+                        )
+                        .with_reason(m.reason.as_deref()),
+                    );
                 }
                 lines
             }
@@ -220,12 +298,15 @@ impl Game<'_> {
             ["mute", name, ..] => vec![self.mute(host, name, None, reason(2), by)],
             ["tempmute", name, time, ..] => match horizon_chat_filter::parse_duration(time) {
                 Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
-                None => vec![format!("{time} isn't a duration: 10m, 2h, 1d")],
+                None => vec![Reply::translated(
+                    "horizon.moderation.invalid_duration",
+                    &[Text::literal(*time)],
+                )],
             },
-            ["mute", ..] => vec!["/mute <player> [reason]".into()],
-            ["tempmute", ..] => vec!["/tempmute <player> <duration> [reason]".into()],
-            ["unmute", ..] => vec!["/unmute <player>".into()],
-            _ => vec!["/mutelist".into()],
+            ["mute", ..] => vec![Reply::translated("horizon.moderation.usage.mute", &[])],
+            ["tempmute", ..] => vec![Reply::translated("horizon.moderation.usage.tempmute", &[])],
+            ["unmute", ..] => vec![Reply::translated("horizon.moderation.usage.unmute", &[])],
+            _ => vec![Reply::translated("horizon.moderation.usage.mutelist", &[])],
         }
     }
 
@@ -237,7 +318,7 @@ impl Game<'_> {
         time: Option<i64>,
         reason: Option<String>,
         by: &str,
-    ) -> String {
+    ) -> Reply {
         // A player here, else one the server has seen (the user cache).
         let user = host
             .hub
@@ -247,7 +328,7 @@ impl Game<'_> {
             .map(|g| (g.uuid, g.name.clone()))
             .or_else(|| self.resolve_name(name).map(|u| (u.id, u.name)));
         let Some((uuid, name)) = user else {
-            return format!("No player was found named {name}");
+            return Reply::no_player();
         };
         let until = time.map(|ms| horizon_chat_filter::now_millis() + ms);
         let what = time.map_or_else(
@@ -258,26 +339,163 @@ impl Game<'_> {
             .as_deref()
             .map(|r| format!(": {r}"))
             .unwrap_or_default();
-        host.hub.mute(uuid, &name, until, by, reason);
+        host.hub.mute(uuid, &name, until, by, reason.clone());
         if self.options.dedicated.is_some() {
             dedicated::log(
                 "INFO",
                 &format!("[chat-filter] {by} muted {name} {what}{why}"),
             );
         }
-        format!("Muted {name} {what}{why}")
+        let until = time.map_or_else(
+            || Reply::translation("horizon.moderation.until_unmuted", &[]),
+            |ms| Reply::translation("horizon.moderation.for_duration", &[Reply::duration(ms)]),
+        );
+        Reply::translated("horizon.moderation.muted", &[Text::literal(name), until])
+            .with_reason(reason.as_deref())
     }
 
     /// Lifts `name`'s mute, logged; what to answer.
-    pub(super) fn unmute(&mut self, host: &mut LanHost, name: &str, by: &str) -> String {
+    pub(super) fn unmute(&mut self, host: &mut LanHost, name: &str, by: &str) -> Reply {
         match host.hub.unmute(name) {
             Some(name) => {
                 if self.options.dedicated.is_some() {
                     dedicated::log("INFO", &format!("[chat-filter] {by} unmuted {name}"));
                 }
-                format!("Unmuted {name}")
+                Reply::translated("horizon.moderation.unmuted", &[Text::literal(name)])
             }
-            None => format!("{name} isn't muted"),
+            None => Reply::translated("horizon.moderation.not_muted", &[Text::literal(name)]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanillas_messages_go_out_as_its_translation_keys() {
+        for (reply, key) in [
+            (Reply::no_player(), "argument.entity.notfound.player"),
+            (Reply::already_banned(), "commands.ban.failed"),
+        ] {
+            assert_eq!(reply.tag(), translatable(key, &[]));
+            assert_eq!(reply.text().translation_key(), Some(key));
+        }
+    }
+
+    #[test]
+    fn horizons_replies_keep_nested_translation_components() {
+        let reply = Reply::translated(
+            "horizon.moderation.muted",
+            &[
+                Text::literal("Steve"),
+                Reply::translation(
+                    "horizon.moderation.for_duration",
+                    &[Reply::duration(61_000)],
+                ),
+            ],
+        )
+        .with_reason(Some("literal reason"));
+        let component = reply.text().component();
+        assert_eq!(component["translate"], "horizon.moderation.reason");
+        assert_eq!(
+            component["with"][0]["translate"],
+            "horizon.moderation.muted"
+        );
+        assert_eq!(
+            component["with"][0]["with"][1]["with"][0]["translate"],
+            "horizon.moderation.duration.minutes"
+        );
+        assert_eq!(component["with"][1]["text"], "literal reason");
+        assert_eq!(
+            reply.tag(),
+            horizon_client::lan::data::component_nbt(&component)
+        );
+    }
+
+    #[test]
+    fn clients_can_translate_nested_replies_or_use_the_fallback() {
+        use horizon_client::lang::{self, Language};
+        lang::scoped(Language::load(&[], "en_us"), || {
+            let reply = Reply::translated(
+                "horizon.moderation.muted",
+                &[
+                    Text::literal("Steve"),
+                    Reply::translation(
+                        "horizon.moderation.for_duration",
+                        &[Reply::duration(61_000)],
+                    ),
+                ],
+            )
+            .with_reason(Some("reason %s"));
+            let wire = reply.tag();
+            assert_eq!(
+                horizon_protocol::text::plain(&wire, &Default::default()),
+                "Muted Steve for 2 minutes: reason %s"
+            );
+            let language = [
+                (
+                    "horizon.moderation.reason".to_owned(),
+                    "%1$s (%2$s)".to_owned(),
+                ),
+                (
+                    "horizon.moderation.muted".to_owned(),
+                    "M %2$s %1$s".to_owned(),
+                ),
+                (
+                    "horizon.moderation.for_duration".to_owned(),
+                    "D %s".to_owned(),
+                ),
+                (
+                    "horizon.moderation.duration.minutes".to_owned(),
+                    "%s min_local".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(
+                horizon_protocol::text::plain(&wire, &language),
+                "M D 2 min_local Steve (reason %s)"
+            );
+        });
+    }
+
+    #[test]
+    fn bundled_languages_resolve_the_reply_on_the_receiving_client() {
+        use horizon_client::lang::{self, Language};
+        lang::scoped(Language::load(&[], "en_us"), || {
+            let reply = Reply::translated(
+                "horizon.moderation.muted",
+                &[
+                    Text::literal("Steve"),
+                    Reply::translation(
+                        "horizon.moderation.for_duration",
+                        &[Reply::duration(61_000)],
+                    ),
+                ],
+            )
+            .with_reason(Some("reason %s"));
+            for (code, expected) in [
+                (
+                    "fr_fr",
+                    "Steve a été réduit au silence pour 2 minutes : reason %s",
+                ),
+                (
+                    "de_de",
+                    "Steve wurde für 2 Minuten stummgeschaltet: reason %s",
+                ),
+                (
+                    "es_es",
+                    "Se ha silenciado a Steve durante 2 minutos: reason %s",
+                ),
+            ] {
+                let language = Language::load(&[], code);
+                assert_eq!(
+                    horizon_protocol::text::plain(&reply.tag(), language.map()),
+                    expected,
+                    "{code}"
+                );
+            }
+        });
     }
 }

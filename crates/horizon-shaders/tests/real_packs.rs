@@ -176,17 +176,36 @@ fn real_packs_read() {
                 entities: Some(terrain.clone()),
                 clouds: Some(terrain.clone()),
                 weather: Some(terrain.clone()),
-                hand: Some(terrain.clone()),
+                lines: Some(terrain.clone()),
+                // As the game's hand (`pack_hand::inputs`): it may read `currentRenderedItemId`
+                // undeclared.
+                hand: Some(horizon_shaders::GbuffersInputs {
+                    item_id_declared: true,
+                    ..terrain.clone()
+                }),
                 terrain_geometry: Some(horizon_shaders::GeometryInputs {
                     inputs: horizon_shaders::GbuffersInputs {
                         declarations: format!(
                             "layout(set = 3, binding = 1) readonly buffer HzVertices {{ uint hz_vertices[]; }};\n{}",
                             terrain.declarations
                         ),
-                        ..terrain
+                        ..terrain.clone()
                     },
                     pull: "        hz_v_pos = uintBitsToFloat(uvec3(hz_vertices[hz_vertex_index * 6u], \
                            hz_vertices[hz_vertex_index * 6u + 1u], hz_vertices[hz_vertex_index * 6u + 2u]));\n"
+                        .into(),
+                    index: "uint(@)".into(),
+                }),
+                entity_geometry: Some(horizon_shaders::GeometryInputs {
+                    inputs: horizon_shaders::GbuffersInputs {
+                        declarations: format!(
+                            "layout(set = 1, binding = 0) readonly buffer HzEntityVertices {{ uint hz_entity_vertices[]; }};\n{}",
+                            terrain.declarations
+                        ),
+                        ..terrain.clone()
+                    },
+                    pull: "        hz_v_pos = uintBitsToFloat(uvec3(hz_entity_vertices[hz_vertex_index * 11u], \
+                           hz_entity_vertices[hz_vertex_index * 11u + 1u], hz_entity_vertices[hz_vertex_index * 11u + 2u]));\n"
                         .into(),
                     index: "uint(@)".into(),
                 }),

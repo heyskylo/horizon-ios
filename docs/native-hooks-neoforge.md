@@ -1,7 +1,7 @@
 # Native hook points, modelled on NeoForge 26.3 (proposal)
 
 Status: proposal, for the authors of hook PRs to comment on. Nothing here is built yet. Checked against `native-hooks.json` on main
-(41 hooks, `NATIVE_HOOKS_API` 24) on 31 October 2026.
+(386 hooks, `NATIVE_HOOKS_API` 359) on 3 November 2026.
 
 Native mods hook empty functions in `crates/horizon-client/src/game/native_hooks.rs`, listed by name in
 `native-hooks.json` ([native-mods.md](native-mods.md)). So far each hook was designed on its own, and open PRs
@@ -17,7 +17,7 @@ Why NeoForge:
   automatically.
 
 What we take is event names and their documented contracts, from NeoForge's public user documentation
-(<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code) allows. Nobody
+(<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code-or-code-whose-license-allows-it) allows. Nobody
 reads, copies, translates or paraphrases NeoForge's source, its patches included: where a hook fires is decided
 from vanilla 26.3's own methods, and the hooks stay Horizon's own Rust.
 
@@ -87,6 +87,12 @@ assembles its data tables — a world's first open and every `/reload` — befor
 advancements are built. A mod adds `(path, bytes)` pack files to the hook's out parameter; they join the
 load below the world's own data packs, so a pack's file for the same path still overrides them. A mod that
 adds nothing leaves the tables as they were.
+
+`add_server_reload_listeners` is `AddServerReloadListenersEvent` with a `SimpleJsonResourceReloadListener`:
+a mod names a folder under `data/<namespace>/`, and on each data load, before `server_data_loaded`,
+`server_reload_listener_apply` hands it the folder's JSON files (the top pack's for each id) as `apply`
+does. Only JSON folders: a mod parses the values itself, and a listener that merges every pack's file for one
+id is not here.
 
 ## Next hooks
 

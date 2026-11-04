@@ -12,7 +12,11 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     sculk::{self, Context, Info, SculkEntity, SculkKind, WardenSpawnTracker},
 };
-use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Direction, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 use horizon_world::registry::BlockStateId;
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
@@ -87,6 +91,8 @@ pub(super) struct SculkState {
     pub known_revision: Option<u64>,
     // Keyed by mob ids the server gives out: the fast hasher is safe.
     steps: FxHashMap<Who, Steps>,
+    /// Items that have fallen since last touching the ground or water.
+    falling_items: HashSet<u32>,
     /// The vehicle each rider had last tick and where it stood.
     mounts: FxHashMap<Who, (u32, [f64; 3])>,
     damaged: FxHashMap<u32, i64>,
@@ -127,17 +133,59 @@ impl SculkState {
 struct Index {
     order: Vec<(i32, i32, i32)>,
     set: HashSet<(i32, i32, i32)>,
+    /// The positions by 32-block cell, each with its rank: ranks only grow,
+    /// so sorting by them gives `order`'s order. Every mob's step posts a
+    /// game event, and the listeners near it are read from at most eight
+    /// cells instead of the whole level's.
+    cells: FxHashMap<(i32, i32, i32), Vec<(u64, (i32, i32, i32))>>,
+    next: u64,
+}
+fn index_cell(key: (i32, i32, i32)) -> (i32, i32, i32) {
+    (key.0 >> 5, key.1 >> 5, key.2 >> 5)
 }
 impl Index {
     fn insert(&mut self, key: (i32, i32, i32)) {
         if self.set.insert(key) {
             self.order.push(key);
+            self.cells
+                .entry(index_cell(key))
+                .or_default()
+                .push((self.next, key));
+            self.next += 1;
         }
     }
     fn remove(&mut self, key: &(i32, i32, i32)) {
         if self.set.remove(key) {
             self.order.retain(|k| k != key);
+            let cell = index_cell(*key);
+            if let Some(list) = self.cells.get_mut(&cell) {
+                list.retain(|(_, k)| k != key);
+                if list.is_empty() {
+                    self.cells.remove(&cell);
+                }
+            }
         }
+    }
+    /// The positions whose `dist_sqr` to `at` is at most `radius` squared,
+    /// in `order`'s order: what filtering `iter` gives.
+    fn within(&self, at: [i32; 3], radius: i32) -> Vec<(i32, i32, i32)> {
+        let limit = i64::from(radius * radius);
+        let span = |v: i32| {
+            let cell = |w: i64| (w >> 5).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            cell(i64::from(v) - i64::from(radius))..=cell(i64::from(v) + i64::from(radius))
+        };
+        let mut found: Vec<(u64, (i32, i32, i32))> = Vec::new();
+        for x in span(at[0]) {
+            for y in span(at[1]) {
+                for z in span(at[2]) {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        found.extend(list.iter().filter(|(_, k)| dist_sqr(at, *k) <= limit));
+                    }
+                }
+            }
+        }
+        found.sort_unstable_by_key(|(rank, _)| *rank);
+        found.into_iter().map(|(_, k)| k).collect()
     }
     fn contains(&self, key: &(i32, i32, i32)) -> bool {
         self.set.contains(key)
@@ -148,6 +196,10 @@ impl Index {
     fn retain(&mut self, mut keep: impl FnMut(&(i32, i32, i32)) -> bool) {
         self.order.retain(|k| keep(k));
         self.set.retain(|k| keep(k));
+        self.cells.retain(|_, list| {
+            list.retain(|(_, k)| keep(k));
+            !list.is_empty()
+        });
     }
 }
 const KIND_SENSOR: u8 = 1;
@@ -542,13 +594,7 @@ impl Game<'_> {
         }
         let at = block_of(pos);
         let radius = sculk::notification_radius(event).min(16);
-        let near: Vec<(i32, i32, i32)> = self
-            .sculk
-            .index
-            .iter()
-            .copied()
-            .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
-            .collect();
+        let near = self.sculk.index.within(at, radius);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -1581,6 +1627,10 @@ impl Game<'_> {
     fn tick_entity_events(&mut self) {
         self.tick_player_sculk_events();
         self.tick_mob_sculk_events();
+        if !self.sculk.falling_items.is_empty() {
+            let present: HashSet<u32> = self.dropped.iter().map(|item| item.id).collect();
+            self.sculk.falling_items.retain(|id| present.contains(id));
+        }
         // Dropped items are entities too: Entity.applyEffectsFromBlocks.
         let items: Vec<[f64; 3]> = self
             .dropped
@@ -1591,6 +1641,48 @@ impl Game<'_> {
         for at in items {
             self.step_on_redstone_ore(at, false, false);
         }
+    }
+
+    /// `Entity.checkFallDamage` for item movement: retain a fall across an
+    /// exact-height contact, without changing the saved fall-distance getter.
+    pub(super) fn item_landing_event(
+        &mut self,
+        id: u32,
+        previous: Vec3,
+        position: Vec3,
+        on_ground: bool,
+    ) {
+        let at = [position.x, position.y, position.z];
+        if self.in_water_at(at) {
+            self.sculk.falling_items.remove(&id);
+            return;
+        }
+        if position.y < previous.y {
+            self.sculk.falling_items.insert(id);
+        }
+        if on_ground && self.sculk.falling_items.remove(&id) {
+            self.post_landing_event(position, false);
+        }
+    }
+
+    /// `Entity.checkFallDamage` emits HIT_GROUND after the block's fallOn.
+    pub(super) fn post_landing_event(&mut self, position: Vec3, living: bool) {
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        self.sculk_prepare();
+        let state = self.world.block(
+            position.x.floor() as i32,
+            (position.y - 0.2).floor() as i32,
+            position.z.floor() as i32,
+        );
+        let mut context = self.who_context(None, Some(state));
+        context.living = living;
+        self.post_game_event(
+            "minecraft:hit_ground",
+            [position.x, position.y, position.z],
+            context,
+        );
     }
 
     /// Entity.move emits on the authoritative server too, for each ServerPlayer.
@@ -1978,9 +2070,8 @@ pub(super) fn darkness_blend_added(e: &EffectInstance, blend: bool) -> (f32, f32
     (factor, factor)
 }
 
-/// `Entity.processFlappingMovement`'s per-tick gate, before its air-below
-/// test: `Bee.isFlapping` (flying, every other tick) and `Bat.isFlapping`
-/// (awake, every tenth tick).
+/// `Bee.isFlapping` (flying, every other tick) and `Bat.isFlapping`
+/// (awake, every tenth tick). Bird distance thresholds run in mob movement.
 fn flaps(species: Species, resting: bool, on_ground: bool, age: u32) -> bool {
     match species {
         Species::Bee => !on_ground && age.is_multiple_of(2),
@@ -2006,6 +2097,50 @@ mod tests {
         assert_eq!(index.set.len(), 2);
         index.insert((41, 4, 0));
         assert_eq!(index.iter().last(), Some(&(41, 4, 0)));
+    }
+
+    /// The listeners near a point come out as filtering the whole index in
+    /// order would give them, through inserts, removals and retains.
+    #[test]
+    fn listeners_within_a_radius_are_the_filtered_index_in_order() {
+        let mut index = Index::default();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * n as u64 + 1)) as i32 - n
+        };
+        for step in 0..3000 {
+            let key = (next(70), next(40), next(70));
+            match step % 7 {
+                0..=3 => index.insert(key),
+                4..=5 => {
+                    let picked = index
+                        .order
+                        .get(next(1000).unsigned_abs() as usize % index.order.len().max(1))
+                        .copied();
+                    if let Some(k) = picked {
+                        index.remove(&k);
+                    }
+                }
+                _ if step % 500 == 6 => index.retain(|p| (p.0 ^ p.2) & 3 != 0),
+                _ => {}
+            }
+            let at = [next(80), next(50), next(80)];
+            let radius = next(16).abs();
+            let expected: Vec<_> = index
+                .iter()
+                .copied()
+                .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
+                .collect();
+            assert_eq!(
+                index.within(at, radius),
+                expected,
+                "step {step} at {at:?} r {radius}"
+            );
+        }
+        assert!(index.cells.values().map(Vec::len).sum::<usize>() == index.order.len());
     }
 
     /// A bat flaps every tenth tick while it is not resting, whether it is on

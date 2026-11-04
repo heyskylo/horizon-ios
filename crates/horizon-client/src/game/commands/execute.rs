@@ -140,6 +140,12 @@ impl Game<'_> {
                 .iter()
                 .find(|c| c.id == id)
                 .map_or([0.0; 2], |c| [c.yaw, 0.0]),
+            Target::Fangs(id) => self
+                .fangs
+                .list
+                .iter()
+                .find(|f| f.id == id)
+                .map_or([0.0; 2], |f| [f.yaw, 0.0]),
             Target::Other(id) => self
                 .others
                 .iter()
@@ -148,7 +154,7 @@ impl Game<'_> {
             _ => [0.0; 2],
         }
     }
-    pub(super) fn target_eye_height(&self, t: Target) -> f64 {
+    pub(in crate::game) fn target_eye_height(&self, t: Target) -> f64 {
         match t {
             Target::Player => self
                 .player
@@ -647,7 +653,7 @@ impl Game<'_> {
             _ => return Err(err("command.unknown.command", &[])),
         })
     }
-    /// The entities `on <relation>` reaches from the source entity.
+    /// `ExecuteCommand.createRelationOperations`: the entities `on <relation>` reaches.
     fn relation(&mut self, c: &Context, s: Source) -> Vec<Source> {
         let Some(entity) = s.entity else {
             return Vec::new();
@@ -661,7 +667,10 @@ impl Game<'_> {
                     .iter()
                     .find(|m| m.id == id)
                     .and_then(|m| m.extra.owner)
-                    .and_then(|u| self.target_with_uuid(u))
+                    // A guest owner too, not only the player in place.
+                    .and_then(|u| {
+                        self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(u))
+                    })
                     .filter(|owner| {
                         matches!(
                             owner,
@@ -705,18 +714,29 @@ impl Game<'_> {
                     .projectiles
                     .iter()
                     .find(|p| p.id == id)
-                    .and_then(|p| match (p.owner?, p.guest) {
-                        // A guest's shot: `Who::Player` is them.
-                        (horizon_client::mobs::Who::Player, Some(conn))
-                            if self.lan_acting == Some(conn) =>
-                        {
-                            Some(Target::Player)
+                    .and_then(|p| {
+                        // Projectile.getOwner resolves EntityReference<Entity>,
+                        // including loaded owners that cannot be a Who.
+                        let Some(owner) = p.owner else {
+                            return p.owner_uuid.and_then(|uuid| {
+                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
+                                    uuid,
+                                ))
+                            });
+                        };
+                        match (owner, p.guest) {
+                            // A guest's shot: `Who::Player` is them.
+                            (horizon_client::mobs::Who::Player, Some(conn))
+                                if self.lan_acting == Some(conn) =>
+                            {
+                                Some(Target::Player)
+                            }
+                            (horizon_client::mobs::Who::Player, Some(conn)) => {
+                                Some(Target::Guest(conn))
+                            }
+                            (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
+                            (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                         }
-                        (horizon_client::mobs::Who::Player, Some(conn)) => {
-                            Some(Target::Guest(conn))
-                        }
-                        (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
-                        (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                     })
                     .into_iter()
                     .collect(),
@@ -766,7 +786,18 @@ impl Game<'_> {
                             }
                         })
                         .map(|w| match w {
-                            horizon_client::mobs::Who::Player => Target::Player,
+                            horizon_client::mobs::Who::Player => {
+                                // LivingEntity.getLastHurtByMob is the player
+                                // who hit it, not whichever client is reading it.
+                                match self.last_hurt_by_player.get(&id) {
+                                    Some(Some(conn))
+                                        if attacker && self.lan_acting != Some(*conn) =>
+                                    {
+                                        Target::Guest(*conn)
+                                    }
+                                    _ => Target::Player,
+                                }
+                            }
                             horizon_client::mobs::Who::Mob(i) => Target::Mob(i),
                         })
                         .into_iter()
@@ -790,7 +821,7 @@ impl Game<'_> {
     /// so a killed entity and a later summon of the same UUID can both be
     /// in it; the one the level still holds is the entity.
     pub(in crate::game) fn target_with_uuid(&self, uuid: [i32; 4]) -> Option<Target> {
-        if Some(uuid) == self.level.player_uuid {
+        if is_player_in_place(uuid, self.lan_acting_uuid, self.level.player_uuid) {
             return Some(Target::Player);
         }
         self.persist.uuids.iter().find_map(|(&id, found)| {
@@ -1126,5 +1157,45 @@ impl Game<'_> {
         let entries = self.tag_entries("worldgen/biome", tag);
         entries.iter().any(|id| id == biome)
             || (entries.is_empty() && self.res.mob_data().biome_has(tag, biome))
+    }
+}
+
+/// Whether `uuid` is the player in place (`Target::Player`): during a guest's turn that is the guest, not the
+/// level's own player (the world owner), whom `Level.getEntity(UUID)` finds only while they are in the level.
+fn is_player_in_place(
+    uuid: [i32; 4],
+    acting: Option<u128>,
+    level_player: Option<[i32; 4]>,
+) -> bool {
+    match acting {
+        Some(guest) => horizon_client::lan::playerdata::ints_uuid(uuid) == guest,
+        None => Some(uuid) == level_player,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_player_in_place;
+    use horizon_client::lan::playerdata::ints_uuid;
+
+    const OWNER: [i32; 4] = [0, 0, 0, 12];
+    const GUEST: [i32; 4] = [0, 0, 0, 13];
+
+    /// A owns the world, B is a guest: the sequence of one command each way.
+    #[test]
+    fn the_owners_uuid_is_not_the_guest_in_place() {
+        // A's own command, or the single-player one: no guest in place, the level's player is.
+        assert!(is_player_in_place(OWNER, None, Some(OWNER)));
+        assert!(!is_player_in_place(GUEST, None, Some(OWNER)));
+        // B's turn: only B is in place, the owner's UUID names someone else.
+        let b = Some(ints_uuid(GUEST));
+        assert!(is_player_in_place(GUEST, b, Some(OWNER)));
+        assert!(!is_player_in_place(OWNER, b, Some(OWNER)));
+        // A's own turn as a guest of an integrated server.
+        let a = Some(ints_uuid(OWNER));
+        assert!(is_player_in_place(OWNER, a, Some(OWNER)));
+        assert!(!is_player_in_place(GUEST, a, Some(OWNER)));
+        // No level player at all (a dedicated server): nobody is in place without a guest.
+        assert!(!is_player_in_place(OWNER, None, None));
     }
 }

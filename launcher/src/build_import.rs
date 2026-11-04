@@ -114,8 +114,23 @@ pub fn import(path: &Path, requested: Option<&str>) -> Result<String, String> {
     // Read again: the window may have saved other settings during the copy.
     let mut settings = backend::Settings::load();
     settings.selected = Some(tag.clone());
-    settings.save();
+    settings.save()?;
     Ok(tag)
+}
+
+/// Whether `path` holds a game build this computer can run: the program itself,
+/// or an archive with one inside ([`read_program`]).
+///
+/// The drop target asks before it calls a dropped file a build
+/// (`import::what`), because a file with no extension could be anything.
+/// [`import`] checks again and says precisely why a file is not one, so this
+/// answers only yes or no. It reads the whole program, so it is asked last.
+pub fn holds_game(path: &Path) -> bool {
+    let file = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    read_program(path, &file).is_ok_and(|program| is_game(&program))
 }
 
 fn not_a_game(file: &str) -> String {

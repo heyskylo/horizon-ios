@@ -1,7 +1,23 @@
 //! Speaking to servers of an older release: the first layer of the native protocol adapter (roadmap
 //! `older-servers`). Horizon's packets are 26.3's; a server on another protocol numbers them differently.
-//! This maps packet ids per connection state, both ways. It does not translate packet contents.
+//! This maps packet ids per connection state, both ways; a [`Session`] follows one connection's states
+//! and renumbers what goes through it. [`ids`] renumbers the registry ids inside packets as the shared
+//! readers decode them, and `translate` rewrites the packets whose layout changed. An older version is
+//! translated a release at a time (26.1 to 26.2, then 26.2 to 26.3), with its ids mapped straight to the
+//! pinned ones.
+pub mod ids;
+pub mod session;
+mod translate;
+pub mod v1_21_10;
+mod v1_21_10_ids;
+pub mod v1_21_11;
+mod v1_21_11_ids;
+pub mod v26_1_2;
+mod v26_1_2_ids;
 pub mod v26_2;
+mod v26_2_ids;
+
+pub use session::Session;
 
 use crate::{
     Direction, Result, State,
@@ -15,16 +31,37 @@ pub enum ServerVersion {
     #[default]
     Current,
     V26_2,
+    /// 26.1, 26.1.1 and 26.1.2: one protocol.
+    V26_1,
+    V1_21_11,
+    /// 1.21.9 and 1.21.10: one protocol.
+    V1_21_10,
 }
 
 impl ServerVersion {
-    pub const ALL: [Self; 2] = [Self::Current, Self::V26_2];
+    /// Newest first.
+    pub const ALL: [Self; 5] = [
+        Self::Current,
+        Self::V26_2,
+        Self::V26_1,
+        Self::V1_21_11,
+        Self::V1_21_10,
+    ];
+
+    /// Whether this is `other` or an older release: the translation steps from `other` up apply.
+    pub fn at_most(self, other: Self) -> bool {
+        let age = |v: Self| Self::ALL.iter().position(|&a| a == v).unwrap_or(0);
+        age(self) >= age(other)
+    }
 
     /// The protocol number its handshake states.
     pub fn protocol(self) -> i32 {
         match self {
             Self::Current => crate::PROTOCOL_VERSION,
             Self::V26_2 => v26_2::PROTOCOL,
+            Self::V26_1 => v26_1_2::PROTOCOL,
+            Self::V1_21_11 => v1_21_11::PROTOCOL,
+            Self::V1_21_10 => v1_21_10::PROTOCOL,
         }
     }
 
@@ -33,6 +70,9 @@ impl ServerVersion {
         match self {
             Self::Current => crate::GAME_VERSION,
             Self::V26_2 => v26_2::NAME,
+            Self::V26_1 => "26.1",
+            Self::V1_21_11 => v1_21_11::NAME,
+            Self::V1_21_10 => "1.21.10",
         }
     }
 
@@ -53,11 +93,93 @@ impl ServerVersion {
         self.map(state, Direction::Serverbound, id)
     }
 
+    /// How this version numbers block states and registries, against the pinned one. `None` for the pinned
+    /// version itself.
+    pub fn ids(self) -> Option<&'static ids::Ids> {
+        // Before 26.3 a tag slot display was a bare tag id, and pot decorations were item ids.
+        const BEFORE_26_3: ids::Quirks = ids::Quirks {
+            tag_slot_display_is_id: true,
+            pot_decorations_are_items: true,
+            either_holder_song_and_tag_resistance: false,
+            stacks_in_components: false,
+        };
+        // Before 26.1 a jukebox song was an EitherHolder, damage resistance a tag, and the items components
+        // hold ItemStacks.
+        const BEFORE_26_1: ids::Quirks = ids::Quirks {
+            either_holder_song_and_tag_resistance: true,
+            stacks_in_components: true,
+            ..BEFORE_26_3
+        };
+        static V26_2: ids::Ids = ids::Ids {
+            quirks: BEFORE_26_3,
+            ..v26_2_ids::IDS
+        };
+        static V26_1: ids::Ids = ids::Ids {
+            quirks: BEFORE_26_3,
+            ..v26_1_2_ids::IDS
+        };
+        static V1_21_11: ids::Ids = ids::Ids {
+            quirks: BEFORE_26_1,
+            // 26.1 registered the cat, cow, pig and chicken sound variants among the others.
+            entity_data_serializer: ids::Remap::Runs {
+                up: &[
+                    (0, 0, 22),
+                    (22, 23, 1),
+                    (23, 25, 4),
+                    (27, 30, 1),
+                    (28, 32, 11),
+                ],
+                down: &[
+                    (0, 0, 22),
+                    (23, 22, 1),
+                    (25, 23, 4),
+                    (30, 27, 1),
+                    (32, 28, 11),
+                ],
+            },
+            ..v1_21_11_ids::IDS
+        };
+        static V1_21_10: ids::Ids = ids::Ids {
+            quirks: BEFORE_26_1,
+            // As 1.21.11's, without the zombie nautilus variant 1.21.11 added after the chicken's.
+            entity_data_serializer: ids::Remap::Runs {
+                up: &[
+                    (0, 0, 22),
+                    (22, 23, 1),
+                    (23, 25, 4),
+                    (27, 30, 1),
+                    (28, 33, 9),
+                ],
+                down: &[
+                    (0, 0, 22),
+                    (23, 22, 1),
+                    (25, 23, 4),
+                    (30, 27, 1),
+                    (33, 28, 9),
+                ],
+            },
+            ..v1_21_10_ids::IDS
+        };
+        match self {
+            Self::Current => None,
+            Self::V26_2 => Some(&V26_2),
+            Self::V26_1 => Some(&V26_1),
+            Self::V1_21_11 => Some(&V1_21_11),
+            Self::V1_21_10 => Some(&V1_21_10),
+        }
+    }
+
     fn map(self, state: State, direction: Direction, id: i32) -> Option<i32> {
         let table = match (self, direction) {
             (Self::Current, _) => return Some(id),
             (Self::V26_2, Direction::Clientbound) => v26_2::clientbound(state),
             (Self::V26_2, Direction::Serverbound) => v26_2::serverbound(state),
+            (Self::V26_1, Direction::Clientbound) => v26_1_2::clientbound(state),
+            (Self::V26_1, Direction::Serverbound) => v26_1_2::serverbound(state),
+            (Self::V1_21_11, Direction::Clientbound) => v1_21_11::clientbound(state),
+            (Self::V1_21_11, Direction::Serverbound) => v1_21_11::serverbound(state),
+            (Self::V1_21_10, Direction::Clientbound) => v1_21_10::clientbound(state),
+            (Self::V1_21_10, Direction::Serverbound) => v1_21_10::serverbound(state),
         };
         let mapped = *table.get(usize::try_from(id).ok()?)?;
         mapped.map(i32::from)
@@ -100,7 +222,21 @@ mod tests {
             ServerVersion::from_protocol(crate::PROTOCOL_VERSION),
             Some(ServerVersion::Current)
         );
-        assert_eq!(ServerVersion::from_protocol(775), None);
+        assert_eq!(
+            ServerVersion::from_protocol(775),
+            Some(ServerVersion::V26_1)
+        );
+        assert_eq!(
+            ServerVersion::from_protocol(774),
+            Some(ServerVersion::V1_21_11)
+        );
+        assert_eq!(
+            ServerVersion::from_protocol(773),
+            Some(ServerVersion::V1_21_10)
+        );
+        assert_eq!(ServerVersion::from_protocol(772), None);
+        assert!(ServerVersion::V26_1.at_most(ServerVersion::V26_2));
+        assert!(!ServerVersion::V26_2.at_most(ServerVersion::V26_1));
     }
 
     #[test]

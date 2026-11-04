@@ -21,9 +21,9 @@ use horizon_core::{
 use serde_json::Value;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     rc::Rc,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,14 +69,14 @@ pub enum PoolElement {
     },
 }
 #[derive(Clone, Debug)]
-pub struct Jigsaw {
+pub struct Jigsaw<'a> {
     pub pos: [i32; 3],
     pub front: Direction,
     pub top: Direction,
     pub rollable: bool,
-    pub name: Option<String>,
-    pub pool: String,
-    pub target: String,
+    pub name: Option<std::borrow::Cow<'a, str>>,
+    pub pool: std::borrow::Cow<'a, str>,
+    pub target: std::borrow::Cow<'a, str>,
     pub placement_priority: i32,
     pub selection_priority: i32,
 }
@@ -294,13 +294,13 @@ impl PoolElement {
         }
     }
     /// getShuffledJigsawBlocks.
-    pub fn shuffled_jigsaws(
-        &self,
+    pub fn shuffled_jigsaws<'a>(
+        &'a self,
         resources: &StructureResources,
         position: [i32; 3],
         rotation: Rotation,
         random: &mut impl RandomSource,
-    ) -> Vec<Jigsaw> {
+    ) -> Vec<Jigsaw<'a>> {
         match self {
             Self::Empty => Vec::new(),
             Self::Feature { .. } => vec![Jigsaw {
@@ -343,12 +343,12 @@ impl PoolElement {
     }
 }
 /// StructureTemplate.getJigsaws: palette chosen by a position-seeded random.
-fn template_jigsaws(
+fn template_jigsaws<'a>(
     resources: &StructureResources,
-    template: &StructureTemplate,
+    template: &'a StructureTemplate,
     position: [i32; 3],
     rotation: Rotation,
-) -> Vec<Jigsaw> {
+) -> Vec<Jigsaw<'a>> {
     if template.palettes().is_empty() {
         return Vec::new();
     }
@@ -368,7 +368,7 @@ fn template_jigsaws(
             let orientation = resources
                 .registry
                 .state(state)
-                .and_then(|s| s.properties.get("orientation").cloned())
+                .and_then(|s| s.properties.get("orientation").map(String::as_str))
                 .unwrap_or_default();
             let (front, top) = orientation.split_once('_').unwrap_or(("north", "up"));
             Jigsaw {
@@ -376,9 +376,9 @@ fn template_jigsaws(
                 front: direction(front),
                 top: direction(top),
                 rollable: j.rollable,
-                name: Some(j.name.clone()),
-                pool: j.pool.clone(),
-                target: j.target.clone(),
+                name: Some(std::borrow::Cow::Borrowed(&j.name)),
+                pool: std::borrow::Cow::Borrowed(&j.pool),
+                target: std::borrow::Cow::Borrowed(&j.target),
                 placement_priority: j.placement_priority,
                 selection_priority: j.selection_priority,
             }
@@ -552,8 +552,12 @@ impl Pools {
                     match PoolElement::decode(&entry["element"], resources, bindings, None) {
                         Ok(element) => Arc::new(element),
                         Err(error) => {
-                            if std::env::var_os("HORIZON_JIGSAW_DEBUG").is_some() {
-                                eprintln!("pool {name}: {error}");
+                            // Vanilla refuses the data pack; here every structure using the
+                            // pool stops generating, so the reason is the only clue a mod author gets.
+                            // Once per pool: each worker decodes its own copy.
+                            static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+                            if WARNED.lock().unwrap().insert(name.to_owned()) {
+                                log::warn!("Horizon: template pool {name} is left out: {error}");
                             }
                             return None;
                         }
@@ -1071,6 +1075,37 @@ pub fn assemble_drawing(
     random: &mut impl RandomSource,
     position: [i32; 3],
 ) -> Option<([i32; 3], Vec<PoolPiece>)> {
+    let start = place_start(
+        draws, config, context, pools, resources, bindings, random, position,
+    )?;
+    Some(lay_out_children(
+        draws, start, config, context, pools, resources, bindings, random,
+    ))
+}
+
+/// A jigsaw's start piece in place ([`place_start`]), its children not laid out yet: vanilla's
+/// `Structure.GenerationStub`, whose position the structure's biome is checked at before
+/// `JigsawPlacement.addPieces` lays the rest out.
+pub struct PlacedStart {
+    /// The start position (`[centre x, start y, centre z]`).
+    pub position: [i32; 3],
+    center: PoolPiece,
+}
+
+/// The first half of [`assemble_drawing`]: the start piece drawn, rotated, projected to the
+/// heightmap and checked against the height limits. None when the start is invalid. The
+/// draws it makes come first in `random`, as in `assemble_drawing`.
+#[allow(clippy::too_many_arguments)]
+pub fn place_start(
+    draws: Draws,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+    position: [i32; 3],
+) -> Option<PlacedStart> {
     let alias = |name: &str| {
         config
             .aliases
@@ -1140,6 +1175,29 @@ pub fn assemble_drawing(
         return None;
     }
     let cy = bottom + local[1];
+    Some(PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    })
+}
+
+/// The second half of [`assemble_drawing`]: the children of a [`place_start`]ed start laid out
+/// to `config.max_depth`, with the same `random`. Returns the start position and every piece.
+#[allow(clippy::too_many_arguments)]
+pub fn lay_out_children(
+    draws: Draws,
+    start: PlacedStart,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+) -> ([i32; 3], Vec<PoolPiece>) {
+    let PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    } = start;
     let mut pieces = vec![center];
     if config.max_depth > 0 {
         let [h, v] = config.max_distance;
@@ -1160,7 +1218,7 @@ pub fn assemble_drawing(
             container,
         );
     }
-    Some(([cx, cy, cz], pieces))
+    ([cx, cy, cz], pieces)
 }
 
 /// The inner JigsawPlacement.addPieces: lays out the children of

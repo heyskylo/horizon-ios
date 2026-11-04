@@ -66,10 +66,10 @@ impl Game<'_> {
         }
         let at = m.center();
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
-        let harnessed = m.extra.head.is_some();
+        let harnessed = m.extra.body.is_some();
         // Equippable.equipOnInteract: a harness goes on a bare adult.
         if item.ends_with("_harness") && item.starts_with("minecraft:") && !harnessed {
-            self.mobs[index].extra.head = Some(item.into());
+            self.mobs[index].extra.body = Some(item.into());
             self.audio
                 .play("minecraft:entity.happy_ghast.equip", Some(at), 1.0, 1.0);
             self.consume_held();
@@ -79,7 +79,7 @@ impl Game<'_> {
         if item == "minecraft:shears"
             && harnessed
             && !sneaking
-            && let Some(harness) = self.mobs[index].extra.head.take()
+            && let Some(harness) = self.mobs[index].extra.body.take()
         {
             self.audio
                 .play("minecraft:entity.happy_ghast.unequip", Some(at), 1.0, 1.0);
@@ -90,7 +90,7 @@ impl Game<'_> {
         if harnessed && !sneaking {
             // doPlayerRide.
             let id = self.mobs[index].id;
-            if !self.native_may_board(id) {
+            if !self.may_board() || !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);
@@ -155,7 +155,12 @@ impl Game<'_> {
         if let Some(id) = self.spawn_mob("minecraft:happy_ghast", at, true)
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
         {
-            m.extra.age = -24000;
+            // DriedGhastBlock.spawnGhastling sets the baby age before
+            // addFreshEntity, so ageBoundaryReached runs the ghastling setup
+            // (`babyGhastSetup`) while the mob is still being hatched: its
+            // goals, navigation and brain are a ghastling's before its first
+            // tick, not an adult's until the next aiStep.
+            horizon_client::mobs::finalize::set_age(m, -24000);
             m.yaw = yaw;
             m.body_yaw = yaw;
             m.head_yaw = yaw;

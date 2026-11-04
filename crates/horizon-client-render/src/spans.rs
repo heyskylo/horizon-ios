@@ -18,7 +18,14 @@ thread_local! {
     static HERE: Cell<bool> = const { Cell::new(false) };
     /// How many timed spans the thread is inside: the next span's [`Span::depth`].
     static DEPTH: Cell<u8> = const { Cell::new(0) };
+    /// What this thread's slowest steps were busy with since it last took them ([`note`]).
+    static NOTES: RefCell<Vec<(f32, String)>> = const { RefCell::new(Vec::new()) };
 }
+
+/// The shortest step a [`note`] keeps, in milliseconds.
+pub const NOTE_MS: f32 = 10.0;
+/// The notes a thread keeps between two [`take_notes`]: its slowest steps.
+const NOTES_KEPT: usize = 3;
 
 /// A named timing: wall milliseconds and the thread's CPU milliseconds in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,26 +68,78 @@ fn cpu_if_enabled() -> Option<Duration> {
 /// Run `f`, recording its duration under `name` when spans are enabled.
 #[inline]
 pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let _span = guard(name);
+    f()
+}
+/// A span that ends where it is dropped: [`time`] for a step with several ways out (early
+/// returns). Nothing is read while spans are off.
+#[must_use = "the span ends when the guard is dropped"]
+pub struct Guard {
+    open: Option<(&'static str, Instant, Option<Duration>, u8)>,
+    _heap: Option<horizon_threads::heap_census::Tag>,
+}
+/// Start a span named `name` that ends when the returned [`Guard`] is dropped.
+#[inline]
+pub fn guard(name: &'static str) -> Guard {
+    let _heap = horizon_threads::heap_tag(name);
     if !recording_here() {
-        return f();
+        return Guard { open: None, _heap };
     }
     let depth = DEPTH.with(|d| d.replace(d.get().saturating_add(1)));
-    let (started, cpu) = (Instant::now(), cpu_if_enabled());
-    let out = f();
-    let ms = started.elapsed().as_secs_f32() * 1000.0;
-    let cpu_ms = cpu
-        .and_then(|start| Some((thread_cpu()?, start)))
-        .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
-    DEPTH.with(|d| d.set(depth));
-    SPANS.with(|s| {
-        s.borrow_mut().push(Span {
-            name,
-            ms,
-            cpu_ms,
-            depth,
-        })
+    Guard {
+        open: Some((name, Instant::now(), cpu_if_enabled(), depth)),
+        _heap,
+    }
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let Some((name, started, cpu, depth)) = self.open.take() else {
+            return;
+        };
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        let cpu_ms = cpu
+            .and_then(|start| Some((thread_cpu()?, start)))
+            .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
+        DEPTH.with(|d| d.set(depth));
+        SPANS.with(|s| {
+            s.borrow_mut().push(Span {
+                name,
+                ms,
+                cpu_ms,
+                depth,
+            })
+        });
+    }
+}
+/// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
+/// packets, say), when this thread records spans and the step took at least [`NOTE_MS`]: a
+/// span says where a slow tick went, its notes whose doing it was. Only the slowest few are
+/// kept, and `what` is built only for a step that is.
+pub fn note(ms: f32, what: impl FnOnce() -> String) {
+    if ms < NOTE_MS || !recording_here() {
+        return;
+    }
+    NOTES.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.len() >= NOTES_KEPT {
+            let Some((i, _)) = n
+                .iter()
+                .enumerate()
+                .filter(|(_, (kept, _))| *kept < ms)
+                .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            else {
+                return;
+            };
+            n.swap_remove(i);
+        }
+        n.push((ms, what()));
     });
-    out
+}
+/// This thread's notes ([`note`]), slowest first; clears them.
+pub fn take_notes() -> Vec<(f32, String)> {
+    let mut notes = NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    notes.sort_by(|a, b| b.0.total_cmp(&a.0));
+    notes
 }
 /// Consecutive steps of one function timed as spans: each [`Laps::lap`] records the time since
 /// the previous one (or since [`laps`]) under its name. Nothing is read while spans are off.
@@ -291,9 +350,15 @@ pub mod startup {
     pub struct Step {
         name: &'static str,
         started: Instant,
+        traced: bool,
+        /// A heap-census build's tag for the step's allocations.
+        _heap: Option<horizon_threads::heap_census::Tag>,
     }
     impl Drop for Step {
         fn drop(&mut self) {
+            if !self.traced {
+                return;
+            }
             let end = Instant::now();
             write(format_args!(
                 r#""ph":"X","name":"{}","ts":{},"dur":{}"#,
@@ -307,9 +372,12 @@ pub mod startup {
     /// Starts a step named `name` (a literal: no quotes or backslashes).
     #[inline]
     pub fn step(name: &'static str) -> Option<Step> {
-        on().then(|| Step {
+        let traced = on();
+        (traced || horizon_threads::HEAP_CENSUS).then(|| Step {
             name,
             started: Instant::now(),
+            traced,
+            _heap: horizon_threads::heap_tag(name),
         })
     }
 
@@ -394,6 +462,41 @@ pub mod startup {
 #[cfg(test)]
 mod tests {
     use super::Span;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Spans on for every thread ([`super::enable`]) is process-wide: a test that turns them on
+    /// would make another, run beside it, record what it expects left out. Those tests take
+    /// this lock.
+    fn spans_switch() -> MutexGuard<'static, ()> {
+        static SWITCH: Mutex<()> = Mutex::new(());
+        SWITCH.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A slow tick's notes are its slowest steps, slowest first; short steps and steps on a
+    /// thread that records no spans leave none.
+    #[test]
+    fn notes_keep_the_slowest_steps() {
+        let _switch = spans_switch();
+        super::record_here(false);
+        super::note(500.0, || "unrecorded".into());
+        assert!(super::take_notes().is_empty());
+        super::record_here(true);
+        for (ms, what) in [
+            (12.0, "a"),
+            (900.0, "b"),
+            (3.0, "short"),
+            (40.0, "c"),
+            (11.0, "d"),
+            (60.0, "e"),
+        ] {
+            super::note(ms, || what.into());
+        }
+        let notes: Vec<(f32, String)> = super::take_notes();
+        super::record_here(false);
+        let names: Vec<&str> = notes.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(names, ["b", "e", "c"]);
+        assert!(super::take_notes().is_empty(), "taking them clears them");
+    }
 
     /// Spans of one name add up; a span the thread spent mostly waiting
     /// shows its CPU time after the wall time, short ones are left out.
@@ -469,6 +572,42 @@ mod tests {
         .unwrap();
     }
 
+    /// A guarded span ends on every way out of its step, an early return's too, and holds the
+    /// spans that ran inside it until then; the next span outside it is back at its depth.
+    #[test]
+    fn a_guarded_span_ends_where_its_step_returns() {
+        fn step(early: bool) -> u32 {
+            let _span = super::guard("use_block");
+            super::time("open_loot", || ());
+            if early {
+                return 1;
+            }
+            super::time("open_maps", || ());
+            2
+        }
+        std::thread::spawn(|| {
+            super::record_here(true);
+            assert_eq!(step(true), 1);
+            assert_eq!(step(false), 2);
+            super::time("use_item", || ());
+            let raw = super::take_raw();
+            let seen: Vec<_> = raw.iter().map(|s| (s.name, s.depth)).collect();
+            assert_eq!(
+                seen,
+                [
+                    ("open_loot", 1),
+                    ("use_block", 0),
+                    ("open_loot", 1),
+                    ("open_maps", 1),
+                    ("use_block", 0),
+                    ("use_item", 0)
+                ]
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
     /// A slow frame is put down to the slowest outer span, then to the span inside it that took
     /// at least half of it; repeated spans (several ticks a frame) add up.
     #[test]
@@ -505,6 +644,7 @@ mod tests {
     /// Laps record the steps between them while spans are on, and nothing while off.
     #[test]
     fn laps_time_consecutive_steps() {
+        let _switch = spans_switch();
         let _ = super::take();
         let mut off = super::laps();
         off.lap("unseen");

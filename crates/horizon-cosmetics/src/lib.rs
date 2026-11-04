@@ -1,0 +1,48 @@
+//! Cosmetic items that Horizon clients draw on players: hats, back items,
+//! shoulder pets, name tag styles. Only Horizon clients see them; the game protocol carries
+//! nothing about them ([docs/cosmetics.md](../../../docs/cosmetics.md)).
+//!
+//! An item is a small model of boxes (Minecraft's box UV, as Blockbench's
+//! "Modded Entity" format), one texture of at most 64×64, the bone of the
+//! player model it rides on and a few simple looping animations; a name tag
+//! style is a small mark and a line colour, with no model. This crate
+//! reads and checks items and poses them; the game draws them.
+
+pub mod account;
+mod fetch;
+mod item;
+mod pose;
+pub mod prefs;
+pub mod preview;
+
+pub use fetch::{BATCH, Clock, Cosmetics, Frame, Http, Local, Transport, Worn};
+pub use item::{
+    Animation, Axis, Bone, Error, FORMAT, Face, Item, MAX_MARK, MAX_PARTS, MAX_REACH, MAX_TEXTURE,
+    MAX_VERTICES, Motion, Part, Slot, Tag, Texture,
+};
+pub use pose::{Pose, pose_matrix};
+
+/// Cosmetics run by default (Ludovic, 2026-11-04: on when the shop opens): the game asks what
+/// players in view wear and draws it, and its settings show and hide them (both shown by
+/// default). `HORIZON_COSMETICS=0` turns them off.
+pub const ON_BY_DEFAULT: bool = true;
+
+/// The cosmetics service (`HORIZON_COSMETICS_API` overrides it).
+pub const API: &str = "https://cosmetics.playhorizon.dev";
+
+/// Whether cosmetics run: `ON_BY_DEFAULT`, or `HORIZON_COSMETICS=1` / `0` for one run
+/// (development, the bench).
+pub fn enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("HORIZON_COSMETICS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => ON_BY_DEFAULT,
+    })
+}
+
+/// `HORIZON_COSMETICS=1` asked for this run: the launcher shows its Wardrobe even while the
+/// cosmetics service has no Shop to show (development, screenshots).
+pub fn forced() -> bool {
+    std::env::var("HORIZON_COSMETICS").as_deref() == Ok("1")
+}
