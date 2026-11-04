@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "client_chat_received",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_chat_received",
+      "neoforge": "ClientChatReceivedEvent",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a chat line from the server about to show, replaceable or cancellable (`native_client_chat_received`).",
+  "doc_summary": "A chat line from the server is about to show, once Chat Delay lets it through: `native_client_chat_received(system, overlay, sender, chat_type, message, cancel)`, NeoForge's `ClientChatReceivedEvent`, for system messages (`overlay` for the action bar), player chat and disguised chat. `sender` is 0 for system and disguised messages; `chat_type` is the chat type's registry name. Replace `message` to show another line, or set `cancel` to hide it. Bundles need \"hooks\": @API:client_chat_received@."
+}

@@ -29,6 +29,8 @@ use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
 const BUFFERS: usize = horizon_shaders::BUFFERS;
 
+mod packed;
+
 #[cfg(test)]
 mod world_target_tests;
 
@@ -1107,6 +1109,8 @@ struct Resources<'a> {
     storable: u16,
     /// The buffers of a three-channel format (`rgb`): they have no alpha to write, and read 1.
     rgb: u16,
+    /// The bits per channel a buffer of a small packed format keeps ([`packed::bits`]).
+    packed: [Option<[u8; 4]>; BUFFERS],
     /// The stage (`texture.<stage>`) of the programs built so far, and the buffers one of them
     /// flipped: a `texture.<stage>.colortexN` no longer stands in for buffer N in the stage's
     /// later programs, which read what was written, as in Iris. `final` continues
@@ -1503,6 +1507,8 @@ fn build_pass(
     let final_pass = p.group == Group::Final;
     let mut targets = Vec::new();
     let mut writes = Vec::new();
+    // Outputs into a buffer of a small packed format, and the bits it keeps.
+    let mut packed_outputs = Vec::new();
     for &location in &interface.outputs {
         let l = location as usize;
         if targets.len() <= l {
@@ -1533,6 +1539,11 @@ fn build_pass(
                 .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
             {
                 t.blend = Some(blend_state(b));
+            }
+            if !p.group.shadow()
+                && let Some(bits) = pack.packed[buffer as usize]
+            {
+                packed_outputs.push((location, bits));
             }
             targets[l] = state;
             writes.push((location, buffer as usize));
@@ -1593,7 +1604,9 @@ fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
-        let (vs, fs) = (module(program.vertex), module(program.fragment));
+        let mut fragment = program.fragment;
+        packed::quantise_outputs(&mut fragment, &packed_outputs);
+        let (vs, fs) = (module(program.vertex), module(fragment));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -1839,8 +1852,16 @@ fn build_compute(
     })
 }
 
+/// Why a pack can't run, and the notes of loading it until then (why programs were skipped).
+#[derive(Debug)]
+pub struct Refused {
+    pub reason: String,
+    pub notes: Vec<String>,
+}
+
 impl PackPost {
-    /// Builds the pipelines of `post` for a screen of `screen` format.
+    /// Builds the pipelines of `post` for a screen of `screen` format. An error when the pack
+    /// can't show anything on the screen: the game turns it off, as a pack that fails to load.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1848,7 +1869,7 @@ impl PackPost {
         mut post: Post,
         screen: wgpu::TextureFormat,
         world: World<'_>,
-    ) -> Self {
+    ) -> Result<Self, Refused> {
         // What the pack's shaders need of its storage buffers, before its parts move out.
         let minimums = post.buffer_minimums();
         let features = device.features();
@@ -1864,6 +1885,10 @@ impl PackPost {
         let rgb = (0..BUFFERS)
             .filter(|&i| post.config.buffers[i].format.channels == 3)
             .fold(0u16, |m, i| m | 1 << i);
+        // A small packed format's buffer reads back fewer bits, as in Iris: its clears and
+        // what its passes write keep only those.
+        let packed: [Option<[u8; 4]>; BUFFERS] =
+            std::array::from_fn(|i| packed::bits(post.config.buffers[i].format));
         let clears = std::array::from_fn(|i| {
             let b = &post.config.buffers[i];
             b.clear.then(|| {
@@ -1871,7 +1896,7 @@ impl PackPost {
                 if rgb & 1 << i != 0 {
                     c[3] = 1.0;
                 }
-                c
+                packed[i].map_or(c, |bits| packed::quantise(c, bits))
             })
         });
         let mut notes = post.notes;
@@ -1976,6 +2001,7 @@ impl PackPost {
             gpu,
             storable,
             rgb,
+            packed,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
@@ -2255,6 +2281,22 @@ impl PackPost {
             .filter(|p| !skip.split(',').any(|s| s == p.name))
             .filter_map(|p| build(p, None))
             .collect();
+        // The screen gets colortex0 through `final`, or else through Horizon's copy, which reads
+        // floats: an integer colortex0 (`RGBA32UI`...) with no `final` left to draw can't reach
+        // it (#9165).
+        let shows = passes
+            .iter()
+            .any(|p| p.group == Group::Final && matches!(p.pipeline, Pipeline::Render(_)));
+        if !shows && !holds_floats(formats[0]) {
+            return Err(Refused {
+                reason: format!(
+                    "colortex0 has an integer format ({:?}) and no `final` program draws it to \
+                     the screen",
+                    formats[0]
+                ),
+                notes,
+            });
+        }
         let shadow_comp: Vec<Pass> = post
             .shadow_comp
             .into_iter()
@@ -2551,7 +2593,7 @@ impl PackPost {
         let white = [255u8; 4];
         let black = [0u8; 4];
         let flat_normal = [128u8, 128, 255, 255];
-        Self {
+        Ok(Self {
             notes,
             setup_pending: true,
             passes,
@@ -2714,7 +2756,7 @@ impl PackPost {
                 u
             },
             shadow_cache: Default::default(),
-        }
+        })
     }
 
     /// Writes `pass`'s uniforms for a target of `out` pixels; its bind group for the buffers'
@@ -4588,14 +4630,8 @@ impl PackPost {
                 .as_ref()
                 .map(|t| &t[main(m, i) ^ usize::from(alt)])
         };
-        // An integer colortex0 has no colour to show: the screen is only cleared.
-        if !shown && !holds_floats(self.formats[0]) {
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Shader pack colortex0"),
-                color_attachments: &[attach(screen, overwrite)],
-                ..Default::default()
-            });
-        } else if !shown {
+        // Without `final`, colortex0 holds floats (`new` refuses an integer one).
+        if !shown {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack colortex0"),
                 layout: &self.copy.1,
@@ -4775,6 +4811,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -4855,6 +4892,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -4996,6 +5034,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -5167,6 +5206,9 @@ mod material_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod packed_tests;
 
 #[cfg(test)]
 mod trinary_tests;

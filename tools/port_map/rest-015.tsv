@@ -20,7 +20,7 @@ FunctionCommand.register	port	crates/horizon-command/src/tree_misc.rs::function	
 FunctionCommand.getArgumentTag	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	with <path> branch reads the tag and rejects non-compound
 FunctionCommand.queueFunctions	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	no-return path runs in cmd_function; return path goes through run_return_run
 FunctionCommand.instantiateAndQueueFunctions	port	crates/horizon-client/src/game/functions.rs::Game::run_function	instantiates with arguments and runs; instantiation failure reported
-FunctionCommand.decorateOutputIfNeeded	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	per-function result message when a value comes back
+FunctionCommand.decorateOutputIfNeeded	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	per-function result feedback for explicit values and return fail (zero); failure callback remains false/0 and no-return functions stay silent; command-exec function return feedback controls
 FunctionCommand.queueFunctionsAsReturn	port	crates/horizon-client/src/game/commands/execute.rs::Game::run_return_run	gap: minor: several functions under 'return run' return their sum; vanilla hands each result to the frame
 FunctionCommand.queueFunctionsNoReturn	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	sums results into the caller's callback
 GameModeCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	gamemode literal with gamemode and target arguments

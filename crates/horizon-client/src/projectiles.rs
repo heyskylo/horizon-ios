@@ -998,13 +998,14 @@ impl Projectile {
     /// AbstractHurtingProjectile.applyInertia, on both server and client.
     pub fn apply_hurting_inertia(&mut self, water: bool) {
         // WitherSkull.getInertia: 0.73 for dangerous skulls.
-        let inertia = match self.kind {
-            ProjectileKind::WitherSkull { dangerous: true } => 0.73,
+        // Vanilla returns float inertia and widens it before scaling double motion.
+        let inertia = f64::from(match self.kind {
+            ProjectileKind::WitherSkull { dangerous: true } => 0.73_f32,
             // AbstractWindCharge.getInertia and getLiquidInertia.
             ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0,
             _ if water => 0.8,
             _ => 0.95,
-        };
+        });
         let v = self.velocity;
         let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0e-9);
         self.velocity = Vec3::new(
@@ -1724,8 +1725,8 @@ mod tests {
         );
         let w = Empty(vec![]);
         p.tick(&w);
-        // (0.1 + 0.1) * 0.95
-        assert!((p.velocity.x - 0.19).abs() < 1e-9);
+        // Fresh Java 26.3: (0.1 + 0.1) * (double) 0.95f.
+        assert_eq!(p.velocity.x, 0.189_999_997_615_814_2);
     }
 
     /// `Fireball.setItem` with `Fireball.defineSynchedData`'s default and
@@ -1799,8 +1800,26 @@ mod tests {
         // A redirected projectile can carry a different acceleration power.
         p.acceleration = 0.2;
         p.tick(&Empty(vec![]));
-        assert!((p.velocity.x - 0.285).abs() < 1e-9);
-        assert!((p.position.x - 0.285).abs() < 1e-9);
+        assert_eq!(p.velocity.x, 0.284_999_996_423_721_37);
+        assert_eq!(p.position.x, 0.284_999_996_423_721_37);
+    }
+
+    #[test]
+    fn hurting_inertia_widens_water_and_dangerous_skull_floats() {
+        for (kind, water, expected) in [
+            (ProjectileKind::SmallFireball, true, 0.160_000_002_384_185_8),
+            (
+                ProjectileKind::WitherSkull { dangerous: true },
+                false,
+                0.146_000_003_814_697_27,
+            ),
+        ] {
+            let mut p = Projectile::new(kind, Vec3::ZERO, None);
+            p.velocity = Vec3::new(0.1, 0.0, 0.0);
+            p.acceleration = 0.1;
+            p.apply_hurting_inertia(water);
+            assert_eq!(p.velocity, Vec3::new(expected, 0.0, 0.0));
+        }
     }
 
     #[test]
