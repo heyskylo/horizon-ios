@@ -814,6 +814,8 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
+            // aiStep's freezing step (removeFrost) makes the speed instance.
+            a.speed_instance = true;
             let (water_height, lava_height) =
                 a.push_by_fluid(&self.world, &self.res.motion().fluids);
             let in_water = water_height > 0.0;
