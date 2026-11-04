@@ -83,8 +83,12 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
+    parser.add_argument('--reinforcement-original-diagnostic', action='store_true', help='replay the original unisolated174/108 fixture, retaining its terrain prerequisite failure')
+    parser.add_argument('--reinforcement-target-diagnostic', action='store_true', help='retain the separate creative-callee target relation record (full209)')
+    parser.add_argument('--reinforcement-raw-diagnostic', action='store_true', help='add unnormalized full callee snapshots; not the typed gate')
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
@@ -105,6 +109,18 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    isolated_reinforcements = {'command zombie reinforcements', 'command reinforcement once'}
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in isolated_reinforcements]
+    if args.reinforcement_raw_diagnostic or args.reinforcement_original_diagnostic:
+        groups = [(name, corpus_module.command_zombie_reinforcements(
+            once=name == 'command reinforcement once', raw=args.reinforcement_raw_diagnostic, legacy=args.reinforcement_original_diagnostic) if name in isolated_reinforcements else ops)
+            for name, ops in groups]
+    if not args.reinforcement_target_diagnostic and not args.reinforcement_raw_diagnostic and not args.reinforcement_original_diagnostic:
+        # H300's declared208 gate excludes exactly this separate target-policy lead.
+        # --reinforcement-target-diagnostic retains full209/all30 original records.
+        groups = [(name, [op for op in ops if op.get('label') != 'h300 original/hard/callee target']
+                   if name == 'command zombie reinforcements' else ops) for name, ops in groups]
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]
@@ -120,6 +136,8 @@ def main():
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
+    if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
+        parser.error('reinforcement fixtures require --only with one exact group')
     script = []
     for _, lines in groups:
         script.extend(lines)
