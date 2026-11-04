@@ -92,7 +92,7 @@ jobs:
       source_tag: ${{ steps.pick.outputs.source_tag }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -124,14 +124,14 @@ jobs:
         env:
           SHA: ${{ steps.pick.outputs.sha }}
         run: git archive --format=tar.gz --prefix="horizon-${SHA:0:7}/" -o horizon-source.tar.gz "$SHA"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.pick.outputs.build == 'true'
         with:
           name: horizon-source
           path: horizon-source.tar.gz
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nightly-notes
           path: nightly-notes.md
@@ -155,12 +155,12 @@ jobs:
     # The key's only job: main's sign_release.sh hashes the archives and signs with the runner's OpenSSL.
     environment: ${{ needs.pick.outputs.dry_run != 'true' && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: tools/ci/sign_release.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: horizon-*
@@ -178,13 +178,13 @@ jobs:
             "${arm64[@]}" \
             dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-server-linux-x86_64.tar.gz \
             dist/horizon-source.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signature
           path: dist/SHA256SUMS*
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.pick.outputs.dry_run == 'true'
         with:
           name: ephemeral.pub
@@ -199,10 +199,10 @@ jobs:
       contents: write
       issues: read          # the open release-blocker issues (gate)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

@@ -74,7 +74,7 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: mode
@@ -166,7 +166,7 @@ jobs:
         working-directory: launcher
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.decide.outputs.head }}
           persist-credentials: false
@@ -321,7 +321,7 @@ jobs:
         # so the ZIP's copy stays the launcher. Both go into the release's signed SHA256SUMS.
         if: runner.os == 'Windows'
         run: cp "$BIN/${{ matrix.binary }}" "out/${{ matrix.setup_asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: launcher/out/*
@@ -339,12 +339,12 @@ jobs:
     # tools/ci/sign_release.sh, which calls only the runner's sha256sum and OpenSSL (docs/release-flow.md).
     environment: ${{ needs.decide.outputs.dry_run != 'true' && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: tools/ci/sign_release.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: horizon-launcher-*
@@ -356,13 +356,13 @@ jobs:
           EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
           TAG: ${{ needs.decide.outputs.tag }}
         run: bash tools/ci/sign_release.sh "$TAG" dist/horizon-launcher-*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signature
           path: dist/SHA256SUMS*
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.decide.outputs.dry_run == 'true'
         with:
           name: ephemeral.pub
@@ -376,7 +376,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Notes
@@ -386,7 +386,7 @@ jobs:
           python3 tools/release_train.py notes --kind launcher --tag "${{ needs.decide.outputs.tag }}" \
             --head "${{ needs.decide.outputs.head }}" --out notes > /dev/null
           { echo "## $(cat notes/title.txt)"; echo; cat notes/body.md; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -419,7 +419,7 @@ jobs:
         run: |
           echo "Would publish ${{ needs.decide.outputs.tag }} at ${{ needs.decide.outputs.head }}: $(cat notes/title.txt)"
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: launcher-release-notes
           path: notes/

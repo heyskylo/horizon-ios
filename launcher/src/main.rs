@@ -306,6 +306,8 @@ struct Launcher {
     skin: Option<skin_page::SkinPanel>,
     /// The Wardrobe page's account and outfit (`wardrobe_page.rs`).
     wardrobe: Option<wardrobe_page::Wardrobe>,
+    /// Name tag styles' marks; they outlive the account's `wardrobe`.
+    wardrobe_marks: wardrobe_page::Marks,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
     /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
@@ -617,6 +619,7 @@ impl Launcher {
             menu_closed_at: None,
             skin: None,
             wardrobe: None,
+            wardrobe_marks: Default::default(),
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
@@ -1209,7 +1212,6 @@ impl Launcher {
                             .unwrap_or_default();
                         cmd.envs(self.client_vars.iter().map(|(k, v)| (k, v)));
                         let launch = instance.map(|i| i.launch).unwrap_or_default();
-                        horizon_launcher::launch::limit_memory(&mut cmd, &launch);
                         let cmd = horizon_launcher::launch::wrap(cmd, &launch);
                         self.client_home = cmd.get_current_dir().map(|d| d.to_path_buf());
                         match backend::spawn(Job::Client, cmd, self.tx.clone()) {
@@ -5054,6 +5056,12 @@ impl Render for Launcher {
         let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
             .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
         let blur = self.look.blur;
+        let performance = self.settings.performance();
+        // Performance mode's plates are solid: no glass, no blur, nothing sampled from the scene.
+        glass::set_plain(performance);
+        self.scene
+            .update(cx, |scene, cx| scene.set_performance(performance, cx));
+        let blur = if performance { 0. } else { blur };
         self.scene
             .update(cx, |scene, cx| scene.set_look(tint, blur, cx));
         self.scale = window.scale_factor();
@@ -5079,6 +5087,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
+        self.wardrobe_marks.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()

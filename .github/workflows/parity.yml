@@ -33,7 +33,7 @@ jobs:
     # harnesses at a time) up to a few hours, and any pull request's job may land there.
     timeout-minutes: ${{ inputs.full && 360 || 180 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The commit the event names: a fork's later pushes need another run-parity label. The next step merges
           # main into it.
@@ -89,7 +89,7 @@ jobs:
         run: python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400  # world_spawn takes ~1480 s on a busy runner
       - name: Logs of the failed harnesses
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parity-logs
           path: .local/parity-runner/logs/

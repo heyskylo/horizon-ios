@@ -1,8 +1,9 @@
 //! The writers `/tp` and `/rotate` share with a vehicle's riders: a vehicle
-//! that is teleported takes its passengers along in the same operation
-//! (`Entity.teleportSameDimension` -> `teleportPassengers` with
-//! `calculatePassengerTransition`), and `/rotate` turns an entity without
-//! teleporting it (`RotateCommand` -> `Entity.forceSetRotation`).
+//! that is teleported takes its passengers along in the same operation, by the
+//! vehicle's offset and the angles it was placed at (`Entity.teleport` ->
+//! `teleportSameDimension` -> `calculatePassengerTransition`), and `/rotate`
+//! turns an entity without teleporting it (`RotateCommand` ->
+//! `Entity.forceSetRotation`).
 use super::Game;
 use super::commands::Target;
 use horizon_core::geometry::Vec3;
@@ -26,6 +27,31 @@ pub(super) fn absolute_pitch(pitch: f32) -> Option<f32> {
     (!clamped.is_nan()).then(|| (clamped % 360.0).clamp(-90.0, 90.0))
 }
 
+/// `Entity.calculatePassengerTransition` for the angles: a rider turns by what
+/// the vehicle turned, keeping `passenger.getYRot() - getYRot()`. An absolute
+/// angle adds that offset to the vehicle's new one; a relative one (`~`) is a
+/// delta the rider adds to its own: the same sum. `after` is the angle before
+/// the vehicle's pitch clamp; the rider's pitch is clamped on its own
+/// (`Entity.setXRot`), and an axis the command did not set leaves the rider's.
+pub(super) fn passenger_rotation(before: [f32; 2], after: [f32; 2], rider: [f32; 2]) -> [f32; 2] {
+    let axis = |i: usize| {
+        if after[i].is_finite() {
+            after[i] + (rider[i] - before[i])
+        } else {
+            rider[i]
+        }
+    };
+    [axis(0), absolute_pitch(axis(1)).unwrap_or(rider[1])]
+}
+
+/// The angles a command turned a vehicle to, with the angles it had before:
+/// what `Entity.calculatePassengerTransition` needs for the riders.
+#[derive(Clone, Copy)]
+pub(super) struct PlacedRotation {
+    pub before: [f32; 2],
+    pub after: [f32; 2],
+}
+
 /// The entity id a vehicle's riders point at, for the targets that carry some.
 fn vehicle_id(t: Target) -> Option<u32> {
     match t {
@@ -35,11 +61,19 @@ fn vehicle_id(t: Target) -> Option<u32> {
 }
 
 impl Game<'_> {
-    /// `Entity.teleportPassengers`: after `t` moved from `from` to `to`, its
-    /// riders move by the same offset and stay seated, recursively. The
-    /// player in place and the hub's guests (a guest also gets its own
-    /// position packet, as `ServerPlayer.teleport` sends one for a passenger).
-    pub(super) fn teleport_passengers(&mut self, t: Target, from: [f64; 3], to: [f64; 3]) {
+    /// `Entity.teleportSameDimension`: after `t` moved from `from` to `to`, its
+    /// riders move by the same offset, and to the angles the vehicle was
+    /// placed at when it turned (`calculatePassengerTransition`), staying
+    /// seated and recursive. The player in place and the hub's guests (a guest
+    /// also gets its own position packet, as `ServerPlayer.teleport` sends one
+    /// for a passenger).
+    pub(super) fn teleport_passengers(
+        &mut self,
+        t: Target,
+        from: [f64; 3],
+        to: [f64; 3],
+        rotation: Option<PlacedRotation>,
+    ) {
         let Some(id) = vehicle_id(t) else {
             return;
         };
@@ -47,9 +81,15 @@ impl Game<'_> {
             Vec3::new(from[0], from[1], from[2]),
             Vec3::new(to[0], to[1], to[2]),
         );
-        self.move_riders(id, old, new);
+        self.move_riders(id, old, new, rotation);
     }
-    fn move_riders(&mut self, vehicle: u32, old: Vec3, new: Vec3) {
+    fn move_riders(
+        &mut self,
+        vehicle: u32,
+        old: Vec3,
+        new: Vec3,
+        rotation: Option<PlacedRotation>,
+    ) {
         let riders: Vec<u32> = self
             .mobs
             .iter()
@@ -60,14 +100,39 @@ impl Game<'_> {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                 m.position = passenger_destination(old, new, m.position);
                 m.previous = m.position;
+                // Entity.calculatePassengerTransition turns the rider with the
+                // vehicle, then Entity.teleportSetPosition keeps the old angles
+                // for the interpolation.
+                if let Some(placed) = rotation {
+                    let [yaw, pitch] =
+                        passenger_rotation(placed.before, placed.after, [m.yaw, m.head_pitch]);
+                    m.yaw = yaw;
+                    m.body_yaw = yaw;
+                    m.head_yaw = yaw;
+                    m.head_pitch = pitch;
+                    m.previous_yaw = yaw;
+                    m.previous_head_pitch = pitch;
+                }
             }
-            self.move_riders(id, old, new);
+            self.move_riders(id, old, new, rotation);
         }
         if self.riding == Some(vehicle)
             && let Some(p) = self.player.as_mut()
         {
             p.position = passenger_destination(old, new, p.position);
             self.previous_position = p.position;
+        }
+        if let Some(placed) = rotation
+            && self.riding == Some(vehicle)
+        {
+            let [yaw, pitch] =
+                passenger_rotation(placed.before, placed.after, [self.yaw, self.pitch]);
+            if yaw.is_finite() {
+                self.yaw = yaw;
+            }
+            if pitch.is_finite() {
+                self.pitch = pitch;
+            }
         }
         let [yaw, pitch] = self.vehicle_rotation(vehicle);
         if let Some(host) = self.lan.as_mut() {
@@ -87,9 +152,23 @@ impl Game<'_> {
                     relatives: 0,
                     on_ground: false,
                 }));
+                if let Some(placed) = rotation {
+                    let g = &mut host.hub.guests[i];
+                    let [yaw, pitch] =
+                        passenger_rotation(placed.before, placed.after, [g.yaw, g.pitch]);
+                    g.yaw = yaw;
+                    g.head_yaw = yaw;
+                    g.pitch = pitch;
+                }
                 let g = host.hub.guests[i].position;
                 let at = passenger_destination(old, new, Vec3::new(g[0], g[1], g[2]));
-                host.hub.teleport_keeping_motion(i, [at.x, at.y, at.z]);
+                if rotation.is_some() {
+                    // A rider turned with its vehicle: its position packet
+                    // carries the new rotation and keeps its motion.
+                    host.hub.teleport_rider(i, [at.x, at.y, at.z]);
+                } else {
+                    host.hub.teleport_keeping_motion(i, [at.x, at.y, at.z]);
+                }
             }
         }
     }
@@ -199,5 +278,34 @@ mod tests {
         assert_eq!(absolute_pitch(f32::NEG_INFINITY), Some(-90.0));
         assert_eq!(absolute_pitch(45.0), Some(45.0));
         assert_eq!(absolute_pitch(f32::NAN), None);
+    }
+    #[test]
+    fn an_absolute_turn_keeps_the_riders_angle_to_the_vehicle() {
+        // A rider 30 degrees off a vehicle that turns from 0 to 90 ends at
+        // 120: it keeps the 30 degrees it had on it.
+        assert_eq!(
+            passenger_rotation([0.0, 0.0], [90.0, 0.0], [30.0, 0.0]),
+            [120.0, 0.0]
+        );
+        // The pitch keeps its offset the same way, through Entity.setXRot's
+        // clamp: 40 - 10 = 30 degrees off a vehicle placed at 70 would be 100.
+        assert_eq!(
+            passenger_rotation([10.0, 10.0], [0.0, 70.0], [0.0, 40.0]),
+            [-10.0, 90.0]
+        );
+    }
+    #[test]
+    fn a_rider_turns_from_the_vehicles_unclamped_pitch() {
+        // `~ ~100` on a level vehicle: the vehicle stops at 90, a rider 50
+        // below it adds the whole 100 (calculatePassengerTransition) and ends at 50.
+        assert_eq!(
+            passenger_rotation([0.0, 0.0], [0.0, 100.0], [0.0, -50.0]),
+            [0.0, 50.0]
+        );
+    }
+    #[test]
+    fn an_axis_the_command_did_not_set_leaves_the_riders_own() {
+        assert!(passenger_rotation([0.0, 0.0], [f32::NAN, 0.0], [30.0, 0.0])[0] == 30.0);
+        assert!(passenger_rotation([0.0, 0.0], [0.0, f32::NAN], [0.0, 40.0])[1] == 40.0);
     }
 }

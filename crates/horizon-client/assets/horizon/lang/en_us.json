@@ -516,7 +516,7 @@
   "horizon.extras.cosmetics_mine": "My cosmetics",
   "horizon.extras.cosmetics_mine.tooltip": "Hidden: every Horizon player sees you without your cosmetics, you included. The same switch as the launcher's Wardrobe.",
   "horizon.extras.cosmetics_others": "Other players' cosmetics",
-  "horizon.extras.cosmetics_others.tooltip": "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden, the game never asks what they wear.",
+  "horizon.extras.cosmetics_others.tooltip": "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden unless you own cosmetics, until you choose. Hidden, the game never asks what they wear.",
   "horizon.extras.cosmetics_auras": "Others' auras and trails",
   "horizon.extras.cosmetics_auras.tooltip": "Auras and trails other players wear. Off by default.",
   "horizon.extras.cosmetics.shown": "Shown",

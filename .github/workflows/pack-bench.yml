@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install Rust and the ALSA and udev headers

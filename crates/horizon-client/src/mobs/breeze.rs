@@ -2,7 +2,7 @@
 //! arithmetic, the sounds of `Breeze.tick` and `BreezeModel`'s layers. The
 //! brain (`BreezeAi` and its behaviours) is in `monster_brain`.
 use super::{
-    Mob, MobEvent, MobWorld, Species,
+    Damage, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
     keyframes::Animation,
 };
@@ -28,6 +28,10 @@ const ALLOWED_ANGLES: [i32; 5] = [40, 55, 60, 75, 80];
 pub fn register(m: &mut Mob) {
     m.set_malus(super::path::PathType::OnTopOfTrapdoor, -1.0);
     m.set_malus(super::path::PathType::Fire, -1.0);
+}
+/// `Breeze.isInvulnerableTo`: another breeze (or itself).
+pub fn accepts_damage(m: &Mob, source: &Damage) -> bool {
+    !(source.attacker == Some(Who::Mob(m.id)) || source.attacker_species == Some(Species::Breeze))
 }
 pub fn pose(m: &Mob) -> u8 {
     m.extra.variant3
@@ -477,5 +481,186 @@ mod ground_particle_tests {
         // Without the vanilla data under .local/horizon-client there is no world
         // to crumble: the test has nothing to check.
         let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod invulnerability_tests {
+    use super::*;
+    use crate::mobs::{DamageKind, sensor_scan_tests::kind};
+
+    fn test_breeze(id: u32) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:breeze".into();
+        k.species = Species::Breeze;
+        Mob::new(id, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// Scenario 1: Default/legacy behavior preserved:
+    /// Breeze takes normal damage from player, generic damage, fall damage.
+    #[test]
+    fn breeze_takes_normal_damage_from_player_fall_and_generic() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+        assert!(initial_health > 0.0);
+
+        // Player attack
+        let player_hit = Damage::player([0.0, 0.0, 0.0]);
+        assert!(
+            b.damage(2.0, player_hit),
+            "player attack should hurt breeze"
+        );
+        assert_eq!(b.health, initial_health - 2.0);
+
+        // Fall damage
+        b.invulnerable = 0;
+        let health_before_fall = b.health;
+        assert!(
+            b.damage(3.0, Damage::fall()),
+            "fall damage should hurt breeze"
+        );
+        assert_eq!(b.health, health_before_fall - 3.0);
+
+        // Generic damage
+        b.invulnerable = 0;
+        let health_before_generic = b.health;
+        assert!(
+            b.damage(1.0, Damage::of(DamageKind::Generic)),
+            "generic damage should hurt breeze"
+        );
+        assert_eq!(b.health, health_before_generic - 1.0);
+    }
+
+    /// Scenario 2: Blocking/rejection of disallowed actions:
+    /// Breeze rejects damage when attacker is another Breeze (`source.attacker_species == Some(Species::Breeze)`),
+    /// returning `false` from `m.damage(...)` and taking no damage.
+    #[test]
+    fn breeze_rejects_damage_from_another_breeze() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Direct mob attack from another breeze
+        let other_breeze_mob = Damage::mob(2, [0.0, 0.0, 0.0]).with_species(Species::Breeze);
+        assert!(
+            !b.damage(5.0, other_breeze_mob),
+            "breeze should reject damage from another breeze"
+        );
+        assert_eq!(b.health, initial_health, "health must not change");
+
+        // Thrown wind charge or projectile from another breeze
+        let other_breeze_proj = Damage {
+            kind: DamageKind::Thrown,
+            attacker: Some(Who::Mob(2)),
+            from: Some([1.0, 0.0, 0.0]),
+            attacker_species: Some(Species::Breeze),
+        };
+        assert!(
+            !b.damage(3.0, other_breeze_proj),
+            "breeze should reject projectile damage from another breeze"
+        );
+        assert_eq!(b.health, initial_health, "health must remain intact");
+
+        // Directly verify breeze::accepts_damage
+        assert!(!accepts_damage(&b, &other_breeze_mob));
+        assert!(!accepts_damage(&b, &other_breeze_proj));
+    }
+
+    /// Scenario 3: Successful execution when requirements are met:
+    /// Breeze accepts damage from other mob species (e.g. Zombie, Skeleton) when `source.attacker_species` is Zombie/Skeleton.
+    #[test]
+    fn breeze_accepts_damage_from_other_mob_species() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Attack from Zombie
+        let zombie_hit = Damage::mob(5, [0.0, 0.0, 0.0]).with_species(Species::Zombie);
+        assert!(
+            accepts_damage(&b, &zombie_hit),
+            "breeze accepts damage from zombie"
+        );
+        assert!(
+            b.damage(4.0, zombie_hit),
+            "breeze must take damage from zombie"
+        );
+        assert_eq!(b.health, initial_health - 4.0);
+
+        // Attack from Skeleton
+        b.invulnerable = 0;
+        let skeleton_hit = Damage::mob(6, [0.0, 0.0, 0.0]).with_species(Species::Skeleton);
+        assert!(
+            accepts_damage(&b, &skeleton_hit),
+            "breeze accepts damage from skeleton"
+        );
+        assert!(
+            b.damage(2.0, skeleton_hit),
+            "breeze must take damage from skeleton"
+        );
+        assert_eq!(b.health, initial_health - 6.0);
+    }
+
+    /// Scenario 4: Special / edge cases:
+    /// Breeze rejects self-inflicted damage (`source.attacker == Some(Who::Mob(m.id))`),
+    /// and verify bypasses_invulnerability behavior if applicable.
+    #[test]
+    fn breeze_rejects_self_damage_and_respects_invulnerability_flags() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Self-inflicted damage with no species tag
+        let self_hit_no_species = Damage::mob(b.id, [0.0, 0.0, 0.0]);
+        assert!(
+            !accepts_damage(&b, &self_hit_no_species),
+            "breeze rejects self-hit even without species"
+        );
+        assert!(
+            !b.damage(5.0, self_hit_no_species),
+            "breeze takes no damage from itself"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // Self-inflicted damage with species tag
+        let self_hit_with_species =
+            Damage::mob(b.id, [0.0, 0.0, 0.0]).with_species(Species::Breeze);
+        assert!(
+            !accepts_damage(&b, &self_hit_with_species),
+            "breeze rejects self-hit with species"
+        );
+        assert!(
+            !b.damage(5.0, self_hit_with_species),
+            "breeze takes no damage from itself"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // Invulnerable flag on Mob:
+        b.invulnerable_flag = true;
+        // Normal damage does not bypass invulnerability flag
+        let normal_player = Damage::player([0.0, 0.0, 0.0]);
+        assert!(
+            !b.damage(5.0, normal_player),
+            "invulnerable_flag blocks normal player damage"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // GenericKill bypasses invulnerability flag
+        let kill_damage = Damage::of(DamageKind::GenericKill);
+        assert!(kill_damage.kind.bypasses_invulnerability());
+        assert!(
+            b.damage(1.0, kill_damage),
+            "GenericKill bypasses invulnerability flag"
+        );
+        assert_eq!(b.health, initial_health - 1.0);
+
+        // But another Breeze with GenericKill is still rejected by Breeze.isInvulnerableTo
+        b.invulnerable = 0;
+        let breeze_kill = Damage::of(DamageKind::GenericKill).with_species(Species::Breeze);
+        assert!(
+            !accepts_damage(&b, &breeze_kill),
+            "Breeze.isInvulnerableTo rejects breeze attacker even for GenericKill"
+        );
+        assert!(
+            !b.damage(1.0, breeze_kill),
+            "breeze takes no damage from breeze GenericKill"
+        );
     }
 }
