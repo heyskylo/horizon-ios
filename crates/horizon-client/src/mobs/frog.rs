@@ -1022,9 +1022,8 @@ mod tests {
             assert!((m.velocity.y - -0.45).abs() < 1.0e-9, "{}", m.velocity.y);
             assert!((m.velocity.z - 0.3375).abs() < 1.0e-9, "{}", m.velocity.z);
         });
-        if !ran {
-            return;
-        }
+        // Without a test world the closure does not run; there is nothing else to check.
+        let _ = ran;
     }
 
     /// `Frog.updateWalkAnimation`: target `min(distance * 25, 1)`, 0 while
