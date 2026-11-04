@@ -814,7 +814,30 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let client = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
-        let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+        let mut socket = listener.accept().unwrap().0;
+        socket.set_nonblocking(true).unwrap();
+        // Windows may buffer an entire large first write. Establish actual backpressure with
+        // small framed writes before adoption, rather than assuming the batch below fills it.
+        let fill = horizon_protocol::frame::encode(&body(0, 65535), None).unwrap();
+        let mut filled = 0;
+        let mut offset = 0;
+        let fill_until = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < fill_until, "socket prefill timed out");
+            match socket.write(&fill[offset..]) {
+                Ok(n) => {
+                    assert!(n > 0, "socket closed during prefill");
+                    filled += n;
+                    assert!(filled < MAX_PENDING, "socket did not apply backpressure");
+                    offset = (offset + n) % fill.len();
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => panic!("socket prefill: {e}"),
+            }
+        }
+        socket.set_nonblocking(false).unwrap();
+        let server = Connection::from_stream(socket).unwrap();
         let served = serve(server, quiet, Duration::from_secs(30));
         // More than the socket's buffers take.
         let bodies = (0..64).map(|i| body(i, 1 << 20)).collect();
