@@ -64,6 +64,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
+        false,
         true,
     ))?;
     assert!(!renderer.pack_entity_shadows(), "no selected pack");

@@ -103,5 +103,5 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --title "cargo-horizon-mod ${GITHUB_REF_NAME#cargo-horizon-mod-v}" --notes "$notes"
+            gh release create "$GITHUB_REF_NAME" dist/* --latest=false --title "cargo-horizon-mod ${GITHUB_REF_NAME#cargo-horizon-mod-v}" --notes "$notes"
           fi
