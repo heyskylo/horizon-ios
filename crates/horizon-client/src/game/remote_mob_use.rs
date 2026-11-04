@@ -87,7 +87,9 @@ impl Game<'_> {
                 item == "minecraft:water_bucket"
                     || !m.extra.age_locked && m.kind.food.iter().any(|f| f.as_str() == item)
             }
-            Species::Armadillo => item == "minecraft:brush",
+            // Armadillo.brushOffScute fails on a baby, so its brush falls
+            // through to FAIL (scared) or Mob.mobInteract's PASS.
+            Species::Armadillo => item == "minecraft:brush" && !baby,
             // ZombieVillager.mobInteract: CONSUME for a golden apple.
             Species::ZombieVillager => item == "minecraft:golden_apple",
             // Creeper.mobInteract: CREEPER_IGNITERS.
