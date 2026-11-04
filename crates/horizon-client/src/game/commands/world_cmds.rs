@@ -2,10 +2,7 @@
 //! `/particle`, `/attribute`, `/ride` and `/spreadplayers`.
 use super::{Arg, Context, Game, R, Target, err, wrap_degrees};
 use horizon_client::{
-    mobs::{
-        Damage, DamageKind, Who,
-        finalize::{self, Attr},
-    },
+    mobs::{Damage, DamageKind, Who, finalize},
     scoreboard_cmd::{Holder, Tracker},
     settings::SOUND_SOURCES,
     text::Text,
@@ -859,6 +856,9 @@ impl Game<'_> {
         let short = attribute.trim_start_matches("minecraft:");
         Text::translate(&format!("attribute.name.{short}"), &[])
     }
+    /// Read arms follow `AttributeCommand.getAttributeValue` and
+    /// `AttributeCommand.getAttributeModifier`: effective values include modeled
+    /// transient modifiers; base reads still use the unmodified base.
     pub(super) fn cmd_attribute(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = self.entities(ctx, "target", false)?;
         let Some(target) = targets.first().copied() else {
@@ -1081,8 +1081,6 @@ impl Game<'_> {
                 };
                 let current = if id == "attribute.base.get" {
                     finalize::base_value(m, attr)
-                } else if attr == Attr::MovementSpeed {
-                    m.attrs.speed
                 } else {
                     finalize::value(m, attr)
                 };
@@ -1158,7 +1156,15 @@ impl Game<'_> {
                         Ok(1)
                     }
                     _ => {
-                        let Some(v) = finalize::modifier_amount(m, attr, &modifier_id) else {
+                        // Permanent entries stay authoritative. The modeled baby
+                        // modifier is transient and absent from that saved store.
+                        let amount =
+                            finalize::modifier_amount(m, attr, &modifier_id).or_else(|| {
+                                finalize::transient(m, attr)
+                                    .filter(|_| modifier_id == "minecraft:baby")
+                                    .map(|(amount, _)| amount)
+                            });
+                        let Some(v) = amount else {
                             return Err(no_modifier);
                         };
                         self.feedback(Text::translate(
