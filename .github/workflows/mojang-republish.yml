@@ -21,7 +21,8 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # One of our small runners (label horizon-light, docs/ci-runners.md): main's script, Mojang's public manifest.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

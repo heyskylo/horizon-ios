@@ -33,16 +33,13 @@ impl Launcher {
                 Ok(Dropped::Build) => {
                     if !self.can_import_build() {
                         self.importing.note = Some(Err(tr(
-                            "A build is already being imported: wait for it to finish.",
+                            "Wait for the current operation to finish.",
                         )
                         .to_owned()));
                         continue;
                     }
                     self.start_build_import(file, cx);
-                    self.importing.note = Some(Ok(trf(
-                        "Importing {name} as a game build…",
-                        &[("name", &name)],
-                    )));
+                    self.importing.note = Some(Ok(tr("Importing…").to_owned()));
                 }
                 Ok(Dropped::Modpack) => {
                     self.show_modpack(None);

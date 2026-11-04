@@ -140,6 +140,7 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     guest.xp_seed = level.xp_seed;
     guest.effects = crate::effects::PlayerEffects::from_saved(&level.active_effects);
     guest.game_mode = level.mode();
+    guest.previous_game_mode = level.previous_game_mode;
     guest.flying = level.flying;
     guest.flying_speed = level.fly_speed.filter(|s| s.is_finite()).unwrap_or(0.05);
     guest.selected = (level.selected_slot.max(0) as usize).min(8);
@@ -169,10 +170,16 @@ pub fn apply(guest: &mut Guest, level: &Level) {
             .and_then(|t| crate::save::number(t.get(key)))
             .unwrap_or(default) as i32
     };
+    // Entity.load: a component of Motion over 10 blocks a tick reads as 0.
+    let motion = level.motion.map(|v| if v.abs() > 10.0 { 0.0 } else { v });
     guest.loaded_body = Some(SavedBody {
         fire_ticks: short("Fire", -20),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
+        velocity: motion,
+        food_exhaustion: level.food_exhaustion,
+        food_tick_timer: level.food_tick_timer,
+        ticks_frozen: short("TicksFrozen", 0),
     });
     guest.saved_vehicle = level.root_vehicle;
     guest.recipe_book = level.recipe_book.clone();
@@ -399,6 +406,9 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     level.xp_seed = guest.xp_seed;
     level.active_effects = guest.effects.saved();
     level.game_mode = guest.game_mode;
+    // ServerPlayer.addAdditionalSaveData: previousPlayerGameType, when there
+    // is one (storeNullable).
+    level.previous_game_mode = guest.previous_game_mode;
     level.creative = guest.game_mode == 1;
     level.flying = guest.flying;
     level.fly_speed = Some(guest.flying_speed);
@@ -433,8 +443,9 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
             .get_or_insert_with(|| Tag::Compound(Default::default()));
         put(extra, "RootVehicle", vehicle);
     }
-    // The live body's fire, air and fall distance (Entity.saveWithoutId),
-    // or what the file had while the player has no body yet.
+    // The live body's fire, air, fall distance and motion
+    // (Entity.saveWithoutId), or what the file had while the player has no
+    // body yet.
     let body = guest
         .motion
         .as_deref()
@@ -442,6 +453,11 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
         .or(guest.loaded_body);
     if let Some(body) = body {
         level.fall_distance = body.fall_distance;
+        level.motion = body.velocity;
+        // FoodData.addAdditionalSaveData: the exhaustion and the timer that
+        // regenerates or starves the player go with the food level.
+        level.food_exhaustion = body.food_exhaustion;
+        level.food_tick_timer = body.food_tick_timer;
         let extra = level
             .player_extra
             .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
@@ -449,6 +465,16 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
             let short = |v: i32| horizon_world::nbt::Tag::Short(v.clamp(-32768, 32767) as i16);
             map.insert("Fire".into(), short(body.fire_ticks));
             map.insert("Air".into(), short(body.air));
+            // Entity.saveWithoutId writes TicksFrozen only above 0, so a
+            // count from the file the player thawed since does not come back.
+            if body.ticks_frozen > 0 {
+                map.insert(
+                    "TicksFrozen".into(),
+                    horizon_world::nbt::Tag::Int(body.ticks_frozen),
+                );
+            } else {
+                map.remove(&"TicksFrozen".into());
+            }
         }
     }
     // LivingEntity.addAdditionalSaveData: the live body's AttributeMap.pack,
@@ -817,6 +843,10 @@ mod tests {
             fire_ticks: 96,
             air: 250,
             fall_distance: 9.5,
+            velocity: [0.0; 3],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
+            ticks_frozen: 0,
         });
         let mut level = Level::default();
         store(&g, &mut level, None);
@@ -827,6 +857,116 @@ mod tests {
         let mut back = guest();
         apply(&mut back, &read);
         assert_eq!(back.loaded_body, g.loaded_body);
+    }
+
+    /// Store, write, read and apply a guest's file, as a server does between a
+    /// leave and the next join.
+    fn round_trip(g: &Guest) -> (Tag, Guest) {
+        let mut level = Level::default();
+        store(g, &mut level, None);
+        let tag = level.player_tag();
+        let mut read = Level::default();
+        read.read_player(&tag);
+        read.player_extra = Some(tag.clone());
+        let mut back = guest();
+        apply(&mut back, &read);
+        (tag, back)
+    }
+
+    #[test]
+    fn a_saved_motion_comes_back() {
+        // Entity.saveWithoutId writes Motion, the delta movement, as it is;
+        // Entity.load reads each component back, as 0 when it is over 10.
+        let mut g = guest();
+        g.loaded_body = Some(SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.25, -0.0784, 12.5],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
+            ticks_frozen: 0,
+        });
+        let (tag, back) = round_trip(&g);
+        let mut read = Level::default();
+        read.read_player(&tag);
+        assert_eq!(read.motion, [0.25, -0.0784, 12.5]);
+        assert_eq!(
+            back.loaded_body.expect("a body").velocity,
+            [0.25, -0.0784, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_saved_exhaustion_and_food_timer_come_back() {
+        // FoodData.addAdditionalSaveData writes foodExhaustionLevel (a float)
+        // and foodTickTimer (an int) with the food level and saturation.
+        let mut g = guest();
+        g.loaded_body = Some(SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.0; 3],
+            food_exhaustion: 2.75,
+            food_tick_timer: 37,
+            ticks_frozen: 0,
+        });
+        let (tag, back) = round_trip(&g);
+        assert_eq!(
+            tag.get("foodExhaustionLevel"),
+            Some(&Tag::Float(2.75f32.to_bits()))
+        );
+        assert_eq!(tag.get("foodTickTimer"), Some(&Tag::Int(37)));
+        let body = back.loaded_body.expect("a body");
+        assert_eq!((body.food_exhaustion, body.food_tick_timer), (2.75, 37));
+    }
+
+    #[test]
+    fn the_previous_game_mode_is_kept_and_saved() {
+        // ServerPlayerGameMode.changeGameModeForPlayer: the mode left becomes
+        // the previous one, and the mode in use changes nothing.
+        // ServerPlayer.addAdditionalSaveData writes previousPlayerGameType (an
+        // int) only when there is one.
+        let mut g = guest();
+        assert_eq!(g.previous_game_mode, None);
+        let (tag, _) = round_trip(&g);
+        assert_eq!(tag.get("previousPlayerGameType"), None);
+        g.change_game_mode(1);
+        assert_eq!((g.game_mode, g.previous_game_mode), (1, Some(0)));
+        g.change_game_mode(1);
+        assert_eq!((g.game_mode, g.previous_game_mode), (1, Some(0)));
+        g.change_game_mode(3);
+        assert_eq!((g.game_mode, g.previous_game_mode), (3, Some(1)));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("previousPlayerGameType"), Some(&Tag::Int(1)));
+        assert_eq!((back.game_mode, back.previous_game_mode), (3, Some(1)));
+    }
+
+    #[test]
+    fn a_saved_freeze_comes_back_and_a_thaw_clears_it() {
+        // Entity.saveWithoutId writes TicksFrozen (an int) only when it is
+        // above 0; Entity.load reads it with 0 for a missing key.
+        let frozen = |ticks| SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.0; 3],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
+            ticks_frozen: ticks,
+        };
+        let mut g = guest();
+        g.loaded_body = Some(frozen(120));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("TicksFrozen"), Some(&Tag::Int(120)));
+        assert_eq!(back.loaded_body.expect("a body").ticks_frozen, 120);
+        // Thawed since: the file the guest came from still says 120, and the
+        // key goes.
+        let mut g = back;
+        g.loaded_body = Some(frozen(0));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("TicksFrozen"), None);
+        assert_eq!(back.loaded_body.expect("a body").ticks_frozen, 0);
     }
 
     #[test]

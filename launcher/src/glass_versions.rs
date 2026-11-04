@@ -373,7 +373,7 @@ impl Launcher {
                         36.,
                         &t,
                     )
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             this.remove(&t2);

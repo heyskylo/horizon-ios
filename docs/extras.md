@@ -198,6 +198,12 @@ Cancel keeps the current one. The switch is disabled while another player is joi
 P1 is alone, turning it off restores the normal controller reader. Leaving it on while
 alone keeps watching for joins without a compositor.
 
+When Splitscreen is enabled, Play in the launcher also hands over its other signed-in
+Microsoft accounts. They appear first in the profile picker, marked **(Microsoft)**, and
+connect with their own sessions, skins and secure-chat keys. An account whose session is
+unavailable appears as **(Offline)**: sign in again in the launcher and restart the game to
+use it on an online-mode server. Launcher accounts cannot be forgotten from this page.
+
 `HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
 The Setup map previews the monitors, windows and player views. Click a player (its name turns
 yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
@@ -220,7 +226,15 @@ press A; if nobody joins, the offer runs out, or it's declined, it drives P1 aga
 whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
 say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
-Joining P1 on an external server follows separately.
+On a server P1 joined on this computer or its local network (a dedicated server, another
+computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
+others join the same server, each as its own profile. Anywhere else (a public server, even in
+offline mode, or a friend's invite) an offline profile can't join: everyone who plays there owns
+the game, so each player needs its own signed-in account. A name already on the server can't be
+picked, and an online-mode server refuses offline profiles; both are said on the profile page
+before it tries. A player the server turns away as it comes in picks again, told why; one kicked later
+leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
+of P1: the others follow P1's answer.
 
 ### Music page (`musicPage`, default off; `musicOff`, none off by default)
 - An extra like the rest: off, Music & Sounds is exactly vanilla's page and every
