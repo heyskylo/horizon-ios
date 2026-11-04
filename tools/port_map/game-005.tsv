@@ -8,7 +8,7 @@ Entity.equals	skip:java		entities are compared by id
 Entity.setRot	skip:other		plain setter; yaw and pitch are struct fields and the callers clamp pitch
 Entity.reapplyPosition	skip:other		bounding boxes are built from the position on demand (Mob::bounds_at), so there is no cached box to refresh
 Entity.commonTick	inline	crates/horizon-client/src/mobs/ai.rs::tick	previous position and rotations saved and age counted; invulnerable time counts down in base_tick; remote mobs do the same in tick_remote_entities
-Entity.computeSpeed	missing		minor: Entity.lastKnownSpeed is not tracked and getKnownSpeed has no port; FollowPlayerRiddenEntityGoal exists (mobs/dolphin.rs) and reads the vehicle's velocity instead
+Entity.computeSpeed	port	crates/horizon-client/src/mobs/ai.rs::tick	`Mob.known_speed` is the position minus the previous one; gap: minor: mobs only, the player keeps no lastKnownSpeed
 Entity.setSharedFlagOnFire	inline	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: flag 0x01 is fire_ticks > 0, packed only when a mob goes to LAN guests; HasVisualFire is not read
 Entity.isSupportedBy	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_body	supporting block equal to the piston's block decides whether the body rides it
 Entity.getBlockBounciness	port	crates/horizon-world/src/movement_restitution.rs::restitute_movement	mobs bind it too through crates/horizon-client/src/mobs/living.rs::MobRestitution::block_bounce_restitution, so a mob landing on a slime block or bed bounces

@@ -3658,6 +3658,61 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
     assert_eq!(w.prop(campfire, "signal_fire"), "false");
 }
 
+/// #8490 carpet duplication machine: four slime blocks, a sticky piston, a dead
+/// wall coral fan and three carpets on the slime column's far side.
+#[test]
+fn carpet_duplication_machine_8490() {
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let slime = w.id("slime_block", &[]);
+    let air = w.b().air();
+    let piston = w.id("sticky_piston", &[("facing", "west")]);
+    let power = w.id("redstone_block", &[]);
+    let fan = w.id(
+        "dead_tube_coral_wall_fan",
+        &[("facing", "west"), ("waterlogged", "false")],
+    );
+    let carpet = w.id("white_carpet", &[]);
+    w.set(
+        BlockPos::new(4, 1, 0),
+        w.id("grass_block", &[("snowy", "false")]),
+    );
+    for y in 2..6 {
+        w.set(BlockPos::new(3, y, 0), slime);
+    }
+    w.set(BlockPos::new(4, 2, 0), piston);
+    w.set(BlockPos::new(2, 2, 0), fan);
+    for y in 3..6 {
+        w.set(BlockPos::new(2, y, 0), carpet);
+    }
+    w.set(BlockPos::new(5, 2, 0), power);
+    let fan_name = |w: &mut World, x: i32, y: i32| w.name(BlockPos::new(x, y, 0));
+    for _ in 0..6 {
+        w.full_tick();
+    }
+    // Pushed one block west: the column lands with its fan and carpets (the
+    // fan reads the slime block still shown as a finished moving piston).
+    for y in 2..6 {
+        assert_eq!(w.get(BlockPos::new(2, y, 0)), slime, "slime y={y}");
+    }
+    assert!(fan_name(&mut w, 1, 2).starts_with("dead_tube_coral_wall_fan"));
+    for y in 3..6 {
+        assert_eq!(w.get(BlockPos::new(1, y, 0)), carpet, "carpet y={y}");
+    }
+    w.set(BlockPos::new(5, 2, 0), air);
+    for _ in 0..6 {
+        w.full_tick();
+    }
+    // Pulled back: the machine is whole again at its start.
+    for y in 2..6 {
+        assert_eq!(w.get(BlockPos::new(3, y, 0)), slime, "pulled slime y={y}");
+    }
+    assert!(fan_name(&mut w, 2, 2).starts_with("dead_tube_coral_wall_fan"));
+    for y in 3..6 {
+        assert_eq!(w.get(BlockPos::new(2, y, 0)), carpet, "pulled carpet y={y}");
+    }
+}
+
 #[test]
 fn a_rail_on_a_block_a_piston_pushes_pops_off() {
     // PistonBaseBlock.moveBlocks writes the arriving blocks as `moving_piston`
