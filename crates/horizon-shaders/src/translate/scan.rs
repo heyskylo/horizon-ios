@@ -41,6 +41,8 @@ pub(super) struct Stage<'p> {
     /// Name, type with its array suffix, token of the type.
     pub(super) uniforms: Vec<(String, String, usize)>,
     pub(super) samplers: Vec<(String, String)>,
+    /// Uniform names with constant initializers retained as compiler constants.
+    pub(super) defaults: Vec<(String, usize)>,
     pub(super) images: Vec<ImageDecl>,
     /// The bindings of the SSBOs (`buffer` blocks), in set 4.
     pub(super) buffers: BTreeSet<u32>,
@@ -297,6 +299,7 @@ impl<'p> Stage<'p> {
             tokens: lex(&pp.code),
             removed: Vec::new(),
             uniforms: Vec::new(),
+            defaults: Vec::new(),
             samplers: Vec::new(),
             images: Vec::new(),
             buffers: BTreeSet::new(),
@@ -603,6 +606,7 @@ impl<'p> Stage<'p> {
         }
         // Declarators: name [array] [= init], separated by commas.
         let mut declarators: Vec<(String, String)> = Vec::new();
+        let mut defaults = String::new();
         let mut j = k + 1;
         while let Some(&n) = words.get(j) {
             let name = self.tokens[n].to_owned();
@@ -617,9 +621,27 @@ impl<'p> Stage<'p> {
                     _ => {}
                 }
                 if self.tokens[t] == "=" && nesting == 0 {
-                    // An initializer: uniforms are set by the game, so it is dropped.
-                    while words.get(j).is_some_and(|&t| self.tokens[t] != ",") {
+                    let start = j + 1;
+                    j += 1;
+                    let mut depth = 0;
+                    while let Some(&token) = words.get(j) {
+                        match self.tokens[token] {
+                            "," if depth == 0 => break,
+                            "(" | "[" => depth += 1,
+                            ")" | "]" => depth -= 1,
+                            _ => {}
+                        }
                         j += 1;
+                    }
+                    if storage == "uniform" && !is_sampler_type(&ty) && !ty.contains("image") {
+                        let value = words[start..j]
+                            .iter()
+                            .map(|&i| self.tokens[i])
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        write!(defaults, "const {ty} hz_default_{name}{array} = {value}; ")
+                            .unwrap();
+                        self.defaults.push((name.clone(), n));
                     }
                     break;
                 }
@@ -632,6 +654,9 @@ impl<'p> Stage<'p> {
         let fragment = self.kind == ShaderStage::Fragment;
         let input = matches!(storage, "in" | "attribute") || (storage == "varying" && fragment);
         self.removed.push(from..to + 1);
+        if !defaults.is_empty() {
+            self.replaced.insert(words[0], defaults);
+        }
         for (name, array) in declarators {
             let decl = format!("{interpolation}{ty} @{array};");
             match storage {

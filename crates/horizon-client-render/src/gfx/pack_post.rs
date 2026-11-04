@@ -1624,7 +1624,11 @@ fn build_pass(
         .map(|u| u.name.as_str())
         .collect();
     if !missing.is_empty() {
-        notes.push(format!("{}: zero for now: {}", p.name, missing.join(" ")));
+        notes.push(format!(
+            "{}: shader defaults or zero: {}",
+            p.name,
+            missing.join(" ")
+        ));
     }
     let image_copies = image_copies(&samplers, &images);
     Some(Pass {
@@ -1634,7 +1638,7 @@ fn build_pass(
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }),
-        block: vec![0; interface.uniform_size as usize],
+        block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -1762,7 +1766,7 @@ fn build_compute(
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }),
-        block: vec![0; interface.uniform_size as usize],
+        block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -4592,6 +4596,7 @@ mod tests {
         }];
         let interface = horizon_shaders::Interface {
             uniform_size: 48,
+            initial_values: vec![0; 48],
             uniforms: Vec::new(),
             samplers: vec![horizon_shaders::Sampler {
                 name: "colortex0".into(),
@@ -4670,6 +4675,7 @@ mod tests {
         };
         let interface = horizon_shaders::Interface {
             uniform_size: 48,
+            initial_values: vec![0; 48],
             uniforms: Vec::new(),
             samplers: Vec::new(),
             outputs: vec![0],
