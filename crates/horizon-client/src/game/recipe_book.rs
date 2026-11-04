@@ -298,6 +298,8 @@ impl Game<'_> {
                 names: &self.pack.names,
                 trade: None,
                 maps: None,
+                limited_crafting: self.limited_crafting(),
+                known_recipes: Some(&self.level.recipe_book),
             };
             for i in 0..36 {
                 menu.set_player_item(i, self.inventory[i].clone());
@@ -373,6 +375,7 @@ impl Game<'_> {
     /// the server's recipes arrived, or a new session began.
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
+        self.recipe_tables.categories = None;
     }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {

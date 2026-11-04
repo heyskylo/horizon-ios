@@ -236,6 +236,16 @@ machine can read it in the process list. Horizon keeps it out of argv:
 - `--session-stdin` takes the same JSON on standard input instead, so nothing touches the disk (for other
   launchers: [the Launch API](api/launch.md)).
 
+
+- While the game's Splitscreen setting is on (`splitscreen:true` in `horizon-extras.txt`), the
+  other signed-in accounts get a session file each too, for splitscreen players to sign in with, listed in `HORIZON_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
+  first when due; after ten seconds no further renewal starts (an in-flight request finishes).
+  Accounts whose sessions cannot be provided are listed with `skipped` instead
+  of `file`, with no token. They remain in the picker marked “(Offline)”, with a “Sign in again
+  in the launcher” tooltip; valid sessions have a “Microsoft online” tooltip. The game logs
+  unavailable accounts and still starts. These names can play in P1's world or on local offline-mode
+  servers; external and online-mode servers require a valid session from the launcher.
+
 ## Online-mode login (game)
 
 Vanilla's `ClientHandshakePacketListenerImpl.handleHello`, `Crypt` and authlib's

@@ -1053,7 +1053,7 @@ impl Game<'_> {
     /// `Raider.die`: the wave loses its leader, the killing player becomes
     /// a hero of the village, and the raider leaves the raid (its health
     /// stays in the bar's total).
-    pub(super) fn raider_died(&mut self, m: &Mob, by_player: bool) {
+    pub(super) fn raider_died(&mut self, m: &Mob, by_player: bool, killer: Option<u32>) {
         let Some(s) = raider::state(m) else {
             return;
         };
@@ -1063,7 +1063,7 @@ impl Game<'_> {
         let (leader, wave) = (s.patrol_leader, s.wave);
         self.flush_raid_bar(id);
         let living = self.raid_living_health(id, Some(m.id));
-        let uuid = self.level.player_uuid;
+        let uuid = self.player_uuid_of(killer);
         if let Some(r) = self.raiding.raids.get_mut(id) {
             if leader {
                 r.remove_leader(wave);
@@ -1324,7 +1324,17 @@ impl Game<'_> {
                     center[1],
                     center[2] + (angle.sin() * 32.0).floor() as i32,
                 ];
-                if self.find_siege_spawn_pos(&centers, spot).is_some() {
+                if let Some(attempted_pos) = self.find_siege_spawn_pos(&centers, spot) {
+                    let mut canceled = false;
+                    self.native_village_siege(
+                        self.dim.id(),
+                        player.uuid,
+                        attempted_pos,
+                        &mut canceled,
+                    );
+                    if canceled {
+                        return false;
+                    }
                     self.raiding.siege.spot = spot;
                     self.raiding.siege.next_spawn_time = 0;
                     self.raiding.siege.zombies_to_spawn = 20;

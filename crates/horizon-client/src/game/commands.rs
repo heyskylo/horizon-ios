@@ -7,7 +7,7 @@ pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
-mod items;
+pub(in crate::game) mod items;
 mod misc;
 mod place;
 mod players;
@@ -59,6 +59,8 @@ pub(super) enum Target {
     /// An entity of a type Horizon does not simulate (markers, displays,
     /// interactions...): kept as its saved data at a position.
     Other(u32),
+    /// Active evoker fangs, including command-loaded ones.
+    Fangs(u32),
     /// An End crystal, by its entity id (`minecraft:end_crystal`).
     Crystal(u32),
     /// The Ender Dragon, by its entity id (`minecraft:ender_dragon`).
@@ -73,7 +75,14 @@ pub(super) enum Target {
     Trident(u32),
     /// An ominous item spawner, by its entity id (`minecraft:ominous_item_spawner`).
     Spawner(u32),
+    /// A simulated lingering, creeper or dragon area-effect cloud.
+    Cloud(u32),
 }
+/// `Entity.setXRot`: reduce the angle before clamping the pitch.
+fn entity_pitch(pitch: f32) -> f32 {
+    (pitch % 360.0).clamp(-90.0, 90.0)
+}
+
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
 #[derive(Clone, Debug)]
@@ -149,13 +158,15 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Boat(id)
     | Target::Cart(id)
     | Target::Other(id)
+    | Target::Fangs(id)
     | Target::Crystal(id)
     | Target::Dragon(id)
     | Target::Tnt(id)
     | Target::Falling(id)
     | Target::Rocket(id)
     | Target::Trident(id)
-    | Target::Spawner(id)) = t
+    | Target::Spawner(id)
+    | Target::Cloud(id)) = t
     else {
         return None;
     };
@@ -171,6 +182,21 @@ impl Game<'_> {
         {
             self.native_player_level_change(player, &name, from, to);
         }
+    }
+
+    /// `PlayerXpEvent.XpChange` for a `Player.giveExperiencePoints` of `amount`
+    /// points: the amount to give, or `None` when a mod cancelled it.
+    pub(super) fn xp_change(&mut self, amount: i32) -> Option<i32> {
+        if horizon_client::mod_api::mods().is_empty() {
+            return Some(amount);
+        }
+        let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        else {
+            return Some(amount);
+        };
+        let (mut amount, mut cancel) = (amount, false);
+        self.native_player_xp_change(player, &name, &mut amount, &mut cancel);
+        (!cancel).then_some(amount)
     }
 
     /// Commands.performCommand for a line without its slash.
@@ -552,11 +578,13 @@ impl Game<'_> {
                 .iter()
                 .find(|r| r.id == id)
                 .map(|r| [r.position.x, r.position.y, r.position.z]),
+            Target::Cloud(id) => self.breath_clouds.iter().find(|c| c.id == id).map(|c| c.at),
             Target::Trident(id) => self
                 .tridents
                 .iter()
                 .find(|t| t.id == id)
                 .map(|t| [t.position.x, t.position.y, t.position.z]),
+            Target::Fangs(id) => self.fangs.list.iter().find(|f| f.id == id).map(|f| f.pos),
             Target::Spawner(id) => self
                 .ominous_spawners
                 .iter()
@@ -612,7 +640,9 @@ impl Game<'_> {
             Target::Falling(_) => "minecraft:falling_block".into(),
             Target::Rocket(_) => "minecraft:firework_rocket".into(),
             Target::Trident(_) => "minecraft:trident".into(),
+            Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
+            Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -638,14 +668,22 @@ impl Game<'_> {
                 Some(g) => self.player_text(&g.name, g.uuid),
                 None => Text::empty(),
             },
+            // ItemEntity.getName: its CustomName, else the stack's item name
+            // (`getItemName`: `minecraft:item_name`, else the item's own).
             Target::Item(id) => {
-                let item = self
-                    .dropped
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.stack.item.to_string())
-                    .unwrap_or_default();
-                Text::literal(self.pack.names.display_item(&item))
+                if let Some(c) = self.persist_raw(id).and_then(|r| r.get("CustomName")) {
+                    return horizon_client::scoreboard::comp_text(
+                        &horizon_client::scoreboard::tag_to_json(c),
+                    );
+                }
+                let stack = self.dropped.iter().find(|i| i.id == id).map(|i| &i.stack);
+                match stack.and_then(|s| s.item_name()) {
+                    Some(name) => Text::literal(name),
+                    None => {
+                        let item = stack.map(|s| s.item.to_string()).unwrap_or_default();
+                        Text::literal(self.pack.names.display_item(&item))
+                    }
+                }
             }
             // FallingBlockEntity.getTypeName: `entity.minecraft.falling_block_type`
             // with the block's name.
@@ -659,19 +697,11 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id)
-                if self
-                    .mobs
-                    .iter()
-                    .any(|m| m.id == id && m.custom_name.is_some()) =>
-            {
-                let name = self
-                    .mobs
-                    .iter()
-                    .find(|m| m.id == id)
-                    .and_then(|m| m.custom_name.clone());
-                Text::literal(name.unwrap_or_default())
-            }
+            Target::Mob(id) => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| Text::translate("entity.", &[]), |m| m.command_name()),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = match other {
@@ -680,7 +710,9 @@ impl Game<'_> {
                     | Target::Painting(id)
                     | Target::Boat(id)
                     | Target::Cart(id)
-                    | Target::Other(id) => self.persist_raw(id).and_then(|r| r.get("CustomName")),
+                    | Target::Other(id)
+                    | Target::Fangs(id)
+                    | Target::Cloud(id) => self.persist_raw(id).and_then(|r| r.get("CustomName")),
                     _ => None,
                 };
                 if let Some(c) = custom {
@@ -873,6 +905,7 @@ impl Game<'_> {
         candidates.extend(self.item_frames.iter().map(|f| Target::Frame(f.id)));
         candidates.extend(self.paintings.iter().map(|p| Target::Painting(p.id)));
         candidates.extend(self.others.iter().map(|o| Target::Other(o.id)));
+        candidates.extend(self.fangs.list.iter().map(|f| Target::Fangs(f.id)));
         // The End crystals and the dragon (EndCrystal and EnderDragon
         // are entities of their own).
         candidates.extend(self.crystals.iter().map(|c| Target::Crystal(c.id)));
@@ -880,6 +913,12 @@ impl Game<'_> {
             candidates.push(Target::Dragon(d.id));
         }
         candidates.extend(self.ominous_spawners.iter().map(|s| Target::Spawner(s.id)));
+        candidates.extend(
+            self.breath_clouds
+                .iter()
+                .filter(|c| c.id != 0)
+                .map(|c| Target::Cloud(c.id)),
+        );
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -909,6 +948,7 @@ impl Game<'_> {
             Target::Boat(id),
             Target::Cart(id),
             Target::Other(id),
+            Target::Fangs(id),
             Target::Crystal(id),
             Target::Dragon(id),
             Target::Tnt(id),
@@ -916,6 +956,7 @@ impl Game<'_> {
             Target::Rocket(id),
             Target::Trident(id),
             Target::Spawner(id),
+            Target::Cloud(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -935,6 +976,7 @@ impl Game<'_> {
             Target::Boat(id) => self.boats.iter().any(|b| b.id == id),
             Target::Cart(id) => self.carts.iter().any(|c| c.id == id),
             Target::Other(id) => self.others.iter().any(|o| o.id == id),
+            Target::Fangs(id) => self.fangs.list.iter().any(|f| f.id == id),
             Target::Crystal(id) => self.crystals.iter().any(|c| c.id == id),
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
             Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
@@ -942,6 +984,7 @@ impl Game<'_> {
             Target::Rocket(id) => self.rockets.iter().any(|r| r.id == id),
             Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
+            Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1070,6 +1113,11 @@ impl Game<'_> {
             "ban-ip" | "pardon-ip" => self.cmd_ip_bans(id, ctx),
             id if id.starts_with("banlist") => self.cmd_banlist(id),
             id if id.starts_with("whitelist.") => self.cmd_whitelist(id, ctx),
+            "setidletimeout" => self.cmd_setidle_timeout(ctx),
+            "stop" => self.cmd_stop(),
+            "save-all" => self.cmd_save_all(),
+            "save-off" | "save-on" => self.cmd_auto_save(id == "save-on"),
+            "transfer" => self.cmd_transfer(ctx),
             "fetchprofile" => self.cmd_fetchprofile(ctx),
             "publish" => self.cmd_publish(ctx),
             "unpublish" => self.cmd_unpublish(),
@@ -1465,6 +1513,8 @@ impl Game<'_> {
     fn teleport_to_in_level(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
         let from = self.target_position(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
+        // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
+        let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.teleport_to(Target::Player, pos, rotation));
@@ -1490,8 +1540,12 @@ impl Game<'_> {
                 }
                 self.previous_position = v;
                 if let Some([yaw, pitch]) = rotation {
-                    self.yaw = yaw;
-                    self.pitch = pitch.clamp(-90.0, 90.0);
+                    if yaw.is_finite() {
+                        self.yaw = yaw;
+                    }
+                    if !pitch.is_nan() {
+                        self.pitch = entity_pitch(pitch);
+                    }
                 }
                 // A server player's teleport is told to the mods once their
                 // move is in the hub (`leave_guest`).
@@ -1519,10 +1573,14 @@ impl Game<'_> {
                     // Entity.teleportSetPosition: setYRot, setYHeadRot, setXRot
                     // (clamped to -90..90), then setOldRot.
                     if let Some([yaw, pitch]) = rotation {
-                        m.yaw = yaw;
-                        m.body_yaw = yaw;
-                        m.head_yaw = yaw;
-                        m.head_pitch = pitch.clamp(-90.0, 90.0);
+                        if yaw.is_finite() {
+                            m.yaw = yaw;
+                            m.body_yaw = yaw;
+                            m.head_yaw = yaw;
+                        }
+                        if !pitch.is_nan() {
+                            m.head_pitch = entity_pitch(pitch);
+                        }
                         m.previous_yaw = m.yaw;
                         m.previous_head_pitch = m.head_pitch;
                     }
@@ -1550,7 +1608,7 @@ impl Game<'_> {
                 if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         a.yaw = yaw;
                     }
                 }
@@ -1559,7 +1617,7 @@ impl Game<'_> {
                 if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                     b.position = v;
                     b.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         b.yaw = yaw;
                     }
                 }
@@ -1568,8 +1626,16 @@ impl Game<'_> {
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                     c.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         c.yaw = yaw;
+                    }
+                }
+            }
+            Target::Fangs(id) => {
+                if let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id) {
+                    f.pos = [v.x, v.y, v.z];
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
+                        f.yaw = yaw;
                     }
                 }
             }
@@ -1577,8 +1643,12 @@ impl Game<'_> {
                 if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     if let Some([yaw, pitch]) = rotation {
-                        o.yaw = yaw;
-                        o.pitch = pitch;
+                        if yaw.is_finite() {
+                            o.yaw = yaw;
+                        }
+                        if !pitch.is_nan() {
+                            o.pitch = entity_pitch(pitch);
+                        }
                     }
                 }
             }
@@ -1620,6 +1690,11 @@ impl Game<'_> {
             Target::Spawner(id) => {
                 if let Some(s) = self.ominous_spawners.iter_mut().find(|s| s.id == id) {
                     s.position = [v.x, v.y, v.z];
+                }
+            }
+            Target::Cloud(id) => {
+                if let Some(c) = self.breath_clouds.iter_mut().find(|c| c.id == id) {
+                    c.at = pos;
                 }
             }
             // Wall-mounted entities do not move.
@@ -1721,7 +1796,7 @@ impl Game<'_> {
             // Into the destination's level.
             let level = self.target_level(dest);
             // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest));
+            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation) {
                     self.teleport_to(t, pos, rotation);
@@ -1754,7 +1829,10 @@ impl Game<'_> {
             return Err(err("commands.teleport.invalidPosition", &[]));
         }
         let rotation = match ctx.get("rotation") {
-            Some(Arg::Coords(c)) => Some(c.rotation(self.source_rotation())),
+            Some(Arg::Coords(c @ Coordinates::World(axes))) => Some((
+                c.rotation(self.source_rotation()),
+                [axes[0].relative, axes[1].relative],
+            )),
             _ => None,
         };
         // facing: look from the new position at a location or entity.
@@ -1799,7 +1877,19 @@ impl Game<'_> {
             None => self.dim,
         };
         for &t in &targets {
-            let rotation = look_at(self, t).or(rotation);
+            let rotation = look_at(self, t).or_else(|| {
+                let (angles, relative) = rotation?;
+                let current = self.target_rotation(t);
+                // performTeleport wraps relative deltas before calculateAbsolute
+                // adds them back; wrapping the resolved pitch changes its clamp.
+                Some(std::array::from_fn(|axis| {
+                    if relative[axis] {
+                        current[axis] + wrap_degrees(angles[axis] - current[axis])
+                    } else {
+                        wrap_degrees(angles[axis])
+                    }
+                }))
+            });
             if self.teleport_across(t, source_level, pos, rotation) {
                 continue;
             }
@@ -2114,6 +2204,7 @@ impl Game<'_> {
                 self.carts.retain(|c| c.id != id);
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),
+            Target::Fangs(id) => self.fangs.list.retain(|f| f.id != id),
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
             Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
@@ -2121,6 +2212,7 @@ impl Game<'_> {
             Target::Rocket(id) => self.rockets.retain(|r| r.id != id),
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
+            Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
@@ -2152,6 +2244,8 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
+    /// `SummonCommand.createEntity`: Peaceful admission uses the entity-type
+    /// policy for both forms, independently of the mob category.
     fn cmd_summon(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Resource(kind)) = ctx.get("entity").cloned() else {
             return Ok(0);
@@ -2173,18 +2267,12 @@ impl Game<'_> {
         {
             return Err(err("commands.summon.invalidPosition", &[]));
         }
+        if self.ui.difficulty == 0 && !horizon_client::mobs::finalize::allowed_in_peaceful(&kind) {
+            return Err(err("commands.summon.failed.peaceful", &[]));
+        }
         let short = kind.trim_start_matches("minecraft:").to_owned();
         if let Some(Arg::Str(nbt)) = ctx.get("nbt").cloned() {
             // With an NBT argument the entity is built from it, unfinalized.
-            if self.ui.difficulty == 0
-                && self
-                    .res
-                    .mob_types()
-                    .get(&kind)
-                    .is_some_and(|t| t.category == "monster")
-            {
-                return Err(err("commands.summon.failed.peaceful", &[]));
-            }
             let before = self.spawned_mark();
             let name = match self.summon_with_nbt(&kind, pos, &nbt)? {
                 Some(target) => self.target_name(target),
@@ -2199,10 +2287,7 @@ impl Game<'_> {
             return Ok(1);
         }
         let name;
-        if let Some(t) = self.res.mob_types().get(&kind).cloned() {
-            if self.ui.difficulty == 0 && t.category == "monster" {
-                return Err(err("commands.summon.failed.peaceful", &[]));
-            }
+        if self.res.mob_types().contains_key(&kind) {
             self.spawn_mob_spawned(&short, pos)
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
             name = Text::translate(&entity_name_key(&kind), &[]);
@@ -2218,6 +2303,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        join: Default::default(),
                         no_gravity: false,
                         id: self.next_entity,
                         position: Vec3::new(at[0], at[1], at[2]),
@@ -2342,6 +2428,37 @@ impl Game<'_> {
             state,
         )
     }
+    /// `BlockInput.overwriteWithDefinedProperties`: restore explicit command
+    /// properties after normalizing the state against neighbouring blocks.
+    fn block_input_state(
+        &mut self,
+        pos: [i32; 3],
+        input: &BlockInput,
+        state: BlockStateId,
+        strict: bool,
+    ) -> R<BlockStateId> {
+        if strict {
+            return Ok(state);
+        }
+        let updated = self.with_level(|b, level, ticks| {
+            let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
+            let updated = b.update_from_neighbour_shapes(level, ticks, at, state);
+            if b.is_air(updated) { state } else { updated }
+        });
+        let registry = self.pack.assets.registry;
+        let mut descriptor = registry
+            .state(updated)
+            .expect("registered block state")
+            .clone();
+        for (key, value) in &input.properties {
+            if descriptor.properties.contains_key(key) {
+                descriptor.properties.insert(key.clone(), value.clone());
+            }
+        }
+        registry
+            .resolve(&descriptor)
+            .map_err(|_| err("argument.block.id.invalid", &[&input.id]))
+    }
     /// Place a state like BlockInput.place: false when nothing changed.
     pub(super) fn place_state(
         &mut self,
@@ -2407,16 +2524,40 @@ impl Game<'_> {
         if ctx.has("keep") && current != self.world.air {
             return Err(err("commands.setblock.failed", &[]));
         }
-        if ctx.has("destroy") && current != self.world.air {
+        // SetBlockCommand.setBlock skips placement when destruction already
+        // leaves an air state and the requested state is also air.
+        let place_needed = if ctx.has("destroy") {
             self.destroy_block_dropping(pos)?;
-        }
-        let placed = self.place_state(pos, state, ctx.has("strict"))?;
-        let loaded = match &b.nbt {
-            Some(nbt) => self.load_block_entity_nbt(pos, nbt),
-            None => false,
+            let remaining = self.world.block(pos[0], pos[1], pos[2]);
+            !(self.res.facts().is_air(state) && self.res.facts().is_air(remaining))
+        } else {
+            true
         };
-        if !placed && !loaded {
-            return Err(err("commands.setblock.failed", &[]));
+        if place_needed {
+            let state = self.block_input_state(pos, &b, state, ctx.has("strict"))?;
+            let placed = self.place_state(pos, state, ctx.has("strict"))?;
+            let loaded = match &b.nbt {
+                Some(nbt) => self.load_block_entity_nbt(pos, nbt),
+                None => false,
+            };
+            if !placed && !loaded {
+                return Err(err("commands.setblock.failed", &[]));
+            }
+        } else if !ctx.has("strict") {
+            // ServerLevel.updateNeighboursOnBlockSet still runs when placing
+            // air was unnecessary. The unchanged air has no analog output or
+            // removal side effects, so only its neighbours need notification.
+            let remaining = self.world.block(pos[0], pos[1], pos[2]);
+            self.with_level(|b, level, ticks| {
+                b.update_neighbors_at(
+                    level,
+                    ticks,
+                    horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
+                    b.block(remaining),
+                );
+            });
+            self.process_level_events()
+                .map_err(|e| CommandError::new(Text::literal(e.to_string())))?;
         }
         self.feedback(Text::tr(
             "commands.setblock.success",
@@ -2461,7 +2602,9 @@ impl Game<'_> {
         // The lock is outside the model: a tag that only changes it still
         // changes the block entity.
         let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        if after == before && !rolled && !lock_changed {
+        // So is the custom name.
+        let name_changed = self.load_block_name(key, &new, &tag);
+        if after == before && !rolled && !lock_changed && !name_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
@@ -2738,12 +2881,13 @@ impl Game<'_> {
                         ],
                         s,
                         self.world.block_entities.get(&(x, y, z)).cloned(),
+                        self.world.block_names.get(&(x, y, z)).cloned(),
                     ));
                 }
             }
         }
         if moving {
-            for (from, _, _, _) in &copies {
+            for (from, ..) in &copies {
                 self.place_state(*from, air, true)?;
             }
         }
@@ -2752,13 +2896,19 @@ impl Game<'_> {
         // each copied state but a barrier counts as placed.
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         let mut count = 0;
-        for (_, to, s, entity) in copies {
+        for (_, to, s, entity, name) in copies {
             self.place_state(to, s, strict)?;
             if Some(s) != barrier {
                 count += 1;
             }
             if let Some(e) = entity {
-                self.world.block_entities.insert((to[0], to[1], to[2]), e);
+                let key = (to[0], to[1], to[2]);
+                self.world.block_entities.insert(key, e);
+                // The copied tag carries the custom name.
+                match name {
+                    Some(name) => self.world.block_names.insert(key, name),
+                    None => self.world.block_names.remove(&key),
+                };
             }
         }
         if count == 0 {
@@ -2957,11 +3107,11 @@ impl Game<'_> {
         let old_level = self.experience.level;
         if add {
             if levels {
-                self.experience.level = (self.experience.level + amount).max(0);
-                if self.experience.level == 0 && amount < 0 {
-                    self.experience.progress = 0.0;
-                }
-            } else {
+                // Player.giveExperienceLevels handles the strict negative
+                // boundary and emits the level-change hook itself.
+                self.give_levels(amount);
+                return true;
+            } else if let Some(amount) = self.xp_change(amount) {
                 self.give_points(amount);
             }
         } else if levels {
@@ -3818,6 +3968,141 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
 }
 
 #[cfg(test)]
+mod teleport_pitch_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn teleport_and_rotate_resolve_pitch_at_their_own_boundary() {
+        use super::Target;
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            42,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ));
+        for (rotation, expected) in [
+            ([40.0, f32::NAN], [40.0, 20.0]),
+            ([f32::INFINITY, 30.0], [10.0, 30.0]),
+            ([40.0, f32::INFINITY], [40.0, 90.0]),
+            ([40.0, f32::NEG_INFINITY], [40.0, -90.0]),
+        ] {
+            game.yaw = 10.0;
+            game.pitch = 20.0;
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation));
+            assert_eq!([game.yaw, game.pitch], expected);
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+        game.build_registries();
+        game.set_allow_commands(true);
+        for (command, expected) in [
+            ("rotate @e[type=minecraft:zombie,limit=1] 0 360", 90.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 360", 0.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 270", -90.0),
+        ] {
+            assert!(game.run_command(command), "{command}");
+            assert_eq!(game.mobs[0].head_pitch, expected, "{command}");
+        }
+        for (source, target, angle, expected) in [
+            (90.0, 90.0, "~100", 90.0),
+            (-90.0, -90.0, "~-100", -90.0),
+            (0.0, -90.0, "~100", -90.0),
+            (0.0, 90.0, "~-100", 90.0),
+        ] {
+            game.pitch = source;
+            game.mobs[0].head_pitch = target;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 {angle}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        game.yaw = 190.0;
+        game.mobs[0].yaw = 170.0;
+        assert!(game.run_command("tp @e[type=minecraft:zombie,limit=1] 0 0 0 ~ ~"));
+        assert_eq!(game.mobs[0].yaw, 190.0, "relative yaw wraps the delta");
+
+        game.mobs[0].head_pitch = 360.0;
+        assert!(
+            game.run_command(
+                "tp @e[type=minecraft:zombie,limit=1] @e[type=minecraft:zombie,limit=1]"
+            )
+        );
+        assert_eq!(
+            game.mobs[0].head_pitch, 0.0,
+            "destination rotation wraps too"
+        );
+
+        let overflow = "9".repeat(400);
+        for (pitch, expected) in [(overflow.clone(), 90.0), (format!("-{overflow}"), -90.0)] {
+            assert!(game.run_command(&format!(
+                "rotate @e[type=minecraft:zombie,limit=1] 0 {pitch}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        for (yaw, pitch, expected) in [
+            ("40", overflow.as_str(), [40.0, 20.0]),
+            (overflow.as_str(), "30", [10.0, 30.0]),
+        ] {
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 {yaw} {pitch}"
+            )));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+    }
+
+    #[test]
+    fn pitch_wraps_before_clamping() {
+        assert_eq!(super::entity_pitch(360.0), 0.0);
+        assert_eq!(super::entity_pitch(450.0), 90.0);
+        assert_eq!(super::entity_pitch(-360.0), 0.0);
+        assert_eq!(super::entity_pitch(-450.0), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(270.0)), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(-270.0)), 90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(360.0)), 0.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(450.0)), 90.0);
+        assert_eq!(super::wrap_degrees(190.0), -170.0);
+        assert_eq!(super::wrap_degrees(540.0), -180.0);
+    }
+}
+
+#[cfg(test)]
 mod difficulty_tests {
     use super::difficulty_names;
 
@@ -3865,6 +4150,7 @@ mod look_at_tests {
             Target::Rocket(7),
             Target::Trident(7),
             Target::Spawner(7),
+            Target::Cloud(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");
         }
