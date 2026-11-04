@@ -252,9 +252,10 @@ fn pickup_instead_of_push(species: Species, is_passenger: bool, cart_is_vehicle:
     !cart_is_vehicle && !is_passenger && species != Species::IronGolem
 }
 
-/// `Entity.canRide` for a cart: the boarding cooldown, and a warden never rides.
+/// `Entity.canRide` for a cart: the boarding cooldown, and a warden or the
+/// wither never rides (`canRide` false).
 fn can_ride_cart(species: Species, boarding_cooldown: i32) -> bool {
-    boarding_cooldown <= 0 && species != Species::Warden
+    boarding_cooldown <= 0 && !matches!(species, Species::Warden | Species::Wither)
 }
 
 /// `Entity.positionRider` on an `AbstractMinecart`: passenger attachment less
@@ -3037,6 +3038,12 @@ mod tests {
         assert!(!pickup_instead_of_push(Species::Cow, true, false));
         assert!(!can_ride_cart(Species::Cow, 60));
         assert!(!can_ride_cart(Species::Warden, 0));
+    }
+
+    /// `WitherBoss.canRide` returns false, so a moving cart cannot scoop the boss up.
+    #[test]
+    fn a_wither_never_rides_a_cart() {
+        assert!(!can_ride_cart(Species::Wither, 0));
     }
 
     #[test]

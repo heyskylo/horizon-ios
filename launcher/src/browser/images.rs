@@ -265,95 +265,6 @@ pub fn fit_png(bytes: Vec<u8>, side: u32, max_side: u32, max_alloc: u64) -> Opti
     Some(png)
 }
 
-/// Vanilla Minecraft's mark: a grass block drawn from the player's own prepared game files
-/// (`<resources>/assets/minecraft/textures/block/`), never shipped. Kept beside the cache.
-pub fn grass_block(home: &Path, resources: &Path) -> Option<PathBuf> {
-    let target = dir(home).join("grass-block.png");
-    if target.is_file() {
-        return Some(target);
-    }
-    let textures = resources.join("assets/minecraft/textures/block");
-    let load = |name: &str| image::open(textures.join(name)).ok().map(|i| i.to_rgba8());
-    let (top, side, overlay) = (
-        load("grass_block_top.png")?,
-        load("grass_block_side.png")?,
-        load("grass_block_side_overlay.png")?,
-    );
-    let icon = draw_block(&top, &side, &overlay);
-    fs::create_dir_all(dir(home)).ok()?;
-    icon.save(&target).ok()?;
-    Some(target)
-}
-
-/// The plains grass colour vanilla's grass block item shows (`GrassColor.getDefaultColor`
-/// is the colormap at 0.5, 1.0: `#91BD59`).
-const GRASS: [u8; 3] = [0x91, 0xBD, 0x59];
-
-/// An isometric block, 64 pixels a side, from 16x16 faces: the top tinted, the sides with their
-/// tinted overlay, the left side shaded as the game shades a side facing away from the light.
-fn draw_block(
-    top: &image::RgbaImage,
-    side: &image::RgbaImage,
-    overlay: &image::RgbaImage,
-) -> image::RgbaImage {
-    let size = 64u32;
-    let mut out = image::RgbaImage::new(size, size);
-    let at = |img: &image::RgbaImage, u: f32, v: f32| {
-        let (w, h) = (img.width().min(16), img.height().min(16));
-        let x = ((u * w as f32) as u32).min(w - 1);
-        let y = ((v * h as f32) as u32).min(h - 1);
-        *img.get_pixel(x, y)
-    };
-    let tint = |p: image::Rgba<u8>, shade: f32| {
-        let mut q = p;
-        for c in 0..3 {
-            q[c] = (p[c] as f32 * GRASS[c] as f32 / 255. * shade) as u8;
-        }
-        q
-    };
-    let shade = |p: image::Rgba<u8>, s: f32| {
-        let mut q = p;
-        for c in 0..3 {
-            q[c] = (p[c] as f32 * s) as u8;
-        }
-        q
-    };
-    let side_px = |u: f32, v: f32, s: f32| {
-        let o = at(overlay, u, v);
-        if o[3] > 0 {
-            tint(o, s)
-        } else {
-            shade(at(side, u, v), s)
-        }
-    };
-    // The cube: the top face a diamond, two sides below it.
-    let (cx, h) = (size as f32 / 2., size as f32 / 4.);
-    for y in 0..size {
-        for x in 0..size {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let dx = (px - cx) / cx;
-            let dy = (py - h) / h;
-            let u = (dy + dx) / 2. + 0.5;
-            let v = (dy - dx) / 2. + 0.5;
-            let pixel = if (0. ..1.).contains(&u) && (0. ..1.).contains(&v) {
-                Some(tint(at(top, u, v), 1.0))
-            } else if px < cx {
-                let u = px / cx;
-                let v = (py - h - u * h) / (2. * h);
-                (0. ..1.).contains(&v).then(|| side_px(u, v, 0.8))
-            } else {
-                let u = (px - cx) / cx;
-                let v = (py - 2. * h + u * h) / (2. * h);
-                (0. ..1.).contains(&v).then(|| side_px(u, v, 0.6))
-            };
-            if let Some(p) = pixel {
-                out.put_pixel(x, y, p);
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,20 +364,5 @@ mod tests {
         prune(&dir(&home), 0);
         assert!(cached(&home, url, ICON).is_none());
         fs::remove_dir_all(&home).unwrap();
-    }
-
-    #[test]
-    fn a_grass_block_from_faces() {
-        let face = |c: [u8; 4]| image::RgbaImage::from_pixel(16, 16, image::Rgba(c));
-        let icon = draw_block(
-            &face([200, 200, 200, 255]),
-            &face([120, 80, 50, 255]),
-            &face([0, 0, 0, 0]),
-        );
-        // The top is tinted grass, the sides dirt shaded, the corners empty.
-        assert_eq!(icon.get_pixel(32, 16)[1], (200. * 0xBD as f32 / 255.) as u8);
-        assert_eq!(icon.get_pixel(4, 40).0, [96, 64, 40, 255]);
-        assert_eq!(icon.get_pixel(60, 40).0, [72, 48, 30, 255]);
-        assert_eq!(icon.get_pixel(1, 1)[3], 0);
     }
 }

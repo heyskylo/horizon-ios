@@ -7,14 +7,25 @@
 //!   comparisons and logic read the first component; a value takes its declared type at the
 //!   end (`int` truncates toward zero, `bool` is "not zero"). Unknown names read 0 and are
 //!   reported once.
-//! - OQ-26: `smooth` runs per frame with the frame time; its fade times are seconds (1 by
-//!   default) to cover half of the remaining distance, `fadeIn` while rising, `fadeOut` while
-//!   falling. Each call keeps its own state, so the optional id is not needed. As in Iris
+//! - OQ-26: `smooth` runs per frame with the frame time; its fade times (1 by default) are
+//!   half-lives counted in tenths of a second (`FADE_UNIT`), `fadeIn` while rising, `fadeOut`
+//!   while falling. Each call keeps its own state, so the optional id is not needed. As in Iris
 //!   1.11.7, the first argument is that id when it is written as a number and more follow.
+//! - Unknown names, as in Iris 1.11.7 (#8995): an expression naming something the custom
+//!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
+//!   the name is in an `if` branch not taken, and so does every expression using its uniform or
+//!   variable. Only the names of [`NOT_GIVEN_YET`] read 0 alone.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::Properties;
+
+/// The seconds one unit of a `smooth` fade time lasts. Fitted to Iris 1.11.7 with a probe pack of
+/// our own (`smoothprobe`: `smooth(rainStrength, f, f)` for several fades, read across the scene
+/// suite's weather changes): a half-life of a tenth of the fade time's seconds gives every
+/// measured value within 0.016. Horizon's built-in smoothed uniforms use the same 0.1 s unit
+/// (`pack_uniforms.rs` `SECONDS_A_TICK`).
+const FADE_UNIT: f64 = 0.1;
 
 /// A value: up to 16 components (matrices only as names, for `m.column.row`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +72,28 @@ impl Val {
     }
 }
 
+/// Built-in names Iris 1.11.7's custom uniforms can't see, though the game may give them (most
+/// are frame uniforms here). Our probe packs (#8995) read 0 from `(<name>) * 0.0 + 2.0` for
+/// these, and 2 for 29 others (`skyColor.x`, `entityColor.x`, `blockEntityId`, `frameTime`...).
+const HIDDEN: [&str; 12] = [
+    "alphaTestRef",
+    "atlasSize",
+    "blendFunc",
+    "dimension",
+    "entityId",
+    "fogColor",
+    "fogDensity",
+    "fogEnd",
+    "fogMode",
+    "fogShape",
+    "fogStart",
+    "renderStage",
+];
+
+/// Names Iris 1.11.7's custom uniforms see (our probe of #8995) that the game doesn't give yet:
+/// such a name alone reads 0, and the expression keeps the rest.
+const NOT_GIVEN_YET: [&str; 2] = ["currentRenderedItemId", "lightningBoltPosition"];
+
 #[derive(Clone, Debug)]
 enum Expr {
     Num(f64),
@@ -88,6 +121,9 @@ pub struct Custom {
     smooth: HashMap<usize, f64>,
     seed: u64,
     unknown: HashSet<String>,
+    /// Per item, whether it reads 0 because it names something unknown (directly or through
+    /// another item); worked out on the first `eval`.
+    broken: Option<Vec<bool>>,
     /// `BIOME_*`, `CAT_*` and `PPT_*` (crate::biomes).
     constants: HashMap<String, f64>,
     /// Expressions that did not parse, and unknown names, as `key: message`.
@@ -157,11 +193,19 @@ impl Custom {
     /// values of the game's uniforms and constants (`BIOME_*`...). Returns the uniforms'
     /// values, in the order of `uniforms`.
     pub fn eval(&mut self, dt: f64, builtin: &dyn Fn(&str) -> Option<Val>) -> Vec<Val> {
+        if self.broken.is_none() {
+            self.broken = Some(self.resolve(builtin));
+        }
+        let broken = self.broken.take().unwrap_or_default();
         let mut vars: HashMap<String, Val> = HashMap::new();
         let mut out = Vec::new();
         let items = std::mem::take(&mut self.items);
-        for item in &items {
-            let v = self.value(&item.expr, dt, &vars, builtin);
+        for (item, &broken) in items.iter().zip(&broken) {
+            let v = if broken {
+                Val::scalar(0.0)
+            } else {
+                self.value(&item.expr, dt, &vars, builtin)
+            };
             let v = match item.ty.as_str() {
                 "int" => Val::scalar(v.x().trunc()),
                 "bool" => Val::scalar(f64::from(u8::from(v.truth()))),
@@ -183,7 +227,55 @@ impl Custom {
             }
         }
         self.items = items;
+        self.broken = Some(broken);
         out
+    }
+
+    /// Which items read 0: those naming something neither an item, the game (outside
+    /// [`HIDDEN`]) nor a constant gives, and then those naming such an item. Notes each once.
+    fn resolve(&mut self, builtin: &dyn Fn(&str) -> Option<Val>) -> Vec<bool> {
+        let items: HashSet<&str> = self.items.iter().map(|i| i.name.as_str()).collect();
+        let known = |n: &str| {
+            matches!(n, "pi" | "true" | "false")
+                || n.starts_with("BIOME_")
+                || self.constants.contains_key(n)
+                || NOT_GIVEN_YET.contains(&n)
+                || (!HIDDEN.contains(&n) && builtin(n).is_some())
+        };
+        let mut broken = vec![false; self.items.len()];
+        let mut uses: Vec<Vec<&str>> = Vec::new();
+        for (i, item) in self.items.iter().enumerate() {
+            let mut names = Vec::new();
+            names_in(&item.expr, &mut names);
+            if let Some(n) = names.iter().find(|n| !items.contains(*n) && !known(n)) {
+                self.notes.push(format!(
+                    "`{}` reads 0: `{n}` is unknown to custom uniforms",
+                    item.name
+                ));
+                broken[i] = true;
+            }
+            uses.push(names.into_iter().filter(|n| items.contains(n)).collect());
+        }
+        loop {
+            let dead: HashSet<&str> = (self.items.iter().zip(&broken))
+                .filter(|(_, b)| **b)
+                .map(|(i, _)| i.name.as_str())
+                .collect();
+            let mut changed = false;
+            for (i, item) in self.items.iter().enumerate() {
+                if let Some(n) = uses[i].iter().find(|n| !broken[i] && dead.contains(*n)) {
+                    self.notes.push(format!(
+                        "`{}` reads 0: it uses `{n}`, which does",
+                        item.name
+                    ));
+                    broken[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return broken;
+            }
+        }
     }
 
     fn random(&mut self) -> f64 {
@@ -330,7 +422,7 @@ impl Custom {
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
                         if fade > 0.0 {
-                            *state = val + (*state - val) * 0.5f64.powf(dt / fade);
+                            *state = val + (*state - val) * 0.5f64.powf(dt / (fade * FADE_UNIT));
                         } else {
                             *state = val;
                         }
@@ -556,6 +648,20 @@ fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
     }
 }
 
+/// The names `e` reads, calls left out, in order.
+fn names_in<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
+    match e {
+        Expr::Num(_) => {}
+        Expr::Name(n, _) => out.push(n),
+        Expr::Call(_, args, _) => args.iter().for_each(|a| names_in(a, out)),
+        Expr::Neg(a) | Expr::Not(a) => names_in(a, out),
+        Expr::Bin(_, a, b) => {
+            names_in(a, out);
+            names_in(b, out);
+        }
+    }
+}
+
 fn is_name(t: &str) -> bool {
     t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
 }
@@ -634,7 +740,7 @@ mod tests {
                 12.0,
                 2.0 + 2.5 + 2.0,
                 9.0 + 0.875,
-                1.0,
+                0.0,
                 0.0,
                 12.0
             ]
@@ -643,7 +749,7 @@ mod tests {
         assert_eq!(
             c.notes,
             [
-                "`unknownThing` is unknown; it reads 0",
+                "`h` reads 0: `unknownThing` is unknown to custom uniforms",
                 "`BIOME_PALE_GARDEN` names no biome; it reads -1",
                 "`BIOME_OLD` names no biome; it reads -1"
             ]
@@ -651,8 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn smooth_halves_the_distance_per_fade_time() {
-        let mut c = custom("uniform.float.s = smooth(1, target, 2, 0.5)\n");
+    fn smooth_halves_the_distance_per_tenth_of_its_fade_time() {
+        let mut c = custom("uniform.float.s = smooth(1, target, 20, 5)\n");
         let mut target = 0.0;
         let mut run = |t: f64, dt: f64| {
             target = t;
@@ -661,6 +767,42 @@ mod tests {
         assert_eq!(run(0.0, 0.0), 0.0);
         assert!((run(1.0, 2.0) - 0.5).abs() < 1e-9, "rising: fadeIn");
         assert!((run(0.0, 0.5) - 0.25).abs() < 1e-9, "falling: fadeOut");
+    }
+
+    /// Iris 1.11.7 with a probe pack of our own, over the scene suite's weather: `weather rain`
+    /// (the rain level climbs 0.01 a tick, vanilla's `ServerLevel.advanceWeatherCycle`) and a
+    /// picture 9.1 s later, then `weather clear` and a picture 9.2 s after that, then one more
+    /// 4.3 s on. Read there: `smooth(rainStrength, 20, 20)` 0.871, 0.118, 0.027;
+    /// `smooth(rainStrength, 2, 10)` 1.0, 0.020, 0.0; `smooth(rainStrength, 5, 5)` 1.0, 0.0, 0.0.
+    #[test]
+    fn smooth_follows_the_rain_as_iris_does() {
+        let mut c = custom(
+            "uniform.float.a = smooth(rainStrength, 20, 20)\n\
+             uniform.float.b = smooth(rainStrength, 2, 10)\n\
+             uniform.float.c = smooth(rainStrength, 5, 5)\n",
+        );
+        let dt = 1.0 / 60.0;
+        let (mut rain, mut read) = (0.0f64, Vec::new());
+        for (seconds, target) in [(9.1, 1.0), (9.2, 0.0), (4.3, 0.0)] {
+            for _ in 0..(seconds / dt) as usize {
+                rain = if target > rain {
+                    (rain + dt / 5.0).min(1.0)
+                } else {
+                    (rain - dt / 5.0).max(0.0)
+                };
+                let r = rain;
+                read = c.eval(dt, &|n: &str| (n == "rainStrength").then(|| Val::scalar(r)));
+            }
+            let got: Vec<f64> = read.iter().map(|v| v.v[0]).collect();
+            let iris = match target {
+                1.0 => [0.871, 1.0, 1.0],
+                _ if seconds > 9.0 => [0.118, 0.020, 0.0],
+                _ => [0.027, 0.0, 0.0],
+            };
+            for (g, i) in got.iter().zip(iris) {
+                assert!((g - i).abs() < 0.03, "{got:?} against Iris's {iris:?}");
+            }
+        }
     }
 
     /// After a restart `smooth` starts from its next value, as on the first frame, instead of
@@ -717,5 +859,46 @@ mod tests {
         let c = custom("uniform.float.a = (1 + \nuniform.mat4.m = 1\nuniform.float.ok = 2\n");
         assert_eq!(c.uniforms().count(), 1);
         assert_eq!(c.notes.len(), 2, "{:?}", c.notes);
+    }
+
+    /// Iris 1.11.7, with our probe pack of #8995: an expression naming something the custom
+    /// uniforms can't see reads 0 as a whole, even in an `if` branch not taken, and so does
+    /// anything using its uniform or variable.
+    #[test]
+    fn a_name_custom_uniforms_cannot_see_fails_the_whole_expression() {
+        let mut c = custom(
+            "variable.float.v0 = fogStart * 0.0 + 2.0\n\
+             variable.float.v1 = 5.0\n\
+             uniform.float.u0 = 2.0\n\
+             uniform.float.u1 = dimension * 0.0 + 2.0\n\
+             uniform.float.u2 = fogColor.r * 0.0 + 2.0\n\
+             uniform.float.u3 = notAName * 0.0 + 2.0\n\
+             uniform.float.u4 = if(1 > 0, 2.0, fogStart)\n\
+             uniform.float.u5 = u0 + 1.0\n\
+             uniform.float.u6 = u2 + 1.0\n\
+             uniform.float.u7 = v0 + 1.0\n\
+             uniform.float.u8 = v1 + 1.0\n\
+             uniform.float.u9 = frameTime * 0.0 + 2.0\n\
+             uniform.vec3.w = vec3(skyColor.r, entityColor.a, blockEntityId) * 0.0 + 2.0\n\
+             uniform.float.r = currentRenderedItemId * 0.0 + lightningBoltPosition.x + 2.0\n",
+        );
+        // The game gives every name here but `notAName`, `currentRenderedItemId` and
+        // `lightningBoltPosition`, as Horizon's frame uniforms do.
+        let builtin = |n: &str| match n {
+            "notAName" | "currentRenderedItemId" | "lightningBoltPosition" => None,
+            "fogColor" | "skyColor" => Some(Val::vector(&[0.5, 0.6, 0.7])),
+            "entityColor" => Some(Val::vector(&[0.0; 4])),
+            _ => Some(Val::scalar(1.0)),
+        };
+        let x: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
+        assert_eq!(
+            x,
+            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 2.0, 2.0]
+        );
+        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
+        // The same on later frames, with no new notes.
+        let again: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
+        assert_eq!(again, x);
+        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
     }
 }

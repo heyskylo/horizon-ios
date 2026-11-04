@@ -690,18 +690,53 @@ impl Frontend {
             }
         };
 
-        let handle = ctx.locals.append(
-            LocalVariable {
-                name: decl.name.clone(),
-                ty: decl.ty,
-                init: decl.init,
-            },
-            decl.meta,
-        );
-        let expr = ctx.add_expression(Expression::LocalVariable(handle), decl.meta)?;
+        // A `const` local initialized with a constant expression is a constant expression
+        // itself (GLSL 4.60, 4.3.3, as #8462 quotes it), so it may be a texel offset: it
+        // becomes a module constant, as a global `const` does.
+        let constant = match (storage.0, decl.init) {
+            (StorageQualifier::Const, Some(init)) => ctx
+                .lift_up_const_value(init)
+                .ok()
+                .map(|init| {
+                    let constant = Constant {
+                        name: decl.name.clone(),
+                        ty: decl.ty,
+                        init,
+                    };
+                    ctx.module.constants.append(constant, decl.meta)
+                }),
+            _ => None,
+        };
+
+        let expr = match constant {
+            Some(constant) => ctx.add_expression(Expression::Constant(constant), decl.meta)?,
+            None => {
+                let handle = ctx.locals.append(
+                    LocalVariable {
+                        name: decl.name.clone(),
+                        ty: decl.ty,
+                        init: decl.init,
+                    },
+                    decl.meta,
+                );
+                ctx.add_expression(Expression::LocalVariable(handle), decl.meta)?
+            }
+        };
 
         if let Some(name) = decl.name {
-            let maybe_var = ctx.add_local_var(name.clone(), expr, mutable);
+            let maybe_var = match constant {
+                Some(constant) => ctx.symbol_table.add(
+                    name.clone(),
+                    VariableReference {
+                        expr,
+                        load: false,
+                        mutable: false,
+                        constant: Some((constant, decl.ty)),
+                        entry_arg: None,
+                    },
+                ),
+                None => ctx.add_local_var(name.clone(), expr, mutable),
+            };
 
             if maybe_var.is_some() {
                 self.errors.push(Error {
