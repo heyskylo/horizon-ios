@@ -753,22 +753,12 @@ impl Mob {
         if !p.alive || p.spectator {
             return false;
         }
-        // LivingEntity.getVisibilityPercent
-        let mut visibility = if scale { p.visibility_percent() } else { 1.0 };
-        if let Some(head) = p.head.as_ref().filter(|_| scale) {
-            let skull = match self.species() {
-                Species::Zombie | Species::Husk | Species::Drowned | Species::ZombieVillager => {
-                    "minecraft:zombie_head"
-                }
-                Species::Skeleton | Species::Stray | Species::Bogged => "minecraft:skeleton_head",
-                Species::Creeper => "minecraft:creeper_head",
-                Species::Piglin | Species::PiglinBrute => "minecraft:piglin_head",
-                _ => "",
-            };
-            if &**head == skull {
-                visibility *= 0.5;
-            }
-        }
+        // LivingEntity.getVisibilityPercent, including worn mob_visibility.
+        let visibility = if scale {
+            p.visibility_percent(Some(self.kind.id.as_str()), w.items)
+        } else {
+            1.0
+        };
         let dist = (range * visibility).max(2.0);
         if self.distance_sqr(p.position) > dist * dist {
             return false;

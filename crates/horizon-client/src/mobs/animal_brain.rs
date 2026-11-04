@@ -645,7 +645,7 @@ fn targetable(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
             // TargetingConditions.forNonCombat(): in range (scaled by the
             // player's visibility, at least 2) and in sight.
             let Some(p) = &w.player else { return false };
-            let r = (range * p.visibility_percent()).max(2.0);
+            let r = (range * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
             p.alive && !p.spectator && m.distance_sqr(p.position) <= r * r && m.sees(w, who)
         }
         Who::Mob(id) => {
