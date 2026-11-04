@@ -123,6 +123,54 @@ fn mid_tex_coord_follows_each_quads_mapped_corners() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// A stitched atlas (the one `stitched_sprites_keep_their_own_size` works out: 16 by
+/// 8, sprites of 2, 4 and 1 px at (9, 1), (1, 1) and (9, 5)): flat draws map a quad's UVs onto its
+/// sprite's own pixels, so a corner is half the sprite's own side from `mc_midTexCoord`.
+#[test]
+fn flat_draws_map_uvs_onto_a_stitched_sprite() {
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let array = super::tests::upscaled_array(&device, &queue, &[2, 4, 1]);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let atlas =
+        PackAtlas::stitched(&device, &mut encoder, &[array], 3, 4, &[2, 4, 1], 0, 0).unwrap();
+    queue.submit([encoder.finish()]);
+    let whole = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+    let positions = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]];
+    let vertices: Vec<_> = (0..3)
+        .flat_map(|layer| {
+            (0..4).map(move |k| {
+                TerrainVertex::new(positions[k], whole[k], layer as u16 | 0x8000, u32::MAX, 0)
+            })
+        })
+        .collect();
+    // Corner and side of each layer's sprite, in atlas pixels.
+    let sprites = [([9., 1.], 2.), ([1., 1.], 4.), ([9., 5.], 1.)];
+    let origin = f32::from_bits((1. / UV_STEPS).to_bits());
+    let pixels = sample(&device, &queue, &atlas, &vertices, origin, [true, false]);
+    let mut failures = Vec::new();
+    for (layer, ([x, y], side)) in sprites.into_iter().enumerate() {
+        let mid = [(x + side / 2.) / 16., (y + side / 2.) / 8.];
+        for (corner, [u, v]) in whole.iter().enumerate() {
+            let expected = [mid[0], mid[1], (x + u * side) / 16., (y + v * side) / 8.];
+            let actual = pixels[4 * layer + corner];
+            if actual
+                .iter()
+                .zip(expected)
+                .any(|(a, b)| (a - b).abs() > 1e-6)
+            {
+                failures.push(format!(
+                    "layer {layer} corner {corner}: {actual:?} != {expected:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn sample(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -183,7 +231,7 @@ fn sample(
         }],
         vec![storage(0), storage(1)],
         vec![],
-        vec![storage(0), storage(1)],
+        vec![storage(0), storage(1), storage(2)],
     ];
     let layouts: Vec<_> = entries
         .iter()
@@ -268,11 +316,15 @@ fn sample(
         bytemuck::cast_slice(vertices),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
+    let rects = buffer(
+        bytemuck::cast_slice(&atlas.rects_table()),
+        wgpu::BufferUsages::STORAGE,
+    );
     let bindings = [
         vec![(0, &uniform)],
         vec![(0, &slots), (1, &origin)],
         vec![],
-        vec![(0, &ids), (1, &data)],
+        vec![(0, &ids), (1, &data), (2, &rects)],
     ];
     let groups: Vec<_> = bindings
         .iter()

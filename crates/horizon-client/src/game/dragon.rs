@@ -2860,12 +2860,7 @@ impl Breath {
     /// `AreaEffectCloud.isWaiting`: before its wait time (20 ticks, 10 for a
     /// lingering potion's).
     pub(super) fn waiting(&self) -> bool {
-        self.age
-            < if self.potion.is_some() {
-                super::potions::LINGERING_WAIT
-            } else {
-                20
-            }
+        self.age < self.potion.as_ref().map_or(20, |p| p.settings.wait_time)
     }
 }
 impl Game<'_> {
@@ -3223,7 +3218,7 @@ impl Dragon {
             "minecraft:ender_dragon",
             self.position,
             self.velocity,
-            self.yaw,
+            [self.yaw, 0.0],
             uuid,
             raw,
         );
@@ -3260,7 +3255,7 @@ impl Crystal {
             "minecraft:end_crystal",
             self.position,
             Vec3::ZERO,
-            0.0,
+            [0.0, 0.0],
             uuid,
             raw,
         );

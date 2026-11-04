@@ -419,6 +419,11 @@ impl Game<'_> {
         tag: Tag,
     ) -> std::result::Result<(), Tag> {
         match kind {
+            "minecraft:area_effect_cloud" => {
+                if let Some(id) = self.load_potion_cloud(&tag) {
+                    self.remember(id, uuid, tag);
+                }
+            }
             "minecraft:evoker_fangs" => {
                 if let Some(at) = entity_nbt::position(&tag) {
                     self.next_entity += 1;
@@ -558,6 +563,7 @@ impl Game<'_> {
             self.remember_uuid(self.next_entity, uuid, &tag);
             let uuid = self.uuid_for(self.next_entity);
             self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id: self.next_entity,
                 state,
@@ -629,6 +635,7 @@ impl Game<'_> {
                 _ => 80,
             };
             self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: entity_nbt::flag(&tag, "NoGravity"),
                 id,
@@ -642,6 +649,9 @@ impl Game<'_> {
                 // PrimedTnt.readAdditionalSaveData: 4 by default,
                 // kept to 0..128.
                 power: entity_nbt::tnt_power(&tag),
+                block_state: tag
+                    .get("block_state")
+                    .and_then(|v| entity_nbt::state_from_nbt(self.pack.assets.registry, v)),
             });
             // `Entity.load`: the `PortalCooldown` of one that just came through.
             self.remember(id, uuid, tag);
@@ -971,7 +981,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 b.position,
                 b.velocity,
-                b.yaw,
+                [b.yaw, b.pitch],
                 uuid,
                 self.persist.raw.get(&root),
                 b.chest.then_some(&b.items[..]),
@@ -1683,6 +1693,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.rotation,
             uuid,
         );
         let mut tag = with_raw(tag, raw.as_ref());
@@ -1731,6 +1742,8 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.block_state_nbt(self.pack.assets.registry),
+                t.rotation,
                 uuid,
                 self.persist.raw.get(&id),
             );
@@ -1752,7 +1765,7 @@ impl Game<'_> {
             &b.entity_type(),
             b.position,
             b.velocity,
-            b.yaw,
+            [b.yaw, b.pitch],
             uuid,
             self.persist.raw.get(&id),
             b.chest.then_some(&b.items[..]),

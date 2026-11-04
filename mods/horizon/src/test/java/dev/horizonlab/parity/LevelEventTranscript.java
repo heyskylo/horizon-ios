@@ -12,13 +12,14 @@ import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
  * phase: the console says "level_events_NAME" to start a phase and "level_events_done" at the end; the client
  * answers each phase with "level events phase NAME".
  */
-final class LevelEventTranscript {
+final class LevelEventTranscript implements PhasedTranscript {
     private final List<String> lines = new ArrayList<>();
     private String phase = "setup";
     private String pendingAck;
     private boolean done;
 
-    void accept(Packet<?> packet) {
+    @Override
+    public void accept(Packet<?> packet) {
         String text = null;
         if (packet instanceof ClientboundSystemChatPacket p) text = p.content().getString();
         else if (packet instanceof ClientboundDisguisedChatPacket p) text = p.message().getString();
@@ -39,12 +40,15 @@ final class LevelEventTranscript {
         }
     }
 
-    String acknowledgement() {
+    @Override
+    public String acknowledgement() {
         String ack = pendingAck;
         pendingAck = null;
         return ack;
     }
 
-    boolean done() { return done; }
-    List<String> lines() { return lines; }
+    @Override public boolean done() { return done; }
+    @Override public List<String> lines() { return lines; }
+    @Override public String request() { return "summon the scene"; }
+    @Override public String record() { return "play-level-event"; }
 }
