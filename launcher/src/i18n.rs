@@ -119,10 +119,28 @@ pub enum Language {
     Albanian,
     #[serde(rename = "cy")]
     Welsh,
+    #[serde(rename = "ga")]
+    Irish,
+    #[serde(rename = "eu")]
+    Basque,
+    #[serde(rename = "gl")]
+    Galician,
+    #[serde(rename = "fil")]
+    Filipino,
+    #[serde(rename = "ta")]
+    Tamil,
+    #[serde(rename = "mn")]
+    Mongolian,
+    #[serde(rename = "lo")]
+    Lao,
+    #[serde(rename = "so")]
+    Somali,
+    #[serde(rename = "fy")]
+    Frisian,
 }
 
 impl Language {
-    pub const ALL: [Language; 53] = [
+    pub const ALL: [Language; 62] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -176,6 +194,15 @@ impl Language {
         Self::Macedonian,
         Self::Albanian,
         Self::Welsh,
+        Self::Irish,
+        Self::Basque,
+        Self::Galician,
+        Self::Filipino,
+        Self::Tamil,
+        Self::Mongolian,
+        Self::Lao,
+        Self::Somali,
+        Self::Frisian,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -234,6 +261,15 @@ impl Language {
             Self::Macedonian => "mk",
             Self::Albanian => "sq",
             Self::Welsh => "cy",
+            Self::Irish => "ga",
+            Self::Basque => "eu",
+            Self::Galician => "gl",
+            Self::Filipino => "fil",
+            Self::Tamil => "ta",
+            Self::Mongolian => "mn",
+            Self::Lao => "lo",
+            Self::Somali => "so",
+            Self::Frisian => "fy",
         }
     }
 
@@ -293,6 +329,15 @@ impl Language {
             Self::Macedonian => "Македонски",
             Self::Albanian => "Shqip",
             Self::Welsh => "Cymraeg",
+            Self::Irish => "Gaeilge",
+            Self::Basque => "Euskara",
+            Self::Galician => "Galego",
+            Self::Filipino => "Filipino",
+            Self::Tamil => "தமிழ்",
+            Self::Mongolian => "Монгол",
+            Self::Lao => "ລາວ",
+            Self::Somali => "Soomaali",
+            Self::Frisian => "Frysk",
         }
     }
 
@@ -394,6 +439,15 @@ impl Language {
             Self::Macedonian => include_str!("../lang/mk.json"),
             Self::Albanian => include_str!("../lang/sq.json"),
             Self::Welsh => include_str!("../lang/cy.json"),
+            Self::Irish => include_str!("../lang/ga.json"),
+            Self::Basque => include_str!("../lang/eu.json"),
+            Self::Galician => include_str!("../lang/gl.json"),
+            Self::Filipino => include_str!("../lang/fil.json"),
+            Self::Tamil => include_str!("../lang/ta.json"),
+            Self::Mongolian => include_str!("../lang/mn.json"),
+            Self::Lao => include_str!("../lang/lo.json"),
+            Self::Somali => include_str!("../lang/so.json"),
+            Self::Frisian => include_str!("../lang/fy.json"),
         }
     }
 }

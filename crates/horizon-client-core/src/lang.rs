@@ -217,6 +217,33 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/cy_gb.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/cy_gb.json")
             }
+            "assets/horizon/lang/ga_ie.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ga_ie.json")
+            }
+            "assets/horizon/lang/eu_es.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/eu_es.json")
+            }
+            "assets/horizon/lang/gl_es.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/gl_es.json")
+            }
+            "assets/horizon/lang/fil_ph.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fil_ph.json")
+            }
+            "assets/horizon/lang/ta_in.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ta_in.json")
+            }
+            "assets/horizon/lang/mn_mn.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/mn_mn.json")
+            }
+            "assets/horizon/lang/lo_la.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/lo_la.json")
+            }
+            "assets/horizon/lang/so_so.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/so_so.json")
+            }
+            "assets/horizon/lang/fy_nl.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fy_nl.json")
+            }
             "assets/horizon/lang/de_de.json" | "assets/horizon/lang/de_at.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
             }
