@@ -230,6 +230,21 @@ pub fn load_archetype_items(tags: &HashMap<String, HashSet<String>>) {
             .collect(),
     );
 }
+// These unit fixtures share a process-wide item lookup. Whichever initializes
+// it first must include both the explosive and hot bodies exercised below.
+#[cfg(test)]
+fn test_archetype_items() {
+    load_archetype_items(&HashMap::from([
+        (
+            "minecraft:sulfur_cube_archetype/explosive".into(),
+            HashSet::from(["minecraft:tnt".into()]),
+        ),
+        (
+            "minecraft:sulfur_cube_archetype/hot".into(),
+            HashSet::from(["minecraft:magma_block".into()]),
+        ),
+    ]));
+}
 /// `matchingArchetypes`: the last one wins (as `collectEquipmentChanges`
 /// leaves it), buoyancy if any.
 pub fn archetype_of(item: &str) -> Option<&'static Archetype> {
@@ -259,10 +274,7 @@ mod knockback_sync_tests {
     /// does, so a guest sees a cube with a block knocked about at once.
     #[test]
     fn a_knocked_cube_with_a_block_syncs_at_once() {
-        load_archetype_items(&HashMap::from([(
-            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
-            HashSet::from(["minecraft:tnt".to_owned()]),
-        )]));
+        test_archetype_items();
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = Species::SulfurCube;
         let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
@@ -305,10 +317,7 @@ mod burning_arrow_tests {
     use std::sync::Arc;
 
     fn cube(head: Option<&str>) -> Mob {
-        load_archetype_items(&HashMap::from([(
-            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
-            HashSet::from(["minecraft:tnt".to_owned()]),
-        )]));
+        test_archetype_items();
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = Species::SulfurCube;
         let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
@@ -1117,10 +1126,7 @@ mod tnt_rule_tests {
     use std::sync::Arc;
 
     fn tnt_cube() -> Mob {
-        load_archetype_items(&HashMap::from([(
-            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
-            HashSet::from(["minecraft:tnt".to_owned()]),
-        )]));
+        test_archetype_items();
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = Species::SulfurCube;
         let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
@@ -1188,10 +1194,7 @@ mod fuse_anim_tests {
     fn a_primed_cube_is_still_knocked_about() {
         // SulfurCube.hurtServer runs the immune knockback before
         // LivingEntity's invulnerability check, and priming makes it invulnerable.
-        load_archetype_items(&HashMap::from([(
-            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
-            HashSet::from(["minecraft:tnt".to_owned()]),
-        )]));
+        test_archetype_items();
         let mut m = cube();
         m.extra.body = Some("minecraft:tnt".into());
         assert!(prime(&mut m, false));
@@ -1223,10 +1226,7 @@ mod fuse_anim_tests {
         // `fireworks` is in #is_explosion, so it lights the short fuse
         // (`PrimedTnt.getRandomShortFuse`: 15 to 44 of 120 ticks), and so in
         // #sulfur_cube_with_block_immune_to; it is not in #no_knockback.
-        load_archetype_items(&HashMap::from([(
-            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
-            HashSet::from(["minecraft:tnt".to_owned()]),
-        )]));
+        test_archetype_items();
         let source = Damage::fireworks(Some(crate::mobs::Who::Player), [2.0, 0.0, 0.0]);
         assert_eq!(source.kind, DamageKind::Fireworks);
         assert!(!source.no_knockback());
@@ -1422,6 +1422,7 @@ mod mob_contact_tests {
 
     #[test]
     fn mob_tick_contacts_only_overlapping_pushable_mobs_with_a_hot_body() {
+        test_archetype_items();
         let victim = |id: u32, at: Vec3, alive: bool| {
             let mut m = Mob::new(id, crate::mobs::sensor_scan_tests::kind(), at, 0.0);
             if !alive {
