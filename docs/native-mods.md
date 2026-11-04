@@ -1733,13 +1733,28 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet and stops with
-   "the launcher has none for windows aarch64"; it doesn't build x64 game binaries for an ARM64 install. An Intel
-   Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
-   `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
-   (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
-   SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
-   and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on
+   x86-64, Windows x64 and Windows ARM64. The toolchain follows the launcher's process architecture. An x64 launcher
+   running under ARM64 emulation keeps using the existing x64 Rust and MinGW toolchain. Windows x64 keeps using
+   `x86_64-pc-windows-gnu` and WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0 (MSVCRT), with its SHA-pinned `mingw64/`
+   folder on `PATH`.
+
+   On Windows ARM64, Rust 1.99.1's native host tools use `aarch64-pc-windows-gnullvm`; the launcher also downloads
+   a SHA-pinned LLVM-MinGW 23.1.5 toolchain with UCRT. Rust's `aarch64-pc-windows-msvc` release target cannot be
+   reused as a self-contained player toolchain: it needs the MSVC linker and C libraries, while the launcher must
+   bring its own C compiler and linker for dependencies such as `ring` and `hidapi` and for Windows imports. The
+   selected ARM64 game's source is rebuilt in full for `aarch64-pc-windows-gnullvm`; the existing MSVC executable
+   is replaced, never linked into the output. The resulting Rust and C code use one Windows ARM64 calling
+   convention, and the executable's PE machine is checked before installation. LLVM-MinGW is not an MSVC
+   object-library toolchain: prebuilt MSVC static libraries in a native mod are not compatible. The output uses
+   UCRT, which is included with Windows 10 and later.
+
+   Before building on Windows, the launcher reads the selected game's executable architecture. It refuses a game
+   that does not match its managed compiler, so a build cannot install a binary for the wrong architecture. The
+   Windows ARM64 launcher currently cannot build the x64 game used as the fallback in releases without an ARM64
+   asset, and the x64 launcher cannot build an ARM64 game. This also applies if a future game-architecture choice
+   selects a different architecture from the launcher's toolchain; install a matching game and use its matching
+   launcher to build. ARM64EC executables are unsupported. An Intel Mac has no bundled compiler either, so native
+   builds there stop with "the launcher has none for macos x86_64". The linker is the system's on
    macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`). On Linux the
    game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found with
    `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the

@@ -1117,5 +1117,6 @@
   "Move and restart": "Перенести й перезапустити",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Відкрити крамницю",
-  "You don't own any cosmetics yet.": "У вас поки немає косметики."
+  "You don't own any cosmetics yet.": "У вас поки немає косметики.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Для нативних модів потрібні однакові підтримувані архітектури Windows. Гра: {game_arch}; набір інструментів збирання: {toolchain_arch}."
 }

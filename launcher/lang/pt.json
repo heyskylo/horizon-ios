@@ -1117,5 +1117,6 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "O launcher fecha enquanto os teus dados são copiados e verificados, e volta a abrir no fim. As pastas antigas são mantidas e continuam a ocupar espaço no disco até confirmares que a transferência foi bem-sucedida e as apagares manualmente.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir a loja",
-  "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético."
+  "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}."
 }

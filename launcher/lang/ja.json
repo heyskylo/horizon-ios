@@ -1117,5 +1117,6 @@
   "Move and restart": "移動して再起動",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "ショップを開く",
-  "You don't own any cosmetics yet.": "コスメをまだ持っていません。"
+  "You don't own any cosmetics yet.": "コスメをまだ持っていません。",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "ネイティブ Mod には、対応する Windows アーキテクチャの一致が必要です。ゲーム: {game_arch}、ビルド ツールチェーン: {toolchain_arch}。"
 }

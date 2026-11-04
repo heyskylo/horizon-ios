@@ -1117,5 +1117,6 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "आपका डेटा कॉपी और सत्यापित किए जाने के दौरान लॉन्चर बंद रहता है, फिर दोबारा खुलता है। पुराने फ़ोल्डर सुरक्षित रखे जाते हैं और तब तक डिस्क पर जगह घेरते रहते हैं, जब तक आप स्थानांतरण सफल होने की पुष्टि करके उन्हें खुद नहीं हटा देते।",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "दुकान खोलें",
-  "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।"
+  "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "नेटिव मॉड के लिए समर्थित Windows आर्किटेक्चर का मेल होना ज़रूरी है। गेम: {game_arch}; बिल्ड टूलचेन: {toolchain_arch}।"
 }

@@ -1117,5 +1117,6 @@
   "Move and restart": "Déplacer et redémarrer",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Ouvrir la boutique",
-  "You don't own any cosmetics yet.": "Vous ne possédez encore aucun cosmétique."
+  "You don't own any cosmetics yet.": "Vous ne possédez encore aucun cosmétique.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Les mods natifs nécessitent des architectures Windows prises en charge identiques. Jeu : {game_arch} ; chaîne de compilation : {toolchain_arch}."
 }

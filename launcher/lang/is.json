@@ -1117,5 +1117,6 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Opna verslunina",
-  "You don't own any cosmetics yet.": "Þú átt engar snyrtivörur ennþá."
+  "You don't own any cosmetics yet.": "Þú átt engar snyrtivörur ennþá.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}."
 }

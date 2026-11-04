@@ -1117,5 +1117,6 @@
   "Move and restart": "迁移并重启",
   "Could not open the data folder: {error}": "无法打开数据文件夹：{error}",
   "Open the shop": "打开商店",
-  "You don't own any cosmetics yet.": "你还没有任何装饰。"
+  "You don't own any cosmetics yet.": "你还没有任何装饰。",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "原生模组需要匹配的受支持 Windows 架构。游戏：{game_arch}；构建工具链：{toolchain_arch}。"
 }

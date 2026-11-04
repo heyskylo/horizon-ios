@@ -1117,5 +1117,6 @@
   "Move and restart": "Taşı ve yeniden başlat",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Mağazayı aç",
-  "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok."
+  "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Yerel modlar için desteklenen Windows mimarilerinin eşleşmesi gerekir. Oyun: {game_arch}; derleme araç zinciri: {toolchain_arch}."
 }
