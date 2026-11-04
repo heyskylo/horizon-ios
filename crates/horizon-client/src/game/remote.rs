@@ -5579,7 +5579,10 @@ impl Game<'_> {
             return;
         };
         let at = Vec3::new(p[0], p[1], p[2]);
-        let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
+        // ItemEntity's constructor draws bobOffs from the item's own random.
+        let bob_offset = horizon_client::mobs::entity_random(id as u32, at).next_float()
+            * std::f32::consts::PI
+            * 2.0;
         self.dropped.push(ItemEntity {
             rotation: [0.0, 0.0],
             join: Default::default(),
