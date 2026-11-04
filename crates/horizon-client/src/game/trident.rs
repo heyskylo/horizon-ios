@@ -737,6 +737,7 @@ impl Game<'_> {
                                 kind: DamageKind::Arrow,
                                 attacker: Some(Who::Player),
                                 from,
+                                attacker_species: None,
                             },
                             aim,
                             [t.velocity.x, t.velocity.z],

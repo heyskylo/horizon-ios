@@ -10700,6 +10700,7 @@ mod tests {
                 kind,
                 attacker,
                 from: None,
+                attacker_species: None,
             });
             (s.damage_type, s.causing, s.direct)
         };

@@ -61,6 +61,7 @@ mod tests {
                 kind: DamageKind::MobAttack,
                 attacker,
                 from: None,
+                attacker_species: None,
             },
             damage: 2.0,
             in_water: false,

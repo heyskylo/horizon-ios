@@ -1222,6 +1222,7 @@ mod tests {
             kind: DamageKind::PlayerAttack,
             attacker: None,
             from: Some([3.0, 0.0, 0.0]),
+            attacker_species: None,
         };
         // Canceled: no damage, cooldown, sound or knockback.
         let mut kept = mob(9001);

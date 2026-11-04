@@ -206,10 +206,15 @@ impl Game<'_> {
                     Target::Mob(i) => Some(Who::Mob(i)),
                     _ => None,
                 });
+                let attacker_species = match attacker {
+                    Some(Who::Mob(i)) => self.mobs.iter().find(|m| m.id == i).map(|m| m.species()),
+                    _ => None,
+                };
                 let damage = Damage {
                     kind: Self::damage_kind(&ty),
                     attacker,
                     from,
+                    attacker_species,
                 };
                 // DamageSource.getEntity is the causing player, even when
                 // another client issued the command or supplied the direct entity.

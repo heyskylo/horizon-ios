@@ -360,6 +360,7 @@ pub fn sting(m: &mut Mob, who: Who, cx: &mut Cx) {
                 kind: DamageKind::Sting,
                 attacker: Some(Who::Mob(m.id)),
                 from: Some(from),
+                attacker_species: Some(Species::Bee),
             },
         }),
     }
