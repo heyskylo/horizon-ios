@@ -65,6 +65,7 @@ pub enum H {
     BlueMapAutoDetect,
     BlueMapRadius,
     CaveCulling,
+    GpuCulling,
     EntityCulling,
     ParticleCulling,
     LeafCulling,
@@ -378,6 +379,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Skips terrain hidden behind closed sections. Off costs a lot.",
                         ),
                         h(
+                            H::GpuCulling,
+                            Saves,
+                            "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+                        ),
+                        h(
                             H::EntityCulling,
                             None,
                             "Hides entities behind opaque blocks.",
@@ -551,15 +557,15 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             ],
         ),
     ];
-    // Only Windows and Linux have more than one graphics API, and translucent batching
-    // (Metal draws flat).
+    // Only Windows and Linux have more than one graphics API, translucent batching (Metal
+    // draws flat) and GPU culling (Metal draws no count the GPU wrote).
     if cfg!(target_os = "macos") {
         for (_, groups) in &mut pages {
             for (_, rows) in groups {
                 rows.retain(|r| {
                     !matches!(
                         r.item,
-                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching)
+                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching | H::GpuCulling)
                     )
                 });
             }
@@ -748,6 +754,12 @@ impl H {
                 lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
+            // the saved value waits.
+            H::GpuCulling => labelled(
+                "GPU Culling",
+                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+            ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
@@ -904,6 +916,7 @@ impl H {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
@@ -993,7 +1006,8 @@ impl Item {
     /// the saved values wait for an HDR display), and its sliders do something only
     /// while it is on; Translucent Batching switches only where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
-    /// and Smooth Gradients only where it can draw the 16-bit frame, the same way.
+    /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -1030,6 +1044,7 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
             _ => None,
         }
     }
@@ -1045,6 +1060,7 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::GpuCulling) => g.gpu_culling,
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -1134,6 +1150,7 @@ impl Item {
                     | H::GraphicsApi
                     | H::TranslucentBatching
                     | H::HdrSmoothGradients
+                    | H::GpuCulling
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen
@@ -3212,6 +3229,67 @@ mod tests {
         }
     }
 
+    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
+    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    #[test]
+    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+        use crate::graphics::GpuCullingOffer;
+        let item = Item::Horizon(H::GpuCulling);
+        let at = |item| items().into_iter().position(|(_, i)| i == item);
+        if cfg!(target_os = "macos") {
+            // Metal draws no count the GPU wrote: never offered, so not shown.
+            assert_eq!(at(item), None);
+            return;
+        }
+        let i = at(item).unwrap();
+        assert_eq!(items()[i].0, Page::Performance);
+        assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
+        let mut s = Settings::default();
+        assert_eq!(item.switch(&s), Some(false));
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.gpu_culling = true;
+        // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
+        // it does anything.
+        for offer in [
+            GpuCullingOffer::Unsupported,
+            GpuCullingOffer::Software,
+            GpuCullingOffer::OutOfMemory,
+            GpuCullingOffer::Dx12,
+        ] {
+            crate::graphics::offer_gpu_culling(offer);
+            assert!(offer.reason().is_some());
+            assert_eq!(item.blocked(&s), offer.reason());
+            assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
+            let mut ui = GraphicsUi::default();
+            let r = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
+            ui.focus = Some(Target::Item(item));
+            let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+            assert!(enter.0.is_empty());
+            assert!(s.horizon.gpu_culling, "{offer:?}");
+        }
+        // Where it is, a click switches it and keeps the preset.
+        crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        assert_eq!(
+            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.gpu_culling);
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.gpu_culling = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
+            }
+        }
+    }
+
     #[test]
     fn leaf_culling_cycles_modes_beside_the_other_culling() {
         let mut s = Settings::default();
@@ -3395,6 +3473,11 @@ mod tests {
                 "Done",
             ] {
                 lang::get(text);
+            }
+            // Every reason GPU Culling's switch can give, whatever this device offers.
+            use crate::graphics::GpuCullingOffer as O;
+            for offer in [O::Unsupported, O::Software, O::OutOfMemory, O::Dx12] {
+                lang::get(offer.reason().unwrap());
             }
         });
         // `labelled` also looks up values that are already words in the language ("An") or
