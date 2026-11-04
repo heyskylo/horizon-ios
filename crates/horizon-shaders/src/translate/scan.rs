@@ -65,6 +65,9 @@ pub(super) struct Stage<'p> {
     /// (`dot(float, float)`, `normalize(float)`) and naga lacks go in the prelude.
     pub(super) scalar_dot: bool,
     pub(super) scalar_normalize: bool,
+    /// `min3`, `max3` and `mid3` the stage calls with GL_AMD_shader_trinary_minmax enabled and
+    /// doesn't define itself: naga lacks them, so ours are in the prelude.
+    pub(super) trinary: Vec<&'p str>,
     /// The pack's functions that take samplers: which parameters are samplers.
     pub(super) sampler_functions: HashMap<String, Vec<bool>>,
     /// The pack's structs: each member's type and name with its array suffix.
@@ -310,6 +313,7 @@ impl<'p> Stage<'p> {
             query_lod: false,
             scalar_dot: false,
             scalar_normalize: false,
+            trinary: Vec::new(),
             sampler_functions: HashMap::new(),
             structs: HashMap::new(),
             outputs: BTreeSet::new(),
@@ -325,6 +329,12 @@ impl<'p> Stage<'p> {
         let (mut start, mut depth, mut parens) = (0, 0usize, 0usize);
         let mut own_inverse = false;
         let (mut own_dot, mut own_normalize) = (false, false);
+        let mut own_trinary = Vec::new();
+        let trinary_enabled = pp.extensions.iter().any(|e| {
+            e.split_once(':').is_some_and(|(name, behavior)| {
+                name.trim() == "GL_AMD_shader_trinary_minmax" && behavior.trim() != "disable"
+            })
+        });
         for i in 0..s.tokens.len() {
             match s.tokens[i] {
                 "(" => parens += 1,
@@ -376,6 +386,20 @@ impl<'p> Stage<'p> {
                         own_normalize |= defines;
                     }
                 }
+                name @ ("min3" | "max3" | "mid3") if trinary_enabled => {
+                    if !s.trinary.contains(&name) {
+                        s.trinary.push(name);
+                    }
+                    // A definition at the top level: `float max3(float a, ...)`.
+                    if depth == 0
+                        && s.tokens[..i]
+                            .iter()
+                            .rfind(|t| significant(t))
+                            .is_some_and(|t| is_ident(t))
+                    {
+                        own_trinary.push(name);
+                    }
+                }
                 "inverse" => {
                     s.inverse = true;
                     // `mat4 inverse(mat4 m)`: a pack for GLSL 1.20, which has none, wrote its own.
@@ -401,6 +425,7 @@ impl<'p> Stage<'p> {
         s.inverse &= !own_inverse;
         s.scalar_dot &= !own_dot;
         s.scalar_normalize &= !own_normalize;
+        s.trinary.retain(|name| !own_trinary.contains(name));
         if s.gather_offsets {
             // Its sampler is passed as a texture and a sampler, as to the pack's own functions.
             s.sampler_functions

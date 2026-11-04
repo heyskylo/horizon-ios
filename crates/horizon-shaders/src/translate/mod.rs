@@ -2376,6 +2376,43 @@ in VertexData {{ {member} }} vIn;
         }
     }
 
+    /// GL_AMD_shader_trinary_minmax adds `min3`, `max3` and `mid3` for genType, genIType and
+    /// genUType; naga has none of them. A pack's own `max3` is kept, with or without the
+    /// extension (glslangValidator takes both).
+    #[test]
+    fn trinary_min_max_translate() {
+        let ext = "#extension GL_AMD_shader_trinary_minmax : require\n";
+        let calls = "uniform float k;\nuniform int i;\nuniform uint u;\nout vec4 c;\n\
+                     void main() {\n    vec3 v = vec3(k, 0.5, 0.25);\n    \
+                     float f = min3(k, 0.5, 0.25) + max3(v.xy, v.yz, v.zx).y + mid3(v, v.yzx, v.zxy).z\n        \
+                     + mid3(vec4(k), vec4(0.5), vec4(1.0)).w;\n    \
+                     ivec2 n = max3(ivec2(i), ivec2(2), ivec2(-1)) + ivec2(mid3(i, 3, 7), min3(ivec4(i), ivec4(1), ivec4(2)).x);\n    \
+                     uvec3 m = min3(uvec3(u), uvec3(2u), uvec3(9u)) + mid3(u, 4u, 8u) + max3(uvec4(u), uvec4(1u), uvec4(5u)).xyz;\n    \
+                     c = vec4(f, float(n.x + n.y), float(m.x), mid3(1.0, 2.0, 3.0));\n}\n";
+        let own = "uniform float k;\nout vec4 c;\n\
+                   float max3(float a, float b, float c) { return max(a, max(b, c)); }\n\
+                   void main() { c = vec4(max3(k, 0.5, 0.25)); }\n";
+        for fsh in [
+            format!("#version 330\n{ext}{calls}"),
+            format!("#version 330\n{ext}{own}"),
+            format!("#version 330\n{own}"),
+        ] {
+            program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            )
+            .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
+        }
+        let csh = format!(
+            "#version 430\n{ext}layout(local_size_x = 1) in;\n\
+             layout(std430, binding = 0) buffer B {{ uvec2 data; }} b;\n\
+             void main() {{ b.data = uvec2(max3(b.data.x, 2u, 3u), min3(b.data, uvec2(1u), uvec2(4u)).y); }}\n"
+        );
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/composite.csh", &csh)])).unwrap();
+        translate_compute(&preprocess(&pack, "composite.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
     /// GLSL converts a returned value to the function's type (Kappa's `GetEmissionScale`):
     /// `return 1;` in a `float` function, an `int` or `ivec2` returned as `float` or `vec2`.
     #[test]
