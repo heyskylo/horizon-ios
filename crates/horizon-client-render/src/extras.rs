@@ -82,7 +82,8 @@ pub struct Extras {
     /// show the coarse cells it was given for an unzoomed screen
     /// (`lod::Aim`). Costs far tiles while the zoom is held and gives them
     /// back after, and does nothing at all unless far terrain is on
-    /// (`lodDistance`) and the view is actually zoomed.
+    /// (`lodDistance`) and the view is actually zoomed. Off by default until
+    /// a measurement shows the extra tiles land while the zoom is still held.
     pub lod_zoom_detail: bool,
     /// The FPS counter and keystrokes extras are official mods now: their
     /// old settings stay here, kept as they were.
@@ -181,7 +182,7 @@ impl Default for Extras {
             zoom_level: 4,
             zoom_smooth: true,
             zoom_sensitivity: true,
-            lod_zoom_detail: true,
+            lod_zoom_detail: false,
             fps: false,
             fps_corner: Corner::TopLeft,
             fps_lows: false,
