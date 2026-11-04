@@ -3996,7 +3996,7 @@ impl Game<'_> {
                     .as_ref()
                     .is_some_and(|p| p.entity_id as u32 == id)
             {
-                Some(self.player_entity())
+                Some(self.player_entity_for("minecraft:kill_mob_near_sculk_catalyst"))
             } else {
                 host.hub
                     .guests

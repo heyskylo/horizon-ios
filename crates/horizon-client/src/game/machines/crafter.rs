@@ -183,7 +183,7 @@ impl Game<'_> {
         });
         if near {
             let id = format!("minecraft:{recipe}");
-            let me = self.player_entity();
+            let me = self.player_entity_for("minecraft:crafter_recipe_crafted");
             self.trigger("minecraft:crafter_recipe_crafted", move |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),

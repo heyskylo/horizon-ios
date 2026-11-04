@@ -177,7 +177,7 @@ impl Game<'_> {
         zombie: &adv::EntityView,
         villager: &adv::EntityView,
     ) {
-        let me = self.player_entity();
+        let me = self.player_entity_for("minecraft:cured_zombie_villager");
         let (zombie, villager) = (zombie.clone(), villager.clone());
         self.trigger("minecraft:cured_zombie_villager", move |c, w| {
             let origin = me.position;

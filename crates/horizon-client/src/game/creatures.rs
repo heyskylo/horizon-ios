@@ -1435,7 +1435,16 @@ impl Game<'_> {
     /// causing entity, and the projectile when one dealt it.
     pub(super) fn damage_view(&self, d: Damage) -> horizon_client::advancements::DamageView {
         let source = match d.attacker {
-            Some(Who::Player) => Some(self.player_entity()),
+            // Its callers are KilledTrigger's: the source as their killing_blow sees it.
+            Some(Who::Player) => Some(
+                self.player_entity_looking(
+                    self.adv.tree.may_look("minecraft:player_killed_entity")
+                        || self
+                            .adv
+                            .tree
+                            .may_look("minecraft:kill_mob_near_sculk_catalyst"),
+                ),
+            ),
             Some(Who::Mob(id)) => self
                 .mobs
                 .iter()
