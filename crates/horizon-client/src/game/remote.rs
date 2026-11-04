@@ -2527,7 +2527,11 @@ impl Game<'_> {
     }
     /// The player's position, for `retainKnownServerState`'s `player.position()`.
     fn player_position(&self) -> [f64; 3] {
-        let at = self.player.as_ref().map(|p| p.position).unwrap_or(Vec3::ZERO);
+        let at = self
+            .player
+            .as_ref()
+            .map(|p| p.position)
+            .unwrap_or(Vec3::ZERO);
         [at.x, at.y, at.z]
     }
     /// `Entity.isColliding(pos, state)` for the local player: the state's own
@@ -10814,6 +10818,41 @@ mod tests {
         assert!(game.native_send_chat("/warp spawn").is_ok());
         game.settings.chat_visibility = 2;
         assert!(game.native_send_chat("/warp spawn").is_err());
+    }
+
+    /// `Entity.isColliding` and the snap `ClientLevel.syncBlockState` makes: a
+    /// block the server puts back where the player stands sends it to the
+    /// position the prediction remembered, and a block that comes back clear of
+    /// the player, an empty one, or one the player has been teleported since
+    /// leaves it where it is.
+    #[test]
+    fn a_block_the_server_puts_back_snaps_the_player_out_of_it() {
+        use horizon_core::geometry::{Aabb, Vec3, VoxelShape};
+        // A player standing in block (0, 64, 0): 0.6 wide, 1.8 tall.
+        let player = Aabb::new(Vec3::new(0.2, 64.0, 0.2), Vec3::new(0.8, 65.8, 0.8));
+        let cube = VoxelShape::block();
+        assert!(
+            shape_meets(&cube, [0, 64, 0], player),
+            "the block the player is standing in"
+        );
+        assert!(!shape_meets(&cube, [0, 66, 0], player), "above its head");
+        assert!(
+            !shape_meets(&cube, [1, 64, 0], player),
+            "the block beside it"
+        );
+        assert!(!shape_meets(&VoxelShape::empty(), [0, 64, 0], player));
+
+        // The snap itself: the remembered position, unless a teleport came after
+        // the prediction (`lastTeleportSequence < sequence`).
+        let at = [0.5, 64.0, 0.5];
+        assert_eq!(snap_target(at, -1, 3, true), Some(at));
+        assert_eq!(snap_target(at, -1, 3, false), None, "a block it clears");
+        assert_eq!(snap_target(at, 3, 3, true), None, "teleported at 3");
+        assert_eq!(
+            snap_target(at, 2, 3, true),
+            Some(at),
+            "teleported before it"
+        );
     }
 
     /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
