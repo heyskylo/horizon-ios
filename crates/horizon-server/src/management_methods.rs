@@ -80,6 +80,12 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/operator_user_permission_level" => {
+            game.operator_user_permission_level(client, None)
+        }
+        "serversettings/operator_user_permission_level/set" => {
+            game.operator_user_permission_level(client, Some(management_int(argument)?))
+        }
         "serversettings/force_game_mode" => game.force_game_mode(client, None),
         "serversettings/force_game_mode/set" => game.force_game_mode(
             client,
@@ -95,6 +101,24 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
         }
         "serversettings/allow_flight" => game.allow_flight(client, None),
         "serversettings/allow_flight/set" => game.allow_flight(
+            client,
+            Some(
+                argument
+                    .as_bool()
+                    .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
+            ),
+        ),
+        "serversettings/hide_online_players" => game.hide_online_players(client, None),
+        "serversettings/hide_online_players/set" => game.hide_online_players(
+            client,
+            Some(
+                argument
+                    .as_bool()
+                    .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
+            ),
+        ),
+        "serversettings/status_replies" => game.status_replies(client, None),
+        "serversettings/status_replies/set" => game.status_replies(
             client,
             Some(
                 argument
@@ -569,6 +593,52 @@ impl Game<'_> {
         Ok(reply["value"].clone())
     }
 
+    /// `MinecraftServerSettingsServiceImpl.hidesOnlinePlayers` and `setHidesOnlinePlayers`.
+    fn hide_online_players(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/hide_online_players" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/hide_online_players/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "hide-online-players",
+                toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.repliesToStatus` and `setRepliesToStatus`.
+    fn status_replies(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/status_replies" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/status_replies/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "enable-status",
+                toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     /// `MinecraftServerSettingsServiceImpl.getPlayerIdleTimeout` and `setPlayerIdleTimeout`.
     fn player_idle_timeout(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
         let mut request = json!({ "method": "serversettings/player_idle_timeout" });
@@ -632,6 +702,37 @@ impl Game<'_> {
                 "world",
                 "game_mode",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getOperatorUserPermissions` and
+    /// `setOperatorUserPermissionLevel`.
+    fn operator_user_permission_level(
+        &self,
+        client: u32,
+        value: Option<i32>,
+    ) -> Result<Value, Failure> {
+        let mut request = json!({
+            "method": "serversettings/operator_user_permission_level"
+        });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/operator_user_permission_level/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            let value = reply["value"].as_i64().unwrap_or(i64::from(value));
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "op-permission-level",
+                toml::Value::Integer(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }
