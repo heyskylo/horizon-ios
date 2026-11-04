@@ -1187,6 +1187,15 @@ impl ExperienceOrb {
         let sky = light >> 4;
         (u32::try_from(sky).unwrap_or(0) * 16) | ((u32::try_from(block).unwrap_or(15) * 16) << 8)
     }
+    /// `ExperienceOrb.setUnderwaterMovement`: buoyancy and drag before moving.
+    fn set_underwater_movement(&mut self) {
+        // Vanilla widens float constants before applying double arithmetic.
+        self.velocity = Vec3::new(
+            self.velocity.x * f64::from(0.99_f32),
+            (self.velocity.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
+            self.velocity.z * f64::from(0.99_f32),
+        );
+    }
     pub fn tick(
         &mut self,
         world: &World,
@@ -1216,11 +1225,7 @@ impl ExperienceOrb {
         // inside blocks takes no gravity until it is pushed out below.
         let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
         if facts.get(block).fluid == Fluid::Water {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                (self.velocity.y + 5.0e-4).min(0.06),
-                self.velocity.z * 0.99,
-            );
+            self.set_underwater_movement();
         } else if !colliding {
             self.velocity.y -= self.get_gravity();
         }
@@ -3832,6 +3837,72 @@ mod item_destroyed_tests {
         );
     }
 }
+#[cfg(test)]
+mod orb_underwater_tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_executed_java_private_method() {
+        // Actual 26.3 setUnderwaterMovement calls on server-level orbs,
+        // captured by test_orb_water_parity.py (orb-water-reference.json).
+        // Cover both horizontal signs, falling/rising, and the vertical cap.
+        let cases: [([f64; 3], [u64; 3]); 6] = [
+            (
+                [0.0, 0.0, 0.0],
+                [0x0000000000000000, 0x3f40624de0000000, 0x0000000000000000],
+            ),
+            (
+                [0.1, 0.01, -0.2],
+                [0x3fb9581066666667, 0x3f85810625ae147b, 0xbfc9581066666667],
+            ),
+            (
+                [-0.25, -0.03, 0.125],
+                [0xbfcfae1480000000, 0xbf9e353f7c851eb8, 0x3fbfae1480000000],
+            ),
+            (
+                [0.0, 0.059, 0.0],
+                [0x0000000000000000, 0x3fae76c8b46d9168, 0x0000000000000000],
+            ),
+            (
+                [0.5, 0.0595, -0.5],
+                [0x3fdfae1480000000, 0x3faeb851e0000000, 0xbfdfae1480000000],
+            ),
+            (
+                [-1.0, 0.2, 1.0],
+                [0xbfefae1480000000, 0x3faeb851e0000000, 0x3fefae1480000000],
+            ),
+        ];
+        let actual: Vec<_> = cases
+            .iter()
+            .map(|(v, _)| {
+                let mut orb = ExperienceOrb {
+                    rotation: [0.0, 0.0],
+                    join: Default::default(),
+                    no_gravity: false,
+                    id: 1,
+                    position: Vec3::ZERO,
+                    previous: Vec3::ZERO,
+                    velocity: Vec3::new(v[0], v[1], v[2]),
+                    value: 1,
+                    age: 0,
+                    on_ground: false,
+                    count: 1,
+                    ticks: 0,
+                    health: 5,
+                };
+                orb.set_underwater_movement();
+                [
+                    orb.velocity.x.to_bits(),
+                    orb.velocity.y.to_bits(),
+                    orb.velocity.z.to_bits(),
+                ]
+            })
+            .collect();
+        let expected: Vec<_> = cases.into_iter().map(|(_, bits)| bits).collect();
+        assert_eq!(actual, expected);
+    }
+}
+
 #[cfg(test)]
 mod render_light_tests {
     use super::*;
