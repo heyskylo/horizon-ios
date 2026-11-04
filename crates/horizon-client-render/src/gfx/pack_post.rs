@@ -29,6 +29,8 @@ use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
 const BUFFERS: usize = horizon_shaders::BUFFERS;
 
+mod packed;
+
 #[cfg(test)]
 mod world_target_tests;
 
@@ -1094,6 +1096,8 @@ struct Resources<'a> {
     storable: u16,
     /// The buffers of a three-channel format (`rgb`): they have no alpha to write, and read 1.
     rgb: u16,
+    /// The bits per channel a buffer of a small packed format keeps ([`packed::bits`]).
+    packed: [Option<[u8; 4]>; BUFFERS],
     /// The stage (`texture.<stage>`) of the programs built so far, and the buffers one of them
     /// flipped: a `texture.<stage>.colortexN` no longer stands in for buffer N in the stage's
     /// later programs, which read what was written, as in Iris. `final` continues
@@ -1490,6 +1494,8 @@ fn build_pass(
     let final_pass = p.group == Group::Final;
     let mut targets = Vec::new();
     let mut writes = Vec::new();
+    // Outputs into a buffer of a small packed format, and the bits it keeps.
+    let mut packed_outputs = Vec::new();
     for &location in &interface.outputs {
         let l = location as usize;
         if targets.len() <= l {
@@ -1520,6 +1526,11 @@ fn build_pass(
                 .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
             {
                 t.blend = Some(blend_state(b));
+            }
+            if !p.group.shadow()
+                && let Some(bits) = pack.packed[buffer as usize]
+            {
+                packed_outputs.push((location, bits));
             }
             targets[l] = state;
             writes.push((location, buffer as usize));
@@ -1580,7 +1591,9 @@ fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
-        let (vs, fs) = (module(program.vertex), module(program.fragment));
+        let mut fragment = program.fragment;
+        packed::quantise_outputs(&mut fragment, &packed_outputs);
+        let (vs, fs) = (module(program.vertex), module(fragment));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -1851,6 +1864,10 @@ impl PackPost {
         let rgb = (0..BUFFERS)
             .filter(|&i| post.config.buffers[i].format.channels == 3)
             .fold(0u16, |m, i| m | 1 << i);
+        // A small packed format's buffer reads back fewer bits, as in Iris: its clears and
+        // what its passes write keep only those.
+        let packed: [Option<[u8; 4]>; BUFFERS] =
+            std::array::from_fn(|i| packed::bits(post.config.buffers[i].format));
         let clears = std::array::from_fn(|i| {
             let b = &post.config.buffers[i];
             b.clear.then(|| {
@@ -1858,7 +1875,7 @@ impl PackPost {
                 if rgb & 1 << i != 0 {
                     c[3] = 1.0;
                 }
-                c
+                packed[i].map_or(c, |bits| packed::quantise(c, bits))
             })
         });
         let mut notes = post.notes;
@@ -1963,6 +1980,7 @@ impl PackPost {
             gpu,
             storable,
             rgb,
+            packed,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
@@ -4758,6 +4776,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -4838,6 +4857,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -4979,6 +4999,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -5150,6 +5171,9 @@ mod material_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod packed_tests;
 
 #[cfg(test)]
 mod trinary_tests;
