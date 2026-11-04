@@ -130,6 +130,9 @@ mod tests {
         fn dimension(&self) -> &str {
             "minecraft:overworld"
         }
+        fn weather(&self) -> (bool, bool) {
+            (false, false)
+        }
         fn biome(&self, _: [i32; 3]) -> String {
             "minecraft:plains".into()
         }
