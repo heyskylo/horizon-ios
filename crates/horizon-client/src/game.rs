@@ -13848,6 +13848,18 @@ impl Game<'_> {
         }
     }
     pub(super) fn damage_held(&mut self, amount: u32) {
+        self.damage_held_in_slot(
+            amount,
+            horizon_world::player_inventory::EquipmentSlot::MainHand,
+        );
+    }
+    /// Hurt the acting hand's stack through ordinary wear/criterion/break handling,
+    /// reporting its break in the caller's explicit equipment slot.
+    pub(super) fn damage_held_in_slot(
+        &mut self,
+        amount: u32,
+        break_slot: horizon_world::player_inventory::EquipmentSlot,
+    ) {
         if self.creative {
             return;
         }
@@ -13873,10 +13885,7 @@ impl Game<'_> {
                 *cell = None;
                 self.award_stat("broken", &broken, 1);
                 // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
-                self.player_equipment_broke(
-                    horizon_world::player_inventory::EquipmentSlot::MainHand,
-                    &gone,
-                );
+                self.player_equipment_broke(break_slot, &gone);
             }
         }
     }
