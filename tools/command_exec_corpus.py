@@ -4585,6 +4585,67 @@ def advancement_empty_loot_reference():
     return ops + setup('/scoreboard objectives remove empty_loot')
 
 
+def bell_server_glow():
+    """Actual world ticks: near raiders trigger resonance that reaches farther raiders."""
+    # Centre the harness owner's loading area so settle explicitly awaits entity ticking
+    # in every actor chunk, including the witch at z=48 (outside the old centre).
+    ops = setup('/tp @s 8.5 230 24.5', '/forceload add 0 0 31 63') + [{'op': 'settle'}]
+    ops += [cmd('/execute if loaded 8 200 48', expect_result=1)]
+    ops += setup('/fill 0 199 0 31 199 63 stone',
+                 '/fill 0 200 0 31 205 63 air', '/scoreboard objectives add bell_clock dummy')
+    # Let newly forced chunks acquire entity-ticking readiness before actors exist.
+    ops += [{'op': 'tick', 'n': 20}]
+    for scene in range(3):
+        if scene:
+            ops += setup('/kill @e[tag=h288_bell]') + [{'op': 'tick', 'n': 25}]
+            ops += setup('/setblock 9 200 8 air', '/setblock 8 200 8 air')
+            ops += [{'op': 'tick', 'n': 70}]
+        ops += setup('/setblock 8 200 8 bell[attachment=floor,facing=north]')
+        actors = [('witch', '8.5 200 48.5', 1), ('zombie', '13.5 200 8.5', 2)]
+        if scene != 1:
+            actors.append(('pillager', '18.5 200 8.5', 3))
+        for kind, pos, serial in actors:
+            tag = f'h288_{scene}_{kind}'
+            fields = f'UUID:[I;288,{scene},0,{serial}],Tags:["h288_bell","{tag}"],NoAI:1b,Silent:1b,PersistenceRequired:1b'
+            ops += setup(f'/summon {kind} {pos} {{{fields}}}')
+            guard = f'@e[type={kind},tag={tag},nbt={{UUID:[I;288,{scene},0,{serial}],NoAI:1b,Pos:[{pos.replace(" ", "d,")}d]}}]'
+            ops += [cmd(f'/execute if entity {guard}', expect_result=1),
+                    cmd(f'/data get entity @e[tag={tag},limit=1] Health',
+                        expect_result={'witch': 26, 'zombie': 20, 'pillager': 24}[kind]),
+                    cmd(f'/execute unless data entity @e[tag={tag},limit=1] active_effects[{{id:"minecraft:glowing"}}]', expect_result=1)]
+        ops += [{'op': 'tick', 'n': 2}]
+        ops += setup('/setblock 9 200 8 redstone_block')
+        if scene == 2:
+            # Destroy a resonating bell, tick while absent, then ring its replacement.
+            ops += [{'op': 'tick', 'n': 10}]
+            ops += setup('/setblock 9 200 8 air', '/setblock 8 200 8 air')
+            ops += [{'op': 'tick', 'n': 1}]
+            ops += setup('/setblock 8 200 8 bell[attachment=floor,facing=north]',
+                         '/setblock 9 200 8 redstone_block')
+        ops += [cmd('/execute if block 8 199 8 stone', expect_result=1),
+                cmd('/execute if block 8 200 8 bell[attachment=floor,facing=north,powered=true]', expect_result=1),
+                cmd('/execute if block 9 200 8 redstone_block', expect_result=1)]
+        ops += setup('/execute store result score start bell_clock run time query gametime')
+        elapsed = 0
+        for sample in (41, 43, 44, 45, 46, 47, 48, 49):
+            ops += [{'op': 'tick', 'n': sample - elapsed}]
+            elapsed = sample
+            ops += setup('/execute store result score elapsed bell_clock run time query gametime',
+                         '/scoreboard players operation elapsed bell_clock -= start bell_clock')
+            ops += [cmd('/scoreboard players get elapsed bell_clock', expect_result=sample)]
+            for kind, pos, serial in actors:
+                tag = f'h288_{scene}_{kind}'
+                guard = f'@e[type={kind},tag={tag},nbt={{UUID:[I;288,{scene},0,{serial}],NoAI:1b,Pos:[{pos.replace(" ", "d,")}d]}}]'
+                ops += [cmd(f'/execute if entity {guard}', expect_result=1)]
+                ops += setup(f'/execute store result score health bell_clock run data get entity @e[tag={tag},limit=1] Health 1000')
+                ops += [cmd('/execute if score health bell_clock matches 1..', expect_result=1)]
+                sign = 'if' if scene != 1 and sample >= 45 and kind != 'zombie' else 'unless'
+                ops += [cmd(f'/execute {sign} data entity @e[tag={tag},limit=1] active_effects[{{id:"minecraft:glowing"}}]', expect_result=1)]
+            if scene != 1 and sample == 49:
+                ops += [cmd(f'/data get entity @e[tag=h288_{scene}_witch,limit=1] active_effects[{{id:"minecraft:glowing"}}].duration', expect_result=56)]
+    return ops + setup('/scoreboard objectives remove bell_clock')
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4594,6 +4655,9 @@ def groups():
         ('setup', group_setup()),
         ('advancement world loot rewards', advancement_world_loot_rewards()),
         ('advancement empty loot reference', advancement_empty_loot_reference()),
+
+
+        ('bell server glow', bell_server_glow()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),

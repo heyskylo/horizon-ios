@@ -377,6 +377,42 @@ impl Launcher {
             let m = &self.mods;
             let installed = m.entry(&p).is_some();
             let busy = m.busy.as_ref().is_some_and(|b| b.0 == p.id);
+            let checking = m.checking(&p);
+            let can_install =
+                !installed && !checking && m.busy.is_none() && m.support(&p).installable();
+            let action: AnyElement = if installed || busy || checking || m.support(&p).installable()
+            {
+                let label = if installed {
+                    tr("Installed")
+                } else if checking {
+                    tr("Checking…")
+                } else if busy {
+                    tr("Installing…")
+                } else if p.kind == PackKind::Modpack {
+                    tr("Import as an instance")
+                } else {
+                    tr("Install")
+                };
+                let known = p.clone();
+                ui::quiet(
+                    SharedString::from(format!("mods-row-install-{}", p.id)),
+                    label,
+                    32.,
+                    &t,
+                )
+                .flex_none()
+                .when(!can_install, |d| d.opacity(0.5).cursor_default())
+                .when(can_install, |d| {
+                    d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.mods_install(known.source, known.id.clone(), Some(known.clone()));
+                        cx.notify();
+                    }))
+                })
+                .into_any_element()
+            } else {
+                div().flex_none().w(px(20.)).into_any_element()
+            };
             // The registry's rows end with downloads, the others' with how they run (`compat`).
             let right = if p.source == SourceId::Horizon {
                 ui::text(13., FontWeight::NORMAL, 0.5).child(count(p.downloads).to_uppercase())
@@ -440,15 +476,7 @@ impl Launcher {
                         ),
                 )
                 .child(right.flex_none())
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .justify_center()
-                        .w(px(20.))
-                        .when(installed, |d| d.child(ui::icon("tick-02", 17., ui::live())))
-                        .when(busy && !installed, |d| d.child(ui::dot(ui::Tone::Busy))),
-                )
+                .child(action)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.mods.picked = Some(id.clone());
                     this.mods.confirm_remove = None;

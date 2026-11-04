@@ -6,7 +6,10 @@
 //! the spikes, its parts (head and neck take full damage, the rest a quarter
 //! plus one), wing knockback, block breaking, the death flight and rays, the
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
-use super::{Dim, Game};
+use super::{
+    Dim, Game,
+    potions::{Victim, mob_can_be_affected},
+};
 use horizon_client::{
     health::HurtSource,
     hud::HudBatch,
@@ -57,11 +60,11 @@ pub(super) fn breath_expired(age: i32, duration: i32) -> bool {
 /// `AreaEffectCloud.serverTick` victims: every 5 ticks after the wait, drop
 /// entries whose delay (`reapplicationDelay` 20) has passed, then return the
 /// candidates not in the map, recording them until `age + 20`.
-fn breath_victims(
+fn breath_victims<T: Copy + PartialEq>(
     age: i32,
-    victims: &mut Vec<(FightWho, i32)>,
-    candidates: impl IntoIterator<Item = FightWho>,
-) -> Vec<FightWho> {
+    victims: &mut Vec<(T, i32)>,
+    candidates: impl IntoIterator<Item = T>,
+) -> Vec<T> {
     if age < BREATH_WAIT || age % 5 != 0 {
         return Vec::new();
     }
@@ -2402,7 +2405,10 @@ impl Game<'_> {
                 [0.0; 3],
             );
         }
-        let first_kill = !self.fight.previously_killed;
+        // ServerLevel.getDragonFight: only the End has a fight; elsewhere
+        // (`/summon`) a dragon is worth 500 and its death ends nothing.
+        let fight = self.dim == Dim::End;
+        let first_kill = fight && !self.fight.previously_killed;
         let xp = if first_kill { 12000 } else { 500 };
         let drops = self.ui.rules.bool("mob_drops");
         if t > 150 && t % 5 == 0 && drops {
@@ -2425,7 +2431,9 @@ impl Game<'_> {
                 self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.2) as u32);
             }
             self.dragon = None;
-            self.dragon_killed();
+            if fight {
+                self.dragon_killed();
+            }
         }
     }
     /// `EnderDragonFight.setDragonKilled`.
@@ -2505,12 +2513,24 @@ impl Game<'_> {
             .filter(|p| p.alive && !p.spectator)
             .map(|p| p.bounds)
             .collect();
-        // DragonFireball.onHit snaps to any living entity (mobs not ported here).
+        // The mobs too: they stop it, and DragonFireball.onHit snaps to any
+        // living entity (the players first here). Gathered only while a
+        // fireball flies: this runs every tick in the End, among its endermen.
+        let mobs: Vec<(Aabb, Vec3)> = if balls.is_empty() {
+            Vec::new()
+        } else {
+            self.mobs
+                .iter()
+                .filter(|m| m.alive())
+                .map(|m| (m.bounds(), m.position))
+                .collect()
+        };
         let snap_targets: Vec<(Aabb, Vec3)> = self
             .fight_players()
             .iter()
             .filter(|p| p.alive)
             .map(|p| (p.bounds, p.position))
+            .chain(mobs.iter().copied())
             .collect();
         balls.retain_mut(|b| {
             b.previous = b.position;
@@ -2533,13 +2553,13 @@ impl Game<'_> {
                 let f = self.res.facts().get(self.world.block(p[0], p[1], p[2]));
                 f.full_collision || f.legacy_solid
             };
-            let hit_player = players.iter().any(|pb| {
+            let hit_entity = players.iter().chain(mobs.iter().map(|m| &m.0)).any(|pb| {
                 pb.intersects(Aabb::new(
                     Vec3::new(next.x - 0.5, next.y - 0.5, next.z - 0.5),
                     Vec3::new(next.x + 0.5, next.y + 0.5, next.z + 0.5),
                 ))
             });
-            if hit_block || hit_player || b.age > 600 {
+            if hit_block || hit_entity || b.age > 600 {
                 let id = self.take_entity_id();
                 // The cloud starts at the fireball's feet; DragonFireball.onHit
                 // then moves it to the first living entity within 4 blocks.
@@ -2580,7 +2600,8 @@ impl Game<'_> {
         self.tick_breath();
     }
     /// The dragon's breath clouds (`AreaEffectCloud` with instant damage at
-    /// a quarter duration scale): shrinking, puffing particles, harming the player.
+    /// a quarter duration scale): shrinking, puffing particles, harming the
+    /// players and mobs in it.
     fn tick_breath(&mut self) {
         // What instant damage reaches: neither creative nor spectator players.
         let players: Vec<FightPlayer> = self
@@ -2588,7 +2609,22 @@ impl Game<'_> {
             .into_iter()
             .filter(|p| p.alive && !p.creative && !p.spectator)
             .collect();
+        // AreaEffectCloud.serverTick: every living entity, the mobs that
+        // instant damage can affect (`canBeAffected`) too; only while a
+        // breath cloud is there (lingering potions' clouds tick elsewhere).
+        let no_breath = self.breath_clouds.iter().all(|c| c.potion.is_some());
+        let mobs: Vec<(u32, Aabb, Vec3)> = if no_breath {
+            Vec::new()
+        } else {
+            let tags = &self.stations().enchantments.entity_tags;
+            self.mobs
+                .iter()
+                .filter(|m| m.alive() && mob_can_be_affected(tags, &m.kind.id, "instant_damage"))
+                .map(|m| (m.id, m.bounds(), m.position))
+                .collect()
+        };
         let mut harmed: Vec<(FightWho, f32)> = Vec::new();
+        let mut harmed_mobs: Vec<(u32, i32, [f64; 3])> = Vec::new();
         // DragonSittingFlamingPhase.end discards the flame cloud.
         let flame_over = self
             .dragon
@@ -2635,9 +2671,17 @@ impl Game<'_> {
             let inside = players
                 .iter()
                 .filter(|p| cloud_hits(c.at, r, p.bounds, p.position))
-                .map(|p| p.who);
-            for who in breath_victims(c.age, &mut c.victims, inside) {
-                harmed.push((who, amount));
+                .map(|p| Victim::Player(p.who))
+                .chain(
+                    mobs.iter()
+                        .filter(|m| cloud_hits(c.at, r, m.1, m.2))
+                        .map(|m| Victim::Mob(m.0)),
+                );
+            for victim in breath_victims(c.age, &mut c.victims, inside) {
+                match victim {
+                    Victim::Player(who) => harmed.push((who, amount)),
+                    Victim::Mob(id) => harmed_mobs.push((id, i32::from(!c.from_dragon), c.at)),
+                }
             }
             true
         });
@@ -2646,6 +2690,9 @@ impl Game<'_> {
             self.as_fight_player(who, |g| {
                 g.dragon_hurts_player("minecraft:indirect_magic", amount);
             });
+        }
+        for (id, amplifier, at) in harmed_mobs {
+            self.breath_affect_mob(id, amplifier, at);
         }
     }
     /// `EnderDragon.knockBack` on the player in a wing's zone: pushed away
@@ -2844,7 +2891,7 @@ pub(super) struct Breath {
     pub(super) duration: i32,
     pub(super) from_dragon: bool,
     /// Who it hit and until which age (`AreaEffectCloud.victims`).
-    pub(super) victims: Vec<(FightWho, i32)>,
+    pub(super) victims: Vec<(Victim, i32)>,
     /// A lingering potion's cloud (`ThrownLingeringPotion`): what it applies.
     pub(super) potion: Option<super::potions::PotionCloud>,
 }
