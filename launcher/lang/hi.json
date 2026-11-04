@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "बदलाव सहेजें इसे बदल देता है। इसके फ़ोल्डर से कुछ भी नहीं हटता।",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं, पर लोड नहीं होंगे।",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं; कुछ {to} में शायद लोड न हों।",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "इसकी दुनिया Minecraft {from} से सहेजी गई थीं: {to} उन्हें हमेशा के लिए अपग्रेड करता है, और पुराना हो तो उन्हें खोल नहीं सकता।"
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "इसकी दुनिया Minecraft {from} से सहेजी गई थीं: {to} उन्हें हमेशा के लिए अपग्रेड करता है, और पुराना हो तो उन्हें खोल नहीं सकता।",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

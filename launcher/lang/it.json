@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Salva modifiche la cambia. Nella sua cartella non viene eliminato nulla.",
   "Its mods made for {loader} stay in its folder but won't load.": "Le sue mod per {loader} restano nella sua cartella, ma non verranno caricate.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Le sue mod per Minecraft {from} restano nella sua cartella; alcune potrebbero non caricarsi in {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I suoi mondi sono stati salvati da Minecraft {from}: {to} li aggiorna per sempre, e non può aprirli se è più vecchio."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I suoi mondi sono stati salvati da Minecraft {from}: {to} li aggiorna per sempre, e non può aprirli se è più vecchio.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

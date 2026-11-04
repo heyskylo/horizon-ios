@@ -1091,5 +1091,7 @@
   "Its mods made for {loader} stay in its folder but won't load.": "I sò mod fà per {loader} resten in la soa cartella, ma se cargaran minga.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I sò mond hinn staa salvaa de Minecraft {from}: {to} i aggiorna per semper, e el po minga dervii se l'è pussee vegg.",
   "Save changes switches it. Nothing in its folder is deleted.": "«Salva i modifich» la cambia. Nagott in la soa cartella el ven eliminaa.",
-  "What this change can't keep": "Quell che quest cambiament el po minga tegnì"
+  "What this change can't keep": "Quell che quest cambiament el po minga tegnì",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

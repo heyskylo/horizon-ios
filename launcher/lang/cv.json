@@ -1091,5 +1091,7 @@
   "{count} min ago": "{count} мин каялла",
   "{count} on the official SMP": "Официаллӑ SMP-ра {count}",
   "{mode} · stopped": "{mode} · чарӑннӑ",
-  "{online} of {max}": "{max} шутран {online}"
+  "{online} of {max}": "{max} шутран {online}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

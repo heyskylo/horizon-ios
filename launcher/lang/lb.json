@@ -1091,5 +1091,7 @@
   "{count} min ago": "virun {count} Min.",
   "{count} on the official SMP": "{count} um offiziellen SMP",
   "{mode} · stopped": "{mode} · gestoppt",
-  "{online} of {max}": "{online} vun {max}"
+  "{online} of {max}": "{online} vun {max}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

@@ -1091,5 +1091,7 @@
   "{count} min ago": "fyri {count} min síðan",
   "{count} on the official SMP": "{count} á almenna SMP",
   "{mode} · stopped": "{mode} · steðgað",
-  "{online} of {max}": "{online} av {max}"
+  "{online} of {max}": "{online} av {max}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

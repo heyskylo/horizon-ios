@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Salvează modificările o comută. Nimic din folderul ei nu se șterge.",
   "Its mods made for {loader} stay in its folder but won't load.": "Modurile ei făcute pentru {loader} rămân în folderul ei, dar nu se vor încărca.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Modurile ei făcute pentru Minecraft {from} rămân în folderul ei; unele s-ar putea să nu se încarce în {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Lumile ei au fost salvate de Minecraft {from}: {to} le actualizează definitiv și nu le poate deschide dacă e mai vechi."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Lumile ei au fost salvate de Minecraft {from}: {to} le actualizează definitiv și nu le poate deschide dacă e mai vechi.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

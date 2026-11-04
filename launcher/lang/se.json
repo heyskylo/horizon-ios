@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Seaillut rievdadusaid rievdada dan. Ii mihkkege dan máppas leat sihkkojuvvon.",
   "Its mods made for {loader} stay in its folder but won't load.": "Dan moddat mat leat dahkkon {loader} ovddas bissot dan máppas muhto eai lasta.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dan moddat mat leat dahkkon Minecraft {from} ovddas bissot dan máppas; muhtimat eai soaitte lasta {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dan máilmmit leat gádjon Minecraft {from} bokte: {to} ođasmahttá daid buorrin, ja ii sáhte rahpat daid jus lea boarráset."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dan máilmmit leat gádjon Minecraft {from} bokte: {to} ođasmahttá daid buorrin, ja ii sáhte rahpat daid jus lea boarráset.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

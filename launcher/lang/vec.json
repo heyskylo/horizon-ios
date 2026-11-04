@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Salva i canbiamenti i ło canbia. Niente neła so cartèła vien cancełà.",
   "Its mods made for {loader} stay in its folder but won't load.": "I so mod fati par {loader} i resta neła so cartèła ma no i se cariga.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "I suoi mod fatti per Minecraft {from} restano nella sua cartella; alcuni pol no cargarse in {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I so mondi i xe stai salvài da Minecraft {from}: {to} i li agiorna par senpre, e no i pol verxarli se i xe pì veci."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I so mondi i xe stai salvài da Minecraft {from}: {to} i li agiorna par senpre, e no i pol verxarli se i xe pì veci.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Spara ändringar byter den. Inget i dess mapp raderas.",
   "Its mods made for {loader} stay in its folder but won't load.": "Dess moddar för {loader} stannar i dess mapp men laddas inte.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dess moddar för Minecraft {from} stannar i dess mapp; vissa kanske inte laddas i {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dess världar sparades av Minecraft {from}: {to} uppgraderar dem för gott och kan inte öppna dem om den är äldre."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dess världar sparades av Minecraft {from}: {to} uppgraderar dem för gott och kan inte öppna dem om den är äldre.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

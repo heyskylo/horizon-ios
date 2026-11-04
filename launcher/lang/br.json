@@ -1091,5 +1091,7 @@
   "{count} min ago": "{count} mun zo",
   "{count} on the official SMP": "{count} war ar SMP ofisiel",
   "{mode} · stopped": "{mode} · paouezet",
-  "{online} of {max}": "{online} diwar {max}"
+  "{online} of {max}": "{online} diwar {max}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

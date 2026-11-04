@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Lagre endringer bytter den. Ingenting i mappen dens slettes.",
   "Its mods made for {loader} stay in its folder but won't load.": "Dens mods laget for {loader} blir i mappen dens, men lastes ikke.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dens mods laget for Minecraft {from} blir i mappen dens; noen lastes kanskje ikke i {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Verdenene dens ble lagret av Minecraft {from}: {to} oppgraderer dem for godt, og kan ikke åpne dem hvis den er eldre."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Verdenene dens ble lagret av Minecraft {from}: {to} oppgraderer dem for godt, og kan ikke åpne dem hvis den er eldre.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

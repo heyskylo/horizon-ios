@@ -1091,5 +1091,7 @@
   "{count} min ago": "iṣẹju {count} sẹyin",
   "{count} on the official SMP": "{count} lori SMP osise",
   "{mode} · stopped": "{mode} · ti duro",
-  "{online} of {max}": "{online} ninu {max}"
+  "{online} of {max}": "{online} ninu {max}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

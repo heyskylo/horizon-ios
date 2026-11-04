@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "변경 사항 저장을 누르면 전환됩니다. 폴더의 어떤 것도 삭제되지 않습니다.",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader}용 모드는 폴더에 남지만 로드되지 않습니다.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from}용 모드는 폴더에 남습니다. 일부는 {to}에서 로드되지 않을 수 있습니다.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "월드는 Minecraft {from}에서 저장되었습니다: {to}은(는) 이를 영구적으로 업그레이드하며, 더 오래된 버전이면 열 수 없습니다."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "월드는 Minecraft {from}에서 저장되었습니다: {to}은(는) 이를 영구적으로 업그레이드하며, 더 오래된 버전이면 열 수 없습니다.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

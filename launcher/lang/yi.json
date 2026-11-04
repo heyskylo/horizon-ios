@@ -1091,5 +1091,7 @@
   "{count} on the official SMP": "{count} אויפֿן אָפֿיציעלן SMP",
   "{mode} · stopped": "{mode} · אָפּגעשטעלט",
   "{online} of {max}": "{online} פֿון {max}",
-  "{support} in Horizon": "{support} אין Horizon"
+  "{support} in Horizon": "{support} אין Horizon",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

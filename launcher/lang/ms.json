@@ -1091,5 +1091,7 @@
   "{online} of {max}": "{online} daripada {max}",
   "{support} in Horizon": "{support} dalam Horizon",
   "{value} px": "{value} px",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

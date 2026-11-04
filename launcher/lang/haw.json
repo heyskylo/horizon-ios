@@ -1091,5 +1091,7 @@
   "{count} on the official SMP": "{count} ma ka SMP kūhelu",
   "{mode} · stopped": "{mode} · ua hoʻōki ʻia",
   "{online} of {max}": "{online} o {max}",
-  "{support} in Horizon": "{support} ma Horizon"
+  "{support} in Horizon": "{support} ma Horizon",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

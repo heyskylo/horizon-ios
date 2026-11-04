@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Уларытыылары харыстааһын ону уларытар. Кини папкатыгар туох да сотуллубат.",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} оҥоһуллубут модтара папкатыгар хаалаллар, ол гынан баран тиэллибэттэр.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} оҥоһуллубут модтара кини папкатыгар хаалаллар; сорохтор {to} тиэйбэт буолуохтарын сөп.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Аан дойдуларын Minecraft {from} быыһаабыта: {to} кинилэри үчүгэйдик тупсарар, уонна былыргы буоллаҕына арыйар кыаҕа суох."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Аан дойдуларын Minecraft {from} быыһаабыта: {to} кинилэри үчүгэйдик тупсарар, уонна былыргы буоллаҕына арыйар кыаҕа суох.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

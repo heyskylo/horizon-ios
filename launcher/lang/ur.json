@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "تبدیلیاں محفوظ کریں اسے بدل دیتا ہے۔ اس کے فولڈر سے کچھ حذف نہیں ہوتا۔",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} کے لیے بنے اس کے موڈ اس کے فولڈر میں رہتے ہیں لیکن لوڈ نہیں ہوں گے۔",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} کے لیے بنے اس کے موڈ اس کے فولڈر میں رہتے ہیں؛ کچھ شاید {to} میں لوڈ نہ ہوں۔",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "اس کی دنیائیں Minecraft {from} نے محفوظ کیں: {to} انہیں ہمیشہ کے لیے اپ گریڈ کرتا ہے، اور اگر پرانا ہو تو انہیں کھول نہیں سکتا۔"
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "اس کی دنیائیں Minecraft {from} نے محفوظ کیں: {to} انہیں ہمیشہ کے لیے اپ گریڈ کرتا ہے، اور اگر پرانا ہو تو انہیں کھول نہیں سکتا۔",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

@@ -1091,5 +1091,7 @@
   "{count} on the official SMP": "{count} in SMP officiali",
   "{mode} · stopped": "{mode} · sistitum",
   "{online} of {max}": "{online} ex {max}",
-  "{support} in Horizon": "{support} in Horizon"
+  "{support} in Horizon": "{support} in Horizon",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

@@ -1091,5 +1091,7 @@
   "{count} on the official SMP": "Расмий SMP серверинде {count}",
   "{mode} · stopped": "{mode} · токтотулган",
   "{online} of {max}": "{max} ичинен {online}",
-  "{support} in Horizon": "Horizon ичинде {support}"
+  "{support} in Horizon": "Horizon ичинде {support}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

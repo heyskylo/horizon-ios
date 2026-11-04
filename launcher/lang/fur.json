@@ -1091,5 +1091,7 @@
   "Its mods made for {loader} stay in its folder but won't load.": "I siei mods fats par {loader} a restin te sô cartele, ma no si cjariaran.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I siei monds a son stâts salvâts di Minecraft {from}: {to} ju inzorne par simpri, e nol pues vierzju se al è plui vieli.",
   "Save changes switches it. Nothing in its folder is deleted.": "«Salve lis modifichis» le cambie. Nuie te sô cartele al ven eliminât.",
-  "What this change can't keep": "Ce che chest cambiament nol pues tignî"
+  "What this change can't keep": "Ce che chest cambiament nol pues tignî",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

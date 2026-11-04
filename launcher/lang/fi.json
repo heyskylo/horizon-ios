@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Tallenna muutokset vaihtaa sen. Sen kansiosta ei poisteta mitään.",
   "Its mods made for {loader} stay in its folder but won't load.": "Sen {loader}-modit jäävät sen kansioon, mutta niitä ei ladata.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Sen Minecraft {from} -modit jäävät sen kansioon; osa ei ehkä lataudu versiossa {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Sen maailmat on tallennettu Minecraft {from} -versiolla: {to} päivittää ne pysyvästi eikä voi avata niitä, jos se on vanhempi."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Sen maailmat on tallennettu Minecraft {from} -versiolla: {to} päivittää ne pysyvästi eikä voi avata niitä, jos se on vanhempi.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "„Запази промените“ го превключва. Нищо в папката му не се изтрива.",
   "Its mods made for {loader} stay in its folder but won't load.": "Модовете му за {loader} остават в папката му, но няма да се зареждат.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Модовете му за Minecraft {from} остават в папката му; някои може да не се заредят в {to}.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Световете му са записани от Minecraft {from}: {to} ги надгражда завинаги и не може да ги отвори, ако е по-стар."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Световете му са записани от Minecraft {from}: {to} ги надгражда завинаги и не може да ги отвори, ако е по-стар.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

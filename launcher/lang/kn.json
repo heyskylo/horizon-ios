@@ -1091,5 +1091,7 @@
   "{count} on the official SMP": "ಅಧಿಕೃತ SMP ಯಲ್ಲಿ {count}",
   "{mode} · stopped": "{mode} · ನಿಲ್ಲಿಸಲಾಗಿದೆ",
   "{online} of {max}": "{max} ರಲ್ಲಿ {online}",
-  "{support} in Horizon": "Horizon ನಲ್ಲಿ {support}"
+  "{support} in Horizon": "Horizon ನಲ್ಲಿ {support}",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

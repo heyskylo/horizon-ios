@@ -1091,5 +1091,7 @@
   "Its mods made for {loader} stay in its folder but won't load.": "Sos mods fargats per {loader} demòran dins son dorsièr mas se cargaràn pas.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Sos mondes foguèron enregistrats per Minecraft {from}: {to} los met a jorn per totjorn, e los pòt pas dobrir se es mai ancian.",
   "Save changes switches it. Nothing in its folder is deleted.": "« Enregistrar las modificacions » lo càmbia. Res dins son dorsièr es pas suprimit.",
-  "What this change can't keep": "Çò que aqueste cambiament pòt pas gardar"
+  "What this change can't keep": "Çò que aqueste cambiament pòt pas gardar",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }

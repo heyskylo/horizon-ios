@@ -1091,5 +1091,7 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Değişiklikleri kaydet onu değiştirir. Klasöründen hiçbir şey silinmez.",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} için yapılmış modları klasöründe kalır ama yüklenmez.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} için yapılmış modları klasöründe kalır; bazıları {to} sürümünde yüklenmeyebilir.",
-  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dünyaları Minecraft {from} ile kaydedildi: {to} onları kalıcı olarak yükseltir, daha eskiyse açamaz."
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dünyaları Minecraft {from} ile kaydedildi: {to} onları kalıcı olarak yükseltir, daha eskiyse açamaz.",
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move."
 }
