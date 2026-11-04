@@ -2403,8 +2403,13 @@ def ravager_noai_counters():
 
 
 def groups():
+    try:
+        from .loaded_cloud_corpus import loaded_clouds
+    except ImportError:
+        from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('client commands', client_commands()),
         ('game state', game_state()),

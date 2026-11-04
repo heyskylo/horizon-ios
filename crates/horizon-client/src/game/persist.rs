@@ -419,6 +419,11 @@ impl Game<'_> {
         tag: Tag,
     ) -> std::result::Result<(), Tag> {
         match kind {
+            "minecraft:area_effect_cloud" => {
+                if let Some(id) = self.load_potion_cloud(&tag) {
+                    self.remember(id, uuid, tag);
+                }
+            }
             "minecraft:evoker_fangs" => {
                 if let Some(at) = entity_nbt::position(&tag) {
                     self.next_entity += 1;

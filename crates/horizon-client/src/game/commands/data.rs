@@ -250,12 +250,39 @@ impl Game<'_> {
                 set_key(&mut tag, "Age", Tag::Int(c.age));
                 set_key(&mut tag, "Duration", Tag::Int(c.duration));
                 set_key(&mut tag, "Radius", Tag::Float(c.radius.to_bits()));
-                let wait = if c.potion.is_some() {
-                    crate::game::potions::LINGERING_WAIT
-                } else {
-                    20
-                };
+                let wait = c.potion.as_ref().map_or(20, |p| p.settings.wait_time);
                 set_key(&mut tag, "WaitTime", Tag::Int(wait));
+                if let Some(p) = &c.potion {
+                    set_key(
+                        &mut tag,
+                        "ReapplicationDelay",
+                        Tag::Int(p.settings.reapplication_delay),
+                    );
+                    set_key(
+                        &mut tag,
+                        "DurationOnUse",
+                        Tag::Int(p.settings.duration_on_use),
+                    );
+                    set_key(
+                        &mut tag,
+                        "RadiusOnUse",
+                        Tag::Float(p.settings.radius_on_use.to_bits()),
+                    );
+                    set_key(
+                        &mut tag,
+                        "RadiusPerTick",
+                        Tag::Float(p.radius_per_tick.to_bits()),
+                    );
+                    if p.settings.duration_scale != 1.0 {
+                        set_key(
+                            &mut tag,
+                            "potion_duration_scale",
+                            Tag::Float(p.settings.duration_scale.to_bits()),
+                        );
+                    } else if let Tag::Compound(c) = &mut tag {
+                        c.remove(&"potion_duration_scale".into());
+                    }
+                }
                 tag
             }
             Target::Trident(id) => {
