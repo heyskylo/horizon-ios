@@ -2377,6 +2377,65 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def mob_effect_update_result():
+    """EffectCommands counts active/visibility updates, without advancing effect clocks (#8862)."""
+    objective = 'effect_changed'
+    ops = setup(f'/scoreboard objectives add {objective} dummy')
+    pairs = [('equal_short', '10', 1, '5', 1, 'true', 0),
+             ('equal_long', '5', 1, '10', 1, 'true', 1),
+             ('weaker_short', '10', 2, '5', 0, 'true', 0),
+             ('weaker_long', '5', 2, '10', 0, 'true', 0),
+             ('stronger_short', '10', 0, '2', 2, 'true', 1),
+             ('stronger_long', '2', 0, '10', 2, 'true', 1),
+             ('infinite_finite', 'infinite', 1, '10', 1, 'true', 0),
+             ('finite_infinite', '10', 1, 'infinite', 1, 'true', 1),
+             ('equal_visible', '10', 1, '5', 1, 'false', 1),
+             ('weaker_visible', '10', 2, '5', 0, 'false', 1)]
+
+    def apply(target, seconds, amplifier, hide, expected):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run effect give '
+                f'{target} speed {seconds} {amplifier} {hide}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=expected),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(expected > 0))]
+
+    def fields(target):
+        return [cmd(f'/data get entity {target} '
+                    f'active_effects[{{id:"minecraft:speed"}}].{field}')
+                for field in ('duration', 'amplifier', 'show_particles', 'show_icon')]
+
+    for name, first, amp, second, second_amp, hide, changed in pairs:
+        tag = f'effect_update_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon pig 4.5 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b}}',
+                     f'/effect clear {target}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},nbt={{NoAI:1b}}]', expect_result=1),
+                cmd(f'/execute unless entity @e[tag={tag},nbt={{active_effects:[{{id:"minecraft:speed"}}]}}]',
+                    expect_result=1)]
+        ops += apply(target, first, amp, 'true', 1)
+        ops += apply(target, second, second_amp, hide, changed)
+        ops += fields(target) + setup(f'/kill {target}')
+
+    group = '@e[tag=effect_update_mixed]'
+    for name in ('long', 'short', 'new'):
+        ops += setup('/summon pig 4.5 220 4.5 '
+                     f'{{Tags:["effect_update_mixed","effect_mix_{name}"],'
+                     'NoAI:1b,NoGravity:1b,PersistenceRequired:1b}')
+    ops += [cmd(f'/execute if entity {group}', expect_result=3),
+            cmd('/execute if entity @e[tag=effect_update_mixed,nbt={NoAI:1b}]', expect_result=3),
+            cmd('/execute unless entity @e[tag=effect_update_mixed,nbt={active_effects:[{id:"minecraft:speed"}]}]',
+                expect_result=1)]
+    ops += setup('/effect give @e[tag=effect_mix_long,limit=1] speed 10 1 true',
+                 '/effect give @e[tag=effect_mix_short,limit=1] speed 2 1 true')
+    ops += apply(group, '5', 1, 'true', 2)  # Two change among three selected mobs.
+    ops += apply(group, '5', 1, 'true', 0)  # All three are now unchanged.
+    for name in ('long', 'short', 'new'):
+        ops += fields(f'@e[tag=effect_mix_{name},limit=1]')
+    return ops + setup(f'/kill {group}', f'/scoreboard objectives remove {objective}')
 def axolotl_integer_memory_ttl():
     """Loaded integer-memory TTL survives NoAI; behavior writes reset it (#8852)."""
     keys = ('play_dead_ticks', 'temptation_cooldown_ticks')
@@ -2597,6 +2656,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('mob effect update result', mob_effect_update_result()),
         ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
         ('parrot saved Age', parrot_saved_age()),
         ('animal NoAI love', animal_noai_love()),
