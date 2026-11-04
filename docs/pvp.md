@@ -96,3 +96,12 @@ so it costs nothing. Resource packs' core shaders and OptiFine CIT glints keep t
 
 Both fog options stop at the clearest view vanilla itself gives, so they show nothing a vanilla player can't see.
 There is no "no hurt camera" option: vanilla's Accessibility → Damage Tilt already sets the shake from 0 to 100%.
+
+## Your view: time of day and weather (`viewTime`, `viewWeather`, default the world's)
+
+The time of day (morning, noon, sunset, midnight) and the weather (clear, rain, thunder) this player sees. Only
+the frame changes: the sky's colours, sun, moon and stars, the sky's light in the lightmap, the rain and its
+fog (`Game::view_day_time`, `Game::view_weather` in `game/pvp.rs`). The world's `day_time` and weather, and all
+that plays by them (mobs, crops, beds, riptide, rain sounds), stay the server's, and nothing is sent to it.
+The moon keeps the world's phase. Only a client of a server draws it (single player's window is one), in the
+Overworld.

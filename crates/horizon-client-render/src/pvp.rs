@@ -175,6 +175,103 @@ impl Shape {
     }
 }
 
+/// A time of day this player's view can stay at (`ViewTime::day_time` in vanilla's ticks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewTime {
+    Morning,
+    Noon,
+    Sunset,
+    Midnight,
+}
+impl ViewTime {
+    pub const ALL: [ViewTime; 4] = [
+        ViewTime::Morning,
+        ViewTime::Noon,
+        ViewTime::Sunset,
+        ViewTime::Midnight,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewTime::Morning => "morning",
+            ViewTime::Noon => "noon",
+            ViewTime::Sunset => "sunset",
+            ViewTime::Midnight => "midnight",
+        }
+    }
+    fn english(self) -> &'static str {
+        match self {
+            ViewTime::Morning => "Morning",
+            ViewTime::Noon => "Noon",
+            ViewTime::Sunset => "Sunset",
+            ViewTime::Midnight => "Midnight",
+        }
+    }
+    /// The time of day it shows, as `/time set` takes it.
+    pub fn day_time(self) -> i64 {
+        match self {
+            ViewTime::Morning => 1000,
+            ViewTime::Noon => 6000,
+            ViewTime::Sunset => 12500,
+            ViewTime::Midnight => 18000,
+        }
+    }
+    pub fn label(self) -> String {
+        crate::lang::get_or(&format!("horizon.pvp.time.{}", self.name()), self.english())
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+/// The weather this player's view can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewWeather {
+    Clear,
+    Rain,
+    Thunder,
+}
+impl ViewWeather {
+    pub const ALL: [ViewWeather; 3] = [ViewWeather::Clear, ViewWeather::Rain, ViewWeather::Thunder];
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewWeather::Clear => "clear",
+            ViewWeather::Rain => "rain",
+            ViewWeather::Thunder => "thunder",
+        }
+    }
+    fn english(self) -> &'static str {
+        match self {
+            ViewWeather::Clear => "Clear",
+            ViewWeather::Rain => "Rain",
+            ViewWeather::Thunder => "Thunder",
+        }
+    }
+    /// `Level.getRainLevel` and `getThunderLevel` as `/weather` leaves them.
+    pub fn levels(self) -> (f32, f32) {
+        match self {
+            ViewWeather::Clear => (0.0, 0.0),
+            ViewWeather::Rain => (1.0, 0.0),
+            ViewWeather::Thunder => (1.0, 1.0),
+        }
+    }
+    pub fn label(self) -> String {
+        crate::lang::get_or(
+            &format!("horizon.pvp.weather.{}", self.name()),
+            self.english(),
+        )
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+/// The day time this player sees with `fixed` set: the same day (the moon's phase follows the
+/// world's), at that time.
+pub fn view_day_time(world: i64, fixed: Option<ViewTime>) -> i64 {
+    match fixed {
+        Some(t) => world.div_euclid(24000) * 24000 + t.day_time(),
+        None => world,
+    }
+}
+
 /// The crosshair's look. Its defaults draw vanilla's: a 15-pixel cross, one pixel thick,
 /// inverting what is under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -504,6 +601,10 @@ impl Default for Hud {
     }
 }
 pub use crate::extras::Corner;
+/// The value of the view options while they follow the world.
+fn world_label() -> String {
+    crate::lang::get_or("horizon.pvp.view.world", "World's")
+}
 fn corner_label(c: Corner) -> String {
     crate::lang::get_or(&format!("horizon.pvp.corner.{}", c.name()), c.label())
 }
@@ -525,6 +626,10 @@ pub struct Tweaks {
     pub clear_water: bool,
     /// Lava fog as with Fire Resistance (vanilla's clearest), without the effect.
     pub clear_lava: bool,
+    /// The time of day this player sees, `None` for the world's. Never sent to the server.
+    pub time: Option<ViewTime>,
+    /// The weather this player sees, `None` for the world's. Never sent to the server.
+    pub weather: Option<ViewWeather>,
 }
 impl Default for Tweaks {
     fn default() -> Self {
@@ -536,6 +641,8 @@ impl Default for Tweaks {
             glint: None,
             clear_water: false,
             clear_lava: false,
+            time: None,
+            weather: None,
         }
     }
 }
@@ -633,6 +740,18 @@ impl Pvp {
             }
             "clearWater" => t.clear_water = flag(value, t.clear_water),
             "clearLava" => t.clear_lava = flag(value, t.clear_lava),
+            "viewTime" => {
+                t.time = match value {
+                    "off" => None,
+                    v => ViewTime::parse(v).or(t.time),
+                }
+            }
+            "viewWeather" => {
+                t.weather = match value {
+                    "off" => None,
+                    v => ViewWeather::parse(v).or(t.weather),
+                }
+            }
             _ => return false,
         }
         true
@@ -703,6 +822,12 @@ impl Pvp {
             t.glint.map_or("off", Colour::name),
             t.clear_water,
             t.clear_lava,
+        );
+        let _ = write!(
+            out,
+            "viewTime:{}\nviewWeather:{}\n",
+            t.time.map_or("off", ViewTime::name),
+            t.weather.map_or("off", ViewWeather::name),
         );
     }
 }
@@ -788,6 +913,10 @@ opts! {
         "Under water, see as far as vanilla lets you after 30 seconds there, from the start.";
     ClearLava, "clear_lava", "Clear lava",
         "In lava, see as far as vanilla's Fire Resistance lets you, without the effect.";
+    ViewTime, "view_time", "Time of day",
+        "The time of day you see: the sky and its light only. The world's time goes on and nothing is sent to the server.";
+    ViewWeather, "view_weather", "Weather",
+        "The weather you see: rain, its light and fog only. The world's weather goes on and nothing is sent to the server.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -847,6 +976,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.push(Ok(GlintColour));
     rows.push(Err("horizon.pvp.header.visual"));
     rows.extend([FireLower, ShieldSize, TotemSize, ClearWater, ClearLava].map(Ok));
+    rows.push(Err("horizon.pvp.header.view"));
+    rows.extend([ViewTime, ViewWeather].map(Ok));
     rows
 }
 impl Opt {
@@ -860,6 +991,7 @@ impl Opt {
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
             | HudBackground | NumericEnchants => None,
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
+            ViewTime | ViewWeather => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -932,6 +1064,11 @@ impl Opt {
                 Some(colour) => colour.label(),
                 None => crate::lang::get_or("Off", "Off"),
             },
+            Opt::ViewTime => p.tweaks.time.map_or_else(world_label, ViewTime::label),
+            Opt::ViewWeather => p
+                .tweaks
+                .weather
+                .map_or_else(world_label, ViewWeather::label),
             _ => return None,
         })
     }
@@ -999,6 +1136,18 @@ impl Opt {
             Opt::GlintColour => t.glint = solid_or_off(t.glint),
             Opt::ClearWater => t.clear_water = !t.clear_water,
             Opt::ClearLava => t.clear_lava = !t.clear_lava,
+            Opt::ViewTime => {
+                let all: Vec<_> = std::iter::once(None)
+                    .chain(ViewTime::ALL.map(Some))
+                    .collect();
+                t.time = step(&all, t.time, back);
+            }
+            Opt::ViewWeather => {
+                let all: Vec<_> = std::iter::once(None)
+                    .chain(ViewWeather::ALL.map(Some))
+                    .collect();
+                t.weather = step(&all, t.weather, back);
+            }
         }
     }
 }
@@ -1141,6 +1290,10 @@ mod tests {
         assert_eq!((t.fire_lower, t.shield_size, t.totem_size), (10, 50, 25));
         assert_eq!(t.glint, Some(Colour::White));
         assert!(t.clear_water && t.clear_lava);
+        assert_eq!(
+            (t.time, t.weather),
+            (Some(ViewTime::Morning), Some(ViewWeather::Clear))
+        );
         let mut text = String::new();
         p.serialize(&mut text);
         let mut read = Pvp::default();
@@ -1159,6 +1312,18 @@ mod tests {
         assert!(p.parse_line("crosshairColour", "plaid") && p.crosshair.colour == Colour::White);
         assert!(!p.parse_line("fullbright", "true"));
         assert!(p.parse_line("totemSize", "5") && p.tweaks.totem_size == TOTEM_SIZES.0);
+    }
+
+    #[test]
+    fn a_fixed_time_keeps_the_worlds_day() {
+        // Day 9 at 5000: the moon's phase (the day number) stays, the time of day is the chosen.
+        let world = 9 * 24000 + 5000;
+        assert_eq!(view_day_time(world, None), world);
+        assert_eq!(
+            view_day_time(world, Some(ViewTime::Midnight)),
+            9 * 24000 + 18000
+        );
+        assert_eq!(view_day_time(-100, Some(ViewTime::Noon)), -24000 + 6000);
     }
 
     #[test]
@@ -1238,7 +1403,11 @@ mod tests {
         }
         let names = Colour::ALL.map(|c| (format!("horizon.pvp.colour.{}", c.name()), c.english()));
         let shapes = Shape::ALL.map(|c| (format!("horizon.pvp.shape.{}", c.name()), c.english()));
-        for (key, english) in names.iter().chain(&shapes) {
+        let times = ViewTime::ALL.map(|c| (format!("horizon.pvp.time.{}", c.name()), c.english()));
+        let weathers =
+            ViewWeather::ALL.map(|c| (format!("horizon.pvp.weather.{}", c.name()), c.english()));
+        assert_eq!(en.get("horizon.pvp.view.world"), Some("World's"));
+        for (key, english) in names.iter().chain(&shapes).chain(&times).chain(&weathers) {
             assert_eq!(en.get(key), Some(*english), "{key}");
         }
     }

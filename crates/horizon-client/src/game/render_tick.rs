@@ -109,7 +109,7 @@ impl Game<'_> {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
-        let (rain, thunder) = self.weather_levels(self.clock.fraction() as f32);
+        let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
             &title_fog
@@ -402,7 +402,7 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
-            let rain = self.weather_levels(1.0).0;
+            let rain = self.view_weather(1.0).0;
             let biome = self
                 .world
                 .chunks

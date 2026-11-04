@@ -669,5 +669,18 @@
   "horizon.pvp.clear_water.tooltip": "Under water, see as far as vanilla lets you after 30 seconds there, from the start.",
   "horizon.pvp.clear_lava": "Clear lava",
   "horizon.pvp.clear_lava.tooltip": "In lava, see as far as vanilla's Fire Resistance lets you, without the effect.",
-  "horizon.pvp.header.visual": "Visual tweaks"
+  "horizon.pvp.header.visual": "Visual tweaks",
+  "horizon.pvp.view_time": "Time of day",
+  "horizon.pvp.view_time.tooltip": "The time of day you see: the sky and its light only. The world's time goes on and nothing is sent to the server.",
+  "horizon.pvp.view_weather": "Weather",
+  "horizon.pvp.view_weather.tooltip": "The weather you see: rain, its light and fog only. The world's weather goes on and nothing is sent to the server.",
+  "horizon.pvp.header.view": "Your view",
+  "horizon.pvp.view.world": "World's",
+  "horizon.pvp.time.morning": "Morning",
+  "horizon.pvp.time.noon": "Noon",
+  "horizon.pvp.time.sunset": "Sunset",
+  "horizon.pvp.time.midnight": "Midnight",
+  "horizon.pvp.weather.clear": "Clear",
+  "horizon.pvp.weather.rain": "Rain",
+  "horizon.pvp.weather.thunder": "Thunder"
 }
