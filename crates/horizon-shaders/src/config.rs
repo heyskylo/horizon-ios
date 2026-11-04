@@ -5,8 +5,10 @@
 //!
 //! Everything is read from live code only: the preprocessor has already dropped the false
 //! branches, so a format chosen by an option is the one the option selects. Every stage file of
-//! the programs that run is read (OQ-17); a later file overrides an earlier one, with a note when
-//! the values differ.
+//! the programs that run is read (OQ-17), and the shadow programs' when the shadow pass doesn't
+//! run; a later file overrides an earlier one, with a note when the values differ. A colortex
+//! format counts only in a fragment stage, and in a block comment only where `const` starts its
+//! line, as Iris 1.11.7 read our probes ([`Config::read_vertex`], [`Config::read`]).
 
 use crate::Preprocessed;
 
@@ -181,10 +183,8 @@ pub struct Config {
     pub shadow: Shadow,
     /// Conflicting or unreadable settings, as `file:line: message`.
     pub notes: Vec<String>,
-    format_set: [bool; BUFFERS],
     /// Each setting read so far and its value, to report a later file changing it.
     seen: Vec<(String, String)>,
-    gdepth: bool,
 }
 
 impl Default for Config {
@@ -193,9 +193,7 @@ impl Default for Config {
             buffers: std::array::from_fn(|_| Buffer::default()),
             shadow: Shadow::default(),
             notes: Vec::new(),
-            format_set: [false; BUFFERS],
             seen: Vec::new(),
-            gdepth: false,
         }
     }
 }
@@ -230,42 +228,66 @@ pub fn buffer_index(name: &str) -> Option<usize> {
 }
 
 impl Config {
-    /// Reads one preprocessed stage file.
+    /// Reads one preprocessed fragment stage file.
     pub fn read(&mut self, pp: &Preprocessed) {
+        self.read_stage(pp, true, true);
+    }
+
+    /// Reads only the colortex formats of one preprocessed fragment stage file, as [`Self::read`]
+    /// reads them.
+    pub fn read_formats(&mut self, pp: &Preprocessed) {
+        self.read_stage(pp, true, false);
+    }
+
+    /// Reads one preprocessed vertex stage file. Its colortex formats don't count: Iris 1.11.7
+    /// ignored a `colortexNFormat` declared only in `composite.vsh`, `final.vsh`, `deferred.vsh`,
+    /// `gbuffers_terrain.vsh` or `shadow.vsh` of probe packs p9063a, p9063c and p9063s (ours),
+    /// while it honoured the same line in each program's fragment shader.
+    pub fn read_vertex(&mut self, pp: &Preprocessed) {
+        self.read_stage(pp, false, true);
+    }
+
+    /// `formats`: whether colortex formats count; `others`: whether every other setting does.
+    fn read_stage(&mut self, pp: &Preprocessed, formats: bool, others: bool) {
         let line = |at: usize| pp.locate(code_line(&pp.code, at));
         for (at, ty, name, value) in constants(&pp.code) {
             let place = line(at);
-            self.constant(&place, ty, name, value);
+            self.constant(&place, ty, name, value, formats, others);
         }
         for (origin, comment) in &pp.comments {
-            for (_, ty, name, value) in constants(comment) {
+            for (at, ty, name, value) in constants(comment) {
                 let file = pp
                     .files
                     .get(origin.file as usize)
                     .map_or("?", String::as_str);
                 let place = format!("{file}:{}", origin.line);
-                self.constant(&place, ty, name, value);
+                // Our probes' Iris 1.11.7 values fit this (a fit, not a rule Iris states): a
+                // `colortexNFormat` in a block comment counts only when `const` starts its line.
+                // Iris ignored one on the line of the `/*` (`/* const int colortex2Format =
+                // RGBA16F; */`), after a ` * `, and after another declaration on its line; it
+                // honoured one indented, one followed by text or by `*/`, and the first of two.
+                let starts_line = (comment[..at].rfind('\n'))
+                    .is_some_and(|n| comment[n + 1..at].trim().is_empty());
+                self.constant(&place, ty, name, value, formats && starts_line, others);
             }
         }
-        if declares(&pp.code, "gdepth") {
-            self.gdepth = true;
-        }
     }
 
-    /// The settings once every file is read: buffer 1 becomes RGBA32F when a program declares
-    /// `gdepth` and the pack gave it no format (6.1.3).
-    pub fn finish(mut self) -> Self {
-        if self.gdepth && !self.format_set[1] {
-            self.buffers[1].format = Format {
-                channels: 4,
-                bits: 32,
-                kind: Kind::Float,
-            };
+    /// `formats`: whether a colortex format declared here counts; `others`: whether any other
+    /// setting does.
+    fn constant(
+        &mut self,
+        place: &str,
+        ty: &str,
+        name: &str,
+        value: &str,
+        formats: bool,
+        others: bool,
+    ) {
+        let format = ty == "int" && name.strip_suffix("Format").and_then(buffer_index).is_some();
+        if !others && !format {
+            return;
         }
-        self
-    }
-
-    fn constant(&mut self, place: &str, ty: &str, name: &str, value: &str) {
         if self.shadow_constant(ty, name, value) {
             return;
         }
@@ -281,12 +303,12 @@ impl Config {
         }) else {
             return;
         };
+        if setting == "Format" && !formats {
+            return;
+        }
         let b = &mut self.buffers[buffer];
         let ok = match setting {
-            "Format" => Format::parse(value).map(|f| {
-                b.format = f;
-                self.format_set[buffer] = true;
-            }),
+            "Format" => Format::parse(value).map(|f| b.format = f),
             "ClearColor" => vec4(value).map(|c| b.clear_color = Some(c)),
             "Clear" => boolean(value).map(|v| b.clear = v),
             _ => boolean(value).map(|v| b.mipmap = v),
@@ -437,14 +459,6 @@ fn constants(text: &str) -> Vec<(usize, &str, &str, &str)> {
     out
 }
 
-/// Whether `text` declares a uniform sampler called `name`.
-fn declares(text: &str, name: &str) -> bool {
-    text.split(';').any(|decl| {
-        let words: Vec<&str> = decl.split_whitespace().collect();
-        words.first() == Some(&"uniform") && words.last() == Some(&name)
-    })
-}
-
 fn code_line(code: &str, at: usize) -> usize {
     code[..at].matches('\n').count()
 }
@@ -531,7 +545,6 @@ mod tests {
         assert_eq!(draw_buffers(&pp), Some(vec![0, 2, 11]));
         let mut config = Config::default();
         config.read(&pp);
-        let config = config.finish();
         let b = &config.buffers;
         assert_eq!(b[2].format, Format::parse("RGBA16F").unwrap());
         assert_eq!(b[7].format, Format::parse("R32F").unwrap());
@@ -539,7 +552,9 @@ mod tests {
         assert_eq!(b[3].clear_color, Some([0.5, 0.25, 0.0, 1.0]));
         assert!(b[3].mipmap && !b[2].mipmap);
         assert_eq!(b[2].clear_color, Some([1.0; 4]));
-        assert_eq!(b[1].format, Format::parse("RGBA32F").unwrap(), "gdepth");
+        // Iris 1.11.7 kept RGBA8 for `gdepth` (colortex1) with no format given, in probe pack
+        // p9063b of ours; OptiFine's RGBA32F rule doesn't apply.
+        assert_eq!(b[1].format, Format::RGBA8, "gdepth");
         assert!(config.notes.is_empty(), "{:?}", config.notes);
     }
 
@@ -551,7 +566,7 @@ mod tests {
              const float sunPathRotation = -40.0;\nconst bool shadowHardwareFiltering = true;\n\
              /* const int shadowcolor1Format = RGBA16F; */\nconst bool shadowcolor0Clear = false;\n",
         ));
-        let s = c.finish().shadow;
+        let s = c.shadow;
         assert_eq!(
             (s.resolution, s.distance, s.sun_path_rotation),
             (2048, 128.0, -40.0)
@@ -569,16 +584,18 @@ mod tests {
     fn no_directive_and_conflicts() {
         let pp = stage("void main() {}\n");
         assert_eq!(draw_buffers(&pp), None);
-        let a =
-            stage("/* const int colortex1Format = RGB8; */\nconst bool colortex1Clear = maybe;\n");
-        let b =
-            stage("/* const int colortex1Format = RGBA16; const int colortex2Format = XYZ; */\n");
+        let a = stage(
+            "/*\nconst int colortex1Format = RGB8;\n*/\nconst bool colortex1Clear = maybe;\n",
+        );
+        let b = stage(
+            "/*\nconst int colortex1Format = RGBA16;\nconst int colortex2Format = XYZ;\n*/\n",
+        );
         let mut config = Config::default();
         config.read(&a);
         config.read(&b);
         let notes = config.notes.join("\n");
         assert!(
-            notes.contains("composite.fsh:2: `colortex1Clear` is not a bool"),
+            notes.contains("composite.fsh:4: `colortex1Clear` is not a bool"),
             "{notes}"
         );
         assert!(
@@ -586,9 +603,34 @@ mod tests {
             "{notes}"
         );
         assert!(notes.contains("unknown format `XYZ`"), "{notes}");
+        assert_eq!(config.buffers[1].format, Format::parse("RGBA16").unwrap());
+    }
+
+    #[test]
+    fn a_format_in_a_comment_counts_where_const_starts_its_line() {
+        // The placements of probe packs p9063a and p9063c (ours): Iris 1.11.7 kept RGBA8 for
+        // buffers 1, 2, 5 and 6, and took RGBA16F for 3, 4 and 7 to 11.
+        let pp = stage(
+            "/*\n * const int colortex1Format = RGBA16F;\n */\n\
+             /* const int colortex2Format = RGBA16F; */\n\
+             /*\nconst int colortex3Format = RGBA16F;\n    const int colortex4Format = RGBA16F;\n\
+             const int colortex16Dummy = 1; const int colortex5Format = RGBA16F;\n*/\n\
+             /* const int colortex6Format = RGBA16F;\n*/\n\
+             /*\nconst int colortex7Format = RGBA16F; */\n\
+             /*\nconst int colortex8Format = RGBA16F; trailing words\n\
+             \tconst int colortex9Format = RGBA16F;\n\
+             const  int  colortex10Format  =  RGBA16F ;\n\
+             const int colortex11Format = RGBA16F; const int colortex16Dummy = 1;\n*/\n",
+        );
+        let mut config = Config::default();
+        config.read(&pp);
+        let half = Format::parse("RGBA16F").unwrap();
+        let read: Vec<bool> = (1..=11).map(|n| config.buffers[n].format == half).collect();
         assert_eq!(
-            config.finish().buffers[1].format,
-            Format::parse("RGBA16").unwrap()
+            read,
+            [
+                false, false, true, true, false, false, true, true, true, true, true
+            ]
         );
     }
 }

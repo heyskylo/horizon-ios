@@ -872,7 +872,6 @@ pub fn load_post(
         inputs.entities.as_ref(),
         [&inputs.terrain_geometry, &inputs.entity_geometry].map(Option::as_ref),
     );
-    post.config = std::mem::take(&mut post.config).finish();
     post
 }
 
@@ -918,6 +917,19 @@ fn load_shadow(
     let on = forced.unwrap_or(reads);
     loader.post.shadow_pass = on;
     if !on {
+        // Observed in probe packs of ours (p9063a, p9063c), not a rule Iris states: Iris 1.11.7
+        // honoured a `colortexNFormat` declared only in `shadow.fsh` or `shadowcomp.fsh` of a
+        // pack Horizon runs without a shadow pass. So the colortex formats of the shadow
+        // programs' fragment shaders are read here, and nothing else of them (nothing else was
+        // probed). The other shadow programs' files were not probed; they are read as `shadow`.
+        let names = ["shadow", "shadow_water", "shadow_entities", "shadow_block"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain(std::iter::once("shadowcomp".to_owned()))
+            .chain((1..=99).map(|n| format!("shadowcomp{n}")));
+        for name in names {
+            loader.read_formats(&name);
+        }
         return;
     }
     let names =
@@ -1102,7 +1114,7 @@ impl Loader<'_> {
                 return None;
             }
         };
-        self.post.config.read(&vertex);
+        self.post.config.read_vertex(&vertex);
         self.post.config.read(&fragment);
         let mut buffers =
             config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
@@ -1147,6 +1159,28 @@ impl Loader<'_> {
             compute,
             geometry_triangles: 0,
         })
+    }
+
+    /// Reads the colortex formats of program `name` without loading it, when it is there and
+    /// enabled: those of its fragment shader, as [`Self::load`] reads them.
+    fn read_formats(&mut self, name: &str) {
+        let path = |ext: &str| match self.folder {
+            "" => format!("{name}.{ext}"),
+            f => format!("{f}/{name}.{ext}"),
+        };
+        let (vsh, fsh) = (path("vsh"), path("fsh"));
+        let on = enabled(
+            self.properties,
+            self.folder,
+            name,
+            &self.options,
+            &self.switches,
+        );
+        if !on || !self.pack.exists(&fsh) || !self.pack.exists(&vsh) {
+            return;
+        }
+        let fragment = self.preprocess(&fsh);
+        self.post.config.read_formats(&fragment);
     }
 
     /// Stage file `path` through the preprocessor; the pack's images declared without a format
@@ -1228,7 +1262,7 @@ impl Loader<'_> {
                     return None;
                 }
             };
-        self.post.config.read(vertex);
+        self.post.config.read_vertex(vertex);
         self.post.config.read(fragment);
         let mut buffers =
             config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
@@ -2474,6 +2508,67 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         );
         assert_eq!(blend(&properties, "gbuffers_water"), Some(None));
         assert_eq!(blend(&properties, "gbuffers_basic"), None);
+    }
+
+    #[test]
+    fn formats_come_from_the_fragment_shaders_iris_reads() {
+        // Cut down from probe packs p9063a, p9063b and p9063c (ours). Iris 1.11.7: colortex8,
+        // declared only in `composite.vsh`, kept RGBA8; colortex12 and colortex6, declared only
+        // in `shadow.fsh` and `shadowcomp.fsh` of a pack whose shadow pass Horizon doesn't run,
+        // took RGBA16F; colortex1 with `gdepth` declared and no format kept RGBA8. Other
+        // settings of those shadow files weren't probed, and Horizon leaves them out.
+        let declare = |n: u32| format!("/*\nconst int colortex{n}Format = RGBA16F;\n*/\n");
+        let write = "#version 120\n/* RENDERTARGETS: 1,6,8,12 */\nvoid main() { gl_FragData[0] = \
+                     vec4(2.5); gl_FragData[1] = vec4(2.5); gl_FragData[2] = vec4(2.5); \
+                     gl_FragData[3] = vec4(2.5); }\n";
+        let pack = Pack::from_zip_bytes(
+            "original-format-files",
+            zip(&[
+                (
+                    "shaders/composite.vsh",
+                    format!("{}{VSH}", declare(8)).as_str(),
+                ),
+                ("shaders/composite.fsh", write),
+                ("shaders/shadow.vsh", VSH),
+                (
+                    "shaders/shadow.fsh",
+                    format!(
+                        "{}const bool colortex12Clear = false;\n{write}",
+                        declare(12)
+                    )
+                    .as_str(),
+                ),
+                ("shaders/shadowcomp.vsh", VSH),
+                (
+                    "shaders/shadowcomp.fsh",
+                    format!("{}{write}", declare(6)).as_str(),
+                ),
+                ("shaders/final.vsh", VSH),
+                (
+                    "shaders/final.fsh",
+                    "#version 120\nuniform sampler2D gdepth;\nvarying vec2 uv;\n\
+                     void main() { gl_FragColor = texture2D(gdepth, uv); }\n",
+                ),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &macros,
+            &GameInputs::default(),
+        );
+        assert!(!post.shadow_pass);
+        let half = crate::Format::parse("RGBA16F").unwrap();
+        let formats: Vec<bool> = [1, 6, 8, 12]
+            .iter()
+            .map(|&n| post.config.buffers[n].format == half)
+            .collect();
+        assert_eq!(formats, [false, true, false, true]);
+        assert_eq!(post.config.buffers[1].format, crate::Format::RGBA8);
+        assert!(post.config.buffers[12].clear);
     }
 
     #[test]
