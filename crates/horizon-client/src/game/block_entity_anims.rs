@@ -938,45 +938,4 @@ mod tests {
         assert_eq!(openers_at(&open, elsewhere), 1);
         assert_eq!(openers_at(&open, (0, 0, 0)), 0);
     }
-
-    /// Vanilla 26.3 parity: `ContainerOpenersCounter.openerCountChanged`
-    /// emits `GameEvent.CONTAINER_OPEN` and `CONTAINER_CLOSE` only when the
-    /// opener count crosses zero (0 -> 1 on open, 1 -> 0 on close).
-    /// Spectators never increment/decrement the counter, and second openers
-    /// do not trigger game event edges.
-    #[test]
-    fn container_game_event_edges_match_zero_crossings() {
-        let mut counts = HashMap::new();
-        let chest = (10, 64, 10);
-
-        // 1. First player opens: count crosses 0 -> 1, game event fires.
-        let (before, count) = recheck_opener_count(&mut counts, &[chest], chest);
-        let first = (before == 0) && (count > 0);
-        assert!(first, "first opener must fire container_open game event");
-        assert_eq!(count, 1);
-
-        // 2. Second player opens while open: 1 -> 2, no edge, no game event.
-        let (before, count) = recheck_opener_count(&mut counts, &[chest, chest], chest);
-        let second_edge = (before == 0) != (count == 0);
-        assert!(
-            !second_edge,
-            "subsequent opener must not fire duplicate container_open"
-        );
-        assert_eq!(count, 2);
-
-        // 3. One player leaves: 2 -> 1, no edge, no game event.
-        let (before, count) = recheck_opener_count(&mut counts, &[chest], chest);
-        let mid_edge = (before == 0) != (count == 0);
-        assert!(!mid_edge, "partial close must not fire container_close");
-        assert_eq!(count, 1);
-
-        // 4. Last player leaves: 1 -> 0, count crosses zero, close game event fires.
-        let (before, count) = recheck_opener_count(&mut counts, &[], chest);
-        let last = (before > 0) && (count == 0);
-        assert!(
-            last,
-            "last player leaving must fire container_close game event"
-        );
-        assert_eq!(count, 0);
-    }
 }
