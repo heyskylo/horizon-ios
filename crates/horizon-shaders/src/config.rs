@@ -601,7 +601,7 @@ mod tests {
         let nearest = |text: &str| {
             let mut c = Config::default();
             c.read(&stage(text));
-            c.finish().shadow.nearest
+            c.shadow.nearest
         };
         assert_eq!(
             nearest("const bool shadowtex0Nearest = true;\n"),
