@@ -31,7 +31,9 @@ pub struct Sticky {
 /// How far the panel moves down: what the page has scrolled past the row's top, up to where the
 /// panel's foot meets the row's.
 fn offset(m: Measured, scrolled: f32) -> f32 {
-    (scrolled - m.top).clamp(0., (m.row - m.panel).max(0.)).round()
+    (scrolled - m.top)
+        .clamp(0., (m.row - m.panel).max(0.))
+        .round()
 }
 
 impl Sticky {
