@@ -1579,9 +1579,18 @@ pub fn mob_from_nbt(
         }
     }
     // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin, then
-    // `immovable`, `hide_description` and `description` (`updateDescription`).
+    // validated pose, `immovable`, `hide_description` and `description` (`updateDescription`).
     if m.species() == crate::mobs::Species::Mannequin {
         m.profile = tag.get("profile").and_then(profile_from_nbt);
+        // Mannequin.POSE_CODEC accepts only these Avatar poses; an invalid
+        // or absent value defaults to standing before the live dimensions read it.
+        m.extra.avatar_pose = match text(tag.get("pose")).as_deref() {
+            Some("crouching") => crate::pose::Pose::Crouching,
+            Some("swimming") => crate::pose::Pose::Swimming,
+            Some("fall_flying") => crate::pose::Pose::FallFlying,
+            Some("sleeping") => crate::pose::Pose::Sleeping,
+            _ => crate::pose::Pose::Standing,
+        };
         m.extra.immovable = flag(tag, "immovable");
         m.extra.description = if flag(tag, "hide_description") {
             crate::mobs::MannequinDescription::Hidden
