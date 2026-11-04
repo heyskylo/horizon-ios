@@ -456,7 +456,9 @@
   "runs {command} after": "darbojas {command} pēc",
   "downloaded": "lejupielādēts",
   "24/7 online": "24/7 tiešsaistē",
-  "Updated to {version}. Restart the launcher to use it.": "Atjaunināts uz {version}. Restartējiet palaidēju, lai to izmantotu.",
+  "A new version is available": "Ir pieejama jauna versija",
+  "Download again": "Lejupielādēt vēlreiz",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Šī palaidēja kopija nevar aizstāt pati sevi. Vienreiz lejupielādējiet to vēlreiz; pēc tam tas atjauninās pats.",
   "Any MCP client": "Jebkurš MCP klients",
   "{name}'s cape is kept.": "{name} apmetnis tiek paturēts.",
   "Not reviewed by the Horizon registry": "Nav pārskatījis Horizon reģistrs",
@@ -635,7 +637,6 @@
   "Copied": "Kopēts",
   "Couldn't load patch notes. {error}": "Nevarēja ielādēt ielāpu piezīmes. {error}",
   "Couldn't load releases. {error}": "Nevarēja ielādēt laidienus. {error}",
-  "Launcher updated to {version}": "Palaišanas programma atjaunināta uz {version}",
   "Launcher {version}": "Palaišanas programma {version}",
   "Launcher {version}  {percent}%": "Palaišanas programma {version} {percent}%",
   "Manage versions": "Pārvaldīt versijas",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Kaut kas nogāja greizi.",
   "Instances": "Instances",
   "Join the Discord": "Pievienojieties Discord",
-  "Restart to update": "Restartējiet, lai atjauninātu",
   "Duplicate…": "Dublēt…",
   "Create a desktop shortcut": "Izveidojiet darbvirsmas saīsni",
   "Remove the desktop shortcut": "Noņemiet darbvirsmas saīsni",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Atvērt veikalu",
-  "You don't own any cosmetics yet.": "Tev vēl nav kosmētikas."
+  "You don't own any cosmetics yet.": "Tev vēl nav kosmētikas.",
+  "Claim for free": "Saņemt bez maksas",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Veikala maksājumu pakalpojums jūsu valstī nedarbojas, tāpēc Dibinātāja komplektu šeit varat saņemt bez maksas.",
+  "The Founder Set is yours.": "Dibinātāja komplekts ir jūsu."
 }

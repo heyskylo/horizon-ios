@@ -426,10 +426,17 @@ impl Chat {
             let mut last = self.messages.remove(0);
             let shown = last.wrapped.min(self.lines.len());
             self.lines.drain(..shown);
+            // A reader scrolled up keeps their view: only lines the merge adds move it.
+            let (scroll, new_since_scroll) = (self.scroll, self.new_since_scroll);
             last.repeats += 1;
             last.added = message.added;
             last.time = message.time;
             last.wrapped = self.add_lines(font, &last, focused);
+            if scroll > 0 {
+                self.scroll = scroll;
+                self.new_since_scroll = new_since_scroll;
+                self.scroll_by(last.wrapped as i32 - shown as i32, focused);
+            }
             self.messages.insert(0, last);
             return;
         }
@@ -446,16 +453,14 @@ impl Chat {
     }
     /// The lines `message` wraps to (none when the chat search hides it), added newest first.
     fn add_lines(&mut self, font: &crate::font::Font, message: &Message, focused: bool) -> usize {
+        // What the chat shows: legacy `§` codes format the text, they aren't part of it.
+        let whole = message.content.strip_legacy().plain();
         if let Some(query) = &self.search
-            && !message
-                .content
-                .plain()
-                .to_lowercase()
-                .contains(query.as_str())
+            && !whole.to_lowercase().contains(query.as_str())
         {
             return 0;
         }
-        let whole: std::sync::Arc<str> = message.content.plain().into();
+        let whole: std::sync::Arc<str> = whole.into();
         let mut count = 0;
         // GuiMessage.splitLines: room for the tag's icon (its width, 4 before and 2 after).
         let icon = if message.tag.as_ref().is_some_and(|tag| tag.icon) {

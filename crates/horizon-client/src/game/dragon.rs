@@ -391,6 +391,8 @@ pub(super) struct Dragon {
     /// The player a crystal destroyed while it held its pattern sends it
     /// after (`strafe_after_crystal`), taken on its next tick.
     strafe_request: Option<FightWho>,
+    /// `Mob.isNoAi` (`NoAI`): it flaps in place, with no phase or flight.
+    no_ai: bool,
     random: LegacyRandom,
 }
 /// A player in the fight: the window's own player, or a guest by
@@ -520,6 +522,7 @@ impl Dragon {
             nodes: None,
             nearest_crystal: None,
             strafe_request: None,
+            no_ai: false,
             random: LegacyRandom::new(seed),
         }
     }
@@ -2112,6 +2115,12 @@ impl Game<'_> {
         }
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
+        // EnderDragon.aiStep with isNoAi: the flap stops half way, and nothing
+        // else moves it (no flight history, phase, steering or parts).
+        if d.no_ai {
+            d.flap = 0.5;
+            return;
+        }
         d.record();
         self.tick_phase();
         // Steering towards the phase's fly target.
@@ -2380,6 +2389,16 @@ impl Game<'_> {
             d.in_wall = in_wall;
         }
     }
+    /// `Entity.isSilent` of the dragon: its `Silent`, kept with the fields
+    /// Horizon models nowhere (`remember_tags`: `/summon`, a load).
+    fn dragon_silent(&self) -> bool {
+        let raw = self
+            .dragon
+            .as_ref()
+            .filter(|d| d.id != 0)
+            .and_then(|d| self.persist.raw.get(&d.id));
+        saved_silent(raw)
+    }
     /// `tickDeath`: rising for 200 ticks, explosions, experience, then the
     /// exit portal, the egg and a gateway.
     fn tick_dragon_death(&mut self) {
@@ -2414,9 +2433,9 @@ impl Game<'_> {
         if t > 150 && t % 5 == 0 && drops {
             self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.08) as u32);
         }
-        if t == 1 {
+        if t == 1 && !self.dragon_silent() {
             // EnderDragon.tickDeath: global level event 1028, the death
-            // roar, heard everywhere.
+            // roar, heard everywhere, unless the dragon is silent.
             let at = [p.x, p.y, p.z].map(|v| v.floor() as i32);
             self.global_level_event(1028, at, 0);
         }
@@ -3245,6 +3264,11 @@ impl Game<'_> {
         }
     }
 }
+/// `Entity.isSilent` from an entity's saved compound: `Silent`, written only
+/// when set.
+fn saved_silent(raw: Option<&Tag>) -> bool {
+    matches!(raw.and_then(|t| t.get("Silent")), Some(Tag::Byte(b)) if *b != 0)
+}
 /// Saving and loading the dragon and the crystals as chunk entities.
 impl Dragon {
     pub(super) fn to_nbt(&self, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -3260,6 +3284,10 @@ impl Dragon {
             map.insert("Health".into(), Tag::Float(self.health.to_bits()));
             map.insert("DragonPhase".into(), Tag::Int(self.phase.id()));
             map.insert("DragonDeathTime".into(), Tag::Int(self.death_time));
+            // Mob.addAdditionalSaveData writes NoAI only when set.
+            if self.no_ai {
+                map.insert("NoAI".into(), Tag::Byte(1));
+            }
             map.insert(
                 "sitting_damage_received".into(),
                 Tag::Float(self.sitting_damage.to_bits()),
@@ -3280,6 +3308,7 @@ impl Dragon {
         if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
             d.death_time = *t;
         }
+        d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
         Some(d)
     }
 }
@@ -3396,6 +3425,10 @@ impl Game<'_> {
         let phase = d.phase.id();
         if phase != 10 {
             meta.push((16, serializer::INT, Value::Int(phase)));
+        }
+        // Mob.DATA_MOB_FLAGS_ID: NoAI is its first bit.
+        if d.no_ai {
+            meta.push((15, serializer::BYTE, Value::Byte(1)));
         }
         Some(horizon_client::lan::entity::EntityState {
             id: d.id as i32,
@@ -3972,6 +4005,8 @@ impl Game<'_> {
             match (index, value) {
                 (9, Value::Float(health)) => d.health = *health,
                 (16, Value::Int(phase)) => d.set_phase(Phase::from_id(*phase)),
+                // Mob.DATA_MOB_FLAGS_ID: isNoAi.
+                (15, Value::Byte(flags)) => d.no_ai = flags & 1 != 0,
                 _ => {}
             }
         }
@@ -4128,6 +4163,11 @@ impl Game<'_> {
         }
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
+        // EnderDragon.aiStep on a client with isNoAi, as on the server.
+        if d.no_ai {
+            d.flap = 0.5;
+            return;
+        }
         d.record();
         self.remote_dragon_phase_tick();
         self.place_dragon_parts();
@@ -4317,6 +4357,24 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
+    /// `!isSilent()`; `Silent` is saved only when set, as a byte.
+    #[test]
+    fn a_dragon_is_silent_only_with_a_set_silent_byte() {
+        use horizon_world::nbt::{Compound, Tag};
+        let with = |v: Option<i8>| {
+            let mut map = Compound::new();
+            if let Some(b) = v {
+                map.insert("Silent".into(), Tag::Byte(b));
+            }
+            Tag::Compound(map)
+        };
+        assert!(!super::saved_silent(None));
+        assert!(!super::saved_silent(Some(&with(None))));
+        assert!(!super::saved_silent(Some(&with(Some(0)))));
+        assert!(super::saved_silent(Some(&with(Some(1)))));
     }
 
     #[test]

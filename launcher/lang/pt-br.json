@@ -46,7 +46,9 @@
   "up to date": "atualizado",
   "Checking…": "Verificando…",
   "downloading {version}, {percent}%": "baixando {version}, {percent}%",
-  "Updated to {version}. Restart the launcher to use it.": "Atualizado para {version}. Reinicie o launcher para começar a usar essa versão.",
+  "A new version is available": "Uma nova versão está disponível",
+  "Download again": "Baixar de novo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Esta cópia do launcher não consegue se substituir. Baixe-o de novo uma vez; depois disso ele se atualiza sozinho.",
   "the update failed: {error}": "Falha ao atualizar: {error}",
   "Install": "Instalar",
   "Restart": "Reiniciar",
@@ -637,7 +639,6 @@
   "{name} moved to the trash.": "{name} foi movido para a lixeira.",
   "Couldn't load patch notes. {error}": "Não foi possível carregar as notas de atualização. {error}",
   "Couldn't load releases. {error}": "Não foi possível carregar as versões. {error}",
-  "Launcher updated to {version}": "Launcher atualizado para {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
   "Manage versions": "Gerenciar versões",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Something went wrong.",
   "Instances": "Instâncias",
   "Join the Discord": "Entre no Discord",
-  "Restart to update": "Reiniciar para atualizar",
   "Duplicate…": "Duplicar…",
   "Create a desktop shortcut": "Criar um atalho na área de trabalho",
   "Remove the desktop shortcut": "Remover o atalho da área de trabalho",
@@ -1117,5 +1117,8 @@
   "Move and restart": "Mover e reiniciar",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir a loja",
-  "You don't own any cosmetics yet.": "Você ainda não tem nenhum cosmético."
+  "You don't own any cosmetics yet.": "Você ainda não tem nenhum cosmético.",
+  "Claim for free": "Resgatar grátis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagamentos da loja não atende o seu país, então você pode resgatar o Conjunto fundador aqui de graça.",
+  "The Founder Set is yours.": "O Conjunto fundador é seu."
 }

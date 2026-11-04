@@ -456,7 +456,9 @@
   "runs {command} after": "работи {command} после",
   "downloaded": "преземени",
   "24/7 online": "24/7 онлајн",
-  "Updated to {version}. Restart the launcher to use it.": "Ажурирано на {version}. Рестартирајте го стартерот за да го користите.",
+  "A new version is available": "Достапна е нова верзија",
+  "Download again": "Преземи повторно",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Оваа копија од стартерот не може сама да се замени. Преземете го повторно еднаш; потоа се ажурира сам.",
   "Any MCP client": "Секој MCP клиент",
   "{name}'s cape is kept.": "Наметката на {name} се чува.",
   "Not reviewed by the Horizon registry": "Не е прегледано од регистарот Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Копирано",
   "Couldn't load patch notes. {error}": "Не може да се вчитаат белешки за закрпи. {error}",
   "Couldn't load releases. {error}": "Не може да се вчитаат изданијата. {error}",
-  "Launcher updated to {version}": "Стартерот е ажуриран на {version}",
   "Launcher {version}": "Стартувач {version}",
   "Launcher {version}  {percent}%": "Стартувач {version} {percent}%",
   "Manage versions": "Управувајте со верзии",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Нешто тргна наопаку.",
   "Instances": "Инстанци",
   "Join the Discord": "Приклучи се на Discord",
-  "Restart to update": "Рестартирајте за ажурирање",
   "Duplicate…": "Дупликат…",
   "Create a desktop shortcut": "Креирајте кратенка на работната површина",
   "Remove the desktop shortcut": "Отстранете ја кратенката на работната површина",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Отвори ја продавницата",
-  "You don't own any cosmetics yet.": "Сè уште немате козметика."
+  "You don't own any cosmetics yet.": "Сè уште немате козметика.",
+  "Claim for free": "Земи бесплатно",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Давателот на плаќања на продавницата не работи во вашата земја, па Основачкиот сет можете да го земете тука бесплатно.",
+  "The Founder Set is yours.": "Основачкиот сет е ваш."
 }

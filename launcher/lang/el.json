@@ -458,7 +458,9 @@
   "runs {command} after": "τρέχει {command} μετά",
   "downloaded": "κατεβάσει",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Ενημερώθηκε σε {version}. Επανεκκινήστε το πρόγραμμα εκκίνησης για να το χρησιμοποιήσετε.",
+  "A new version is available": "Υπάρχει νέα έκδοση",
+  "Download again": "Λήψη ξανά",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Αυτό το αντίγραφο του εκκινητή δεν μπορεί να αντικαταστήσει τον εαυτό του. Κατεβάστε το ξανά μία φορά· μετά ενημερώνεται μόνο του.",
   "Any MCP client": "Οποιοσδήποτε πελάτης MCP",
   "{name}'s cape is kept.": "Το ακρωτήρι του {name} διατηρείται.",
   "Not reviewed by the Horizon registry": "Δεν έχει ελεγχθεί από το μητρώο Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Αντιγράφηκε",
   "Couldn't load patch notes. {error}": "Δεν ήταν δυνατή η φόρτωση των σημειώσεων ενημέρωσης κώδικα. {error}",
   "Couldn't load releases. {error}": "Δεν ήταν δυνατή η φόρτωση των κυκλοφοριών. {error}",
-  "Launcher updated to {version}": "Το πρόγραμμα εκκίνησης ενημερώθηκε σε {version}",
   "Launcher {version}": "Εκτοξευτής {version}",
   "Launcher {version}  {percent}%": "Εκτοξευτής {version} {percent}%",
   "Manage versions": "Διαχείριση εκδόσεων",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Κάτι πήγε στραβά.",
   "Instances": "Περιπτώσεις",
   "Join the Discord": "Εγγραφείτε στο Discord",
-  "Restart to update": "Κάντε επανεκκίνηση για ενημέρωση",
   "Duplicate…": "Διπλότυπο…",
   "Create a desktop shortcut": "Δημιουργήστε μια συντόμευση επιφάνειας εργασίας",
   "Remove the desktop shortcut": "Καταργήστε τη συντόμευση της επιφάνειας εργασίας",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Άνοιγμα καταστήματος",
-  "You don't own any cosmetics yet.": "Δεν έχετε ακόμα καλλυντικά."
+  "You don't own any cosmetics yet.": "Δεν έχετε ακόμα καλλυντικά.",
+  "Claim for free": "Απόκτησέ το δωρεάν",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ο πάροχος πληρωμών του καταστήματος δεν εξυπηρετεί τη χώρα σου, οπότε μπορείς να αποκτήσεις το Ιδρυτικό σύνολο εδώ δωρεάν.",
+  "The Founder Set is yours.": "Το Ιδρυτικό σύνολο είναι δικό σου."
 }

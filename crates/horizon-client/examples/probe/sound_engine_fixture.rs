@@ -4,7 +4,8 @@
 use crate::audio_common as common;
 use common::{Fake, d, describe, f, flush, result_name};
 use horizon_client::sound_engine::{
-    Attenuation, Backend, CartSound, InstanceId, SoundEngine, SoundInstance, TickContext,
+    Attenuation, Backend, CartSound, InstanceId, SoundEngine, SoundEntity, SoundEntityState,
+    SoundInstance, TickContext,
 };
 use horizon_client::sound_events::SoundRegistry;
 use horizon_core::random::LegacyRandom;
@@ -21,6 +22,7 @@ pub fn main() {
     // Script cart names to entity ids (a removed cart leaves the level).
     let mut cart_ids: BTreeMap<String, u32> = BTreeMap::new();
     let mut removed: BTreeMap<u32, CartSound> = BTreeMap::new();
+    let mut bound_entities: BTreeMap<String, SoundEntity> = BTreeMap::new();
     let input = std::fs::read_to_string(&args[2]).expect("input");
     let mut out = std::io::BufWriter::new(std::fs::File::create(&args[3]).expect("output"));
     for line in input.lines() {
@@ -51,6 +53,14 @@ pub fn main() {
                     "loop" => SoundInstance::biome_loop(&event, random),
                     "uloop" => SoundInstance::under_liquid_loop(&event, random),
                     "usub" => SoundInstance::under_liquid_sub(&event, random),
+                    "bound" => SoundInstance::entity_bound(
+                        &event,
+                        source(4),
+                        f(a[5]),
+                        f(a[6]),
+                        random,
+                        bound_entities[a[15]].clone(),
+                    ),
                     "cart" | "rcart" | "rcartu" => {
                         let id = cart_ids[a[3]];
                         let cart = ctx
@@ -109,7 +119,7 @@ pub fn main() {
                 ctx.player_underwater = a[1] == "1";
                 ctx.player_removed = a[2] == "1";
             }
-            "cart" => {
+            "cart" | "cartnew" => {
                 let next = cart_ids.len() as u32 + 1;
                 let id = *cart_ids.entry(a[1].to_owned()).or_insert(next);
                 ctx.carts.retain(|c| c.id != id);
@@ -119,6 +129,22 @@ pub fn main() {
                     // Vec3.horizontalDistance.
                     speed: (d(a[5]) * d(a[5]) + d(a[7]) * d(a[7])).sqrt(),
                 };
+                let silent = a.get(9) == Some(&"1");
+                if a[0] == "cartnew"
+                    && let Some(old) = bound_entities.remove(a[1])
+                {
+                    let mut state = old.state();
+                    state.removed = true;
+                    old.update(state);
+                }
+                let entity = bound_entities
+                    .entry(a[1].to_owned())
+                    .or_insert_with(|| SoundEntity::new(id, cart.position, silent));
+                entity.update(SoundEntityState {
+                    position: cart.position,
+                    silent,
+                    removed: a[8] == "1",
+                });
                 if a[8] == "1" {
                     // Out of the level, still there for a later play.
                     removed.insert(id, cart);

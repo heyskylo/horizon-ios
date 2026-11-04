@@ -458,7 +458,9 @@
   "runs {command} after": "kjører {command} etter",
   "downloaded": "lastet ned",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Oppdatert til {version}. Start startprogrammet på nytt for å bruke det.",
+  "A new version is available": "En ny versjon er tilgjengelig",
+  "Download again": "Last ned på nytt",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Denne kopien av launcheren kan ikke erstatte seg selv. Last den ned på nytt én gang; etter det oppdaterer den seg selv.",
   "Any MCP client": "Enhver MCP-klient",
   "{name}'s cape is kept.": "{name}s kappe beholdes.",
   "Not reviewed by the Horizon registry": "Ikke gjennomgått av Horizon-registeret",
@@ -637,7 +639,6 @@
   "Copied": "Kopiert",
   "Couldn't load patch notes. {error}": "Kunne ikke laste inn patch-notater. {error}",
   "Couldn't load releases. {error}": "Kunne ikke laste inn utgivelser. {error}",
-  "Launcher updated to {version}": "Launcher oppdatert til {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version} {percent}%",
   "Manage versions": "Administrer versjoner",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Noe gikk galt.",
   "Instances": "Forekomster",
   "Join the Discord": "Bli med i Discord",
-  "Restart to update": "Start på nytt for å oppdatere",
   "Duplicate…": "Dupliser...",
   "Create a desktop shortcut": "Lag en snarvei på skrivebordet",
   "Remove the desktop shortcut": "Fjern snarveien på skrivebordet",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Åpne butikken",
-  "You don't own any cosmetics yet.": "Du eier ingen kosmetikk ennå."
+  "You don't own any cosmetics yet.": "Du eier ingen kosmetikk ennå.",
+  "Claim for free": "Hent gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Butikkens betalingsleverandør betjener ikke landet ditt, så du kan hente Grunnleggersettet her gratis.",
+  "The Founder Set is yours.": "Grunnleggersettet er ditt."
 }

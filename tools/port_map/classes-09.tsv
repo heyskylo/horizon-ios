@@ -41,7 +41,7 @@ MatchBlock.getReferencedContextParams	skip:data		validation metadata for context
 MatchBlock.test	port	crates/horizon-items/src/items.rs::LootContext::condition	match_block arm: block id, state and property ranges; gap: minor: the block-entity part of the predicate is not read
 MatchTool.test	port	crates/horizon-items/src/items.rs::LootContext::condition	match_tool arm; gap: minor: item ids, tags and enchantment levels only, other ItemPredicate parts are not read
 TimeCheck	missing		no `time_check` arm in `loot.rs::condition`; no vanilla data file uses it, so only a datapack reaches it
-WeatherCheck.test	port	crates/horizon-client/src/game/trident.rs::Game::channel_lightning	channeling's thunder check (thundering only); gap: minor: raining is not read, channeling only uses thundering
+WeatherCheck.test	port	crates/horizon-client/src/advancements.rs::conditions	named command predicates compare both optional fields against Game View's effective weather; channeling remains a separate thunder-only caller
 NbtProviders	skip:data		registry bootstrap
 AggregateProvider	skip:java		codec only
 BinaryProvider.mapCodec	skip:java		codec
