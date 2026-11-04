@@ -130,6 +130,36 @@ impl Game<'_> {
         .ok_or(NativeBlockReadError::UnavailableDimension)?;
         read_block(world, self.pack.assets.registry, pos)
     }
+
+    /// The current of the fluid at `pos` in `dimension`
+    /// (`FluidState.getFlow(level, pos)`), normalised: the push an item in it
+    /// gets, a water wheel's speed from the water around it. Zero where there
+    /// is no fluid or it doesn't move; none where the chunk isn't loaded or
+    /// the dimension isn't available (a client has only the level it is in,
+    /// a server also its parked ones), so a caller can keep its last answer.
+    /// API @API:fluid_flow@.
+    #[allow(dead_code)]
+    pub(super) fn native_fluid_flow(&self, dimension: &str, pos: [i32; 3]) -> Option<[f64; 3]> {
+        let dim = match dimension {
+            "minecraft:overworld" => Dim::Overworld,
+            "minecraft:the_nether" => Dim::Nether,
+            "minecraft:the_end" => Dim::End,
+            _ => return None,
+        };
+        let world = if dim == self.dim {
+            &self.world
+        } else {
+            self.levels.parked_world(dim)?
+        };
+        if !world.loaded(pos[0], pos[2]) {
+            return None;
+        }
+        Some(horizon_client::entities::fluid_flow(
+            world,
+            &self.res.motion().fluids,
+            pos,
+        ))
+    }
 }
 
 /// Resolve an existing world state, preserving unloaded and invalid states.

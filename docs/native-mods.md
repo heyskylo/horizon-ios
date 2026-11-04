@@ -2795,6 +2795,22 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+### Fluid currents
+
+`native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
+push an item there gets. It is zero for still water and for no fluid, and none where the chunk isn't loaded or the
+dimension isn't available (a client has only the level it is in), so a water wheel on a chunk edge can keep its last
+speed rather than stop.
+
+### A mod's own fluids in tanks
+
+Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water and lava: any id in a namespace other
+than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
+and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
+a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
+cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
+mod's fluid yet, and no buckets of one.
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
@@ -3473,8 +3489,8 @@ The following documented `Game` helpers are not in the trait yet:
 - `spawn_mob`, `mob`, `mobs`, `block_in_tag`, `item_in_tag`,
   `server_block_in_tag`, `server_block`,
   `set_display`, `sidebar`, `experience_orbs`,
-  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`,
-  `fluid_tanks` and `container_slots` use gameplay-private types.
+  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`
+  and `container_slots` use gameplay-private types.
 - `with_mod_block_entity` and `trigger_criterion` are generic or take
   `impl Trait`, so their signatures cannot be called through `dyn Host`;
   the forms above stand in for them.
