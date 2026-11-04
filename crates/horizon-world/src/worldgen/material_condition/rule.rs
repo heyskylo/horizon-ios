@@ -317,15 +317,6 @@ where
             }
         }
     }
-    /// Whether the rule binds densities, which belong to one chunk's volume.
-    fn binds_densities(&self) -> bool {
-        match self {
-            Self::OreVein { .. } => true,
-            Self::Condition { rule, .. } => rule.binds_densities(),
-            Self::Sequence(children) => children.iter().any(Self::binds_densities),
-            Self::Empty | Self::Block(_) | Self::Bandlands => false,
-        }
-    }
     /// Whether applying this rule never gives `None` (only an error).
     fn always_produces(&self) -> bool {
         match self {
@@ -426,21 +417,47 @@ where
     }
 }
 /// A world's surface rule compiled once for every chunk of a generator
-/// worker: the rule before any chunk's possible biomes fold it, and the
-/// noises it bound, in the order it bound them.
+/// worker: the rule before any chunk's possible biomes fold it, the noises it
+/// bound, and the densities (ore veins) it binds to each chunk's volume, in
+/// the order it bound them.
 pub struct CompiledSurfaceRule<R: RandomSource> {
     rule: CompiledRule<R>,
     noises: Vec<((String, bool), Arc<dyn Noise>)>,
+    densities: Vec<(Arc<dyn DensitySampler>, bool)>,
+}
+/// The densities `CompiledRule::compile` binds for `rule`, in its order,
+/// with whether it samples each over the volume now.
+fn density_bindings(rule: &MaterialRule, out: &mut Vec<(Arc<dyn DensitySampler>, bool)>) {
+    match rule {
+        MaterialRule::Reference(value) => density_bindings(value, out),
+        MaterialRule::OreVein {
+            density,
+            richness,
+            filler_gap,
+            ..
+        } => out.extend([
+            (Arc::clone(density), true),
+            (Arc::clone(richness), true),
+            (Arc::clone(filler_gap), false),
+        ]),
+        MaterialRule::Condition { then_run, .. } => density_bindings(then_run, out),
+        MaterialRule::Sequence(children) => {
+            for child in children {
+                density_bindings(child, out);
+            }
+        }
+        MaterialRule::Block(_) | MaterialRule::Bandlands => {}
+    }
 }
 impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
 where
     R::Positional: Clone,
 {
     /// `add_rule`, compiling `rule` only the first time `shared` is used:
-    /// later workers take the compiled rule and its noises, and fold it with
-    /// their own possible biomes as `compile` does. A worker that already
-    /// holds rules or noises, a possible biome the surface doesn't number, or
-    /// a rule that binds densities (to one chunk's volume) compiles as
+    /// later workers take the compiled rule and its noises, bind its densities
+    /// to their own volume in the same order, and fold it with their own
+    /// possible biomes as `compile` does. A worker that already holds rules or
+    /// noises, or a possible biome the surface doesn't number, compiles as
     /// `add_rule` does.
     pub fn add_shared_rule(
         &mut self,
@@ -465,7 +482,6 @@ where
             }
         }
         match shared {
-            Some(shared) if shared.rule.binds_densities() => return self.add_rule(rule.clone()),
             Some(shared) => {
                 for (key, sampler) in &shared.noises {
                     let is_3d = key.1;
@@ -482,6 +498,11 @@ where
                         value: 0.0,
                     });
                     self.context.noise_indices.insert(key.clone(), index);
+                }
+                for (sampler, eager) in &shared.densities {
+                    self.context
+                        .surface
+                        .bind_density(Arc::clone(sampler), *eager)?;
                 }
             }
             None => {
@@ -500,9 +521,12 @@ where
                     .into_iter()
                     .map(|(index, key)| (key, Arc::clone(&self.context.noises[index].sampler)))
                     .collect();
+                let mut densities = Vec::new();
+                density_bindings(rule, &mut densities);
                 *shared = Some(CompiledSurfaceRule {
                     rule: compiled?,
                     noises,
+                    densities,
                 });
             }
         }
