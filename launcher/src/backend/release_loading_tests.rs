@@ -11,14 +11,14 @@ fn fixture() -> String {
                 "tag_name": format!("v2026.10.14.{i}"),
                 "name": format!("Build {i}"), "body": "Release notes\r\n".repeat(256),
                 "published_at": "2026-10-14T12:00:00Z", "draft": i == 99,
-                "assets": [{"name": game_asset().unwrap_or("unsupported"),
+                "assets": [{"name": ASSET.unwrap_or("unsupported"),
                     "browser_download_url": "https://example.test/game", "size": 12345}]
             })
         })
         .collect();
     list.push(serde_json::json!({
         "tag_name": "launcher@99.0.0", "name": "Launcher", "body": "Notes",
-        "assets": [{"name": launcher_platform_asset().unwrap_or("unsupported"),
+        "assets": [{"name": LAUNCHER_ASSET.unwrap_or("unsupported"),
             "browser_download_url": "https://example.test/launcher", "size": 6789}]
     }));
     serde_json::to_string(&list).unwrap()
@@ -30,18 +30,14 @@ fn installed_fixture() -> Vec<String> {
 
 // The former startup paths: each decodes its own response; the update path parses games again.
 fn baseline(load: impl Fn() -> Result<serde_json::Value, String>) -> (Vec<Release>, Updates) {
-    let releases = parse_releases(&load().unwrap(), game_asset(), is_game_tag);
+    let releases = parse_releases(&load().unwrap(), ASSET, is_game_tag);
     let list = load().unwrap();
     let updates = Updates {
         horizon: horizon_update(
-            &parse_releases(&list, game_asset(), is_game_tag),
+            &parse_releases(&list, ASSET, is_game_tag),
             &installed_fixture(),
         ),
-        launcher: launcher_update(&parse_releases(
-            &list,
-            launcher_platform_asset(),
-            is_launcher_tag,
-        )),
+        launcher: launcher_update(&parse_releases(&list, LAUNCHER_ASSET, is_launcher_tag)),
     };
     (releases, updates)
 }
@@ -51,7 +47,7 @@ fn shared(load: impl FnOnce() -> Result<serde_json::Value, String>) -> (Vec<Rele
     let updates = releases_and_updates_with(
         load,
         installed_fixture,
-        |list| parse_releases(list, launcher_platform_asset(), is_launcher_tag),
+        |list| parse_releases(list, LAUNCHER_ASSET, is_launcher_tag),
         |r| releases = Some(r.unwrap()),
     )
     .unwrap();
@@ -110,7 +106,7 @@ fn publish_games_before_older_launcher_fallback() {
                 } else {
                     Ok(
                         serde_json::json!({"tag_name": "launcher@99.0.0", "assets": [{
-                            "name": launcher_platform_asset().unwrap_or("unsupported"),
+                            "name": LAUNCHER_ASSET.unwrap_or("unsupported"),
                             "browser_download_url": "u", "size": 1
                         }]}),
                     )
@@ -124,10 +120,7 @@ fn publish_games_before_older_launcher_fallback() {
     )
     .unwrap();
     assert_eq!(*events.borrow(), ["releases", "fallback", "fallback"]);
-    assert_eq!(
-        result.launcher.is_some(),
-        launcher_platform_asset().is_some()
-    );
+    assert_eq!(result.launcher.is_some(), LAUNCHER_ASSET.is_some());
 }
 
 #[test]
@@ -172,22 +165,18 @@ fn benchmark_shared_startup_response() {
     let concurrent_old = || {
         std::thread::scope(|scope| {
             let releases = scope.spawn(|| {
-                parse_releases(
-                    &load(Duration::from_millis(5)).unwrap(),
-                    game_asset(),
-                    is_game_tag,
-                )
+                parse_releases(&load(Duration::from_millis(5)).unwrap(), ASSET, is_game_tag)
             });
             let updates = scope.spawn(|| {
                 let list = load(Duration::from_millis(5)).unwrap();
                 Updates {
                     horizon: horizon_update(
-                        &parse_releases(&list, game_asset(), is_game_tag),
+                        &parse_releases(&list, ASSET, is_game_tag),
                         &installed_fixture(),
                     ),
                     launcher: launcher_update(&parse_releases(
                         &list,
-                        launcher_platform_asset(),
+                        LAUNCHER_ASSET,
                         is_launcher_tag,
                     )),
                 }

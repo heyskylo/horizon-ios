@@ -25,7 +25,8 @@ fn assets_for(os: &str, arch: &str) -> &'static [&'static str] {
         ],
         ("macos", "aarch64") => &["horizon-macos-arm64.zip"],
         ("macos", "x86_64") => &["horizon-macos-x64.zip"],
-        ("windows", "aarch64") => &["horizon-windows-arm64.zip"],
+        // A release without an ARM64 build: the x64 one, which Windows runs under emulation.
+        ("windows", "aarch64") => &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"],
         ("windows", "x86_64") => &["horizon-windows-x64.zip"],
         _ => &[],
     }
@@ -830,7 +831,7 @@ mod tests {
         );
         assert_eq!(
             assets_for("windows", "aarch64"),
-            &["horizon-windows-arm64.zip"]
+            &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
         );
     }
 

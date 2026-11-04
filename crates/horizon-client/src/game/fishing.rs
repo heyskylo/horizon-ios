@@ -126,6 +126,24 @@ fn pull_item(item: &mut horizon_client::entities::ItemEntity, delta: Vec3) {
     // cannot request the immediate motion update for tracking clients.
     item.needs_sync = true;
 }
+/// `FishingHook.pullEntity`: add a tenth of the vector from the hook to its owner.
+fn pull_hooked(velocity: Vec3, hook: Vec3, owner: Vec3) -> Vec3 {
+    Vec3::new(
+        velocity.x + (owner.x - hook.x) * 0.1,
+        velocity.y + (owner.y - hook.y) * 0.1,
+        velocity.z + (owner.z - hook.z) * 0.1,
+    )
+}
+/// Minecarts a hook can catch. `AbstractMinecart.isPickable` is true while the
+/// cart exists, and `Projectile.canHitEntity` skips the vehicle the owner rides.
+fn minecart_hook_targets<'a>(
+    carts: impl Iterator<Item = &'a super::minecarts::Minecart> + 'a,
+    own_vehicle: Option<u32>,
+) -> impl Iterator<Item = (u32, Aabb)> + 'a {
+    carts
+        .filter(move |c| Some(c.id) != own_vehicle)
+        .map(|c| (c.id, c.bounds()))
+}
 impl Hook {
     pub(super) fn bounds(&self) -> Aabb {
         bounds(self.position)
@@ -272,7 +290,7 @@ impl Game<'_> {
                 owner.y - hook.position.y,
                 owner.z - hook.position.z,
             );
-            let pulled = |v: Vec3| Vec3::new(v.x + d.x * 0.1, v.y + d.y * 0.1, v.z + d.z * 0.1);
+            let pulled = |v: Vec3| pull_hooked(v, hook.position, owner);
             let mut hooked_item = false;
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                 m.velocity = pulled(m.velocity);
@@ -285,6 +303,9 @@ impl Game<'_> {
                 a.velocity = pulled(a.velocity);
             } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                 b.velocity = pulled(b.velocity);
+            } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                // `AbstractMinecart` is pickable, so `pullEntity` moves it too.
+                c.velocity = pulled(c.velocity);
             } else if self.creatures.hook_targets.iter().any(|t| t.id == id) {
                 // A player: the hub moves them when the tick ends.
                 self.creatures
@@ -710,6 +731,7 @@ impl Game<'_> {
                                 .filter(|b| Some(b.id) != own_vehicle)
                                 .map(|b| (b.id, b.bounds())),
                         )
+                        .chain(minecart_hook_targets(self.carts.iter(), own_vehicle))
                         .chain(self.dropped.iter().map(|i| (i.id, i.bounds())))
                         .chain(
                             self.tnts
@@ -771,6 +793,12 @@ impl Game<'_> {
                             .iter()
                             .find(|b| b.id == id)
                             .map(|b| (b.position, super::boats::HEIGHT))
+                    })
+                    .or_else(|| {
+                        self.carts
+                            .iter()
+                            .find(|c| c.id == id)
+                            .map(|c| (c.position, super::minecarts::HEIGHT))
                     })
                     .or_else(|| {
                         self.dropped
@@ -1361,6 +1389,12 @@ impl Game<'_> {
                         .find(|m| m.id == id && m.alive())
                         .map(|m| (m.position, f64::from(m.height())))
                         .or_else(|| {
+                            self.carts
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| (c.position, super::minecarts::HEIGHT))
+                        })
+                        .or_else(|| {
                             self.dropped
                                 .iter()
                                 .find(|i| i.id == id)
@@ -1514,6 +1548,7 @@ mod tests {
     #[test]
     fn reeling_an_item_requests_an_immediate_motion_update() {
         let mut item = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -1534,6 +1569,7 @@ mod tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
 
         pull_item(&mut item, Vec3::new(0.5, 0.1, -0.2));
@@ -1592,5 +1628,32 @@ mod tests {
             first_entity_hit(start, end, 0.0, [(2, far), (1, near)]),
             Some(1)
         );
+    }
+
+    /// A minecart is pickable (`AbstractMinecart.isPickable`), so the hook
+    /// meets it. The cart the owner rides is the same vehicle and is skipped.
+    #[test]
+    fn a_fishing_hook_meets_a_minecart_but_not_the_one_it_rides() {
+        use super::super::minecarts::{CartKind, Minecart};
+        let cart = Minecart::new(7, CartKind::Rideable, Vec3::new(0.6, 0.0, 0.0));
+        let ridden = Minecart::new(3, CartKind::Chest, Vec3::new(0.2, 0.0, 0.0));
+        let boxes = super::minecart_hook_targets([&cart, &ridden].into_iter(), Some(3));
+        assert_eq!(
+            first_entity_hit(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 0.0, boxes),
+            Some(7)
+        );
+    }
+
+    /// `FishingHook.pullEntity` scales the hook-to-owner vector by 0.1.
+    #[test]
+    fn reeling_pulls_a_hooked_minecart_a_tenth_of_the_way() {
+        // Still cart at the origin, owner 10 east and 2 up: +1 x and +0.2 y,
+        // on top of the cart's own 0.5.
+        let pulled = super::pull_hooked(
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::new(10.0, 2.0, 0.0),
+        );
+        assert_eq!(pulled, Vec3::new(1.5, 0.2, 0.0));
     }
 }

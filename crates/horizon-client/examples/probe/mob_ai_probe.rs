@@ -898,7 +898,9 @@ pub fn main() -> horizon_client::Result<()> {
     let biomes = Biomes::load(root)?;
     let items = Items::load(root, registry, &facts, &PackOverlay::NONE)?;
     let tables = LightTables::load(root, registry, &facts)?;
-    let collision = collisions::load(root, registry)?;
+    let collision = std::sync::Arc::new(collisions::load(root, registry)?);
+    let suffocation =
+        horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)?;
     let air = registry.default_state("minecraft:air").ok_or("no air")?;
     let layers = [
         state(registry, "minecraft:bedrock"),
@@ -1173,6 +1175,7 @@ pub fn main() -> horizon_client::Result<()> {
                     fluid_tables: &motion.fluids,
                     movement: &motion.blocks,
                     collision: &collision,
+                    suffocation: &suffocation,
                     data: &data,
                     player: player.clone(),
                     controlling_player_movement: None,
@@ -1182,6 +1185,7 @@ pub fn main() -> horizon_client::Result<()> {
                     leash_boats: &[],
                     others_grid: $grid,
                     others_index: None,
+                    others_villagers: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
                     monsters_burn: !(12542..23460).contains(&world.day_time.rem_euclid(24000)),
                     game_time: world.game_time,

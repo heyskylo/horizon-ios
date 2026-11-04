@@ -344,6 +344,7 @@ impl Game<'_> {
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id,
@@ -355,9 +356,11 @@ impl Game<'_> {
                 owner: None,
                 guest: None,
                 power: 4.0,
+                block_state: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
                 state: BlockStateId(data.max(0) as u32),
@@ -675,6 +678,14 @@ impl Game<'_> {
             let _ = t.tick(world, collision, assets, facts, fluids, border);
             t.fuse > 0
         });
+        // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
+        // particle at (x, y + 0.5, z). The server's Level.addParticle never
+        // reaches this window.
+        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoke = ParticleOptions::simple(ParticleType::Smoke);
+        for p in smoking {
+            self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
@@ -1079,10 +1090,9 @@ mod tests {
         let mut list = vec![tracked(ProjectileKind::LargeFireball { power: 1 }, 12)];
         remote_projectile_power(&mut list, 12, 0.5);
         assert_eq!(list[0].acceleration, 0.5);
-        // AbstractHurtingProjectile.applyInertia: (v + v/|v| * 0.5) * 0.95,
-        // where the default 0.1 would have made 1.52.
+        // AbstractHurtingProjectile.applyInertia: (1.5 + 0.5) * (double) 0.95f.
         remote_projectile_tick(&mut list[0], &Empty);
-        assert!((list[0].velocity.x - 1.9).abs() < 1e-9, "{:?}", list[0]);
+        assert_eq!(list[0].velocity.x, 1.899_999_976_158_142);
     }
 
     #[test]

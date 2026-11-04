@@ -225,14 +225,15 @@ jobs:
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
           retry "$launcher" versions
           "$launcher" links --json
-          # The Intel Mac (#1161) and Windows ARM64 launchers can release before their game assets reach the latest
-          # Nightly. Skip installation only when a valid version list has no matching build (exit 3); a launcher or
-          # a script that fails still fails the step.
-          if [[ "${{ matrix.name }}" == macos-x64 || "${{ matrix.name }}" == windows-arm64 ]]; then
+          # The Intel Mac launcher can come out before any game build has its asset (#1161): then there is nothing
+          # to install yet. Only that entry skips, and only on a version list that parsed and had no build here
+          # (exit 3); a launcher or a script that fails still fails the step. The Windows ARM64 launcher always has
+          # one: it installs the x64 build where a release has no ARM64 one (backend.rs, GAME_FALLBACK).
+          if [[ "${{ matrix.name }}" == macos-x64 ]]; then
             versions=$(retry "$launcher" --json versions)
             no_build='import json, sys; sys.exit(3 if not any(r["available_here"] for r in json.load(sys.stdin)) else 0)'
             status=0
-            ${{ runner.os == 'Windows' && 'python' || 'python3' }} -c "$no_build" <<<"$versions" || status=$?
+            python3 -c "$no_build" <<<"$versions" || status=$?
             if [[ $status == 3 ]]; then
               echo "::warning::No game build has an asset for ${{ matrix.name }} yet: install not tested"
               rm -rf "$HORIZON_LAUNCHER_HOME"
@@ -251,7 +252,11 @@ jobs:
           # release linked to a Nix store is a warning here, not a broken launcher.
           soft() { if [[ "$RUNNER_OS" == "Linux" ]]; then "$@" || echo "::warning::$* failed"; else "$@"; fi; }
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$client"
+            if ! python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$client"; then
+              # A Nightly without an ARM64 build: the ARM64 launcher installs the x64 one (backend.rs, GAME_FALLBACK).
+              [[ "${{ matrix.pe_arch }}" == arm64 ]] && python ../tools/check_pe_arch.py x64 "$client" || exit 1
+              echo "::warning::the latest game has no ARM64 build: the launcher installed the x64 one"
+            fi
             python ../tools/check_imports.py "$client"
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
             soft python3 ../tools/check_imports.py "$client"

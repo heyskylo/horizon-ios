@@ -7,7 +7,46 @@
 //! are saved and sent against the changed defaults as against vanilla's.
 
 use serde_json::{Map, Value};
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
+};
+
+/// An immutable default-component snapshot. Kept only while a resource load
+/// holds it: a later load reads the files and applies native hooks afresh.
+pub type Defaults = BTreeMap<String, Value>;
+static SHARED: Mutex<Vec<(PathBuf, Weak<Defaults>)>> = Mutex::new(Vec::new());
+
+/// Share parsed defaults with the other tables built during this load. Callers
+/// that need a fresh read regardless of other loads can still use [`read`].
+pub fn shared(root: &Path) -> io::Result<Arc<Defaults>> {
+    let held = || {
+        SHARED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(path, _)| path == root)
+            .and_then(|(_, value)| value.upgrade())
+    };
+    if let Some(value) = held() {
+        return Ok(value);
+    }
+    // Native hooks run without the cache lock, so they can read other data.
+    let value = Arc::new(read(root)?);
+    let mut cache = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(other) = cache
+        .iter()
+        .find(|(path, _)| path == root)
+        .and_then(|(_, v)| v.upgrade())
+    {
+        return Ok(other);
+    }
+    cache.retain(|(_, value)| value.strong_count() > 0);
+    cache.push((root.to_owned(), Arc::downgrade(&value)));
+    Ok(value)
+}
 
 /// The largest stack size a native mod may set: `ItemStack.count` is a `u32`,
 /// but the count is a VarInt on the wire and is saved as an `int`, so a
@@ -86,6 +125,42 @@ pub fn read(root: &Path) -> io::Result<BTreeMap<String, Value>> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    #[test]
+    fn a_load_shares_one_snapshot_and_the_next_load_reads_changes() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-default-snapshot-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let write = |size| {
+            fs::write(
+                root.join("items.json"),
+                format!(r#"{{"test:item":{{"minecraft:max_stack_size":{size}}}}}"#),
+            )
+            .unwrap()
+        };
+        write(16);
+        let first = super::shared(&root).unwrap();
+        write(64);
+        let second = super::shared(&root).unwrap();
+        assert_eq!(second["test:item"]["minecraft:max_stack_size"], 16);
+        // Explicit fresh reads remain available even while a load owns its snapshot.
+        assert_eq!(
+            super::read(&root).unwrap()["test:item"]["minecraft:max_stack_size"],
+            64
+        );
+        drop((first, second));
+        let next = super::shared(&root).unwrap();
+        assert_eq!(next["test:item"]["minecraft:max_stack_size"], 64);
+        drop(next);
+        fs::write(root.join("items.json"), "broken").unwrap();
+        assert!(super::shared(&root).is_err());
+        write(2);
+        assert_eq!(
+            super::shared(&root).unwrap()["test:item"]["minecraft:max_stack_size"],
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     /// A data pack's stack size is kept to vanilla's 1..=99, so stack
     /// arithmetic never sees a 0, and a mod may raise it above 99 (up to the

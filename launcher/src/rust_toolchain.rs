@@ -108,19 +108,15 @@ const HOSTS: &[Host] = &[
     },
 ];
 
-/// The architecture of this launcher process, if Horizon bundles a toolchain for it. An x64
-/// launcher running under emulation keeps its x64 native-mod toolchain.
-fn host_target(os: &str, process_arch: &str) -> Option<&'static str> {
-    Some(match (os, process_arch) {
+/// This computer's host, if the launcher ships a toolchain for it (the platforms it is released
+/// for: macOS on Apple silicon, Linux x86-64, Windows x64).
+pub fn host() -> Option<&'static Host> {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("windows", "x86_64") => "x86_64-pc-windows-gnu",
         _ => return None,
-    })
-}
-
-pub fn host() -> Option<&'static Host> {
-    let target = host_target(std::env::consts::OS, std::env::consts::ARCH)?;
+    };
     HOSTS.iter().find(|h| h.target == target)
 }
 
@@ -631,19 +627,6 @@ mod tests {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             assert_eq!(host().unwrap().target, "aarch64-apple-darwin");
         }
-        if cfg!(windows) {
-            let expected = host_target("windows", std::env::consts::ARCH);
-            assert_eq!(host().map(|host| host.target), expected);
-        }
-    }
-
-    #[test]
-    fn native_mod_toolchain_follows_the_launcher_process_architecture() {
-        assert_eq!(
-            host_target("windows", "x86_64"),
-            Some("x86_64-pc-windows-gnu")
-        );
-        assert_eq!(host_target("windows", "aarch64"), None);
     }
 
     #[test]

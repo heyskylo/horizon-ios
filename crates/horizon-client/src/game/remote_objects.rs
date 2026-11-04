@@ -364,6 +364,17 @@ impl Game<'_> {
                     [0.0; 3],
                 );
             }
+            // MinecartTNT.tick: a primed cart counts its fuse down and sheds
+            // smoke. The server explodes it; this copy only shows the fuse
+            // (`TntMinecartRenderer`'s flash and swell).
+            if c.kind == super::minecarts::CartKind::Tnt && c.fuse > 0 {
+                c.fuse -= 1;
+                self.particles.add(
+                    &ParticleOptions::simple(ParticleType::Smoke),
+                    [c.position.x, c.position.y + 0.5, c.position.z],
+                    [0.0; 3],
+                );
+            }
         }
         // The boat the player drives moves here, not where the server says.
         let driven = self.riding;
@@ -432,6 +443,11 @@ impl Game<'_> {
     }
 
     /// Every object a server sent (a new connection, level or dimension).
+    /// Experience orbs too: `ClientPacketListener.handleRespawn` replaces the
+    /// `ClientLevel` on a dimension change, and `Hub::change_level` does not
+    /// remove the old level's entities one by one. An orb kept here follows
+    /// the player (`ExperienceOrb.tick` on the client) and is never
+    /// `playerTouch`ed.
     pub(super) fn clear_remote_objects(&mut self) {
         self.text_displays.clear();
         self.interactions.clear();
@@ -443,6 +459,7 @@ impl Game<'_> {
         self.cushions.clear();
         self.item_frames.clear();
         self.paintings.clear();
+        self.orbs.clear();
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {

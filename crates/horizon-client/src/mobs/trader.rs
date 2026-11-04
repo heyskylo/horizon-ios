@@ -101,7 +101,10 @@ impl Goal for DrinkItem {
         0
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if cx.w.nether {
+        // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
+        // time (the Nether and the End) is neither dark nor bright outside,
+        // so neither potion is drunk.
+        if cx.w.nether || cx.w.end {
             return false;
         }
         if self.dark {
@@ -318,5 +321,68 @@ mod tests {
     #[test]
     fn despawn_delay_is_two_days() {
         assert_eq!(DESPAWN_DELAY, 2 * 24000);
+    }
+
+    /// `UseItemGoal` for the wandering trader: the End has a fixed time, so
+    /// it is neither dark nor bright outside and the trader drinks nothing.
+    #[test]
+    fn a_trader_does_not_drink_in_the_end() {
+        use crate::mobs::world::with_test_world;
+        use horizon_core::geometry::Vec3;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let _ = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
+            let mut potion = DrinkItem {
+                item: "minecraft:potion",
+                finish_sound: "entity.wandering_trader.disappeared",
+                dark: true,
+            };
+            let mut milk = DrinkItem {
+                item: "minecraft:milk_bucket",
+                finish_sound: "entity.wandering_trader.reappeared",
+                dark: false,
+            };
+            let decide =
+                |world: &MobWorld, m: &mut Mob, potion: &mut DrinkItem, milk: &mut DrinkItem| {
+                    let mut lr = LegacyRandom::new(1);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w: world,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let dark = potion.can_use(m, &mut cx);
+                    let day = milk.can_use(m, &mut cx);
+                    (dark, day)
+                };
+            let mut night = w.clone();
+            night.daylight = false;
+            night.end = false;
+            night.nether = false;
+            assert_eq!(
+                decide(&night, &mut m, &mut potion, &mut milk),
+                (true, false)
+            );
+            let mut end_dark = night.clone();
+            end_dark.end = true;
+            assert_eq!(
+                decide(&end_dark, &mut m, &mut potion, &mut milk),
+                (false, false)
+            );
+            m.extra.effects.push((INVISIBILITY, 3600, 0));
+            let mut day = w.clone();
+            day.daylight = true;
+            day.end = false;
+            day.nether = false;
+            assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
+            let mut end_bright = day.clone();
+            end_bright.end = true;
+            assert_eq!(
+                decide(&end_bright, &mut m, &mut potion, &mut milk),
+                (false, false)
+            );
+        });
     }
 }

@@ -53,10 +53,10 @@ struct Params {
 @group(0) @binding(8) var<storage, read_write> scd_previous_histogram: array<f32>;
 @group(0) @binding(9) var<storage, read_write> scd_temp: array<atomic<u32>, 3>;
 @group(0) @binding(10) var<storage, read_write> scd_output: array<atomic<u32>, 3>;
+@group(0) @binding(11) var<storage, read_write> scd_next_histogram: array<f32>;
 
 const SCD_OUTPUT_SCENE_CHANGE_SLOT: u32 = 0u;
 const SCD_OUTPUT_HISTORY_BITS_SLOT: u32 = 1u;
-const SCD_OUTPUT_COMPLETED_WORKGROUPS_SLOT: u32 = 2u;
 
 fn load_luma(t: texture_2d<f32>, p: vec2<i32>) -> u32 {
     let size = vec2<i32>(textureDimensions(t));
@@ -266,7 +266,6 @@ fn scd_divergence_pass(
     @builtin(local_invocation_index) local_index: u32,
 ) {
     let factor = 1000000.0;
-    let where_to_stop = 3u * 9u - 1u;
     let histogram_count = 9.0;
     let kernel = array(0.0088122291, 0.027143577, 0.065114059, 0.12164907, 0.17699835, 0.20056541);
     let li = i32(local_index);
@@ -326,27 +325,32 @@ fn scd_divergence_pass(
         let res_float = 1.0 - exp(-(abs(sum.x) + abs(sum.y)));
         let res_uint = u32((res_float / histogram_count) * factor);
         atomicAdd(&scd_temp[gid.y], res_uint);
-        let finished = atomicAdd(&scd_output[SCD_OUTPUT_COMPLETED_WORKGROUPS_SLOT], 1u);
-        if finished == where_to_stop {
-            let res0 = atomicLoad(&scd_temp[0]);
-            let res1 = atomicLoad(&scd_temp[1]);
-            let res2 = atomicLoad(&scd_temp[2]);
-            let scene_change = f32(min(res0, min(res1, res2))) / factor;
-            var history = atomicLoad(&scd_output[SCD_OUTPUT_HISTORY_BITS_SLOT]) << 1u;
-            if scene_change > 0.45 {
-                history |= 1u;
-            }
-            atomicStore(&scd_output[SCD_OUTPUT_SCENE_CHANGE_SLOT], bitcast<u32>(scene_change));
-            atomicStore(&scd_output[SCD_OUTPUT_HISTORY_BITS_SLOT], history);
-            atomicStore(&scd_output[SCD_OUTPUT_COMPLETED_WORKGROUPS_SLOT], 0u);
-            atomicStore(&scd_temp[0], 0u);
-            atomicStore(&scd_temp[1], 0u);
-            atomicStore(&scd_temp[2], 0u);
-        }
     }
     if gid.y == 1u {
-        scd_previous_histogram[gid.x] = current;
-        atomicStore(&scd_histogram[gid.x], 0u);
+        scd_next_histogram[gid.x] = current;
+    }
+}
+
+// All divergence workgroups must finish reading both histograms before either is
+// replaced. A separate dispatch also makes every partial sum visible to the reducer.
+@compute @workgroup_size(256)
+fn scd_finalize_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
+    scd_previous_histogram[gid.x] = scd_next_histogram[gid.x];
+    atomicStore(&scd_histogram[gid.x], 0u);
+    if gid.x == 0u {
+        let res0 = atomicLoad(&scd_temp[0]);
+        let res1 = atomicLoad(&scd_temp[1]);
+        let res2 = atomicLoad(&scd_temp[2]);
+        let scene_change = f32(min(res0, min(res1, res2))) / 1000000.0;
+        var history = atomicLoad(&scd_output[SCD_OUTPUT_HISTORY_BITS_SLOT]) << 1u;
+        if scene_change > 0.45 {
+            history |= 1u;
+        }
+        atomicStore(&scd_output[SCD_OUTPUT_SCENE_CHANGE_SLOT], bitcast<u32>(scene_change));
+        atomicStore(&scd_output[SCD_OUTPUT_HISTORY_BITS_SLOT], history);
+        atomicStore(&scd_temp[0], 0u);
+        atomicStore(&scd_temp[1], 0u);
+        atomicStore(&scd_temp[2], 0u);
     }
 }
 
