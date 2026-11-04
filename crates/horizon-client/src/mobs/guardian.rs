@@ -262,17 +262,19 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             .add_vector(Vec3::new(f64::from(x) * 0.4, 0.5, f64::from(z) * 0.4));
         m.yaw = m.random.next_float() * 360.0;
         m.on_ground = false;
-        let flop = if is_elder(m) {
-            "entity.elder_guardian.flop"
-        } else {
-            "entity.guardian.flop"
-        };
-        events.push(MobEvent::Sound(
-            flop,
-            [m.position.x, m.position.y, m.position.z],
-            1.0,
-            1.0,
-        ));
+        if !m.silent {
+            let flop = if is_elder(m) {
+                "entity.elder_guardian.flop"
+            } else {
+                "entity.guardian.flop"
+            };
+            events.push(MobEvent::Sound(
+                flop,
+                [m.position.x, m.position.y, m.position.z],
+                1.0,
+                1.0,
+            ));
+        }
     }
     if m.extra.flag {
         m.yaw = m.head_yaw;
@@ -483,5 +485,109 @@ pub fn attack_scale(m: &Mob) -> f32 {
         m.extra.counter2 as f32 / attack_duration(m) as f32
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use std::sync::Arc;
+
+    fn flop(kind: &str, silent: bool) -> Option<(Mob, Vec<MobEvent>)> {
+        let mut result = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut mob = Mob::new(
+                1,
+                Arc::new(types.types[kind].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            register(&mut mob);
+            mob.on_ground = true;
+            mob.fluids.in_water = false;
+            mob.silent = silent;
+            let mut events = Vec::new();
+            ai_step(&mut mob, w, &mut events);
+            result = Some((mob, events));
+        });
+        if !ran {
+            return None;
+        }
+        result
+    }
+
+    #[test]
+    fn guardian_flop_plays_sound_when_not_silent() {
+        let Some((mob, events)) = flop("minecraft:guardian", false) else {
+            return;
+        };
+        assert!(!mob.on_ground);
+        assert!(mob.velocity.y > 0.0);
+        let sounds: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::Sound(s, _, _, _) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sounds, vec!["entity.guardian.flop"]);
+    }
+
+    #[test]
+    fn elder_guardian_flop_plays_sound_when_not_silent() {
+        let Some((mob, events)) = flop("minecraft:elder_guardian", false) else {
+            return;
+        };
+        assert!(!mob.on_ground);
+        assert!(mob.velocity.y > 0.0);
+        let sounds: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::Sound(s, _, _, _) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sounds, vec!["entity.elder_guardian.flop"]);
+    }
+
+    #[test]
+    fn silent_guardian_flops_without_sound() {
+        let Some((mob, events)) = flop("minecraft:guardian", true) else {
+            return;
+        };
+        assert!(!mob.on_ground);
+        assert!(mob.velocity.y > 0.0);
+        let sounds: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::Sound(s, _, _, _) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sounds.is_empty(),
+            "silent guardian must not play flop sound"
+        );
+    }
+
+    #[test]
+    fn silent_elder_guardian_flops_without_sound() {
+        let Some((mob, events)) = flop("minecraft:elder_guardian", true) else {
+            return;
+        };
+        assert!(!mob.on_ground);
+        assert!(mob.velocity.y > 0.0);
+        let sounds: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::Sound(s, _, _, _) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sounds.is_empty(),
+            "silent elder guardian must not play flop sound"
+        );
     }
 }
