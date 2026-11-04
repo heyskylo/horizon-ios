@@ -94,6 +94,32 @@ struct Entries {
     from_pack: Vec<bool>,
 }
 
+/// The damage registry already bound for gameplay at world entry. Keeping
+/// only these entries lets unrelated pack data remain lazy until a hub needs it.
+pub struct FrozenDamage(Entries);
+
+impl FrozenDamage {
+    pub fn new(
+        catalog: &horizon_world::damage_source::Catalog,
+        overlay: &horizon_world::loot::PackOverlay<'_>,
+    ) -> Self {
+        let packed: HashSet<_> = overlay.kind("damage_type").map(|(id, _)| id).collect();
+        let mut definitions: Vec<_> = catalog.entries().map(|(_, d)| d).collect();
+        definitions.sort_by_cached_key(|d| {
+            let (ns, path) = d.name.split_once(':').expect("canonical damage identifier");
+            (format!("{path}.json"), ns.to_owned())
+        });
+        Self(Entries {
+            names: definitions.iter().map(|d| d.name.clone()).collect(),
+            data: definitions.iter().map(|d| d.to_nbt()).collect(),
+            from_pack: definitions
+                .iter()
+                .map(|d| !d.name.starts_with("minecraft:") || packed.contains(d.name.as_str()))
+                .collect(),
+        })
+    }
+}
+
 pub struct SyncData {
     pub content_identity: Option<[u8; 32]>,
     pub builtin: Builtin,
@@ -252,6 +278,26 @@ impl SyncData {
         biomes: Option<&crate::biome::Biomes>,
         kept: Option<&Self>,
     ) -> Result<Self, String> {
+        Self::load_with_frozen(resources, overlay, biomes, kept, None)
+    }
+
+    /// First lazy load after world entry: damage definitions are the same
+    /// snapshot gameplay uses, even if `/reload` happened before the first hub.
+    pub fn load_with_frozen_damage(
+        resources: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        damage: &FrozenDamage,
+    ) -> Result<Self, String> {
+        Self::load_with_frozen(resources, overlay, None, None, Some(damage))
+    }
+
+    fn load_with_frozen(
+        resources: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        biomes: Option<&crate::biome::Biomes>,
+        kept: Option<&Self>,
+        damage: Option<&FrozenDamage>,
+    ) -> Result<Self, String> {
         use crate::spans::startup;
         // The recipe book, the recipe sync and the advancements read the
         // recipe folder: held here, they share one read of it.
@@ -276,6 +322,21 @@ impl SyncData {
                         .insert((*key).into(), kept.dynamic.registries[*key].clone());
                     registries.push(((*key).into(), entries.clone()));
                 }
+                continue;
+            }
+            if *key == "minecraft:damage_type"
+                && let Some(damage) = damage
+            {
+                dynamic.registries.insert(
+                    (*key).into(),
+                    damage
+                        .0
+                        .names
+                        .iter()
+                        .map(|name| (name.clone(), None))
+                        .collect(),
+                );
+                registries.push(((*key).into(), damage.0.clone()));
                 continue;
             }
             let path = key.trim_start_matches("minecraft:");

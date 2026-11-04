@@ -8,7 +8,7 @@ use horizon_client::{
     lan::{
         self, Lan, NetConfig,
         chunks::ChunkEncoder,
-        data::{BIOME_REGISTRY, SyncData},
+        data::{BIOME_REGISTRY, FrozenDamage, SyncData},
         entity::{EntityState, States},
         hub::{HostEvent, Hub, HubConfig, TickCtx},
         playerdata,
@@ -32,13 +32,22 @@ use std::{
 /// data, and the registries and tags.
 type Synced = (bool, std::result::Result<Arc<SyncData>, String>);
 
-/// One world session's frozen registries and reloadable tags, or the no-pack
-/// preload waiting for a world. Leaving a session forgets its snapshot.
-static SYNC: Mutex<Option<Synced>> = Mutex::new(None);
+/// Only damage is bound eagerly for gameplay. Full wire data remains lazy
+/// except when the entering world actually defines damage types.
+#[derive(Default)]
+struct SyncCache {
+    data: Option<Synced>,
+    damage: Option<FrozenDamage>,
+    world_packs: bool,
+}
 
-/// The registries and tags a server sends, loaded from `root` the first
-/// time, with the world's data packs' recipes, advancements and dialogs over
-/// them. Pack changes within one session retain its frozen registries.
+static SYNC: Mutex<SyncCache> = Mutex::new(SyncCache {
+    data: None,
+    damage: None,
+    world_packs: false,
+});
+
+/// Load wire data once, retaining this session's frozen damage definitions.
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
@@ -48,45 +57,59 @@ pub(super) fn sync_data(
 }
 
 fn cached_sync_data(
-    sync: &mut Option<Synced>,
+    sync: &mut SyncCache,
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<Arc<SyncData>, String> {
     let packs = !overlay.files.is_empty();
-    sync.get_or_insert_with(|| (packs, SyncData::load(root, overlay).map(Arc::new)))
-        .1
-        .clone()
+    let load = || {
+        match &sync.damage {
+            Some(damage) => SyncData::load_with_frozen_damage(root, overlay, damage),
+            None => SyncData::load(root, overlay),
+        }
+        .map(Arc::new)
+    };
+    // A helper started before world entry must not fill a pack world's
+    // still-lazy cache with its vanilla overlay.
+    if sync.data.is_none() && sync.world_packs && !packs {
+        return load();
+    }
+    sync.data.get_or_insert_with(|| (packs, load())).1.clone()
 }
 
-/// Freeze the entering world's registries before a reload or a guest can
-/// observe them. Ordinary worlds reuse the existing no-pack preload. A
-/// pack world replaces it while holding the same lock used by preload readers:
-/// there is no empty-cache window in which a helper can install vanilla data.
+/// Reuse a no-pack preload; unrelated packs only invalidate it, as on main.
+/// Packs defining damage types seed the wire snapshot under the same lock
+/// that helpers use, before reloads or guests can observe a partial state.
 pub(super) fn open_world_sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
-) -> std::result::Result<Arc<SyncData>, String> {
+    damage: &horizon_world::damage_source::Catalog,
+) -> std::result::Result<(), String> {
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    initialize_world_sync_data(&mut sync, root, overlay)
+    initialize_world_sync_data(&mut sync, root, overlay, damage)
 }
 
 fn initialize_world_sync_data(
-    sync: &mut Option<Synced>,
+    sync: &mut SyncCache,
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
-) -> std::result::Result<Arc<SyncData>, String> {
-    // World exits discard the preceding session. Here the cache may only
-    // contain its vanilla preload; packs need their own initial snapshot.
-    if !overlay.files.is_empty() {
-        *sync = None;
+    damage: &horizon_world::damage_source::Catalog,
+) -> std::result::Result<(), String> {
+    sync.world_packs = !overlay.files.is_empty();
+    if sync.world_packs {
+        sync.data = None;
     }
-    cached_sync_data(sync, root, overlay)
+    sync.damage = Some(FrozenDamage::new(damage, overlay));
+    if overlay.kind("damage_type").next().is_some() {
+        cached_sync_data(sync, root, overlay)?;
+    }
+    Ok(())
 }
 
 /// Let go of what `sync_data` loaded: a preload no world used
 /// (game/world_loading.rs), or the previous session when another world opens.
 pub(super) fn forget_sync_data() {
-    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = SyncCache::default();
 }
 
 /// Without a hub yet, retain this world's frozen registries through `/reload`
@@ -98,6 +121,7 @@ pub(super) fn reload_cached_sync_data(
     let kept = SYNC
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .data
         .as_ref()
         .and_then(|(_, result)| result.as_ref().ok())
         .cloned();
@@ -123,7 +147,7 @@ pub(super) fn reload_sync_data(
         sync.features.clone_from(&kept.features);
         Arc::new(sync)
     });
-    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = Some((packs, sync.clone()));
+    SYNC.lock().unwrap_or_else(|e| e.into_inner()).data = Some((packs, sync.clone()));
     sync
 }
 
@@ -153,7 +177,10 @@ pub(super) struct SyncPreload(std::thread::JoinHandle<std::result::Result<SyncDa
 /// Start reading the server's data beside the world's preparation; `None`
 /// when it is read already, or being read (`preload_world_data`).
 pub(super) fn preload_sync_data(root: &std::path::Path) -> Option<SyncPreload> {
-    if !SYNC.try_lock().is_ok_and(|sync| sync.is_none()) {
+    if !SYNC
+        .try_lock()
+        .is_ok_and(|sync| sync.data.is_none() && sync.damage.is_none())
+    {
         return None;
     }
     let root = root.to_owned();
@@ -173,8 +200,8 @@ impl SyncPreload {
         }
         if let Ok(read) = self.0.join() {
             let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-            if sync.as_ref().is_none_or(|(with_packs, _)| *with_packs) {
-                *sync = Some((false, read.map(Arc::new)));
+            if !sync.world_packs && sync.data.is_none() {
+                sync.data = Some((false, read.map(Arc::new)));
             }
         }
     }
@@ -3262,18 +3289,24 @@ mod tests {
     #[test]
     #[ignore = "requires prepared vanilla resources"]
     fn datapack_damage_world_open_reuses_the_no_pack_preload() {
-        use super::{SyncData, cached_sync_data, initialize_world_sync_data};
+        use super::{SyncCache, SyncData, cached_sync_data, initialize_world_sync_data};
         use horizon_world::loot::PackOverlay;
         use std::{path::Path, sync::Arc};
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         let preloaded = Arc::new(SyncData::load(&root, &PackOverlay::NONE).unwrap());
-        let mut cache = Some((false, Ok(preloaded.clone())));
+        let mut cache = SyncCache {
+            data: Some((false, Ok(preloaded.clone()))),
+            ..Default::default()
+        };
+        let damage =
+            horizon_world::damage_source::Catalog::load(&root, &PackOverlay::NONE).unwrap();
         // A missing root makes an accidental second disk read fail, rather
         // than merely comparing equal snapshots loaded twice.
         let absent = root.join("no-such-resources");
-        let opened = initialize_world_sync_data(&mut cache, &absent, &PackOverlay::NONE).unwrap();
+        initialize_world_sync_data(&mut cache, &absent, &PackOverlay::NONE, &damage).unwrap();
+        let opened = cached_sync_data(&mut cache, &absent, &PackOverlay::NONE).unwrap();
         assert!(Arc::ptr_eq(&preloaded, &opened));
         assert!(Arc::ptr_eq(
             &opened,
@@ -3284,7 +3317,7 @@ mod tests {
     #[test]
     #[ignore = "requires prepared vanilla resources"]
     fn datapack_damage_world_open_replaces_preload_atomically() {
-        use super::{SyncData, cached_sync_data, initialize_world_sync_data};
+        use super::{SyncCache, SyncData, cached_sync_data, initialize_world_sync_data};
         use horizon_world::loot::PackOverlay;
         use std::{
             path::Path,
@@ -3294,7 +3327,10 @@ mod tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         let preloaded = Arc::new(SyncData::load(&root, &PackOverlay::NONE).unwrap());
-        let cache = Arc::new(Mutex::new(Some((false, Ok(preloaded.clone())))));
+        let cache = Arc::new(Mutex::new(SyncCache {
+            data: Some((false, Ok(preloaded.clone()))),
+            ..Default::default()
+        }));
         let barrier = Arc::new(Barrier::new(2));
         let worker = {
             let cache = cache.clone();
@@ -3313,12 +3349,10 @@ mod tests {
             vec![br#"{"message_id":"world_heat","scaling":"never","exhaustion":0.25}"#.to_vec()],
         )];
         barrier.wait();
-        let opened = initialize_world_sync_data(
-            &mut cache.lock().unwrap(),
-            &root,
-            &PackOverlay { files: &files },
-        )
-        .unwrap();
+        let overlay = PackOverlay { files: &files };
+        let damage = horizon_world::damage_source::Catalog::load(&root, &overlay).unwrap();
+        initialize_world_sync_data(&mut cache.lock().unwrap(), &root, &overlay, &damage).unwrap();
+        let opened = cached_sync_data(&mut cache.lock().unwrap(), &root, &overlay).unwrap();
         worker.join().unwrap();
         assert!(!Arc::ptr_eq(&preloaded, &opened));
         let id = opened
@@ -3337,6 +3371,144 @@ mod tests {
             .unwrap();
         assert_eq!(packet.entries[id as usize].id, "demo:world_heat");
         assert!(packet.entries[id as usize].data.is_some());
+    }
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_unrelated_packs_do_not_load_sync_data_at_open() {
+        use super::{SyncCache, SyncData, initialize_world_sync_data};
+        use horizon_world::{damage_source::Catalog, loot::PackOverlay};
+        use std::{path::Path, sync::Arc};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let damage = Catalog::load(&root, &PackOverlay::NONE).unwrap();
+        let preloaded = Arc::new(SyncData::load(&root, &PackOverlay::NONE).unwrap());
+        // A recipe-only pack and a damage-tag-only pack must retain main's
+        // lazy wire-data path. An absent root proves no full load happens.
+        for key in ["recipe/demo:test", "tags/minecraft:damage_type/is_fire"] {
+            let files = vec![(key.into(), vec![br#"{"values":[]}"#.to_vec()])];
+            let mut cache = SyncCache {
+                data: Some((false, Ok(preloaded.clone()))),
+                ..Default::default()
+            };
+            initialize_world_sync_data(
+                &mut cache,
+                &root.join("absent"),
+                &PackOverlay { files: &files },
+                &damage,
+            )
+            .unwrap();
+            assert!(cache.data.is_none(), "{key} must not eagerly load SyncData");
+            assert!(cache.damage.is_some());
+        }
+        let mut empty = SyncCache::default();
+        initialize_world_sync_data(
+            &mut empty,
+            &root.join("absent"),
+            &PackOverlay::NONE,
+            &damage,
+        )
+        .unwrap();
+        assert!(
+            empty.data.is_none(),
+            "no-pack worlds need no synchronous fallback load either"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub() {
+        use super::{SyncCache, cached_sync_data, initialize_world_sync_data};
+        use horizon_world::{damage_source::Catalog, loot::PackOverlay};
+        use std::path::Path;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let damage = Catalog::load(&root, &PackOverlay::NONE).unwrap();
+        let initial = vec![(
+            "dialog/demo:before".into(),
+            vec![br#"{"type":"minecraft:notice"}"#.to_vec()],
+        )];
+        let mut cache = SyncCache::default();
+        initialize_world_sync_data(&mut cache, &root, &PackOverlay { files: &initial }, &damage)
+            .unwrap();
+        assert!(cache.data.is_none());
+        // A late vanilla helper cannot install its overlay over this world.
+        cached_sync_data(&mut cache, &root, &PackOverlay::NONE).unwrap();
+        assert!(cache.data.is_none());
+        let changed = vec![
+            (
+                "damage_type/demo:too_late".into(),
+                vec![br#"{"message_id":"too_late","scaling":"never","exhaustion":0.5}"#.to_vec()],
+            ),
+            (
+                "damage_type/minecraft:fall".into(),
+                vec![br#"{"message_id":"changed","scaling":"never","exhaustion":0.9}"#.to_vec()],
+            ),
+            (
+                "dialog/demo:after".into(),
+                vec![br#"{"type":"minecraft:notice"}"#.to_vec()],
+            ),
+            (
+                "tags/demo:damage_type/reloaded".into(),
+                vec![
+                    br#"{"values":["minecraft:fall",{"id":"demo:too_late","required":false}]}"#
+                        .to_vec(),
+                ],
+            ),
+        ];
+        let overlay = PackOverlay { files: &changed };
+        let health = damage.reload_tags(&root, &overlay).unwrap();
+        let wire = cached_sync_data(&mut cache, &root, &overlay).unwrap();
+        assert!(wire.id("minecraft:damage_type", "demo:too_late").is_none());
+        assert!(health.id("demo:too_late").is_none());
+        assert!(wire.id("minecraft:dialog", "demo:before").is_none());
+        assert!(
+            wire.id("minecraft:dialog", "demo:after").is_some(),
+            "unrelated registries stay lazy"
+        );
+        let fall = wire.id("minecraft:damage_type", "minecraft:fall").unwrap();
+        let packets = wire.registry_packets(false, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packet = packets
+            .iter()
+            .find(|p| p.registry == "minecraft:damage_type")
+            .unwrap();
+        let definition = health
+            .definition(health.id("minecraft:fall").unwrap())
+            .unwrap();
+        assert_eq!(
+            packet.entries[fall as usize].data.as_ref(),
+            Some(&definition.to_nbt())
+        );
+        let tags = wire
+            .tags
+            .registries
+            .iter()
+            .find(|r| r.registry == "minecraft:damage_type")
+            .unwrap();
+        assert_eq!(
+            tags.tags
+                .iter()
+                .find(|t| t.name == "demo:reloaded")
+                .unwrap()
+                .ids,
+            vec![fall]
+        );
+        assert_eq!(
+            health.tag_members("demo:reloaded").collect::<Vec<_>>(),
+            vec!["minecraft:fall"]
+        );
+        // The next world's initial load can register the previously-late type.
+        let next = Catalog::load(&root, &overlay).unwrap();
+        let mut next_cache = SyncCache::default();
+        initialize_world_sync_data(&mut next_cache, &root, &overlay, &next).unwrap();
+        assert!(
+            cached_sync_data(&mut next_cache, &root, &overlay)
+                .unwrap()
+                .id("minecraft:damage_type", "demo:too_late")
+                .is_some()
+        );
     }
 
     fn mob_of(kind: &str) -> Option<Mob> {
