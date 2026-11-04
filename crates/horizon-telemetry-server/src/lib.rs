@@ -546,13 +546,13 @@ fn rate_key(ip: IpAddr) -> IpAddr {
 pub async fn blocking<T: Send + 'static>(
     app: &Arc<App>,
     f: impl FnOnce(&App) -> T + Send + 'static,
-) -> Result<T, Response> {
+) -> Result<T, Box<Response>> {
     let app = app.clone();
     tokio::task::spawn_blocking(move || f(&app))
         .await
         .map_err(|e| {
             eprintln!("horizon-telemetry-server: a blocking task failed: {e}");
-            status(StatusCode::SERVICE_UNAVAILABLE, "try again later")
+            Box::new(status(StatusCode::SERVICE_UNAVAILABLE, "try again later"))
         })
 }
 
@@ -582,7 +582,7 @@ async fn receive(State(app): State<Arc<App>>, req: Request) -> Response {
     };
     blocking(&app, move |app| app.store_batch(&body))
         .await
-        .unwrap_or_else(|r| r)
+        .unwrap_or_else(|r| *r)
 }
 
 async fn forget(State(app): State<Arc<App>>, Path(id): Path<String>, req: Request) -> Response {
@@ -594,7 +594,7 @@ async fn forget(State(app): State<Arc<App>>, Path(id): Path<String>, req: Reques
     };
     let deleted = match blocking(&app, move |app| app.store().delete_install(&install)).await {
         Ok(deleted) => deleted,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match deleted {
         // Nothing of that install: the cached totals still hold, so a made-up ID costs no rebuild.
@@ -667,7 +667,7 @@ async fn aggregate(
                     eprintln!("horizon-telemetry-server: could not build the totals: {e}");
                     return status(StatusCode::SERVICE_UNAVAILABLE, "try again later");
                 }
-                Err(response) => return response,
+                Err(response) => return *response,
             }
         }
     };
@@ -703,7 +703,7 @@ async fn benchmarks(State(app): State<Arc<App>>, req: Request) -> Response {
                     eprintln!("horizon-telemetry-server: could not read the benchmarks: {e}");
                     return status(StatusCode::SERVICE_UNAVAILABLE, "try again later");
                 }
-                Err(response) => return response,
+                Err(response) => return *response,
             };
             *app.summary_cache.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some((Instant::now(), json.clone()));
@@ -839,7 +839,7 @@ async fn live_history(
                 eprintln!("horizon-telemetry-server: could not read the live history: {e}");
                 return status(StatusCode::SERVICE_UNAVAILABLE, "try again later");
             }
-            Err(response) => return response,
+            Err(response) => return *response,
         },
     };
     json_response(&app, json, HISTORY_FOR.as_secs())
