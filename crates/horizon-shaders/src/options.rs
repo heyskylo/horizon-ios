@@ -577,4 +577,44 @@ iris.features.required = NOT_A_FEATURE
         );
         assert_eq!(parse_chosen(&chosen_text(&chosen)), chosen);
     }
+
+    /// A custom uniform's or variable's line has the macros expanded: a value option, a
+    /// `#define` of `shaders.properties` (function-like too), a standard macro, and a macro in
+    /// the uniform's name. Our probe pack's shape; Iris 1.11.7 drew p0..p5 as 127, 191, 64, 255,
+    /// 127 and 255 of 255 with the option at its default.
+    #[test]
+    fn custom_uniform_lines_read_the_options_and_macros() {
+        let bytes = crate::pack::tests::zip(&[
+            ("shaders/final.fsh", "#define MY_OPT 2 // [1 2 3]\n"),
+            (
+                "shaders/shaders.properties",
+                "#define PROP_DEF 3\n#define HALF(x) ((x) * 0.5)\n#define KEYNAME p5\n\
+                 uniform.float.p0 = MY_OPT * 0.25\n\
+                 uniform.float.p1 = PROP_DEF * 0.25\n\
+                 variable.float.v2 = MY_OPT * 0.125\nuniform.float.p2 = v2\n\
+                 uniform.float.p3 = if(MC_VERSION > 10000, 1.0, 0.0)\n\
+                 uniform.float.p4 = HALF(MY_OPT) * 0.5\n\
+                 uniform.float.KEYNAME = 1.0\n",
+            ),
+        ]);
+        for (chosen, p0) in [(None, 0.5), (Some("3"), 0.75)] {
+            let mut pack = Pack::from_zip_bytes("p.zip", bytes.clone()).unwrap();
+            if let Some(value) = chosen {
+                pack = pack.with_chosen(BTreeMap::from([("MY_OPT".into(), value.into())]));
+            }
+            let (properties, _) = read_properties(&pack, &mut crate::Macros::standard());
+            assert!(properties.notes.is_empty(), "{:?}", properties.notes);
+            let mut custom = crate::Custom::parse(&properties);
+            let values: Vec<f64> = custom
+                .eval(0.016, &|_| None)
+                .iter()
+                .map(|v| v.v[0])
+                .collect();
+            let p4 = if chosen.is_some() { 0.75 } else { 0.5 };
+            assert_eq!(values, [p0, 0.75, p0 / 2.0, 1.0, p4, 1.0]);
+            let names: Vec<_> = custom.uniforms().map(|(name, _)| name.to_owned()).collect();
+            assert_eq!(names, ["p0", "p1", "p2", "p3", "p4", "p5"]);
+            assert!(custom.notes.is_empty(), "{:?}", custom.notes);
+        }
+    }
 }

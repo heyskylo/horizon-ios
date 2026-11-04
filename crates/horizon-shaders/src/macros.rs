@@ -164,6 +164,32 @@ impl Macros {
         self.0.insert(name.into(), Macro { params: None, body });
     }
 
+    /// The rest of a `#define` line: `NAME body`, or `NAME(a, b) body` (no space before the `(`)
+    /// for a function-like macro.
+    pub(crate) fn define_line(&mut self, rest: &str) -> Result<(), String> {
+        let len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (name, tail) = rest.split_at(len);
+        if name.is_empty() {
+            return Err("`#define` without a name".into());
+        }
+        if let Some(params) = tail.strip_prefix('(') {
+            let Some((params, body)) = params.split_once(')') else {
+                return Err(format!("`#define {name}(` without `)`"));
+            };
+            let params = params
+                .split(',')
+                .map(|p| p.trim().to_owned())
+                .filter(|p| !p.is_empty())
+                .collect();
+            self.define_function(name, params, body.trim());
+        } else {
+            self.define(name, tail.trim());
+        }
+        Ok(())
+    }
+
     pub fn define_function(&mut self, name: &str, params: Vec<String>, body: &str) {
         let body = body.to_owned();
         self.0.insert(
