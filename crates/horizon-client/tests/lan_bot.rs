@@ -895,6 +895,29 @@ fn status_and_join() {
     // ServerStatus.CODEC writes a plain literal MOTD as a bare string.
     assert_eq!(v["description"], "Test - World");
 
+    // `DedicatedServer.setRepliesToStatus`: disabling it closes a fresh status handshake.
+    s.hub.lan.shared.set_enable_status(false);
+    let closed = run(&mut s, move || {
+        let mut c = Connection::connect("127.0.0.1", port, Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+        c.send(
+            &handshake::Serverbound::Intention(handshake::Intention {
+                protocol: PROTOCOL_VERSION,
+                host: "127.0.0.1".into(),
+                port,
+                intent: handshake::STATUS,
+            })
+            .encode(),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(c.recv().is_err())
+    });
+    assert!(
+        closed,
+        "status handshake should close when replies are disabled"
+    );
+    s.hub.lan.shared.set_enable_status(true);
+
     // Join, receive the world, place a block, see another player arrive.
     let report = run(&mut s, move || {
         let mut bot = connect(port, "Steve", true)?;

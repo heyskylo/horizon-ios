@@ -4228,6 +4228,15 @@ impl Game<'_> {
                 &nearby,
                 Some(self.border.geometry()),
             );
+            if merging && !no_physics {
+                self.entity_powder_snow_particles(
+                    item.previous,
+                    item.position,
+                    item.bounds(),
+                    item.velocity,
+                    false,
+                );
+            }
             cells.moved(i, item.previous, item.position);
             // Entity.handleOnAboveBubbleColumn: the server sends the particles of
             // the surface of a bubble column the item is at the top of.
@@ -5889,6 +5898,13 @@ impl Game<'_> {
         for pos in tops {
             self.bubble_column_particles(pos);
         }
+        self.entity_powder_snow_particles(
+            from,
+            f.position,
+            horizon_client::falling_block::bounds(f.position),
+            f.velocity,
+            false,
+        );
         // FallingBlockEntity.tick handles its portal after the move's block
         // effects, before placing/dropping on the floor under an End portal.
         let teleported = self.falling_through_portal(f);
@@ -11621,7 +11637,7 @@ impl Game<'_> {
             state: None,
             at,
             spread,
-            speed: 0.0,
+            speed: [0.0; 3],
             count: 0,
             randomization: 0,
         });
@@ -11849,7 +11865,7 @@ impl Game<'_> {
                     state: None,
                     at: [feet[0], feet[1] + height * 0.5, feet[2]],
                     spread: [0.1, 0.0, 0.1],
-                    speed: 0.2,
+                    speed: [0.2; 3],
                     count: (actual * 0.5) as u32 as i32,
                     randomization: 0,
                 });
@@ -19811,7 +19827,24 @@ fn load_core(
     progress: &Progress,
     launch_world: Option<&str>,
 ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
-    let assets = match startup::time("core.assets", || Assets::load(root)) {
+    // The model library reads every file under `assets/` and needs no
+    // block registry, so it is parsed beside `Assets::load` rather than
+    // after it. It used to sit inside `reload` behind both the registry
+    // read and the block facts; on a cold cache that read was most of a
+    // second on the critical path, and warm it is still ~30 ms.
+    // A server draws nothing and parses no models, so it skips this.
+    let (assets, parsed_models) = std::thread::scope(|scope| {
+        let models = (parallel && !headless).then(|| {
+            scope.spawn(|| {
+                let _step = startup::step("core.models_parse");
+                horizon_client::model_library::ParsedModels::load(root)
+            })
+        });
+        let assets = startup::time("core.assets", || Assets::load(root));
+        let models = models.map(|m| m.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
+        (assets, models)
+    });
+    let assets = match assets {
         Ok(assets) => assets,
         Err(e) => return Ok(Err(e.to_string())),
     };
@@ -19823,9 +19856,12 @@ fn load_core(
             let render = Step::spawn(scope, parallel, move || {
                 // A server reads no block sprites' pixels, which only the
                 // renderer draws (32 MB).
+                let parsed_models = parsed_models;
                 let render = startup::time("core.block_models_sprites", || {
                     if headless {
                         assets.reload_for_server(root)
+                    } else if let Some(parsed) = parsed_models {
+                        assets.reload_with_models(root, parsed)
                     } else {
                         assets.reload(root)
                     }

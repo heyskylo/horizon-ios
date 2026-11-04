@@ -51,7 +51,7 @@ Usage: horizon-server [--dir DIR] <command>
               --offline --yes)
   run         Run the server in the foreground; type console commands, Ctrl-C stops it cleanly. It
               restarts the game if it crashes.
-  start       Run the server in the background (its output goes to logs/supervisor.log)
+  start       Run the server in the background, or resume a stopped supervisor (output goes to logs/supervisor.log)
   stop, restart
   status [--json]
               Up or not, TPS, MSPT, players, RAM and CPU
