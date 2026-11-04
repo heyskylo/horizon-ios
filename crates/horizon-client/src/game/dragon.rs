@@ -566,6 +566,19 @@ impl Dragon {
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
     ) -> Hurt {
+        self.hurt_part_from(part, damage, counts, kind, direct, None)
+    }
+    /// `hurt_part` with the melee attacker's position (`DamageSource.getSourcePosition`,
+    /// the direct entity's feet). `None` for a hit that is not a player's melee.
+    fn hurt_part_from(
+        &mut self,
+        part: usize,
+        damage: f32,
+        counts: Option<HurtSource<'_>>,
+        kind: DamageKind,
+        direct: Option<&ProjectileKind>,
+        from: Option<Vec3>,
+    ) -> Hurt {
         if is_fire(kind) {
             return Hurt::Refused;
         }
@@ -575,7 +588,7 @@ impl Dragon {
                 ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::WindCharge
             )
         );
-        self.hurt(part, damage, counts, arrow)
+        self.hurt_from(part, damage, counts, arrow, from)
     }
     /// `EnderDragon.hurt(part, source, damage)`: whether the hit landed
     /// (an arrow is spent, else it turns back). `counts` is the source
@@ -584,6 +597,17 @@ impl Dragon {
     /// direct arrow or wind charge, which a perched dragon shrugs off
     /// (`AbstractDragonSittingPhase.onHurt`).
     fn hurt(&mut self, part: usize, damage: f32, counts: Option<HurtSource>, arrow: bool) -> Hurt {
+        self.hurt_from(part, damage, counts, arrow, None)
+    }
+    /// `hurt` with the position `dealDefaultKnockback` pushes away from.
+    fn hurt_from(
+        &mut self,
+        part: usize,
+        damage: f32,
+        counts: Option<HurtSource>,
+        arrow: bool,
+        from: Option<Vec3>,
+    ) -> Hurt {
         if matches!(self.phase, Phase::Dying { .. }) || !self.alive() {
             return Hurt::Refused;
         }
@@ -640,6 +664,19 @@ impl Dragon {
                 });
             }
         }
+        // `LivingEntity.hurtServer` calls `dealDefaultKnockback` (strength
+        // `0.4F`) on a full hit, before `EnderDragon.hurt` adds sitting damage
+        // and maybe takes off. `from` is the attacker's feet for a player's
+        // melee hit. Explosions are `#no_knockback`; their push is
+        // `explosion_knockback`.
+        if full && let Some(from) = from {
+            self.knockback(
+                f64::from(0.4_f32),
+                from.x - self.position.x,
+                from.z - self.position.z,
+                source,
+            );
+        }
         if self.phase.sitting() {
             self.sitting_damage += before - self.health.max(0.0);
             if self.sitting_damage > 0.25 * MAX_HEALTH {
@@ -652,6 +689,43 @@ impl Dragon {
             }
         }
         Hurt::Landed { full }
+    }
+    /// `EnderDragon.knockback`: `LivingEntity.knockback` only when the phase
+    /// is not sitting. `(xd, zd)` points at the hit (`dealDefaultKnockback`:
+    /// the source position minus this position). Knockback resistance is the
+    /// mob default, 0. `noPhysics` never sets `onGround`, so the vertical
+    /// component stays.
+    fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: HurtSource<'_>) {
+        if self.phase.sitting() {
+            return;
+        }
+        let mut knock = horizon_client::health::Knock {
+            strength: power,
+            x: xd,
+            z: zd,
+        };
+        if horizon_client::health::knockback_canceled(
+            horizon_client::health::Hurting::Dragon(self.id as i32, source),
+            &mut knock,
+        ) {
+            return;
+        }
+        let horizon_client::health::Knock {
+            strength: power,
+            x: mut xd,
+            z: mut zd,
+        } = knock;
+        if power <= 0.0 {
+            return;
+        }
+        while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
+            xd = (self.random.next_double() - self.random.next_double()) * 0.01;
+            zd = (self.random.next_double() - self.random.next_double()) * 0.01;
+        }
+        let len = (xd * xd + zd * zd).sqrt();
+        let (kx, kz) = (xd / len * power, zd / len * power);
+        let v = self.velocity;
+        self.velocity = Vec3::new(v.x / 2.0 - kx, v.y, v.z / 2.0 - kz);
     }
     /// `ServerExplosion.hurtEntities` on the dragon: the dragon itself (its
     /// body takes it), then each part, in `Level.getEntities` order, each by
@@ -1275,12 +1349,19 @@ impl Game<'_> {
     ) -> Hurt {
         let by_id = by.map(|who| self.fight_entity(who));
         let source = counts.then(|| hurt_source(kind, by_id, direct));
+        // `dealDefaultKnockback` for a player's melee: away from the attacker's
+        // feet. The scope names that player to the knockback hook.
+        let _attacker = (kind == DamageKind::PlayerAttack)
+            .then(|| self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id)));
+        let from = (kind == DamageKind::PlayerAttack)
+            .then(|| self.player.as_ref().map(|p| p.position))
+            .flatten();
         let Some(d) = self.dragon.as_mut() else {
             return Hurt::Refused;
         };
         let was_down = d.down();
         let (cooldown, last_hurt) = (d.invulnerable, d.last_hurt);
-        let hurt = d.hurt_part(part, damage, source, kind, direct);
+        let hurt = d.hurt_part_from(part, damage, source, kind, direct, from);
         // LivingEntity.hurtServer: damage that is applied sets lastHurtByPlayer
         // (100 ticks); a hit the damage cooldown absorbs returns before that.
         if counts
@@ -4563,6 +4644,49 @@ mod tests {
         let mut d = dragon(flying());
         assert_eq!(d.hurt(0, 9.0, HIT, true), Hurt::Landed { full: true });
         assert_eq!(d.health, MAX_HEALTH - 9.0);
+    }
+
+    /// `EnderDragon.knockback` calls `LivingEntity.knockback` only when the
+    /// phase is not sitting. `dealDefaultKnockback` uses `0.4F` away from the
+    /// attacker's feet. Resistance is 0 and `onGround` stays false
+    /// (`noPhysics`), so from velocity `(1, -0.3, 0.5)` and a source 3 by 4
+    /// blocks away the push is `(0.5 - 0.6p, -0.3, 0.25 - 0.8p)` with
+    /// `p = (double) 0.4F`. A perched hit, including one that makes it take
+    /// off, leaves the velocity alone. A hit inside the damage cooldown is
+    /// not a full hit, so it does not push either.
+    #[test]
+    fn a_melee_hit_knocks_a_flying_dragon_and_not_a_perched_one() {
+        let from = Vec3::new(3.0, 70.0, 4.0);
+        let velocity = Vec3::new(1.0, -0.3, 0.5);
+        let power = f64::from(0.4_f32);
+        let pushed = Vec3::new(0.5 - 0.6 * power, -0.3, 0.25 - 0.8 * power);
+
+        let mut perched = dragon(Phase::Scanning { time: 0 });
+        perched.velocity = velocity;
+        assert_eq!(
+            perched.hurt_from(0, 9.0, HIT, false, Some(from)),
+            Hurt::Landed { full: true }
+        );
+        assert_eq!(perched.velocity, velocity);
+
+        let mut taking_off = dragon(Phase::Flaming { ticks: 0 });
+        taking_off.velocity = velocity;
+        taking_off.hurt_from(0, 60.0, HIT, false, Some(from));
+        assert!(matches!(taking_off.phase, Phase::Takeoff { .. }));
+        assert_eq!(taking_off.velocity, velocity);
+
+        let mut flying = dragon(flying());
+        flying.velocity = velocity;
+        assert_eq!(
+            flying.hurt_from(0, 9.0, HIT, false, Some(from)),
+            Hurt::Landed { full: true }
+        );
+        assert_eq!(flying.velocity, pushed);
+        assert_eq!(
+            flying.hurt_from(0, 20.0, HIT, false, Some(from)),
+            Hurt::Landed { full: false }
+        );
+        assert_eq!(flying.velocity, pushed);
     }
 
     #[test]
