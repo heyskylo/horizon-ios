@@ -382,7 +382,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-entities', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-entities', 'piston-slime', 'piston-slide', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
@@ -4783,6 +4783,39 @@ def check_fireworks(host, guest, out):
     return {'flashes': flashes, 'red_burst': burst, 'red_trail_fade': trails, 'rockets': rockets}
 
 
+def check_piston_slide(host, guest, out):
+    """A pushed block reaches the clients after their own copy of it finished moving (#8430).
+
+    The block event makes each client move the block itself (PistonBaseBlock.moveBlocks), for three ticks of
+    PistonMovingBlockEntity.tick. ServerLevel.tick broadcasts the changed blocks before it ticks block entities,
+    so the server's landed block goes out the tick after it lands: three ticks after the block event, not two,
+    and at a slow tick rate the client's block slides all the way instead of jumping the rest. The host reads
+    its own copy of the destination once a tick (each read follows the client tick that saw what arrived), at
+    /tick rate 1.
+    """
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    y += 3
+    host('command', command=f'fill {x - 2} {y - 1} {z - 1} {x + 4} {y + 1} {z + 1} minecraft:air')
+    host('command', command=f'setblock {x} {y} {z} minecraft:piston[facing=east]')
+    host('command', command=f'setblock {x + 1} {y} {z} minecraft:stone')
+    host.wait(5)
+    host('command', command='tick rate 1')
+    try:
+        replies = host.script([f'command setblock {x - 1} {y} {z} minecraft:redstone_block']
+                              + ['wait 1', f'block {x + 2} {y} {z}', 'status'] * 8, every=True)
+    finally:
+        host('command', command='tick rate 20')
+        host('command', command=f'fill {x - 1} {y} {z} {x + 3} {y} {z} minecraft:air')
+    seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))
+            for block, status in zip(replies[2::3], replies[3::3])]
+    moving = next((tick for tick, name in seen if name == 'moving_piston'), None)
+    landed = next((tick for tick, name in seen if name == 'stone'), None)
+    result = {'seen': seen, 'ticks_moving': None if moving is None or landed is None else landed - moving}
+    assert moving is not None and landed is not None, f'the block did not move and land: {result}'
+    assert result['ticks_moving'] == 3, f'the landed block came {result["ticks_moving"]} ticks after the move: {result}'
+    return result
+
+
 def check_rocket_walls(host, guest, out):
     """A rocket shot at an angle explodes on a block only with explosions (#4281).
 
@@ -6968,6 +7001,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'border': check_border,
              'particles': check_particles, 'fireworks': check_fireworks,
              'rocket-walls': check_rocket_walls, 'rocket-ceilings': check_rocket_ceilings,
+             'piston-slide': check_piston_slide,
              'tag-query': check_tag_query}
 
 
