@@ -46,7 +46,9 @@
   "up to date": "最新",
   "Checking…": "確認中…",
   "downloading {version}, {percent}%": "{version} をダウンロード中 ({percent}%)",
-  "Updated to {version}. Restart the launcher to use it.": "{version} に更新されました。適用するにはランチャーを再起動してください。",
+  "A new version is available": "新しいバージョンがあります",
+  "Download again": "もう一度ダウンロード",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "このランチャーは自分自身を置き換えられません。一度だけダウンロードし直してください。その後は自動で更新されます。",
   "the update failed: {error}": "アップデートに失敗しました: {error}",
   "Install": "インストール",
   "Restart": "再起動",
@@ -637,7 +639,6 @@
   "{name} moved to the trash.": "{name} moved to the trash.",
   "Couldn't load patch notes. {error}": "パッチノートを読み込めませんでした。{error}",
   "Couldn't load releases. {error}": "リリースを読み込めませんでした。{error}",
-  "Launcher updated to {version}": "ランチャーを {version} に更新しました",
   "Launcher {version}": "ランチャー {version}",
   "Launcher {version}  {percent}%": "ランチャー {version}  {percent}%",
   "Manage versions": "バージョンを管理",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Something went wrong.",
   "Instances": "インスタンス",
   "Join the Discord": "Discord に参加",
-  "Restart to update": "再起動して更新",
   "Duplicate…": "複製…",
   "Create a desktop shortcut": "デスクトップにショートカットを作成",
   "Remove the desktop shortcut": "デスクトップのショートカットを削除",
@@ -1117,5 +1117,8 @@
   "Move and restart": "移動して再起動",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "ショップを開く",
-  "You don't own any cosmetics yet.": "コスメをまだ持っていません。"
+  "You don't own any cosmetics yet.": "コスメをまだ持っていません。",
+  "Claim for free": "無料で受け取る",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ショップの決済サービスはお住まいの国に対応していないため、ファウンダーセットをここで無料で受け取れます。",
+  "The Founder Set is yours.": "ファウンダーセットはあなたのものです。"
 }

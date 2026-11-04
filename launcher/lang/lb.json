@@ -456,7 +456,9 @@
   "runs {command} after": "leeft {command} no",
   "downloaded": "erofgelueden",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Aktualiséiert op {version}. Restart de Launcher fir se ze benotzen.",
+  "A new version is available": "Eng nei Versioun ass verfügbar",
+  "Download again": "Nach eng Kéier eroflueden",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Dës Kopie vum Launcher kann sech net selwer ersetzen. Lued en eng Kéier nei erof; duerno aktualiséiert en sech selwer.",
   "Any MCP client": "All MCP Client",
   "{name}'s cape is kept.": "Dem {name} säi Kaape bleift.",
   "Not reviewed by the Horizon registry": "Net iwwerpréift vum Horizon Registry",
@@ -635,7 +637,6 @@
   "Copied": "Kopéiert",
   "Couldn't load patch notes. {error}": "Konnt Patch Notizen net lueden. {error}",
   "Couldn't load releases. {error}": "Konnt Verëffentlechungen net lueden. {error}",
-  "Launcher updated to {version}": "Launcher aktualiséiert op {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version} {percent}%",
   "Manage versions": "Verwalte Versiounen",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Eppes ass falsch gaangen.",
   "Instances": "Instanzen",
   "Join the Discord": "Maacht mat bei Discord",
-  "Restart to update": "Restart fir ze aktualiséieren",
   "Duplicate…": "Duplizéieren…",
   "Create a desktop shortcut": "Erstellt eng Desktop Ofkiirzung",
   "Remove the desktop shortcut": "Ewechzehuelen der Desktop Ofkiirzung",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "De Buttek opmaachen",
-  "You don't own any cosmetics yet.": "Dir hutt nach keng Kosmetik."
+  "You don't own any cosmetics yet.": "Dir hutt nach keng Kosmetik.",
+  "Claim for free": "Gratis kréien",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "De Bezuelservice vum Buttek ass an Ärem Land net disponibel, dofir kënnt Dir de Grënner Set hei gratis kréien.",
+  "The Founder Set is yours.": "De Grënner Set gehéiert Iech."
 }
