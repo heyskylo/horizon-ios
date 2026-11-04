@@ -34,6 +34,9 @@ mod world_target_tests;
 #[cfg(test)]
 mod higher_shadowcolor_tests;
 
+#[cfg(test)]
+mod forced_flip_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -1528,11 +1531,12 @@ fn build_pass(
         .iter()
         .filter(|f| !f.1)
         .fold(0u16, |m, f| m | 1 << f.0);
-    // Gbuffers programs write in place (6.1.6).
+    // Gbuffers programs write in place (6.1.6). A forced flip of a buffer the program writes
+    // cancels the write's own flip, as in Iris 1.11.7 (probed with packs of our own).
     let flip = if final_pass || geometry.is_some() {
         0
     } else {
-        (written & !kept) | mask(&p.flips)
+        (written & !kept) ^ mask(&p.flips)
     };
     let created = checked(device, || {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
