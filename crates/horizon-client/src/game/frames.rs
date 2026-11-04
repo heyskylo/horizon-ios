@@ -482,12 +482,16 @@ impl Game<'_> {
     /// ItemFrameRenderer: the frame model, then the item half size on its face.
     pub(super) fn frame_geometry(&mut self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         let sprites = &self.gui.atlas.sprites;
-        let mut maps: Vec<(i32, glam::Mat4, u32, bool)> = Vec::new();
-        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool)> = Vec::new();
+        // Each with its frame's type: a pack tells a glow frame and what it holds apart by its
+        // `entityId` (`glow_item_frame` in entity.properties), the item drawn within its frame.
+        let mut maps: Vec<(i32, glam::Mat4, u32, bool, &'static str)> = Vec::new();
+        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool, &'static str)> = Vec::new();
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
         for f in &self.item_frames {
+            let entity_start = out.len();
+            self.mark_entity(entity_start, f.kind());
             let map = f.item.as_ref().and_then(super::maps::map_id);
             // EntityRenderer.shouldRender: its box (a block wide with a map),
             // measured from the box's centre.
@@ -619,7 +623,7 @@ impl Game<'_> {
                     * glam::DMat4::from_rotation_z(std::f64::consts::PI)
                     * glam::DMat4::from_scale(glam::DVec3::splat(0.0078125))
                     * glam::DMat4::from_translation(glam::DVec3::new(-64.0, -64.0, -1.0));
-                maps.push((id, m.as_mat4(), item_light, cull_contents));
+                maps.push((id, m.as_mat4(), item_light, cull_contents, f.kind()));
                 continue;
             }
             let Some(stack) = f.item.clone() else {
@@ -632,14 +636,22 @@ impl Game<'_> {
                 * glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, depth))
                 * glam::DMat4::from_rotation_z((f64::from(f.rotation) * 45.0).to_radians())
                 * glam::DMat4::from_scale(glam::DVec3::splat(0.5));
-            items.push((stack, f.id, m.as_mat4(), item_light, cull_contents));
+            items.push((
+                stack,
+                f.id,
+                m.as_mat4(),
+                item_light,
+                cull_contents,
+                f.kind(),
+            ));
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
         let lights =
             horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
-        for (stack, id, m, light, cull) in items {
+        for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
+            self.mark_entity(entity_start, kind);
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
@@ -659,8 +671,9 @@ impl Game<'_> {
                 self.cull_skinned(out, entity_start, skinned);
             }
         }
-        for (id, m, light, cull) in maps {
+        for (id, m, light, cull, kind) in maps {
             let entity_start = out.len();
+            self.mark_entity(entity_start, kind);
             self.map_vertices(id, true, m, light, out);
             if cull {
                 self.cull_entity_vertices(out, entity_start);
