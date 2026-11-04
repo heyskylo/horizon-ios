@@ -2090,6 +2090,7 @@ impl PackPost {
             table: g.table,
             depth_write: g.depth_write,
             atlas: g.atlas.clone(),
+            material_maps: g.material_maps,
             ids: g.ids,
             cull: false,
         });
