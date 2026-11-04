@@ -509,22 +509,31 @@ impl<'p> Stage<'p> {
 
     /// Core names share the compatibility state for geometry, including shadow transforms.
     /// Authored non-uniform globals (or uniforms of another type) keep their own meaning.
+    /// `normalMatrix` is the core profile's only (ShaderDoc's `gl_NormalMatrix`, as #9136 quotes
+    /// it): in a compatibility-profile stage it stays a uniform of the frame, read as zero.
     pub(super) fn core_matrix(&self, name: &str) -> Option<&'static str> {
-        let matrix = match name {
-            "projectionMatrix" => "hz_ProjectionMatrix",
-            "modelViewMatrix" => "hz_ModelViewMatrix",
+        let (matrix, ty) = match name {
+            "projectionMatrix" => ("hz_ProjectionMatrix", "mat4"),
+            "modelViewMatrix" => ("hz_ModelViewMatrix", "mat4"),
+            "normalMatrix" if self.core_profile() => ("hz_NormalMatrix", "mat3"),
             _ => return None,
         };
         if !self.gbuffers
             || (self.globals.contains(name)
-                && !self
-                    .uniforms
-                    .iter()
-                    .any(|(n, ty, _)| n == name && ty == "mat4"))
+                && !self.uniforms.iter().any(|(n, t, _)| n == name && t == ty))
         {
             return None;
         }
         Some(matrix)
+    }
+
+    /// The stage is in the core profile: a `#version` of 150 or later that doesn't name the
+    /// compatibility profile. A fit of our #9136 probe's Iris 1.11.7 pictures (`normalMatrix` set
+    /// at `330 core`, `330` and `150`, zero at `330 compatibility`), not Iris's rule. Below 150 is
+    /// unmeasured (Iris drew no geometry for the `140` probe) and stays as before.
+    fn core_profile(&self) -> bool {
+        matches!(&self.pp.version, Some((version, profile))
+            if *version >= 150 && profile.as_deref() != Some("compatibility"))
     }
 
     /// Remember names without interpreting their values. Commas inside constructors and array

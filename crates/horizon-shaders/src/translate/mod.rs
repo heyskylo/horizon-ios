@@ -314,6 +314,16 @@ fn translate(
                 uniforms.remove(name);
             }
         }
+        // A compatibility-profile stage keeps reading the frame's `normalMatrix`.
+        let normal = "normalMatrix";
+        if uniforms.get(normal).is_some_and(|ty| ty == "mat3")
+            && [&v, &f].into_iter().all(|stage| {
+                stage.core_matrix(normal).is_some()
+                    || !stage.uniforms.iter().any(|(name, ..)| name == normal)
+            })
+        {
+            uniforms.remove(normal);
+        }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
     let alpha_test_ref = gbuffers
@@ -1581,6 +1591,31 @@ mod tests {
                     assert!(p.interface.uniforms.iter().any(|u| u.name == name));
                 }
             }
+        }
+    }
+
+    /// `normalMatrix` follows the geometry's transform in a core-profile gbuffers stage and stays
+    /// a uniform of the frame (zero) in a compatibility-profile one, as our #9136 probe's Iris
+    /// 1.11.7 pictures show at these four `#version` lines.
+    #[test]
+    fn core_normal_matrix_uses_frame_state_in_the_core_profile_only() {
+        for (profile, core) in [
+            ("330 core", true),
+            ("330", true),
+            ("150", true),
+            ("330 compatibility", false),
+        ] {
+            let source = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nin vec3 vaNormal;\nout vec3 n;\n\
+                 void main() {{ n = normalMatrix * vaNormal; gl_Position = vec4(n, 1.0); }}\n"
+            );
+            let p = core_matrix_program(&source, false).unwrap();
+            let uniform = p
+                .interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "normalMatrix");
+            assert_eq!(uniform, !core, "{profile}");
         }
     }
 
