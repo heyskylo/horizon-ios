@@ -191,15 +191,36 @@ impl Game<'_> {
         }) {
             return;
         }
+        let original = amount;
         let amount = if self.armor[0].is_some() {
             amount * 0.75
         } else {
             amount
         };
-        if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.health_resources.damage.id(kind)
-        {
-            let _ = p.hurt(&self.health_resources, self.world.health_rules, id, amount);
+        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
+            (Some(p), Some(id)) => p
+                .hurt(&self.health_resources, self.world.health_rules, id, amount)
+                .unwrap_or(false),
+            _ => false,
+        };
+        if hurt {
+            // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, the falling block
+            // (`DamageSources.fallingBlock(this)` and the like) being both the
+            // causing and the direct entity.
+            let block = horizon_client::advancements::EntityView {
+                kind: "minecraft:falling_block".into(),
+                position: [position.x, position.y, position.z],
+                ..Default::default()
+            };
+            self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
+                kind: kind.to_owned(),
+                direct: Some(block.clone()),
+                is_direct: true,
+                source: Some(block),
+                original,
+                actual: amount,
+                blocked: false,
+            });
         }
     }
 }

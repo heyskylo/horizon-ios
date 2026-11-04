@@ -777,6 +777,9 @@ pub struct Frame<'a> {
     pub stars: Option<(Mat4, f32)>,
     /// First-person hand and held item, drawn after clearing depth.
     pub hand: &'a [Vertex],
+    /// Where the arm and each held item start in `hand` (first vertex), with the
+    /// `currentRenderedItemId` a shader pack's `gbuffers_hand` reads for them.
+    pub hand_items: &'a [(u32, i32)],
     /// `CameraRenderState.hudFov`: the hand's own field of view
     /// (`GameRenderer.render3dHud`).
     pub hand_fov_degrees: f32,
@@ -1019,8 +1022,8 @@ pub struct Renderer {
     entity_skin: Option<entity_skin::EntitySkin>,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
-    /// The resource packs' LabPBR maps (normals, specular), for native shader packs.
-    pbr_maps: Option<[wgpu::Texture; 2]>,
+    /// Resource-pack normal/specular maps, split like the colour sprite arrays.
+    pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
     lightmap: wgpu::Texture,
     /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
@@ -1049,6 +1052,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
+    material_animations: Vec<SpriteAnimation>,
     active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
@@ -1174,6 +1178,11 @@ pub struct Renderer {
     emission_stats: hdr_stats::EmissionStats,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// What every pipeline that draws the frame targets: the swapchain's 8-bit format, or
+    /// `Rgba16Unorm` when the renderer was made with HDR output on (`wide_frame`) and the
+    /// device draws and blends into it. A 16-bit frame with HDR off since reaches the
+    /// swapchain through `readback`.
+    frame_format: wgpu::TextureFormat,
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
@@ -1193,6 +1202,7 @@ pub struct Renderer {
     pack_weather: Option<pack_weather::PackWeather>,
     /// The block sprites as one atlas, while a shader pack is loaded.
     pack_atlas: Option<pack_atlas::PackAtlas>,
+    pack_material_atlases: Option<[pack_atlas::PackAtlas; 2]>,
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
@@ -1732,6 +1742,45 @@ fn surface_format(
     .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
     .unwrap_or(default)
 }
+/// The 16-bit frame HDR output draws into where it can (`Renderer::frame_format`). Unorm
+/// rather than float: it clips at white after every pass as the 8-bit frame does, so light
+/// added past white (the sun on the sky) and then blended over (glass) looks the same.
+const WIDE_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Unorm;
+
+/// Whether a device with `features` can draw, blend and filter `WIDE_FRAME`, whose
+/// format features (`format`) the adapter reports. Drawing into it is an adapter-specific
+/// format feature, beyond the format itself.
+fn draws_wide_frame(features: wgpu::Features, format: wgpu::TextureFormatFeatures) -> bool {
+    features.contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) && format.allowed_usages.contains(
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+    ) && format.flags.contains(
+        wgpu::TextureFormatFeatureFlags::BLENDABLE | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+    )
+}
+
+/// What a renderer's frame is drawn in: `WIDE_FRAME` when it is made with HDR on and Smooth
+/// Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
+/// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
+/// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
+fn frame_format(
+    wide_frame: bool,
+    hdr_offered: bool,
+    device_draws_it: bool,
+    swapchain: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if wide_frame && hdr_offered && device_draws_it {
+        WIDE_FRAME
+    } else {
+        swapchain.remove_srgb_suffix()
+    }
+}
+
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -2084,7 +2133,9 @@ impl Renderer {
             ("block_sprites", textures(&self.sprite_textures)),
             (
                 "pbr_maps",
-                self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
+                self.pbr_maps
+                    .as_ref()
+                    .map_or(0, |maps| maps.iter().flatten().map(texture_bytes).sum()),
             ),
             (
                 "flat_draws",
@@ -2163,6 +2214,7 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
         translucent_batching: bool,
+        wide_frame: bool,
         shader_pack: bool,
     ) -> Result<Self> {
         let Opened {
@@ -2280,6 +2332,12 @@ impl Renderer {
         let offscreen = surface
             .is_none()
             .then(|| Self::offscreen_target(&device, &config));
+        let wide_ok = draws_wide_frame(
+            device.features(),
+            adapter.get_texture_format_features(WIDE_FRAME),
+        );
+        crate::graphics::offer_smooth_gradients(wide_ok);
+        let frame_format = frame_format(wide_frame, hdr_output.is_some(), wide_ok, config.format);
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -2443,7 +2501,7 @@ impl Renderer {
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -2635,7 +2693,7 @@ impl Renderer {
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::empty(),
                 })],
@@ -2726,39 +2784,48 @@ impl Renderer {
         };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
-        // The resource packs' LabPBR maps, for native shader packs: one array each, cut to
-        // the layers the GPU has (`block_normal_map` gives the default past them).
+        // Keep every colour layer's companion, split by the same device limit. Native
+        // material stages read the first array; terrain packs stitch all of them.
         let pbr_maps = prepared
             .pbr
-            .map(|(normals, specular, levels, layers, size)| {
-                let kept = layers.min(device.limits().max_texture_array_layers);
-                let count = array_layers(kept, gl);
-                [("LabPBR normals", normals), ("LabPBR specular", specular)].map(
-                    |(label, mut data)| {
-                        // The extra layers are empty.
-                        let layer_bytes = data.len() / layers as usize;
-                        data.resize(layer_bytes * count as usize, 0);
-                        device.create_texture_with_data(
-                            &queue,
-                            &wgpu::TextureDescriptor {
-                                label: Some(label),
-                                size: wgpu::Extent3d {
-                                    width: size,
-                                    height: size,
-                                    depth_or_array_layers: count,
-                                },
-                                mip_level_count: levels,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format: wgpu::TextureFormat::Rgba8Unorm,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                                view_formats: &[],
+            .map(|(normals, specular, levels, map_layers, size)| {
+                let layer_bytes = normals.len() / map_layers as usize;
+                (0..map_layers.div_ceil(split))
+                    .map(|array| {
+                        let first = array * split;
+                        let used = (map_layers - first).min(split);
+                        let count = array_layers(used, gl);
+                        [("LabPBR normals", &normals), ("LabPBR specular", &specular)].map(
+                            |(label, data)| {
+                                let start = first as usize * layer_bytes;
+                                let mut data =
+                                    data[start..start + used as usize * layer_bytes].to_vec();
+                                data.resize(layer_bytes * count as usize, 0);
+                                device.create_texture_with_data(
+                                    &queue,
+                                    &wgpu::TextureDescriptor {
+                                        label: Some(label),
+                                        size: wgpu::Extent3d {
+                                            width: size,
+                                            height: size,
+                                            depth_or_array_layers: count,
+                                        },
+                                        mip_level_count: levels,
+                                        sample_count: 1,
+                                        dimension: wgpu::TextureDimension::D2,
+                                        format: wgpu::TextureFormat::Rgba8Unorm,
+                                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                            | wgpu::TextureUsages::COPY_SRC
+                                            | wgpu::TextureUsages::COPY_DST,
+                                        view_formats: &[],
+                                    },
+                                    wgpu::util::TextureDataOrder::LayerMajor,
+                                    &data,
+                                )
                             },
-                            wgpu::util::TextureDataOrder::LayerMajor,
-                            &data,
                         )
-                    },
-                )
+                    })
+                    .collect()
             });
         let sprite_textures: Vec<wgpu::Texture> = prepared
             .sprites
@@ -2795,6 +2862,11 @@ impl Renderer {
                     &mips,
                 )
             })
+            .collect();
+        let material_animations = animations
+            .iter()
+            .filter(|a| a.has_materials())
+            .cloned()
             .collect();
         let animations = animate::SpriteAnimator::new(
             &device,
@@ -2995,7 +3067,7 @@ impl Renderer {
         let glint_armor_view = glint_armor_texture.create_view(&Default::default());
         let mut hud = HudRenderer::new(
             &device,
-            config.format.remove_srgb_suffix(),
+            frame_format,
             &atlas_view,
             &glint_view,
             &glint_sampler,
@@ -3088,12 +3160,8 @@ impl Renderer {
                     },
                 )],
             });
-        let weather = weather::Weather::new(
-            &device,
-            config.format.remove_srgb_suffix(),
-            &entity_bindings,
-            &entity_shader,
-        );
+        let weather =
+            weather::Weather::new(&device, frame_format, &entity_bindings, &entity_shader);
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Atlas"),
             ..Default::default()
@@ -3297,7 +3365,7 @@ impl Renderer {
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend: Some(blend),
                         write_mask,
                     })],
@@ -3477,7 +3545,7 @@ impl Renderer {
                     entry_point: Some("fs_entity"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         // fs_entity's discard handles binary cutout alpha. Any
                         // sprite with fractional alpha stays on the blended
                         // dynamic entity path.
@@ -3569,7 +3637,7 @@ impl Renderer {
                 entry_point: Some("fs_celestial"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -3606,7 +3674,7 @@ impl Renderer {
         // HDR output's mark on lightning bolts: fs_hdr_mark over the bolts' own vertex layout,
         // as hdr_mark_pipeline marks entities and particles (only alpha written).
         let mark_targets = [Some(wgpu::ColorTargetState {
-            format: config.format.remove_srgb_suffix(),
+            format: frame_format,
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALPHA,
         })];
@@ -3661,7 +3729,7 @@ impl Renderer {
                 entry_point: Some("fs_sky_celestial"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     // RenderPipelines.CELESTIAL: additive (src alpha, one), with
                     // the colour premultiplied in fs_sky_celestial. Its alpha is
                     // how much a texel adds: HDR output (hdr.wgsl) lets the sun's
@@ -3835,7 +3903,7 @@ impl Renderer {
                 entry_point: Some("fs_border"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -3913,7 +3981,7 @@ impl Renderer {
                     entry_point: Some(entry),
                     compilation_options,
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend: Some(blend),
                         // 8 and up: colour only, for a tint of the world in HDR output.
                         write_mask: if i & 8 == 0 {
@@ -4064,13 +4132,7 @@ impl Renderer {
                 log::info!(
                     "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
                 );
-                visbuffer::Visbuffer::new(
-                    &device,
-                    &bindings,
-                    f,
-                    config.format.remove_srgb_suffix(),
-                    &sprite_constants,
-                )
+                visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
         let multi_draw = device
             .features()
@@ -4132,8 +4194,7 @@ impl Renderer {
                 _ => depth_test,
             })
             .map(|depth_test| {
-                let mut cull =
-                    cull::Cull::new(&device, config.format.remove_srgb_suffix(), depth_test);
+                let mut cull = cull::Cull::new(&device, frame_format, depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
                 if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
@@ -4141,17 +4202,16 @@ impl Renderer {
                 cull
             });
         let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
+        let world_post = world_post::Post::new(&device, frame_format);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
-        let stars = stars::Stars::new(&device, config.format.remove_srgb_suffix());
+        let stars = stars::Stars::new(&device, frame_format);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
-            config.format.remove_srgb_suffix(),
+            frame_format,
         );
-        let panorama =
-            panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
+        let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -4308,6 +4368,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
+            material_animations,
             active_animated_layers: vec![0; active_layer_words],
             uploads,
             section_uploads,
@@ -4372,6 +4433,7 @@ impl Renderer {
             hdr: None,
             emission_stats,
             hdr_output,
+            frame_format,
             hdr_marker: None,
             pack_post: None,
             native: None,
@@ -4381,6 +4443,7 @@ impl Renderer {
             cloud_bindings,
             pack_weather: None,
             pack_atlas: None,
+            pack_material_atlases: None,
             pack_terrain_flat: false,
             separate_ao: false,
             hud,
@@ -4471,7 +4534,7 @@ impl Renderer {
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
     /// outline, or the built-in one.
     pub fn set_lines_shader(&mut self, program: Option<&horizon_shaders::CoreProgram>) {
-        let format = self.config.format.remove_srgb_suffix();
+        let format = self.frame_format;
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
     }
@@ -5826,7 +5889,7 @@ impl Renderer {
             } else {
                 DisplayWatch::default()
             };
-            let format = self.config.format.remove_srgb_suffix();
+            let format = self.frame_format;
             self.hdr =
                 output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
             self.configure_surface();
@@ -5936,6 +5999,7 @@ impl Renderer {
     ) -> Option<(Vec<String>, Vec<String>)> {
         if pack.is_none() {
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         let instance = wgpu::vertex_attr_array![5=>Float32x4];
         let vertex = wgpu::VertexBufferLayout {
@@ -5953,6 +6017,10 @@ impl Renderer {
         let post = pack.map(|post| {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+                material_maps: self
+                    .pack_material_atlases
+                    .as_ref()
+                    .map(|a| [a[0].view.clone(), a[1].view.clone()]),
                 lightmap: self.lightmap_view.clone(),
                 gui_size: self
                     .hud
@@ -5964,6 +6032,7 @@ impl Renderer {
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
+                    material_maps: true,
                     ids: None,
                     cull: true,
                 }),
@@ -5982,7 +6051,7 @@ impl Renderer {
                 &self.queue,
                 &self.adapter,
                 post,
-                self.config.format.remove_srgb_suffix(),
+                self.frame_format,
                 world,
             )
         });
@@ -6033,12 +6102,12 @@ impl Renderer {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
-            format: self.config.format.remove_srgb_suffix(),
+            format: self.frame_format,
             sprite_tags: &sprite_tags,
             sprite_materials: &sprite_materials,
             entities: &self.entity_bindings,
             weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
-            pbr: self.pbr_maps.as_ref(),
+            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
         };
         let (pack, labels) = native_pack::NativePack::new(
             &self.device,
@@ -6052,6 +6121,7 @@ impl Renderer {
         if self.native.is_some() {
             self.pack_post = None;
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         Ok(labels)
     }
@@ -6106,6 +6176,20 @@ impl Renderer {
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
+            self.pack_material_atlases = atlas.as_ref().and_then(|_| {
+                let maps = self.pbr_maps.as_ref()?;
+                let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
+                    let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
+                    pack_atlas::PackAtlas::material(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.sprite_split,
+                        layers,
+                    )
+                };
+                Some([make(0, &mut encoder)?, make(1, &mut encoder)?])
+            });
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
@@ -6337,6 +6421,49 @@ impl Renderer {
             active,
             self.own_timing.as_mut(),
         );
+        if let Some(arrays) = &self.pbr_maps {
+            for animation in &self.material_animations {
+                if !self.animations.changed().contains(&animation.layer) {
+                    continue;
+                }
+                let Some(pair) = arrays.get((animation.layer / self.sprite_split) as usize) else {
+                    continue;
+                };
+                for kind in 0..2 {
+                    let Some(pixels) = animation.material_pixels(kind, tick) else {
+                        continue;
+                    };
+                    let texture = &pair[kind];
+                    let from = (pixels.len() / 4).isqrt() as u32;
+                    for level in 0..texture.mip_level_count() {
+                        let size = texture.width() >> level;
+                        let pixels = crate::sprites::resample(pixels, from, size);
+                        self.uploads.texture(
+                            encoder,
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: level,
+                                origin: wgpu::Origin3d {
+                                    x: 0,
+                                    y: 0,
+                                    z: animation.layer % self.sprite_split,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            size,
+                            size,
+                            &pixels,
+                        );
+                    }
+                }
+            }
+            if let Some(atlases) = &self.pack_material_atlases {
+                for kind in 0..2 {
+                    let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
+                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                }
+            }
+        }
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -6422,6 +6549,12 @@ impl Renderer {
         let mut config = self.config.clone();
         [config.width, config.height] = size;
         config.usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        if self.frame_format != config.format.remove_srgb_suffix() {
+            // A 16-bit frame, read back through an 8-bit copy (`take_readback`).
+            config.format = self.frame_format;
+            config.view_formats = vec![self.frame_format];
+            config.usage |= wgpu::TextureUsages::TEXTURE_BINDING;
+        }
         // Out of video memory (an invalid texture's view is a validation error):
         // tried again at half the size next frame; the window keeps its last one.
         let checks = GpuChecks::push(&self.device);
@@ -6523,10 +6656,11 @@ impl Renderer {
         laps.lap("r_prepare");
         // Frame generation: its present thread acquires and presents, this frame draws
         // into frames of its own. Not over menus that blur the frame, a shader pack's
-        // own post passes, HDR or the title screen.
+        // own post passes, HDR (or the 16-bit frame it was started with) or the title screen.
         let fg = self.frame_gen.on
             && !self.frame_gen.paused
             && self.hdr.is_none()
+            && self.frame_format == self.config.format.remove_srgb_suffix()
             && !frame.title
             && frame.menu_blur.is_none()
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
@@ -6602,11 +6736,16 @@ impl Renderer {
         let target_texture = match (&surface_frame, &mut self.hdr) {
             _ if let Some((real, _)) = &fg_frames => real.clone(),
             (Some(_), Some(hdr)) => hdr.frame(&self.device, size),
-            // A screenshot of a swapchain without COPY_SRC (OpenGL) draws
-            // into a texture that has it, then onto the swapchain.
+            // A screenshot of a swapchain without COPY_SRC (OpenGL), and a 16-bit frame
+            // with HDR off, draw into a texture of their own, then onto the swapchain.
             (Some(f), None) => self
                 .readback
-                .target(&self.device, &f.texture, self.screenshot.is_some())
+                .target(
+                    &self.device,
+                    &f.texture,
+                    self.frame_format,
+                    self.screenshot.is_some(),
+                )
                 .unwrap_or_else(|| f.texture.clone()),
             (None, _) => self.offscreen.clone().ok_or("no offscreen target")?,
         };
@@ -8168,7 +8307,7 @@ impl Renderer {
             self.drawn_sections += gpu.records.live();
         }
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.config.format.remove_srgb_suffix()),
+            format: Some(self.frame_format),
             ..Default::default()
         });
         if let Some(timer) = &mut self.gpu_timer {
@@ -8274,7 +8413,7 @@ impl Renderer {
             let (device, layout, sprites) =
                 (&self.device, &self.terrain_layout, self.terrain_sprites);
             let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
-            let format = self.config.format.remove_srgb_suffix();
+            let format = self.frame_format;
             let flat = self
                 .flat
                 .as_ref()
@@ -8451,7 +8590,7 @@ impl Renderer {
             && let Some(sky) = &native.sky
         {
             if let Some(t) = &mut native.timing {
-                let format = self.config.format.remove_srgb_suffix();
+                let format = self.frame_format;
                 t.mark(&self.device, &mut encoder, (world_view, format));
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -8514,7 +8653,7 @@ impl Renderer {
                     size,
                     color: target(
                         "Water mirror",
-                        self.config.format.remove_srgb_suffix(),
+                        self.frame_format,
                         wgpu::TextureUsages::RENDER_ATTACHMENT
                             | wgpu::TextureUsages::TEXTURE_BINDING,
                     ),
@@ -9737,7 +9876,7 @@ impl Renderer {
                 encoder: &mut encoder,
                 color: &target_texture,
                 color_view: &view_target,
-                color_format: self.config.format.remove_srgb_suffix(),
+                color_format: self.frame_format,
                 size,
                 depth,
                 depth_size,
@@ -9777,7 +9916,7 @@ impl Renderer {
             timer.end(
                 &self.device,
                 &mut encoder,
-                (&view_target, self.config.format.remove_srgb_suffix()),
+                (&view_target, self.frame_format),
             );
         }
         laps.lap("r_passes");
@@ -10075,7 +10214,7 @@ impl Renderer {
                 encoder: &mut *encoder,
                 color: target_texture,
                 color_view: view_target,
-                color_format: self.config.format.remove_srgb_suffix(),
+                color_format: self.frame_format,
                 size: [self.config.width, self.config.height],
                 hand: if overlay.hand_drawn { frame.hand } else { &[] },
                 view_proj: overlay.hand_view_proj,
@@ -10245,7 +10384,7 @@ impl Renderer {
             timing.as_mut(),
         );
         if let Some(radius) = menu_blur {
-            let format = self.config.format;
+            let format = self.frame_format;
             let device = &self.device;
             let software = is_software(self.info.device_type);
             self.menu_blur
@@ -10396,6 +10535,15 @@ impl Renderer {
         // the row stride too small for the copy and abort in validation.
         if self.config.format.block_copy_size(None) == Some(4) {
             let size = [self.config.width, self.config.height];
+            // The 16-bit frame is read through an 8-bit copy in the swapchain's format.
+            let copy = (texture.format() != self.config.format.remove_srgb_suffix()
+                && texture.format() == self.frame_format)
+                .then(|| {
+                    let format = self.config.format.remove_srgb_suffix();
+                    self.readback
+                        .unorm_copy(&self.device, encoder, texture, format)
+                });
+            let texture = copy.as_ref().unwrap_or(texture);
             Some((request, copy_frame(&self.device, encoder, texture, size)))
         } else {
             self.screenshot_result = Some(Err(format!(
@@ -11025,6 +11173,72 @@ mod tests {
             Rgba8Unorm,
         ];
         assert_eq!(surface_format(&without_bgra, Rgba8UnormSrgb), Rgba8Unorm);
+    }
+    /// The 16-bit frame only with HDR on, Smooth Gradients on, an HDR surface and a device
+    /// that draws it; in every other case the swapchain's 8-bit format, as before it existed.
+    #[test]
+    fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
+        use super::frame_format;
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
+        assert_eq!(frame_format(true, true, true, Bgra8Unorm), Rgba16Unorm);
+        for (wide_frame, hdr_offered, draws) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb),
+                Bgra8Unorm
+            );
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Rgba8Unorm),
+                Rgba8Unorm
+            );
+        }
+    }
+    /// What `draws_wide_frame` needs of a device: both features, and the usages and flags
+    /// every pass takes of the frame. Missing any one of them keeps the 8-bit frame.
+    #[test]
+    fn the_16_bit_frame_needs_every_usage_and_flag_the_passes_take() {
+        use super::draws_wide_frame;
+        use wgpu::{Features as F, TextureFormatFeatureFlags as Fl, TextureUsages as U};
+        let features = F::TEXTURE_FORMAT_16BIT_NORM | F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let usages = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC | U::COPY_DST;
+        let flags = Fl::BLENDABLE | Fl::FILTERABLE;
+        let format = |allowed_usages, flags| wgpu::TextureFormatFeatures {
+            allowed_usages,
+            flags,
+        };
+        // A desktop GPU: all of it, and more.
+        assert!(draws_wide_frame(
+            features | F::FLOAT32_FILTERABLE,
+            format(usages | U::STORAGE_BINDING, flags | Fl::MULTISAMPLE_X4),
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_FORMAT_16BIT_NORM,
+            format(usages, flags)
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            format(usages, flags)
+        ));
+        // A downlevel device reports no usages at all for a format it lacks.
+        assert!(!draws_wide_frame(
+            F::empty(),
+            format(U::empty(), Fl::empty())
+        ));
+        for usage in [
+            U::RENDER_ATTACHMENT,
+            U::TEXTURE_BINDING,
+            U::COPY_SRC,
+            U::COPY_DST,
+        ] {
+            assert!(!draws_wide_frame(features, format(usages - usage, flags)));
+        }
+        for flag in [Fl::BLENDABLE, Fl::FILTERABLE] {
+            assert!(!draws_wide_frame(features, format(usages, flags - flag)));
+        }
     }
     #[test]
     fn special_material_batches_preserve_quad_order_and_offsets() {

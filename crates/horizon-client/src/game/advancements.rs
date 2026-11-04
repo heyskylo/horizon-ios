@@ -438,6 +438,16 @@ impl Game<'_> {
         )
     }
     pub(super) fn player_entity(&self) -> EntityView {
+        self.player_entity_looking(true)
+    }
+    /// [`Self::player_entity`] for `trigger`'s criteria: what the player
+    /// looks at only when one of them may ask (a ray against every entity
+    /// each tick otherwise).
+    fn player_entity_for(&self, trigger: &str) -> EntityView {
+        self.player_entity_looking(self.adv.tree.may_look(trigger))
+    }
+    /// The player as predicates see it, with what it looks at when `looking`.
+    fn player_entity_looking(&self, looking: bool) -> EntityView {
         let Some(p) = self.player.as_ref() else {
             return EntityView::default();
         };
@@ -484,6 +494,11 @@ impl Game<'_> {
                 })
                 .collect(),
             gamemode: Some(self.mode.name().to_owned()),
+            // Vanilla looks for it inside PlayerPredicate.matches whatever the
+            // trigger; skipped for a tick or location whose criteria can't ask.
+            looking_at: looking
+                .then(|| self.looking_at_entity().map(Box::new))
+                .flatten(),
             ..Default::default()
         }
     }
@@ -693,7 +708,9 @@ impl Game<'_> {
         for r in &allowed {
             let list = tree.recipe_criteria(r);
             self.trigger_criteria(&tree, &list, |c, _| {
-                c["recipes"].as_str() == Some(r.as_str())
+                c["recipes"]
+                    .as_str()
+                    .is_some_and(|id| adv::full(id) == r.as_str())
             });
         }
     }
@@ -898,7 +915,7 @@ impl Game<'_> {
         }
         self.check_inventory_trigger();
         // ServerPlayer.tick: PlayerTrigger.TICK every tick.
-        let me = self.player_entity();
+        let me = self.player_entity_for("minecraft:tick");
         self.trigger("minecraft:tick", |c, w| {
             let ctx = adv::Entities {
                 this: Some(&me),
@@ -932,7 +949,7 @@ impl Game<'_> {
         }
         self.tick_marks();
         if self.ticks.is_multiple_of(20) {
-            let me = self.player_entity();
+            let me = self.player_entity_for("minecraft:location");
             self.trigger("minecraft:location", |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
@@ -1213,14 +1230,12 @@ impl Game<'_> {
                 && adv::range_i(&c["delta"], damage - new_damage)
         });
     }
-    /// `ServerPlayer.updateUsingItem`: USING_ITEM for the item in use, with
-    /// what the player looks at (`PlayerPredicate.lookingAt`).
+    /// `ServerPlayer.updateUsingItem`: USING_ITEM for the item in use.
     pub(super) fn trigger_using_item(&mut self, stack: &ItemStack) {
         if self.remote.is_some() || self.no_player_here() {
             return;
         }
-        let mut me = self.player_entity();
-        me.looking_at = self.looking_at_entity().map(Box::new);
+        let me = self.player_entity();
         let it = item_view(stack);
         self.trigger("minecraft:using_item", move |c, w| {
             let pctx = adv::Entities {
@@ -1232,24 +1247,60 @@ impl Game<'_> {
             adv::conditions(&c["player"], &pctx, w) && adv::item(&c["item"], &it, w)
         });
     }
-    /// The mob a 100 block ray from the eyes meets first, if no block is in
-    /// the way (`ProjectileUtil.getEntityHitResult` and `hasLineOfSight`).
+    /// The entity a 100 block ray from the eyes meets first, if no block is
+    /// in the way (`ProjectileUtil.getEntityHitResult` over every entity but
+    /// the player that is not a spectator, then `hasLineOfSight`).
     fn looking_at_entity(&self) -> Option<EntityView> {
+        use super::commands::Target;
+        use super::entity::{Entity as _, entity_lists_of, for_each_entity};
+        use horizon_core::geometry::Aabb;
         let eye = self.eye_position()?;
         let dir = super::view_vector(self.yaw, self.pitch);
-        let (m, _) = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .filter_map(|m| Some((m, super::ray_box(eye, dir, 100.0, m.bounds())?)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        let mut best: Option<(Target, f64)> = None;
+        let mut offer = |t: Option<Target>, b: Aabb| {
+            if let Some(t) = t
+                && let Some(d) = super::ray_box(eye, dir, 100.0, b)
+                && best.is_none_or(|(_, bd)| d < bd)
+            {
+                best = Some((t, d));
+            }
+        };
+        for_each_entity!(entity_lists_of!(self), e => {
+            if !e.is_removed() {
+                offer(e.selector_target(), e.bounds());
+            }
+        });
+        let aabb = |(lo, hi): ([f64; 3], [f64; 3])| {
+            Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            )
+        };
+        for f in self.item_frames.iter() {
+            offer(Some(Target::Frame(f.id)), aabb(f.bounds()));
+        }
+        for p in self.paintings.iter() {
+            offer(Some(Target::Painting(p.id)), aabb(p.bounds()));
+        }
+        for c in self.crystals.iter() {
+            offer(Some(Target::Crystal(c.id)), c.bounds());
+        }
+        let (t, _) = best?;
         // `LivingEntity.hasLineOfSight`: eye to the target's eye height,
         // `ClipContext.Block.COLLIDER`, no fluids, within 128 blocks.
+        let at = self.target_position(t)?;
         let from = Vec3::new(eye[0], eye[1], eye[2]);
-        let to = Vec3::new(m.position.x, m.eye_y(), m.position.z);
+        let to = Vec3::new(at[0], at[1] + self.target_eye_height(t), at[2]);
         let world = self.mob_world_base(&[]);
         let clear = to.distance(from) <= 128.0 && world.clear_between(from, to, false);
-        clear.then(|| self.mob_entity(m))
+        if !clear {
+            return None;
+        }
+        Some(match t {
+            Target::Mob(id) => self.mob_entity(self.mobs.iter().find(|m| m.id == id)?),
+            Target::Boat(id) => self.boat_entity(self.boats.iter().find(|b| b.id == id)?),
+            other => self.entity_view_of(other),
+        })
     }
     /// `PlayerHurtEntityTrigger`: the player, the damage and the victim.
     pub(super) fn trigger_player_hurt_entity(
@@ -1776,8 +1827,8 @@ impl Game<'_> {
     pub(super) fn trigger_dimension(&mut self, from: Dim, to: Dim, at: [f64; 3]) {
         let (from_id, to_id) = (from.id().to_owned(), to.id().to_owned());
         self.trigger("minecraft:changed_dimension", move |c, _| {
-            c["from"].as_str().is_none_or(|f| f == from_id)
-                && c["to"].as_str().is_none_or(|t| t == to_id)
+            c["from"].as_str().is_none_or(|f| adv::full(f) == from_id)
+                && c["to"].as_str().is_none_or(|t| adv::full(t) == to_id)
         });
         if from == Dim::Overworld && to == Dim::Nether {
             self.adv.marks.nether = Some(at);
@@ -2138,6 +2189,39 @@ pub(super) fn text_of(v: &Value) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn looking_at_triggers_are_the_ones_that_ask() {
+        let criterion = |trigger: &str, conditions: serde_json::Value| adv::Criterion {
+            name: "c".into(),
+            trigger: trigger.into(),
+            conditions: horizon_world::lazy_json::LazyJson::new(&conditions),
+        };
+        let looking = serde_json::json!({"player": {"type": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:type_specific/player":
+            {"looking_at": {"minecraft:entity_type": "minecraft:oak_boat"}}}}});
+        let reference = serde_json::json!({"player": [{"condition": "minecraft:reference",
+            "name": "pack:looks"}]});
+        let plain = serde_json::json!({"player": {"type": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:flags": {"is_sneaking": true}}}});
+        let mut tree = Tree::default();
+        tree.list.push(adv::Advancement {
+            id: "pack:a".into(),
+            parent: None,
+            display: None,
+            criteria: vec![
+                criterion("minecraft:using_item", looking),
+                criterion("minecraft:location", reference),
+                criterion("minecraft:tick", plain),
+            ],
+            requirements: Vec::new(),
+            rewards: Default::default(),
+        });
+        tree.index_looking_at();
+        assert!(tree.may_look("minecraft:using_item"));
+        assert!(tree.may_look("minecraft:location"));
+        assert!(!tree.may_look("minecraft:tick"));
+    }
 
     #[test]
     fn toast_labels_are_yellow_or_pink() {

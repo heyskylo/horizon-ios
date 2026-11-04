@@ -187,6 +187,98 @@ impl Game<'_> {
                 self.set_default_game_mode(state.game_mode);
                 return json!({ "value": GAME_MODES[state.game_mode as usize] });
             }
+            "serversettings/entity_broadcast_range" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
+            "serversettings/entity_broadcast_range/set" => {
+                let Some(percentage) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({
+                        "error": "entity broadcast range percentage must be an integer"
+                    });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(100, |host| host.hub.entity_range_percent);
+                // MinecraftServerSettingsServiceImpl logs the value asked for; the
+                // DedicatedServerProperties deserializer clamps what is applied and saved.
+                rpc(format!(
+                    "Update entity broadcast range percentage from {current}% to {percentage}%"
+                ));
+                let percentage = percentage.clamp(10, 1000);
+                self.set_entity_broadcast_range_percentage(percentage);
+                self.store_property("entity-broadcast-range-percentage", percentage.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
+            "serversettings/simulation_distance" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(0, |host| host.hub.config.simulation_distance)
+                });
+            }
+            "serversettings/simulation_distance/set" => {
+                let Some(distance) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "simulation distance must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.config.simulation_distance);
+                rpc(format!(
+                    "Update simulation distance from {current} to {distance}"
+                ));
+                self.set_simulation_distance(distance);
+                state.view.1 = distance.max(0) as u32;
+                self.store_property("simulation-distance", distance.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(0, |host| host.hub.config.simulation_distance)
+                });
+            }
+            "serversettings/view_distance" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
+            "serversettings/view_distance/set" => {
+                let Some(distance) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "view distance must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.config.view_distance);
+                rpc(format!("Update view distance from {current} to {distance}"));
+                self.set_view_distance(distance);
+                state.view.0 = distance.max(0) as u32;
+                self.store_property("view-distance", distance.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
             "serversettings/operator_user_permission_level" => {
                 return json!({ "value": state.op_level });
             }
@@ -224,6 +316,31 @@ impl Game<'_> {
                 state.force_game_mode = force;
                 self.set_force_game_mode(force);
                 return json!({ "value": state.force_game_mode });
+            }
+            "serversettings/spawn_protection_radius" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
+            }
+            "serversettings/spawn_protection_radius/set" => {
+                let Some(radius) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "spawn protection radius must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.spawn_protection);
+                rpc(format!(
+                    "Update spawn protection radius from {current} to {radius}"
+                ));
+                self.set_spawn_protection(radius);
+                self.store_property("spawn-protection", radius.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
             }
             "serversettings/allow_flight" => {
                 return json!({
