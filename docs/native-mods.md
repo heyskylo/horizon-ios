@@ -2789,6 +2789,13 @@ never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
 shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
 slot from filling that way, lower `max_stack`.
 
+### What a mod's container takes
+
+`native_container_accepts(pos, entity, slot, stack, face, cancel)` is a hook (NeoForge's `IItemHandler.isItemValid`).
+Hoppers, droppers and `native_insert_item` ask it before they put an item into a slot that the block's `ModContainer`
+lets them fill. Set `cancel` to refuse the item there: a millstone takes only what it has a recipe for. Players' clicks
+in a menu are `native_menu_slot_rules`' instead.
+
 ### Shift-click in a mod container
 
 `native_menu_quick_move(pos, entity, container_slots, slot, stack, handled)` is a mod container's

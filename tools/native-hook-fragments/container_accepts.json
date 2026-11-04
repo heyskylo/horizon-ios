@@ -1,0 +1,20 @@
+{
+  "hooks": [
+    {
+      "name": "container_accepts",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_container_accepts",
+      "neoforge": "IItemHandler.isItemValid (Capabilities.Item.BLOCK)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a mod container's say on which items it takes (`native_container_accepts`).",
+  "doc_summary": "`native_container_accepts(pos, entity, slot, stack, face, cancel)` is asked before a hopper, a dropper or `native_insert_item` puts an item into a slot of a mod's container that its `ModContainer` lets be filled; set `cancel` to refuse it, as `IItemHandler.isItemValid` returning false. Bundles need \"hooks\": @API:container_accepts@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_hooks.rs"
+  ]
+}
