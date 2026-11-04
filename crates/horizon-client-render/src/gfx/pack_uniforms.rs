@@ -718,6 +718,13 @@ fn components(name: &str) -> usize {
     }
 }
 
+/// What `name` gives custom uniforms before the first frame: zeros, at its size, so their
+/// shapes check out as on a frame (#9086).
+pub fn zero(name: &str) -> Option<horizon_shaders::Val> {
+    index(name)?;
+    Some(horizon_shaders::Val::vector(&[0.0; 16][..components(name)]))
+}
+
 /// The position of `name` in [`NAMES`].
 pub fn index(name: &str) -> Option<usize> {
     NAMES.iter().position(|n| *n == name)
@@ -750,6 +757,22 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    /// The load-time run of custom uniforms sees each built-in at its size: Iris 1.11.7 reads 2
+    /// for the first line of our probes K and X (#9086) and 0 for the others.
+    #[test]
+    fn custom_uniforms_check_the_shapes_of_built_ins_before_the_first_frame() {
+        let properties = horizon_shaders::Properties::parse(
+            "uniform.vec3.a = skyColor * vec3(0.0, 0.0, 0.0) + vec3(2.0, 2.0, 2.0)\n\
+             uniform.float.b = skyColor\n\
+             uniform.float.c = gbufferModelView * 0.0 + 2.0\n",
+            &horizon_shaders::Macros::standard(),
+        );
+        let mut custom = horizon_shaders::Custom::parse(&properties);
+        custom.eval(0.0, &zero);
+        let broken: Vec<&str> = custom.notes.iter().map(|n| &n[1..2]).collect();
+        assert_eq!(broken, ["b", "c"], "{:?}", custom.notes);
     }
 
     /// Iris's status uniforms as its documentation defines them (shaders.properties, "Status").

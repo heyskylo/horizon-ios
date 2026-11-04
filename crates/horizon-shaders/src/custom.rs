@@ -15,6 +15,9 @@
 //!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
 //!   the name is in an `if` branch not taken, and so does every expression using its uniform or
 //!   variable. Only the names of [`NOT_GIVEN_YET`] read 0 alone.
+//! - Shapes, as in Iris 1.11.7 (#9086): an expression without its declared shape, or joining a
+//!   vector and a scalar, reads 0 as a whole, and so does everything using it. The rules
+//!   ([`Shape`]) are a fit to our probe packs.
 
 use std::collections::{HashMap, HashSet};
 
@@ -246,6 +249,9 @@ impl Custom {
                     item.name
                 ));
                 broken[i] = true;
+            } else if let Err(why) = self.typed(item, builtin) {
+                self.notes.push(format!("`{}` reads 0: {why}", item.name));
+                broken[i] = true;
             }
             uses.push(names.into_iter().filter(|n| items.contains(n)).collect());
         }
@@ -268,6 +274,29 @@ impl Custom {
             if !changed {
                 return broken;
             }
+        }
+    }
+
+    /// Whether `item`'s expression has its declared shape, by the rules of [`Shape`].
+    fn typed(&self, item: &Item, builtin: &dyn Fn(&str) -> Option<Val>) -> Result<(), String> {
+        let name_shape = |n: &str| {
+            if let Some(other) = self.items.iter().find(|i| i.name == n) {
+                return Shape::declared(&other.ty);
+            }
+            match builtin(n) {
+                Some(v) if !NOT_GIVEN_YET.contains(&n) => Shape::of(v.n),
+                // A constant, `pi`, `true` or `false`; the names of `NOT_GIVEN_YET` keep their
+                // shape unknown, so they don't fail anything.
+                _ if NOT_GIVEN_YET.contains(&n) => Shape::Any,
+                _ => Shape::Scalar,
+            }
+        };
+        let got = shape(&item.expr, &name_shape)?;
+        let want = Shape::declared(&item.ty);
+        if got.fits(want) {
+            Ok(())
+        } else {
+            Err(format!("it gives {got} where `{}` is declared", item.ty))
         }
     }
 
@@ -641,6 +670,134 @@ fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
     }
 }
 
+/// What an expression gives, for the type check Iris 1.11.7 makes before it keeps a custom
+/// uniform or variable (#9086). The rules are a fit to our probe packs' values in Iris, not a
+/// rule Iris documents:
+/// - `+ - * / %` take two scalars or two vectors of one size: `vec3 * 2.0`, `2.0 * vec3` and
+///   `vec3 + vec2` read 0. Unary minus keeps the shape; comparisons, `&&`, `!` and the
+///   conditions of `if` take scalars (`||` too, by analogy: not probed).
+/// - `vecN(...)` takes exactly N scalars: `vec3(2.0)`, `vec3(vec2, 2.0)` and `vec3(vec3)` read 0.
+/// - `abs`, `floor` and `ceil` take any shape; `min` and `max` take two of one shape, or scalars
+///   only; `clamp` three of one shape; `if` a scalar condition and two values of one shape, or
+///   scalars only (`if(c1, v, c2, v, v)` with vectors reads 0). Every other function takes
+///   scalars only (probed with a vector: `ifb`, `sin`, `sqrt`, `pow`, `mix`, `fmod`, `smooth`,
+///   `atan2`, `between`, `frac`, `round`, `sign` and 15 more).
+/// - A matrix counts only through a component (`m.0.1`).
+/// - The result must be a scalar for `float`, `int` and `bool`, and the declared vector for `vecN`:
+///   `float = skyColor` and `vec3 = 2.0` read 0.
+///
+/// Not checked here: Iris also tells `int`, `float` and `bool` apart (our probe reads 0 for
+/// `int = 2.0` and `float = 1 > 0`); that needs each built-in's scalar type.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shape {
+    /// A name whose shape we don't know (one of [`NOT_GIVEN_YET`]): it fits anything.
+    Any,
+    Scalar,
+    Vector(usize),
+    Matrix,
+}
+
+impl Shape {
+    fn of(components: usize) -> Self {
+        match components {
+            1 => Shape::Scalar,
+            2..=4 => Shape::Vector(components),
+            _ => Shape::Matrix,
+        }
+    }
+    fn declared(ty: &str) -> Self {
+        match ty {
+            "vec2" | "vec3" | "vec4" => Shape::Vector((ty.as_bytes()[3] - b'0') as usize),
+            _ => Shape::Scalar,
+        }
+    }
+    fn fits(self, other: Shape) -> bool {
+        self == other || self == Shape::Any || other == Shape::Any
+    }
+    /// The shape `shapes` share, `Any` aside.
+    fn common(shapes: &[Shape]) -> Option<Shape> {
+        let mut out = Shape::Any;
+        for &s in shapes {
+            if !s.fits(out) {
+                return None;
+            }
+            if s != Shape::Any {
+                out = s;
+            }
+        }
+        Some(out)
+    }
+}
+
+impl std::fmt::Display for Shape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shape::Any => write!(f, "unknown"),
+            Shape::Scalar => write!(f, "a scalar"),
+            Shape::Vector(n) => write!(f, "a vec{n}"),
+            Shape::Matrix => write!(f, "a matrix"),
+        }
+    }
+}
+
+/// The shape of `e` (rules on [`Shape`]), or why it has none.
+fn shape(e: &Expr, name: &dyn Fn(&str) -> Shape) -> Result<Shape, String> {
+    let scalar = |s: Shape, what: &str| {
+        if s.fits(Shape::Scalar) {
+            Ok(Shape::Scalar)
+        } else {
+            Err(format!("{what} is given {s}"))
+        }
+    };
+    match e {
+        Expr::Num(_) => Ok(Shape::Scalar),
+        Expr::Name(_, Some(_)) => Ok(Shape::Scalar),
+        Expr::Name(n, None) => match name(n) {
+            Shape::Matrix => Err(format!("the matrix `{n}` is used without a component")),
+            s => Ok(s),
+        },
+        Expr::Neg(a) => shape(a, name),
+        Expr::Not(a) => scalar(shape(a, name)?, "`!`"),
+        Expr::Bin(op, a, b) => {
+            let (a, b) = (shape(a, name)?, shape(b, name)?);
+            if matches!(*op, "+" | "-" | "*" | "/" | "%") {
+                Shape::common(&[a, b]).ok_or_else(|| format!("`{op}` joins {a} and {b}"))
+            } else {
+                scalar(a, &format!("`{op}`"))?;
+                scalar(b, &format!("`{op}`"))
+            }
+        }
+        Expr::Call(f, args, _) => {
+            let a = args
+                .iter()
+                .map(|e| shape(e, name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let same = || Shape::common(&a).ok_or_else(|| format!("`{f}` mixes shapes"));
+            let all_scalar = a.iter().all(|s| s.fits(Shape::Scalar));
+            match f.as_str() {
+                "vec2" | "vec3" | "vec4" => {
+                    let n = (f.as_bytes()[3] - b'0') as usize;
+                    if a.len() == n && all_scalar {
+                        Ok(Shape::Vector(n))
+                    } else {
+                        Err(format!("`{f}` takes {n} scalars"))
+                    }
+                }
+                "abs" | "floor" | "ceil" if a.len() == 1 => Ok(a[0]),
+                "min" | "max" if all_scalar => Ok(Shape::Scalar),
+                "min" | "max" if a.len() == 2 => same(),
+                "clamp" if a.len() == 3 => same(),
+                "if" if a.len() == 3 && !all_scalar => {
+                    scalar(a[0], "the condition of `if`")?;
+                    Shape::common(&a[1..]).ok_or_else(|| format!("`{f}` mixes shapes"))
+                }
+                _ if all_scalar => Ok(Shape::Scalar),
+                _ => Err(format!("`{f}` takes scalars only")),
+            }
+        }
+    }
+}
+
 /// The names `e` reads, calls left out, in order.
 fn names_in<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
     match e {
@@ -730,7 +887,7 @@ mod tests {
                 3.0,
                 1.0,
                 -3.0,
-                12.0,
+                0.0,
                 2.0 + 2.5 + 2.0,
                 9.0 + 0.875,
                 0.0,
@@ -738,10 +895,12 @@ mod tests {
                 12.0
             ]
         );
-        assert_eq!(&v[3].v[..3], &[12.0, 128.0, 4.0]);
+        // `vec3 * 2` joins a vector and a scalar, which Iris 1.11.7 doesn't take (#9086).
+        assert_eq!(&v[3].v[..3], &[0.0, 0.0, 0.0]);
         assert_eq!(
             c.notes,
             [
+                "`e` reads 0: `*` joins a vec3 and a scalar",
                 "`h` reads 0: `unknownThing` is unknown to custom uniforms",
                 "`BIOME_PALE_GARDEN` names no biome; it reads -1",
                 "`BIOME_OLD` names no biome; it reads -1"
@@ -848,14 +1007,104 @@ mod tests {
             _ => Some(Val::scalar(1.0)),
         };
         let x: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
+        // `w` reads 0 as well: `vec3 * 0.0` joins a vector and a scalar (#9086).
         assert_eq!(
             x,
-            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 2.0, 2.0]
+            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 0.0, 2.0]
         );
-        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
+        assert_eq!(c.notes.len(), 10, "{:?}", c.notes);
         // The same on later frames, with no new notes.
         let again: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
         assert_eq!(again, x);
-        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
+        assert_eq!(c.notes.len(), 10, "{:?}", c.notes);
+    }
+
+    /// Iris 1.11.7, with our probe packs of #9086 (`final` drew each uniform, a vector's `.y`):
+    /// an expression without its declared shape, or joining a vector and a scalar, reads 0, and
+    /// so does a uniform using such a variable. Each row: the probe's line, then what Iris read
+    /// (`k5` reads our `skyColor.y` here; Iris read its own sky, 0.64). A variable isn't drawn:
+    /// its number follows Iris's warnings (`vbad` failed) and the uniforms reading it.
+    #[test]
+    fn an_expression_without_its_declared_shape_reads_zero() {
+        const ROWS: &str = "\
+            uniform.float.k0 = 2.0 | 2
+            uniform.float.k1 = skyColor * 0.0 + 2.0 | 0
+            uniform.vec3.k2 = skyColor * 0.0 + 2.0 | 0
+            uniform.float.k3 = skyColor.y * 0.0 + 2.0 | 2
+            uniform.vec3.k4 = vec3(skyColor.x * 0.0 + 2.0, skyColor.y * 0.0 + 2.0, skyColor.z * 0.0 + 2.0) | 2
+            uniform.vec3.k5 = skyColor | 0.5
+            uniform.float.k6 = skyColor | 0
+            uniform.vec3.k7 = vec3(2.0, 2.0, 2.0) * 1.0 | 0
+            uniform.vec3.k8 = vec3(2.0, 2.0, 2.0) + 0.0 | 0
+            uniform.vec3.k9 = skyColor * vec3(0.0, 0.0, 0.0) + vec3(2.0, 2.0, 2.0) | 2
+            uniform.float.k10 = vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec2.k11 = vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec3.w0 = 2.0 * vec3(1.0, 1.0, 1.0) | 0
+            uniform.vec3.w1 = vec3(4.0, 4.0, 4.0) / 2.0 | 0
+            uniform.vec3.w19 = vec3(2.0, 2.0, 2.0) % 3.0 | 0
+            uniform.vec3.w2 = -vec3(-2.0, -2.0, -2.0) | 2
+            uniform.vec3.z11 = vec3(4.0, 4.0, 4.0) / vec3(2.0, 2.0, 2.0) | 2
+            uniform.vec3.x0 = vec3(2.0, 2.0, 2.0) + vec2(0.0, 0.0) | 0
+            uniform.vec3.x17 = -skyColor + skyColor + vec3(2.0, 2.0, 2.0) | 2
+            uniform.bool.z0 = !vec3(0.0, 0.0, 0.0) | 0
+            uniform.bool.z2 = vec3(1.0, 1.0, 1.0) < vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec3.w5 = 2.0 | 0
+            uniform.vec3.w6 = vec3(2.0) | 0
+            uniform.vec3.z10 = vec3(2.0, 2.0) | 0
+            uniform.vec3.w7 = vec3(vec2(2.0, 2.0), 2.0) | 0
+            uniform.vec3.x6 = vec3(vec3(2.0, 2.0, 2.0)) | 0
+            uniform.vec2.x8 = vec2(frameCounter * 0 + 2, 2) | 2
+            uniform.vec4.w4 = vec4(2.0, 2.0, 2.0, 2.0) | 2
+            uniform.vec3.w11 = abs(vec3(-2.0, -2.0, -2.0)) | 2
+            uniform.vec2.z5 = floor(vec3(2.5, 2.5, 2.5)) | 0
+            uniform.float.z6 = abs(skyColor) | 0
+            uniform.vec3.w10 = max(vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 2
+            uniform.vec3.w9 = max(vec3(2.0, 2.0, 2.0), 0.0) | 0
+            uniform.vec3.x12 = min(vec3(2.0, 2.0, 2.0), vec3(3.0, 3.0, 3.0), vec3(4.0, 4.0, 4.0)) | 0
+            uniform.vec3.y3 = clamp(vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0), vec3(3.0, 3.0, 3.0)) | 2
+            uniform.vec3.w12 = clamp(vec3(2.0, 2.0, 2.0), 0.0, 3.0) | 0
+            uniform.vec3.y9 = sqrt(vec3(4.0, 4.0, 4.0)) | 0
+            uniform.vec3.x3 = pow(vec3(2.0, 2.0, 2.0), 1.0) | 0
+            uniform.vec3.x11 = smooth(vec3(2.0, 2.0, 2.0), 0.0001, 0.0001) | 0
+            uniform.vec3.w8 = if(1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 2
+            uniform.vec3.x19 = if(1.0 > 0.0, vec3(2.0, 2.0, 2.0), 0.0) | 0
+            uniform.float.x9 = if(vec3(1.0, 1.0, 1.0), 2.0, 0.0) | 0
+            uniform.vec3.z12 = if(1.0 < 0.0, vec3(0.0, 0.0, 0.0), 1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 0
+            uniform.vec3.z9 = ifb(1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 0
+            uniform.float.x15 = gbufferModelView * 0.0 + 2.0 | 0
+            uniform.float.x16 = gbufferModelView.0.0 * 0.0 + 2.0 | 2
+            variable.vec3.vbad = vec3(2.0, 2.0, 2.0) * 1.0 | 0
+            uniform.float.w13 = vbad.y | 0
+            variable.vec3.vgood = vec3(2.0, 2.0, 2.0) | 2
+            uniform.float.w14 = vgood.y | 2
+            uniform.vec3.w16 = vgood * vgood * vec3(0.5, 0.5, 0.5) | 2";
+        let rows: Vec<(&str, f64)> = (ROWS.lines())
+            .map(|l| l.trim().split_once(" | ").unwrap())
+            .map(|(line, x)| (line, x.parse().unwrap()))
+            .collect();
+        let mut c = custom(
+            &rows
+                .iter()
+                .map(|r| format!("{}\n", r.0))
+                .collect::<String>(),
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let builtin = |n: &str| match n {
+            "skyColor" => Some(Val::vector(&[0.25, 0.5, 0.75])),
+            "gbufferModelView" => Some(Val::vector(&[0.0; 16])),
+            "frameCounter" => Some(Val::scalar(7.0)),
+            _ => None,
+        };
+        let got = c.eval(0.016, &builtin);
+        let uniforms = rows.iter().filter(|r| r.0.starts_with("uniform."));
+        assert_eq!(got.len(), uniforms.clone().count());
+        for (v, (line, x)) in got.iter().zip(uniforms) {
+            // A vector shows its `.y`, as the probe drew it; one reading 0 is 0 throughout.
+            let shown = v.v[usize::from(v.n > 1)];
+            assert!((shown - x).abs() < 1e-9, "{line}: {shown}, Iris {x}");
+            assert!(*x != 0.0 || v.v[..v.n].iter().all(|&c| c == 0.0), "{line}");
+        }
+        let zeros = rows.iter().filter(|r| r.1 == 0.0).count();
+        assert_eq!(c.notes.len(), zeros, "{:?}", c.notes);
     }
 }
