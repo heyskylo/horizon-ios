@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "block_face_sprite", "target": "horizon_client::game::native_block_sprites::Game<'_>::native_block_face_sprite"}
+  ],
+  "rust_summary": "the texture a block state shows on a side, by the name the block entity drawing helpers take (`native_block_face_sprite`), for copycat blocks.",
+  "doc_summary": "`native_block_face_sprite(state, side)` names the texture a block state's model shows on a side and its tint index, as `native_draw_cube` takes it: a copycat block draws its material's textures on its own shape. Bundles need \"hooks\": @API:block_face_sprite@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_sprites.rs"
+  ]
+}

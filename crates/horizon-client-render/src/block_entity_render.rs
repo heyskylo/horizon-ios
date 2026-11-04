@@ -695,11 +695,23 @@ const TEXT_OVER_OUTLINE: f32 = 0.05;
 /// reader instead (a twentieth of a font pixel, invisible) rather than
 /// z-fighting with the outline under it.
 fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
+    text_vertices(scene.glyph, call, out);
+}
+
+/// `draw_text` with the font's glyph cells and advances from `glyph`: the
+/// text of `call` as glyph quads in its matrix's plane, 1 unit a font pixel,
+/// y down as the font's, with its outline when it has one. A native mod's
+/// block entity draws its text this way (`native_draw_text`).
+pub fn text_vertices(
+    glyph: &dyn Fn(char) -> (Option<Rect>, f32),
+    call: &TextCall,
+    out: &mut Vec<Vertex>,
+) {
     let mut emit = |dx: f32, dy: f32, z: f32, argb: u32| {
         let mut x = call.x + dx;
         let y0 = call.y + dy;
         for ch in call.text.chars() {
-            let (cell, advance) = (scene.glyph)(ch);
+            let (cell, advance) = glyph(ch);
             if let Some(r) = cell {
                 let corners = [(x, y0 + 8.0), (x + 8.0, y0 + 8.0), (x + 8.0, y0), (x, y0)];
                 let uvs = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
