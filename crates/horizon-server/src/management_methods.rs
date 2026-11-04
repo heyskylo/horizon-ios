@@ -27,7 +27,7 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             game.console(if flush { "save-all flush" } else { "save-all" })?;
             Ok(json!(true))
         }
-        // `ServerStateService.halt` → `MinecraftServer.halt(false)`: the server stops and its process exits.
+        // `ServerStateService.stop` submits `MinecraftServer.halt(false)`: the server stops and its process exits.
         "server/stop" => {
             shared.shut_down();
             Ok(json!(true))
