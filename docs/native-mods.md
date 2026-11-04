@@ -90,6 +90,8 @@ separate from the engine/level generators. Choose blended rendering explicitly
 for alpha-fading particles; `set_full_bright` controls light without bypassing
 normal atlas, geometry or engine population limits. This is an opt-in compiled
 API, not executable particle data in a resource pack.
+Resource reload discards controlled particles and their pending instances, so
+their numeric sprite-set handles cannot refer to a different reloaded set.
 
 ## Pinned to a Nightly
 

@@ -141,6 +141,12 @@ mod tests {
         e.render(DVec3::ZERO, 0.0, 0.0, 0.5, &|_| 0, &mut vertices);
         assert!(vertices.is_empty());
         assert_eq!(e.particles[0].age, 2);
+        e.pending.push(copy);
+        e.reload(Path::new(""), &HashMap::new(), &HashSet::new());
+        assert!(e.pending.is_empty());
+        vertices.clear();
+        e.render(DVec3::ZERO, 0.0, 0.0, 0.5, &|_| 0, &mut vertices);
+        assert!(vertices.is_empty());
         e.tick_particle(&mut p, &level);
         assert!(p.removed);
         assert_eq!(p.position, [3.0, 0.0, 0.0]);

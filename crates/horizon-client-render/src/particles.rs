@@ -1338,6 +1338,10 @@ impl ParticleEngine {
         atlas: &HashMap<String, Rect>,
         translucent: &HashSet<String>,
     ) {
+        // Controllers' numeric sprite-set handles belong to this resource
+        // generation. Discard them rather than selecting another set after reload.
+        self.particles.retain(|p| p.controller.is_none());
+        self.pending.retain(|p| p.controller.is_none());
         self.atlas = atlas
             .iter()
             .map(|(name, &rect)| (name.clone(), (rect, translucent.contains(name))))
