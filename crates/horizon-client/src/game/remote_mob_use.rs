@@ -291,7 +291,10 @@ mod tests {
             cow.extra.age = age;
             cow.extra.in_love = in_love;
             cow.extra.age_locked = age_locked;
-            assert!(takes(&cow, "minecraft:wheat"), "{age} {in_love} {age_locked}");
+            assert!(
+                takes(&cow, "minecraft:wheat"),
+                "{age} {in_love} {age_locked}"
+            );
         }
         assert!(!takes(&cow, "minecraft:stick"));
     }
