@@ -1268,7 +1268,7 @@ impl Backdrop {
             h,
             px: m.px,
             glass: blurred(blur),
-            float: blurred(blur + 24.),
+            float: blurred(if blur <= 0. { 0. } else { blur + 24. }),
             tint: None,
         }
     }
