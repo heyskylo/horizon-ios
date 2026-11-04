@@ -640,6 +640,52 @@ def selector_missing_predicates():
     return ops + setup('/kill @e[tag=h124]', '/tick unfreeze')
 
 
+
+def item_command_damage():
+    """DamageCommand -> live ItemEntity health, resistance and destruction."""
+    ops = setup('/forceload add 0 0 31 31', '/scoreboard objectives add item_hurt dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 100 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze', '/fill 12 99 0 15 103 4 air')
+    witness = '@e[tag=item_hurt_witness,limit=1]'
+    ops += setup('/summon item 14.5 100 3.5 {Tags:["item_hurt_actor","item_hurt_witness"],Item:{id:"minecraft:stone",count:1},CustomName:"witness",PickupDelay:32767,NoGravity:1b,Motion:[0d,0d,0d]}')
+    ops += [cmd(f'/execute if entity {witness}', expect_result=1)]
+    cases = (
+        ('ordinary', 'stone', '', ((3, '', 2, True), (1, 'in_fire', 1, True), (1, '', None, True))),
+        ('zero', 'stone', '', ((0, '', 5, True),)),
+        ('fractional', 'stone', '', ((0.25, '', 4, True),)),
+        ('netherite', 'netherite_ingot', '', ((3, 'lava', 5, False), (1, '', 4, True))),
+        ('star', 'nether_star', '', ((3, 'explosion', 5, False), (1, '', 4, True))),
+        ('component', 'stone', ',components:{"minecraft:damage_resistant":{types:"#minecraft:is_fire"}}',
+         ((3, 'in_fire', 5, False), (1, '', 4, True))),
+    )
+    for label, item, components, hits in cases:
+        target = f'@e[tag=item_hurt_{label},limit=1]'
+        ops += setup(f'/summon item 14.5 100 0.5 {{Tags:["item_hurt_actor","item_hurt_{label}"],Item:{{id:"minecraft:{item}",count:1{components}}},CustomName:"hit_{label}",PickupDelay:32767,NoGravity:1b,Motion:[0d,0d,0d]}}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/data get entity {target} Health', expect_result=5)]
+        for amount, source, health, accepted in hits:
+            damage_type = f' minecraft:{source}' if source else ''
+            ops += setup('/scoreboard players set #result item_hurt -1', '/scoreboard players set #success item_hurt -1')
+            ops += [cmd(f'/execute store result score #result item_hurt store success score #success item_hurt run damage {target} {amount}{damage_type}'),
+                    cmd('/scoreboard players get #result item_hurt', expect_result=int(accepted)),
+                    cmd('/scoreboard players get #success item_hurt', expect_result=int(accepted))]
+            if health is None:
+                ops += [cmd(f'/execute unless entity {target}', expect_result=1),
+                        cmd(f'/data get entity {witness} Health', expect_result=5)]
+            else:
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd(f'/data get entity {target} Health', expect_result=health)]
+    mob = '@e[tag=item_hurt_mob,limit=1]'
+    ops += setup('/summon pig 12.5 100 0.5 {Tags:["item_hurt_actor","item_hurt_mob"],NoAI:1b,NoGravity:1b,CustomName:"mob_control"}')
+    ops += [cmd(f'/execute if entity {mob}', expect_result=1),
+            cmd(f'/data get entity {mob} Health', expect_result=10),
+            cmd(f'/damage {mob} 3', expect_result=1),
+            cmd(f'/data get entity {mob} Health', expect_result=7)]
+    return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
+
+
 def execute():
     return [
         *setup('/scoreboard objectives add exec dummy', '/scoreboard players set @s exec 4', '/scoreboard players set fake exec 9'),
@@ -2414,6 +2460,7 @@ def groups():
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
+        ('item command damage', item_command_damage()),
         ('execute', execute()),
         ('selector missing predicates', selector_missing_predicates()),
         ('levels', levels()),
