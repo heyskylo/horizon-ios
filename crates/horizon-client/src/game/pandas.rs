@@ -138,7 +138,9 @@ impl Game<'_> {
         else {
             return;
         };
-        for m in &mut self.mobs {
+        let mut mobs = std::mem::take(&mut self.mobs);
+        let w = self.mob_world_base(&[]);
+        for m in &mut mobs {
             if m.species() == Species::Panda
                 && !m.is_baby()
                 && m.on_ground
@@ -148,12 +150,13 @@ impl Game<'_> {
             {
                 // LivingEntity.jumpFromGround.
                 m.needs_sync = true;
-                let power = f64::from(m.jump_power());
+                let power = f64::from(m.jump_power(&w));
                 if power > 1.0e-5 {
                     m.velocity.y = power.max(m.velocity.y);
                 }
             }
         }
+        self.mobs = mobs;
     }
     /// What a window draws of its pandas: the crumbs of a bite
     /// (`addEatingParticles`) and the sneeze's particle.

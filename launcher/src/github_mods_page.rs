@@ -59,7 +59,7 @@ impl Github {
         self.focused = self.focus.is_focused(window);
     }
 
-    fn busy(&self) -> bool {
+    pub(super) fn busy(&self) -> bool {
         matches!(self.stage, Stage::Working(_))
     }
 
