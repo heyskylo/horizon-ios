@@ -3072,6 +3072,70 @@ in VertexData {{ {member} }} vIn;
             .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
+    /// Atomic functions on a component of a shared vector, whatever its declaration: alone, in a
+    /// declaration of several names, a member of a shared struct (with whole-vector stores and
+    /// reads, or atomics only). The forms of #9085's probe; glslang accepts all of them.
+    #[test]
+    fn atomics_on_shared_vector_components_compile_in_lists_and_structs() {
+        let forms = [
+            (
+                "shared ivec3 mn;\nshared ivec3 mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared ivec3 mn, mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "if (i == 0) sh.mn = ivec3(1000);\n    barrier();\n    atomicMin(sh.mn.x, i);\n    \
+                 barrier();\n    ivec3 r = sh.mn;\n    sh.other = uint(r.x);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "atomicMin(sh.mn.x, i);",
+            ),
+        ];
+        for (decl, body) in forms {
+            let csh = format!(
+                "#version 460 core\nlayout(local_size_x = 8) in;\n{decl}void main() {{\n    \
+                 int i = int(gl_LocalInvocationIndex);\n    {body}\n}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            let p = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                .unwrap_or_else(|e| panic!("{csh}\n{e:?}"));
+            // The struct keeps its other member; the vector's components are atomic.
+            if decl.contains("struct") {
+                let (_, sh) = p
+                    .module
+                    .global_variables
+                    .iter()
+                    .find(|(_, g)| g.space == naga::AddressSpace::WorkGroup)
+                    .expect("the shared struct");
+                let naga::TypeInner::Struct { members, .. } = &p.module.types[sh.ty].inner else {
+                    panic!("{:?}", p.module.types[sh.ty]);
+                };
+                let inner = |m: &naga::StructMember| p.module.types[m.ty].inner.clone();
+                let [mn, other] = &members[..] else {
+                    panic!("{members:?}")
+                };
+                let naga::TypeInner::Array { base, size, .. } = inner(mn) else {
+                    panic!("{mn:?}")
+                };
+                assert_eq!(size, naga::ArraySize::Constant(3.try_into().unwrap()));
+                assert!(matches!(
+                    p.module.types[base].inner,
+                    naga::TypeInner::Atomic(naga::Scalar::I32)
+                ));
+                assert!(matches!(
+                    inner(other),
+                    naga::TypeInner::Scalar(naga::Scalar::U32)
+                ));
+            }
+        }
+    }
+
     /// A stage's `#version` may come from a header it includes: the program is that version
     /// (`shared` is a keyword in GLSL 4.30, not a name to rename).
     #[test]
