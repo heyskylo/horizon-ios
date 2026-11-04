@@ -659,6 +659,7 @@ pub fn tick(
             super::equine::tail_tick(m);
         }
         ageable_step(m, w, level_random, events);
+        animal_step(m, events);
         if m.species() == Species::Chicken {
             farm::chicken_egg_step(m, events);
         }
@@ -1377,6 +1378,36 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 fn turtle_ambient_silent(m: &Mob) -> bool {
     m.fluids.in_water || !m.on_ground || m.is_baby()
 }
+/// `Animal.aiStep`: age-based love clearing and countdown, following the age step.
+/// Both the normal and NoAI paths run it after the age step.
+fn animal_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    if m.alive() {
+        if m.extra.age != 0 {
+            m.extra.in_love = 0;
+        }
+        if m.extra.in_love > 0 {
+            m.extra.in_love -= 1;
+            if m.extra.in_love % 10 == 0 {
+                // The heart's speed and getRandomX/Y/Z, drawn even on the server.
+                let (w, h) = (f64::from(m.width()), f64::from(m.height()));
+                let r = &mut m.random;
+                let velocity = [
+                    r.next_gaussian() * 0.02,
+                    r.next_gaussian() * 0.02,
+                    r.next_gaussian() * 0.02,
+                ];
+                let x = m.position.x + w * (2.0 * r.next_double() - 1.0);
+                let y = m.position.y + h * r.next_double() + 0.5;
+                let z = m.position.z + w * (2.0 * r.next_double() - 1.0);
+                events.push(MobEvent::ParticleAt {
+                    kind: "heart",
+                    at: [x, y, z],
+                    velocity,
+                });
+            }
+        }
+    }
+}
 /// `AgeableMob.aiStep` runs even when `Mob.serverAiStep` is disabled.
 fn ageable_step(
     m: &mut Mob,
@@ -1516,33 +1547,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         m.climbing = m.horizontal_collision;
     }
     ageable_step(m, w, level_random, events);
-    if m.alive() {
-        // Animal.aiStep
-        if m.extra.age != 0 {
-            m.extra.in_love = 0;
-        }
-        if m.extra.in_love > 0 {
-            m.extra.in_love -= 1;
-            if m.extra.in_love % 10 == 0 {
-                // The heart's speed and getRandomX/Y/Z, drawn even on the server.
-                let (w, h) = (f64::from(m.width()), f64::from(m.height()));
-                let r = &mut m.random;
-                let velocity = [
-                    r.next_gaussian() * 0.02,
-                    r.next_gaussian() * 0.02,
-                    r.next_gaussian() * 0.02,
-                ];
-                let x = m.position.x + w * (2.0 * r.next_double() - 1.0);
-                let y = m.position.y + h * r.next_double() + 0.5;
-                let z = m.position.z + w * (2.0 * r.next_double() - 1.0);
-                events.push(MobEvent::ParticleAt {
-                    kind: "heart",
-                    at: [x, y, z],
-                    velocity,
-                });
-            }
-        }
-    }
+    animal_step(m, events);
     burn_undead(m, w, events);
     species_ai_step(m, w, level_random, events);
 }

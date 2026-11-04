@@ -2377,6 +2377,45 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def animal_noai_love():
+    """Animal.aiStep love clocks run with NoAI; parrot Age inputs are ignored (#8825)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    cases = [('adult', 0, 40), ('negative_age', -100, 40),
+             ('positive_age', 100, 40), ('zero', 0, 0), ('negative', 0, -2)]
+    for species in ('pig', 'parrot'):
+        for no_ai in (0, 1):
+            for name, age, love in cases:
+                tag = f'love_{species}_{no_ai}_{name}'
+                target = f'@e[tag={tag},limit=1]'
+                variant = ',Variant:3' if species == 'parrot' else ''
+                ops += setup(f'/summon {species} 4.5 220 4.5 '
+                             f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,'
+                             f'PersistenceRequired:1b,Age:{age},InLove:{love}{variant}}}')
+                elapsed = 0
+                for tick in (0, 1, 3):
+                    if tick != elapsed:
+                        ops.append({'op': 'tick', 'n': tick - elapsed})
+                    elapsed = tick
+                    ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                    # Raw parrot Age omission is a separate save-field discrepancy.
+                    fields = ('Age', 'InLove') if species == 'pig' else ('InLove',)
+                    for field in fields:
+                        ops.append(cmd(f'/data get entity {target} {field}'))
+                    if species == 'parrot':
+                        ops.append(cmd(f'/data get entity {target} Variant'))
+                ops += setup(f'/kill {target}')
+    for name, variant in [('absent', ''), ('high', ',Variant:9'), ('negative', ',Variant:-2')]:
+        tag = f'love_parrot_variant_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon parrot 4.5 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b{variant}}}')
+        for tick in (0, 1):
+            if tick:
+                ops.append({'op': 'tick', 'n': 1})
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/data get entity {target} Variant')]
+        ops += setup(f'/kill {target}')
+    return ops
 def turtle_summon_home():
     """Turtle load defaults precede summon placement; plain summons finalize (#8804)."""
     ops = setup('/forceload add -32 -32 31 31',
@@ -2468,6 +2507,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('animal NoAI love', animal_noai_love()),
         ('turtle summon home', turtle_summon_home()),
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
