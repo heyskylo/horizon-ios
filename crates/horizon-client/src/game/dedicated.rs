@@ -441,6 +441,37 @@ pub(super) struct Lists {
     pub stop: bool,
     /// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
     pub autosave: bool,
+    /// UUID prefixes (lower case, with dashes) that pass the whitelist: `whitelist-bypass.txt`.
+    pub whitelist_bypass: Vec<String>,
+}
+
+/// The lines of `whitelist-bypass.txt`: one UUID prefix each, e.g. `00000000-0000-0000-0009-` for Floodgate's
+/// Bedrock players. `#` starts a comment. A prefix has to be a dashed UUID start of at least 8 characters, so
+/// a typo can't open the whitelist to everybody.
+fn parse_whitelist_bypass(text: &str) -> std::result::Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() < 8
+            || line.len() > 36
+            || !line.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        {
+            return Err(format!(
+                "whitelist-bypass.txt line {}: {line:?} is not a UUID prefix",
+                n + 1
+            ));
+        }
+        out.push(line);
+    }
+    Ok(out)
 }
 impl Lists {
     fn load() -> Self {
@@ -455,7 +486,24 @@ impl Lists {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
+            whitelist_bypass: Vec::new(),
         };
+        // Horizon only: players from a proxy's Bedrock bridge (Floodgate) are never on whitelist.json.
+        if let Ok(text) = std::fs::read_to_string("whitelist-bypass.txt") {
+            match parse_whitelist_bypass(&text) {
+                Ok(prefixes) => {
+                    log(
+                        "INFO",
+                        &format!(
+                            "whitelist-bypass.txt: {} UUID prefix(es) skip the whitelist",
+                            prefixes.len()
+                        ),
+                    );
+                    l.whitelist_bypass = prefixes;
+                }
+                Err(e) => log("ERROR", &format!("{e}; the file is ignored")),
+            }
+        }
         // Each list tells the event stream what changes in it, as vanilla's tell their `NotificationService`.
         l.ops.watch(|change| {
             let (kind, e) = listed("operators", change);
@@ -501,7 +549,16 @@ impl Lists {
     }
     /// PlayerList.isWhiteListed.
     fn whitelisted(&self, user: &NameAndId) -> bool {
-        !self.use_whitelist || self.ops.contains(user) || self.white.contains(user)
+        !self.use_whitelist
+            || self.ops.contains(user)
+            || self.white.contains(user)
+            || self.bypasses_whitelist(user.id)
+    }
+    fn bypasses_whitelist(&self, id: u128) -> bool {
+        let id = horizon_protocol::crypto::uuid_string(id);
+        self.whitelist_bypass
+            .iter()
+            .any(|p| id.starts_with(p.as_str()))
     }
     /// PlayerList.canPlayerLogin before the player count.
     fn can_login(&mut self, address: std::net::SocketAddr, user: &NameAndId) -> Option<Tag> {
@@ -709,6 +766,27 @@ fn save_all_reply(saved: bool) -> Text {
     )
 }
 
+/// `BanIpCommands.banIp`'s `commands.banip.info`: the count of affected players and
+/// `EntitySelector.joinNames` of them (a gray ", " between names). None when no one is affected,
+/// as vanilla sends no line then.
+fn ban_ip_info(names: &[&str]) -> Option<Text> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(Text::translate(
+        "commands.banip.info",
+        &[
+            Text::literal(names.len().to_string()),
+            horizon_client::scoreboard_cmd::format_list(
+                names
+                    .iter()
+                    .map(|n| Text::literal((*n).to_owned()))
+                    .collect(),
+            ),
+        ],
+    ))
+}
+
 /// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
 fn auto_save(state: &ServerState) -> bool {
     state.lists.lock().unwrap().autosave
@@ -876,6 +954,8 @@ impl Game<'_> {
         self.server_lists = Some(lists.clone());
         log("INFO", &format!("Preparing level \"{level_name}\""));
         let folder = world_dir.to_string_lossy().into_owned();
+        // The mods' common and server configs, read before the server starts.
+        self.native_configs_server_start(&world_dir, true);
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(true);
         self.native_lifecycle_open_started();
@@ -1105,7 +1185,9 @@ impl Game<'_> {
         let watchdog = Watchdog::start(props.max_tick_time);
         let mut braked = Instant::now();
         let mut overload_warned: Option<Instant> = None;
-        while !state.lists.lock().unwrap().stop {
+        // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
+        // saved below.
+        while !state.lists.lock().unwrap().stop && horizon_threads::stop_requests() == 0 {
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
@@ -1562,7 +1644,7 @@ impl Game<'_> {
                     let replies = self.mute_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
@@ -1573,7 +1655,7 @@ impl Game<'_> {
                     let replies = self.tempban_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
@@ -1647,7 +1729,7 @@ impl Game<'_> {
                         ),
                     ],
                 ));
-                let banned: Vec<u128> = self
+                let banned: Vec<(u128, String)> = self
                     .lan
                     .as_ref()
                     .map(|h| {
@@ -1655,17 +1737,15 @@ impl Game<'_> {
                             .guests
                             .iter()
                             .filter(|g| g.address.ip().to_string() == ip)
-                            .map(|g| g.uuid)
+                            .map(|g| (g.uuid, g.name.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
-                if !banned.is_empty() {
-                    self.console_reply(Text::translate(
-                        "commands.banip.info",
-                        &[lit(&banned.len().to_string()), lit("")],
-                    ));
+                let names: Vec<&str> = banned.iter().map(|(_, n)| n.as_str()).collect();
+                if let Some(info) = ban_ip_info(&names) {
+                    self.console_reply(info);
                 }
-                for uuid in banned {
+                for (uuid, _) in banned {
                     self.kick_uuid(uuid, translatable("multiplayer.disconnect.ip_banned", &[]));
                 }
             }
@@ -2096,6 +2176,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(true);
+        self.native_configs_server_stop();
         log("INFO", "Stopping server");
         self.native_players_leaving();
         log("INFO", "Saving players");
@@ -2162,13 +2243,54 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_log, log, log_from, overload_warning, panic_message};
+    use super::{
+        capture_log, log, log_from, overload_warning, panic_message, parse_whitelist_bypass,
+    };
     use std::{
         fs,
         io::{self, BufRead, BufReader, Read, Write},
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is
+    /// absent when no one is affected.
+    #[test]
+    fn ban_ip_info_names_the_affected_players() {
+        let args = |t: &super::Text| {
+            let c = t.component();
+            c["with"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(super::ban_ip_info(&[]).is_none());
+        let one = super::ban_ip_info(&["Alex"]).unwrap();
+        assert_eq!(one.translation_key(), Some("commands.banip.info"));
+        let a = args(&one);
+        assert!(a[0].contains('1') && a[1].contains("Alex"), "{a:?}");
+        let two = super::ban_ip_info(&["Alex", "Steve"]).unwrap();
+        let a = args(&two);
+        assert!(a[0].contains('2'), "{a:?}");
+        assert!(
+            a[1].contains("Alex") && a[1].contains(", ") && a[1].contains("Steve"),
+            "{a:?}"
+        );
+    }
+
+    #[test]
+    fn whitelist_bypass_file_takes_uuid_prefixes_and_refuses_junk() {
+        let ok =
+            parse_whitelist_bypass("# Bedrock\n00000000-0000-0000-0009-  # floodgate\n\n").unwrap();
+        assert_eq!(ok, vec!["00000000-0000-0000-0009-".to_owned()]);
+        assert!(
+            parse_whitelist_bypass("0-").is_err(),
+            "a short prefix would match nearly everyone"
+        );
+        assert!(parse_whitelist_bypass("not-a-uuid-at-all").is_err());
+    }
 
     /// `SaveAllCommand.saveAll`: a save that throws is the `ERROR_FAILED` the
     /// source is told about, not a log line the caller never sees.
@@ -2322,6 +2444,7 @@ mod tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
+            whitelist_bypass: Vec::new(),
         };
         // Every translation key and string in a message, in the order they come.
         fn words(tag: &super::Tag, out: &mut Vec<String>) {

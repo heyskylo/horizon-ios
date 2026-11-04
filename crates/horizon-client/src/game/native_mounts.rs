@@ -12,7 +12,7 @@ impl Game<'_> {
 
     /// The entity id of the acting player: a guest's while their action runs (kept with the
     /// action, as the hub is often out of `lan` then), else none (0).
-    fn native_acting_entity(&self) -> u32 {
+    pub(super) fn native_acting_entity(&self) -> u32 {
         match self.lan_acting {
             Some(conn) => self.lan_acting_entity.unwrap_or_else(|| {
                 let guests = self.lan_guest_entities();

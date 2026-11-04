@@ -857,12 +857,17 @@ impl Mob {
                 && (self.on_ground || climbable)
                 && !self.fluids_swimming();
             if produced {
+                // `getMovementEmission().emitsSounds()`: the footfall is played
+                // only for a type whose emission is `ALL`, while the step game
+                // event below is sent by `EVENTS` types too.
+                let heard = super::ai::movement_sounds(self);
                 if super::equine::hoof_steps(self.species()) {
-                    if !self.silent {
+                    if heard && !self.silent {
                         super::equine::play_step(self, w, legacy, legacy_state, events);
                     }
                 } else if let Some((sound, volume, pitch)) =
                     super::ai::step_sound(self, w, legacy, legacy_state)
+                    && heard
                     && !self.silent
                 {
                     let at = [self.position.x, self.position.y, self.position.z];
@@ -1569,6 +1574,14 @@ impl Mob {
                 self.velocity.z += f64::from(trig::cos(angle)) * 0.2;
             }
         }
+        // Sniffer.jumpFromGround: a hop the move control asked for, taken from
+        // nearly standing still, carries a tenth of a block forward.
+        if self.species() == super::Species::Sniffer
+            && self.ai.mov.speed_modifier > 0.0
+            && self.velocity.horizontal_distance_squared() < 0.01
+        {
+            self.move_relative(0.1, Vec3::new(0.0, 0.0, 1.0));
+        }
         crate::motion::native_living_jump(self.id, &self.kind.id);
     }
     pub fn jump_power(&self) -> f32 {
@@ -1745,6 +1758,26 @@ impl horizon_world::water_splash::WaterSplashWorld for Splash<'_> {
     }
 }
 
+/// `Entity.doWaterSplashEffect` for a mob this window is drawing.
+/// `Level.addParticle` runs on the client. `ClientLevel.playSeededSound`
+/// ignores `Entity.playSound` (`except` is null), and the SPLASH game event
+/// stays on the server, so only the bubble and splash particles are kept.
+pub fn client_water_splash(mob: &mut Mob, out: &mut Vec<MobEvent>) {
+    let mut events = Vec::new();
+    let _ = horizon_world::water_splash::water_splash(
+        &mut Splash {
+            mob,
+            events: &mut events,
+        },
+        1_000_000,
+    );
+    out.extend(
+        events
+            .into_iter()
+            .filter(|event| matches!(event, MobEvent::ParticleAt { .. })),
+    );
+}
+
 /// `Entity.restituteMovementAfterCollisions`' native inputs, bound for a mob:
 /// its own bounciness attribute, the block's coefficients and the pose of a
 /// mob that never sneaks. The phases themselves are
@@ -1901,12 +1934,14 @@ mod tests {
                 collision: &collision,
                 data: &data,
                 player: None,
+                controlling_player_movement: None,
                 nearest_player: None,
                 others: &[],
                 dragon: None,
                 leash_boats: &[],
                 others_grid: None,
                 others_index: None,
+                others_villagers: None,
                 daylight: true,
                 monsters_burn: false,
                 game_time: 1000,
@@ -2013,12 +2048,14 @@ mod tests {
             collision: &collision,
             data: &data,
             player: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
             dragon: None,
             leash_boats: &[],
             others_grid: None,
             others_index: None,
+            others_villagers: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
@@ -2334,6 +2371,63 @@ mod tests {
         cow.extra.model_scale = 4.0;
         assert_eq!(cow.model_scale(), 4.0);
     }
+    /// `Sniffer.jumpFromGround`: a hop the move control asked for, taken from
+    /// nearly standing still, carries the sniffer a tenth of a block along its
+    /// yaw (`moveRelative(0.1F, (0, 0, 1))`). A sniffer that already moves, one
+    /// the move control did not ask to move, and every other species keep the
+    /// hop they had.
+    #[test]
+    fn a_sniffers_hop_from_a_standstill_carries_it_forward() {
+        use crate::mobs::Species;
+        let sniffer = |speed: f64, sideways: f64| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = "minecraft:sniffer".into();
+            kind.species = Species::Sniffer;
+            kind.jump_strength = 0.42;
+            let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            // `MoveControl.getSpeedModifier` and the speed it moves at.
+            m.ai.mov.speed_modifier = speed;
+            m.velocity = Vec3::new(0.0, 0.0, sideways);
+            m
+        };
+        // Yaw 0 faces south (+z), so the nudge lands on z.
+        let hop = |m: &mut Mob| {
+            let mut jumped = false;
+            if crate::mobs::world::with_test_world(&[], |w, _| m.jump_from_ground(w)) {
+                jumped = true;
+            }
+            jumped
+        };
+        let mut m = sniffer(1.0, 0.0);
+        if !hop(&mut m) {
+            return;
+        }
+        assert!(
+            (m.velocity.z - 0.1).abs() < 1.0e-6 && m.velocity.x.abs() < 1.0e-6,
+            "the hop goes forward: {:?}",
+            m.velocity
+        );
+        assert!(m.velocity.y > 0.0, "and it is still a hop");
+        // Already moving sideways: `horizontalDistanceSqr` is over the 0.01.
+        let mut moving = sniffer(1.0, 0.2);
+        assert!(hop(&mut moving));
+        assert!(
+            (moving.velocity.z - 0.2).abs() < 1.0e-6,
+            "{:?}",
+            moving.velocity
+        );
+        // The move control wanted nothing this tick.
+        let mut still = sniffer(0.0, 0.0);
+        assert!(hop(&mut still));
+        assert_eq!(still.velocity.z, 0.0);
+        // No other species gets the nudge.
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.jump_strength = 0.42;
+        let mut cow = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        cow.ai.mov.speed_modifier = 1.0;
+        assert!(hop(&mut cow));
+        assert_eq!(cow.velocity.z, 0.0);
+    }
 
     /// #8140: `LivingEntity.handleOnClimbable` slows any mob in vines, not
     /// only a spider on a wall. A cow let go at rest moves before gravity
@@ -2441,6 +2535,70 @@ mod tests {
                 m.extra.fall_flying = true;
                 assert_eq!(m.on_climbable(w), gliding_holds, "{block}: while gliding");
             }
+        });
+    }
+    /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
+    /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
+    /// flopping across stone sends the `minecraft:step` game event and no
+    /// sound, where a sheep walking the same block is heard at the block's
+    /// step volume times 0.15. A silverfish's own `playStepSound` names
+    /// `entity.silverfish.step` and is never heard either, and a shulker, whose
+    /// emission is `NONE`, sends nothing at all.
+    #[test]
+    fn a_squid_and_a_bat_step_without_a_sound() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let id = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..=8 {
+                for z in 0..=8 {
+                    world.set(x, 0, z, id).unwrap();
+                }
+            }
+        };
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            // One step's worth of walking: 2 blocks times the 0.6 factor, over
+            // the 1.0 the first step waits for.
+            let walk = |id: &str| {
+                let kind = std::sync::Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
+                m.on_ground = true;
+                m.supporting = Some([0, 0, 0]);
+                let mut events = Vec::new();
+                m.movement_emission(w, Vec3::new(2.0, 0.0, 0.0), &mut events);
+                events
+            };
+            let heard = |events: &[MobEvent]| {
+                events.iter().find_map(|e| match e {
+                    MobEvent::Sound(sound, _, volume, pitch) => Some((*sound, *volume, *pitch)),
+                    _ => None,
+                })
+            };
+            let stepped = |events: &[MobEvent]| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::GameEvent { event, .. } if *event == "minecraft:step"))
+            };
+            for quiet in ["minecraft:squid", "minecraft:glow_squid", "minecraft:bat"] {
+                let events = walk(quiet);
+                assert_eq!(heard(&events), None, "{quiet} is silent");
+                assert!(stepped(&events), "{quiet} still sends the step event");
+            }
+            // A silverfish asks for its own step sound and its type's emission
+            // never plays it.
+            let events = walk("minecraft:silverfish");
+            assert_eq!(heard(&events), None);
+            assert!(stepped(&events));
+            // The same walk from a type whose emission is ALL is heard.
+            let events = walk("minecraft:sheep");
+            assert_eq!(heard(&events), Some(("entity.sheep.step", 0.15, 1.0)));
+            // Shulker.getMovementEmission is NONE: not even the event.
+            let events = walk("minecraft:shulker");
+            assert_eq!(heard(&events), None);
+            assert!(!stepped(&events), "a shulker emits nothing");
         });
     }
 }

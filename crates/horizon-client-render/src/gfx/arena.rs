@@ -877,6 +877,8 @@ mod tests {
             start,
             translucent_at,
             solid,
+            solid_slots: u64::from(solid) * 4,
+            packed: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -930,11 +932,12 @@ mod tests {
                 .iter()
                 .map(|s| (s.page, s.start, s.translucent_at))
                 .collect();
-            // The sections with solid quads have records, on page 0.
+            // The sections with solid quads have records, on page 0, each with
+            // its cell's box.
             let mut records = gpu_culling::Records::default();
             for (i, s) in sections.iter_mut().enumerate() {
                 if s.solid > 0 {
-                    s.gpu_id = Some(records.insert((i as i32, 0, 0), s.page, s.start, s.solid));
+                    s.gpu_id = Some(records.insert(s.record((i as i32, 0, 0), None)));
                 }
             }
             let recorded = records.live() as u32;
@@ -957,9 +960,8 @@ mod tests {
             let word =
                 |(page, at): (u32, u64)| read(&device, &queue, arena.buffer(page), at * stride);
             for (i, s) in sections.iter().enumerate() {
-                // Its record names its solid quads where they are now.
-                let record = (s.solid > 0)
-                    .then(|| gpu_culling::Record::new((i as i32, 0, 0), s.page, s.start, s.solid));
+                // Its record names its solid quads where they are now, its box kept.
+                let record = (s.solid > 0).then(|| s.record((i as i32, 0, 0), None));
                 let held = s.gpu_id.and_then(|id| records.at(id));
                 assert_eq!(held, record.as_ref(), "split {split}, section {i}");
                 let Some((page, start, len)) = s.vertex_ranges(split).0 else {
@@ -1014,7 +1016,7 @@ mod tests {
             label: None,
             entries: &[],
         });
-        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _| {
+        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _, _| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -1071,6 +1073,8 @@ mod tests {
             start: 0,
             translucent_at: (0, at),
             solid: 64,
+            solid_slots: 64 * 4,
+            packed: false,
             sides: crate::mesher::Sides::unsorted(64),
             translucent: 128,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1295,6 +1299,8 @@ mod tests {
                 start: 0,
                 translucent_at: if indices { (7, 7) } else { at },
                 solid,
+                solid_slots: u64::from(solid) * 4,
+                packed: false,
                 sides: crate::mesher::Sides::unsorted(solid),
                 translucent,
                 sort: super::super::translucency::SortState::new(Vec::new()),
