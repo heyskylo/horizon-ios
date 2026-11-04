@@ -342,6 +342,7 @@ impl Launcher {
                         .h(px(6. * 32. + 8.))
                         .p(px(4.))
                         .overflow_y_scroll()
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
                         .rounded(px(night::RADIUS_CONTROL))
                         .border_1()
                         .border_color(alpha(n.stroke, n.stroke_alpha))
