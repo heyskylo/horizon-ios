@@ -5139,7 +5139,7 @@ impl Game<'_> {
         slim: bool,
     ) -> Option<std::sync::Arc<horizon_client::mobs::Part>> {
         use horizon_client::mobs::skin_layers;
-        if !self.settings.three_d_skin_layers {
+        if !self.settings.extras.three_d_skin_layers {
             return None;
         }
         let key = (skin.to_owned(), slim);
