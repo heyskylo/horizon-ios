@@ -5,12 +5,13 @@
 //! Gbuffers programs come later; until then the pack's composites read Horizon's picture.
 //!
 //! Every colortex buffer a program reads or writes has two textures, A and B. Programs read
-//! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). The
-//! mapping carries over to the next frame, so a buffer that is not cleared reads back what was
-//! written last (OQ-8). A cleared buffer has both textures cleared at the start of the frame:
-//! with an odd number of flips a frame, the texture a program writes was "main" the frame before
-//! and may still hold what was stored into it after that frame's clear (Iris 1.11.7 blends onto
-//! the clear value there, probed with a pack of our own).
+//! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). Every
+//! frame starts with A as "main". A cleared buffer has both textures cleared then (Iris 1.11.7
+//! reads and blends onto the clear value where a program leaves pixels, probed with a pack of our
+//! own). A buffer that is not cleared reads back what was written last (OQ-8): when the last
+//! frame ended on B, B is copied to A, and B keeps what was last written into it, which is what
+//! a write leaves alone or blends onto there (a model that fits Iris 1.11.7's values in probe
+//! packs of our own).
 //! Pack buffers store rows as GL does (row 0 at the bottom: the translator negates clip y), so
 //! the world is copied in upside down, and its reverse-Z depth becomes GL window depth.
 
@@ -3773,6 +3774,10 @@ impl PackPost {
                 if self.copied & 1 << i != 0 {
                     attachment |= wgpu::TextureUsages::COPY_SRC;
                 }
+                // A buffer that isn't cleared starts each frame with B copied back to A.
+                if i != 0 && self.clears[i].is_none() {
+                    attachment |= wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+                }
                 let sides = [0, 1]
                     .map(|_| texture_sized(&label, self.formats[i], attachment, levels, sizes[i]));
                 if mipped && let Some((_, layout)) = self.down.get(&self.formats[i]) {
@@ -4158,6 +4163,20 @@ impl PackPost {
             &mut self.zeros,
         );
         let Some(targets) = &self.targets else { return };
+        // Every frame starts on A. A buffer that isn't cleared and ended the last frame on B has B
+        // copied back to A, and B keeps what was last written into it: a model that fits Iris 1.11.7's
+        // values in probe packs of our own (#9009), not a documented Iris rule. colortex0's A is
+        // overwritten by the world below.
+        for b in (1..BUFFERS).filter(|&b| self.main & 1 << b != 0 && self.clears[b].is_none()) {
+            if let Some([a, b_side]) = &targets.color[b] {
+                encoder.copy_texture_to_texture(
+                    b_side.texture().as_image_copy(),
+                    a.texture().as_image_copy(),
+                    a.texture().size(),
+                );
+            }
+        }
+        self.main = 0;
         let main = |m: u16, i: usize| usize::from(m & 1 << i != 0);
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
