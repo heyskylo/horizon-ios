@@ -3325,6 +3325,34 @@ def mob_baby_attribute_reads():
 
 
 
+def cube_saved_age():
+    """Age is absent for live cubes, including supplied raw values (#8985)."""
+    ops = setup('/fill 0 199 0 15 199 15 stone')
+    ops.append(cmd('/execute if loaded 10 200 10', expect_result=1))
+    subjects = []
+    for row, kind in enumerate(('slime', 'magma_cube')):
+        for col, age in enumerate((None, 0, -24000, 37)):
+            n = row * 4 + col + 1
+            target = f'000000e4-0000-0000-0000-{n:012x}'
+            x, z = 2.5 + col * 4, 2.5 + row * 8
+            extra = '' if age is None else f',Age:{age}'
+            ops += setup(f'/summon minecraft:{kind} {x} 200 {z} '
+                         f'{{UUID:[I;228,0,0,{n}],Tags:["h228_{n}"],NoAI:1b,Silent:1b,PersistenceRequired:1b,Size:3{extra}}}')
+            subjects.append((target, n, x, z))
+    pig = '000000e4-0000-0000-0000-000000000009'
+    ops += setup(f'/summon pig 6.5 200 6.5 {{UUID:[I;228,0,0,9],Tags:["h228_pig"],NoAI:1b,Age:37}}')
+    for tick in (0, 1):
+        if tick:
+            ops.append({'op': 'tick', 'n': 1})
+        for target, n, x, z in subjects:
+            ops.append(cmd(f'/execute as {target} if entity @s[tag=h228_{n},nbt={{Pos:[{x}d,200d,{z}d],Health:16f,NoAI:1b,Silent:1b,PersistenceRequired:1b,Size:3}}]', expect_result=1))
+            ops.append(cmd(f'/data get entity {target} Age'))
+        ops.append(cmd(f'/execute as {pig} if entity @s[tag=h228_pig,nbt={{Health:10f,NoAI:1b}}]', expect_result=1))
+        ops.append(cmd(f'/data get entity {pig} Age', expect_result=37 - tick))
+    return ops
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3371,6 +3399,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('cube saved Age', cube_saved_age()),
         ('mob baby attribute reads', mob_baby_attribute_reads()),
         ('mob partial block suffocation', mob_partial_block_suffocation()),
         ('allay invalid Brain retention', allay_invalid_brain_retention()),
