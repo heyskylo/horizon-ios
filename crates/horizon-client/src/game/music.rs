@@ -148,6 +148,20 @@ impl Game<'_> {
     /// `pauseAllExcept(MUSIC, UI)` when the game pauses and `resume` when it
     /// carries on.
     pub(super) fn tick_sound_engine(&mut self) {
+        if self.remote.is_some() {
+            for entity in self.audio.engine.bound_entities() {
+                let previous = entity.state();
+                if !previous.removed {
+                    entity.update(self.remote_sound_entity_state(entity.id as i32).unwrap_or(
+                        horizon_client::sound_engine::SoundEntityState {
+                            removed: true,
+                            ..previous
+                        },
+                    ));
+                }
+            }
+        }
+
         if self.pause != self.sound_paused {
             if self.pause {
                 self.audio.pause();

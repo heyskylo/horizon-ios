@@ -167,25 +167,35 @@ fn hurt_sound_for(
         })
 }
 
-/// Position of the entity a `ClientboundSoundEntityPacket` names, if this level
-/// has it and `EntityBoundSoundInstance.canPlaySound` (`!entity.isSilent()`)
-/// holds. The local player is not a tracked entity; removed ids leave the
-/// tracked table.
-fn entity_position(
+/// The live entity a bound sound names; absence means that object was removed.
+fn entity_sound_state(
     id: i32,
-    player: Option<(i32, [f64; 3])>,
+    player: Option<(i32, [f64; 3], bool)>,
     mobs: &[Mob],
     tracked: &HashMap<i32, Tracked>,
-) -> Option<[f64; 3]> {
-    if let Some((player_id, at)) = player
+) -> Option<horizon_client::sound_engine::SoundEntityState> {
+    use horizon_client::sound_engine::SoundEntityState;
+    if let Some((player_id, position, silent)) = player
         && player_id == id
     {
-        return Some(at);
+        return Some(SoundEntityState {
+            position,
+            silent,
+            removed: false,
+        });
     }
     if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
-        return (!m.silent).then_some([m.position.x, m.position.y, m.position.z]);
+        return Some(SoundEntityState {
+            position: [m.position.x, m.position.y, m.position.z],
+            silent: m.silent,
+            removed: m.removed,
+        });
     }
-    tracked.get(&id).map(|t| t.position)
+    tracked.get(&id).map(|t| SoundEntityState {
+        position: t.position,
+        silent: t.silent,
+        removed: false,
+    })
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -246,6 +256,7 @@ impl ChunkGenerator for NoTerrain {
 struct Tracked {
     kind: String,
     position: [f64; 3],
+    silent: bool,
 }
 /// Smooth an entity toward a new position over three ticks (InterpolationHandler).
 #[derive(Clone, Copy)]
@@ -486,6 +497,7 @@ pub(super) struct Remote {
     pub(super) logged_in: bool,
     status: String,
     pub(super) entity_id: i32,
+    local_entity_silent: bool,
     /// `Minecraft.cameraEntity` when the server put the view on another
     /// entity (ClientboundSetCameraPacket); None while it is the player.
     pub(super) camera: Option<i32>,
@@ -757,14 +769,28 @@ impl Game<'_> {
             }),
         }
     }
-    /// Position of an entity `ClientboundSoundEntityPacket` names.
-    fn remote_entity_position(&self, id: i32) -> Option<[f64; 3]> {
+    pub(super) fn remote_sound_entity_state(
+        &self,
+        id: i32,
+    ) -> Option<horizon_client::sound_engine::SoundEntityState> {
         let r = self.remote.as_ref()?;
-        let player = self
-            .player
-            .as_ref()
-            .map(|p| (r.entity_id, [p.position.x, p.position.y, p.position.z]));
-        entity_position(id, player, &self.mobs, &r.entities)
+        let player = self.player.as_ref().map(|p| {
+            (
+                r.entity_id,
+                [p.position.x, p.position.y, p.position.z],
+                r.local_entity_silent,
+            )
+        });
+        let mut state = entity_sound_state(id, player, &self.mobs, &r.entities)?;
+        // Vehicles, projectiles and other simulated objects may have moved since
+        // the last tracking packet, just as the mob interpolation has.
+        if let Some(position) = self
+            .level_entity(id)
+            .and_then(|target| self.target_position(target))
+        {
+            state.position = position;
+        }
+        Some(state)
     }
     /// The hurt sound the hurt player's own client plays from
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
@@ -1016,6 +1042,7 @@ impl Game<'_> {
             reconfiguring: None,
             logged_in: false,
             entity_id: 0,
+            local_entity_silent: false,
             camera: None,
             use_item: None,
             dimension: DimensionType::vanilla("minecraft:overworld"),
@@ -2607,6 +2634,7 @@ impl Game<'_> {
                 Tracked {
                     kind: kind.to_owned(),
                     position,
+                    silent: false,
                 },
             );
         }
@@ -2865,6 +2893,7 @@ impl Game<'_> {
         self.turn_remote_projectile(id, rotation);
     }
     fn remove_entity(&mut self, id: i32) {
+        self.audio.remove_sound_entity(id as u32);
         // Entity.setRemoved detaches every passenger, even when no empty
         // SetPassengers packet preceded the vehicle's removal. Otherwise
         // mobs and other players keep their passenger pose after it is gone.
@@ -3152,6 +3181,7 @@ impl Game<'_> {
                     r.online_mode = p.online_mode;
                     r.enforces_secure_chat = p.enforces_secure_chat;
                     r.entity_id = p.player_id;
+                    r.local_entity_silent = false;
                     // handleLogin: the new LocalPlayer is the camera.
                     r.camera = None;
                     r.logged_in = true;
@@ -3179,6 +3209,9 @@ impl Game<'_> {
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
+                if let Some(r) = self.remote.as_ref() {
+                    self.audio.remove_sound_entity(r.entity_id as u32);
+                }
                 // A new player, without effects (the server sends them
                 // again) and with no item in use.
                 self.potions.effects.clear();
@@ -3199,6 +3232,7 @@ impl Game<'_> {
                     if let Some(r) = self.remote.as_mut() {
                         r.own_invisible = false;
                         r.own_on_fire = false;
+                        r.local_entity_silent = false;
                     }
                 }
                 let dimension_changed = self.dim != Dim::from_id(&p.spawn.dimension);
@@ -3337,30 +3371,29 @@ impl Game<'_> {
                     }
                 }
             }
-            // shortcut: vanilla's `EntityBoundSoundInstance` re-reads the entity's position
-            // every tick and stops with it, so the sound follows the entity; a play at the
-            // packet's arrival does not. Upgrade when the sound engine has a generic
-            // entity-bound instance (its tickable ones are one per mob kind, e.g. `Ticking::Bee`).
             C::SoundEntity(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && let Some(at) = self.remote_entity_position(p.id)
+                    && let Some(state) = self.remote_sound_entity_state(p.id)
                 {
-                    match usize::try_from(p.source)
+                    let source = usize::try_from(p.source)
                         .ok()
                         .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
-                    {
-                        Some(source) => {
-                            self.audio
-                                .play_on(source, &name, Some(at), p.volume, p.pitch)
-                        }
-                        None => self.audio.play(&name, Some(at), p.volume, p.pitch),
-                    }
+                        .unwrap_or_else(|| horizon_client::settings::sound_source(&name));
+                    let entity = horizon_client::sound_engine::SoundEntity::new(
+                        p.id as u32,
+                        state.position,
+                        state.silent,
+                    );
+                    entity.update(state);
+                    self.audio
+                        .play_entity_seeded(&name, source, p.volume, p.pitch, p.seed, entity);
                 }
             }
             C::StopSound(p) => self
                 .audio
                 .stop_sounds(p.sound.as_deref(), p.source.map(|s| s as usize)),
             C::AddEntity(p) => {
+                self.audio.remove_sound_entity(p.id as u32);
                 let kind = self
                     .remote
                     .as_ref()
@@ -3554,6 +3587,18 @@ impl Game<'_> {
                 }
             }
             C::SetEntityData(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    for (index, _, value) in &p.values {
+                        if let (4, Value::Bool(silent)) = (index, value) {
+                            if p.id == r.entity_id {
+                                r.local_entity_silent = *silent;
+                            }
+                            if let Some(t) = r.entities.get_mut(&p.id) {
+                                t.silent = *silent;
+                            }
+                        }
+                    }
+                }
                 // Entity.DATA_SHARED_FLAGS_ID, DATA_CUSTOM_NAME and
                 // DATA_CUSTOM_NAME_VISIBLE: server NPCs and holograms rely on
                 // these instead of saved NBT.
@@ -11281,29 +11326,59 @@ mod tests {
             super::Tracked {
                 kind: "minecraft:cow".to_owned(),
                 position: [8.5, 64.0, -3.5],
+                silent: false,
             },
         );
-        let player = Some((2, [0.5, 70.0, 0.5]));
+        let player = Some((2, [0.5, 70.0, 0.5], false));
         assert_eq!(
-            super::entity_position(2, player, &[], &tracked),
+            super::entity_sound_state(2, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             Some([0.5, 70.0, 0.5]),
             "the local player is named by Remote.entity_id"
         );
         assert_eq!(
-            super::entity_position(7, player, &[], &tracked),
+            super::entity_sound_state(7, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             Some([8.5, 64.0, -3.5]),
             "another entity the server spawned"
         );
         assert_eq!(
-            super::entity_position(9, player, &[], &tracked),
+            super::entity_sound_state(9, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             None,
             "getEntity is null: handleSoundEntityEvent returns"
         );
         assert_eq!(
-            super::entity_position(2, None, &[], &tracked),
+            super::entity_sound_state(2, None, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             None,
             "a player with no position yet"
         );
+    }
+    #[test]
+    fn a_sound_entity_retains_silence_for_players_and_non_mob_targets() {
+        use std::collections::HashMap;
+        let mut tracked = HashMap::new();
+        tracked.insert(
+            7,
+            super::Tracked {
+                kind: "minecraft:arrow".to_owned(),
+                position: [8.5, 64.0, -3.5],
+                silent: true,
+            },
+        );
+        let state = super::entity_sound_state(7, None, &[], &tracked).unwrap();
+        assert!(state.silent);
+        assert!(!state.removed);
+        assert_eq!(state.position, [8.5, 64.0, -3.5]);
+        let player =
+            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), &[], &tracked).unwrap();
+        assert!(player.silent);
+        assert!(super::entity_sound_state(9, None, &[], &tracked).is_none());
     }
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW
     /// drops the stack, so the player's hand swings, as `LivingEntity.drop`

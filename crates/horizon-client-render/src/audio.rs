@@ -1301,6 +1301,41 @@ impl Audio {
         preview.preview(self, source, volume);
         self.preview = preview;
     }
+    /// An incoming entity-sound packet: retain its seed and category without rebroadcasting it.
+    pub fn play_entity_seeded(
+        &mut self,
+        event: &str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+        entity: crate::sound_engine::SoundEntity,
+    ) {
+        *self.heard.entry(event.to_owned()).or_default() += 1;
+        let event = crate::sound_events::normalize(event);
+        let instance = SoundInstance::entity_bound(
+            &event,
+            source,
+            volume,
+            pitch,
+            LegacyRandom::new(seed),
+            entity,
+        );
+        self.play_instance(instance, false);
+    }
+    /// Removal belongs to the old object even if its numeric id is immediately reused.
+    pub fn remove_sound_entity(&mut self, id: u32) {
+        for entity in self
+            .engine
+            .bound_entities()
+            .into_iter()
+            .filter(|e| e.id == id)
+        {
+            let mut state = entity.state();
+            state.removed = true;
+            entity.update(state);
+        }
+    }
     /// `play` with the seed a sound packet carries.
     pub fn play_seeded(
         &mut self,
@@ -1450,6 +1485,42 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_sound_packets_neither_rebroadcast_nor_advance_the_local_seed_generator() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        audio.capture = Some(Vec::new());
+        let mut expected = audio.random.clone();
+        let entity = crate::sound_engine::SoundEntity::new(7, [1.0, 2.0, 3.0], false);
+        audio.play_entity_seeded("minecraft:fixture.bound", 6, 0.7, 1.2, 42, entity);
+        assert!(audio.capture.as_ref().unwrap().is_empty());
+        assert_eq!(audio.random.next_long(), expected.next_long());
+    }
+    #[test]
+    fn removal_marks_only_existing_references_to_that_entity() {
+        use crate::sound_engine::SoundEntity;
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        let old = SoundEntity::new(7, [0.0; 3], false);
+        let other = SoundEntity::new(8, [0.0; 3], false);
+        for entity in [old.clone(), other.clone()] {
+            audio.engine.add(
+                SoundInstance::entity_bound(
+                    "minecraft:fixture.bound",
+                    6,
+                    1.0,
+                    1.0,
+                    LegacyRandom::new(42),
+                    entity,
+                ),
+                true,
+            );
+        }
+        audio.remove_sound_entity(7);
+        let replacement = SoundEntity::new(7, [10.0; 3], false);
+        assert!(old.state().removed);
+        assert!(!other.state().removed);
+        assert!(!replacement.state().removed);
+    }
 
     #[test]
     fn button_click_uses_vanilla_ui_parameters_without_advancing_world_random() {
