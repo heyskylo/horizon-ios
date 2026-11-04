@@ -274,6 +274,52 @@ impl Game<'_> {
                 }
             }
         }
+        let paused = self
+            .studio_replay
+            .as_ref()
+            .is_some_and(|replay| replay.is_paused());
+        if self.player_model.is_none() {
+            self.tick_player_model();
+        }
+        if let Some(player) = &self.player {
+            let current_pos = player.position;
+            let (dx, dz) = (
+                current_pos.x - self.previous_position.x,
+                current_pos.z - self.previous_position.z,
+            );
+            let walked = (dx * dx + dz * dz).sqrt() as f32;
+            if let Some(m) = self.player_model.as_mut() {
+                m.previous_limb_speed = m.limb_speed;
+                let step_factor = (delta.as_secs_f32() * 20.0).clamp(0.1, 2.0);
+                if walked > 0.0001 {
+                    m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
+                    m.limb_position += m.limb_speed * step_factor;
+                    let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
+                    let facing = ((self.yaw - walk + 180.0).rem_euclid(360.0) - 180.0).abs();
+                    let target = if 95.0 < facing && facing < 265.0 {
+                        walk - 180.0
+                    } else {
+                        walk
+                    };
+                    let diff = (target - m.body_yaw + 180.0).rem_euclid(360.0) - 180.0;
+                    m.body_yaw += diff * 0.3;
+                } else if !paused {
+                    m.limb_speed = (m.limb_speed * 0.8).max(0.0);
+                    if m.limb_speed > 0.01 {
+                        m.limb_position += m.limb_speed * step_factor;
+                    }
+                }
+                m.previous = self.previous_position;
+                m.position = current_pos;
+                m.previous_yaw = m.yaw;
+                m.previous_head_yaw = m.head_yaw;
+                m.previous_head_pitch = m.head_pitch;
+                m.yaw = self.yaw;
+                m.head_yaw = self.yaw;
+                m.head_pitch = self.pitch;
+            }
+            self.previous_position = current_pos;
+        }
         Ok(())
     }
 
