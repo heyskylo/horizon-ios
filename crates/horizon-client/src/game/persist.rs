@@ -7,7 +7,8 @@ use horizon_client::{
     chunk::Chunk,
     entity_nbt,
     mobs::Who,
-    save::{ChunkExtras, random_uuid},
+    save::{ChunkExtras, random_uuid, text, uuid_text},
+    scoreboard::Scoreboard,
 };
 use horizon_core::{
     geometry::{Direction, Vec3},
@@ -1239,9 +1240,13 @@ impl Game<'_> {
             self.remember_tags(id, tag);
         }
     }
-    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
+    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, mut tag: Tag) {
         self.restore_portal_cooldown(id, &tag);
         self.remember_uuid(id, uuid, &tag);
+        // `Team` is read, never written: the team keeps its members itself.
+        if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Team".into());
+        }
         self.persist.raw.insert(id, tag);
     }
     /// The UUID entity `id` was loaded with, and the attachments `tag` saved under it.
@@ -1249,6 +1254,13 @@ impl Game<'_> {
         if let Some(u) = uuid {
             self.persist.uuids.insert(id, u);
             read_attachments(tag, u, &mut self.entity_attachments);
+        }
+        self.join_saved_team(id, tag);
+    }
+    fn join_saved_team(&mut self, id: u32, tag: &Tag) {
+        if tag.get("Team").is_some() {
+            let name = uuid_text(self.uuid_for(id));
+            join_saved_team(&mut self.score.board, &name, tag);
         }
     }
     /// The mob that was loaded or saved with a UUID.
@@ -1907,11 +1919,57 @@ fn drop_unleashable_leash(tag: &mut Tag, kind: &str, is_mob: bool) {
         c.remove(&"leash".into());
     }
 }
+/// `Entity.load`: a string `Team` adds the entity (`name`, its UUID) to that
+/// team when the scoreboard has it; else vanilla only logs a warning.
+fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
+    let Some(team) = text(tag.get("Team")) else {
+        return false;
+    };
+    if board.team(&team).is_none() {
+        log::warn!("Unable to add mob to team \"{team}\" (that team probably doesn't exist)");
+        return false;
+    }
+    board.add_to_team(name, &team);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MOUNT: [i32; 4] = [1, 2, 3, 4];
+
+    #[test]
+    fn a_saved_team_is_joined_only_when_the_scoreboard_has_it() {
+        let mut board = Scoreboard::default();
+        board.add_team("red");
+        let with_team = |team: &str| {
+            let mut t = entity("minecraft:zombie");
+            if let Tag::Compound(c) = &mut t {
+                c.insert("Team".into(), Tag::String(team.into()));
+            }
+            t
+        };
+        let name = "00000001-0002-0003-0004-000000000005";
+        assert!(join_saved_team(&mut board, name, &with_team("red")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        // A team the scoreboard doesn't have is ignored, and the entity
+        // stays on its team.
+        assert!(!join_saved_team(&mut board, name, &with_team("blue")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        assert!(!join_saved_team(
+            &mut board,
+            "other",
+            &entity("minecraft:zombie")
+        ));
+        assert!(board.players_team("other").is_none());
+    }
 
     #[test]
     fn only_mobs_and_boats_keep_a_leash_tag() {
