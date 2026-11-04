@@ -4901,6 +4901,7 @@ mod tests {
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
+            packed: [None; BUFFERS],
         };
         let (_, samplers, ..) = bindings(
             device.features(),
