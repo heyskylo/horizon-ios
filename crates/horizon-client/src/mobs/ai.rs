@@ -14,7 +14,7 @@ use super::{
 use crate::blocks::Fluid;
 use crate::breathing::{Breath, breathe, drown};
 use horizon_core::{
-    geometry::Vec3,
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
 };
 
@@ -1019,28 +1019,25 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
     }
 }
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
-/// a box of `width * 0.8` (a float product) by 1e-6 high, centred on the eye,
-/// touches a suffocating block. `BlockPos.betweenClosed(AABB)` visits every
-/// cell from `floor(min)` to `floor(max)`; `joinIsNotEmpty` then needs a
-/// volume overlap beyond `Shapes.EPSILON` (1e-7). `suffocating` is the cell's
-/// `isSuffocating` with a full-cube collision shape. Wide mobs (hoglins) cover
-/// several columns; there is no width guard in vanilla.
-fn in_wall(width: f32, eye: [f64; 3], suffocating: impl Fn(i32, i32, i32) -> bool) -> bool {
-    const EPS: f64 = 1.0e-7;
+/// visit every cell covered by the thin eye box and ask whether a suffocating
+/// collision shape actually intersects it. Width multiplication is a float.
+fn in_wall(
+    width: f32,
+    eye: [f64; 3],
+    mut intersects: impl FnMut(i32, i32, i32, &Aabb) -> bool,
+) -> bool {
     let side = f64::from(width * 0.8_f32);
     let half = [side / 2.0, 1.0e-6 / 2.0, side / 2.0];
     let lo = [0, 1, 2].map(|i| eye[i] - half[i]);
     let hi = [0, 1, 2].map(|i| eye[i] + half[i]);
+    let bounds = Aabb::new(
+        Vec3::new(lo[0], lo[1], lo[2]),
+        Vec3::new(hi[0], hi[1], hi[2]),
+    );
     let c0 = lo.map(|v| v.floor() as i32);
     let c1 = hi.map(|v| v.floor() as i32);
-    // Overlap of the box with the unit cell `c` on axis `i`.
-    let overlaps = |i: usize, c: i32| hi[i].min(f64::from(c) + 1.0) - lo[i].max(f64::from(c)) > EPS;
-    (c0[0]..=c1[0]).any(|x| {
-        (c0[1]..=c1[1]).any(|y| {
-            (c0[2]..=c1[2])
-                .any(|z| overlaps(0, x) && overlaps(1, y) && overlaps(2, z) && suffocating(x, y, z))
-        })
-    })
+    (c0[0]..=c1[0])
+        .any(|x| (c0[1]..=c1[1]).any(|y| (c0[2]..=c1[2]).any(|z| intersects(x, y, z, &bounds))))
 }
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
 fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -1097,15 +1094,39 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     m.first_tick = false;
     if m.alive() {
-        // LivingEntity.baseTick: suffocation inside full blocks. Entity.isInWall
+        // LivingEntity.baseTick: a suffocating shape intersects the eye. Entity.isInWall
         // is false under noPhysics, which Vex.tick holds while it ticks.
+        let mut scene = crate::collisions::SceneCollisions {
+            world: w.world,
+            binding: w.collision,
+            subject: None,
+        };
         if m.species() != Species::Vex
             && in_wall(
                 m.width(),
                 [m.position.x, m.eye_y(), m.position.z],
-                |x, y, z| {
-                    let f = w.facts.get(w.world.block(x, y, z));
-                    f.full_collision && f.solid_render
+                |x, y, z, eye_bounds| {
+                    let p = [x, y, z];
+                    let state = w.world.block(x, y, z);
+                    if !w
+                        .suffocation
+                        .is_suffocating(&mut scene, state, p)
+                        .unwrap_or(false)
+                    {
+                        return false;
+                    }
+                    w.collision
+                        .collision_shape(&mut scene, state, p)
+                        .ok()
+                        .is_some_and(|shape| {
+                            let Ok(eye_shape) = VoxelShape::from_box(*eye_bounds) else {
+                                return false;
+                            };
+                            shape
+                                .moved(Vec3::new(f64::from(x), f64::from(y), f64::from(z)))
+                                .join_is_not_empty(&eye_shape, ShapeOp::AND)
+                                .unwrap_or(false)
+                        })
                 },
             )
         {
@@ -4120,14 +4141,33 @@ mod age_up_tests {
 
 #[cfg(test)]
 mod in_wall_tests {
-    use super::in_wall;
+    use super::{Aabb, ShapeOp, Vec3, VoxelShape, in_wall};
+
+    #[test]
+    fn a_suffocating_partial_shape_must_reach_the_eye() {
+        let slab = VoxelShape::from_box(Aabb::new(Vec3::ZERO, Vec3::new(1.0, 0.5, 1.0))).unwrap();
+        let intersects = |x, y, z, eye: &Aabb| {
+            (x, y, z) == (0, 0, 0)
+                && slab
+                    .join_is_not_empty(&VoxelShape::from_box(*eye).unwrap(), ShapeOp::AND)
+                    .unwrap()
+        };
+        assert!(in_wall(0.6, [0.5, 0.25, 0.5], intersects));
+        assert!(!in_wall(0.6, [0.5, 0.75, 0.5], intersects));
+    }
 
     /// `Entity.isInWall` has no width guard (#5872): a hoglin (1.3965 wide)
     /// whose eye is in a solid block, or whose 1.117-wide eye box reaches a
     /// neighbouring wall column, takes in-wall damage like a narrow mob.
     #[test]
     fn wide_mobs_suffocate_by_the_eye_box() {
-        let wall = |x: i32, _y: i32, _z: i32| x >= 0;
+        let wall = |x: i32, y: i32, z: i32, eye: &Aabb| {
+            x >= 0
+                && VoxelShape::block()
+                    .moved(Vec3::new(f64::from(x), f64::from(y), f64::from(z)))
+                    .join_is_not_empty(&VoxelShape::from_box(*eye).unwrap(), ShapeOp::AND)
+                    .unwrap()
+        };
         // Eye inside the wall: hoglin and zombie (0.6) alike.
         assert!(in_wall(1.3965, [0.5, 64.5, 0.5], wall));
         assert!(in_wall(0.6, [0.5, 64.5, 0.5], wall));

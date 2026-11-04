@@ -55,6 +55,39 @@ def group_setup():
     ]
 
 
+def mob_partial_block_suffocation():
+    """Real base ticks: suffocation predicates plus the actual shape at the eye."""
+    ops = setup('/gamerule random_tick_speed 0', '/gamerule mob_griefing false',
+                '/fill 8 198 8 12 199 12 stone')
+    ops.append(cmd('/execute if loaded 10 201 10', expect_result=1))
+    blocks = ['stone', 'glass', 'red_stained_glass', 'oak_leaves[persistent=true]',
+              'copper_grate', 'farmland', 'mud']
+    for i, block in enumerate(blocks):
+        target = f'000000e1-0000-0000-0000-{i + 1:012x}'
+        tag = f'h225_{i}'
+        ops += setup('/fill 8 200 8 12 205 12 air', f'/setblock 10 201 10 {block}',
+                     f'/summon cow 10.5 200 10.5 {{UUID:[I;225,0,0,{i + 1}],Tags:["{tag}"],NoAI:1b,Silent:1b,PersistenceRequired:1b}}')
+        guard = f'/execute as {target} if entity @s[tag={tag},nbt={{Pos:[10.5d,200d,10.5d],NoAI:1b,Silent:1b,PersistenceRequired:1b}}]'
+        ops.append(cmd(guard, expect_result=1))
+        ops.append(cmd(f'/data get entity {target} Health', expect_result=10))
+        for ticks, n in [(1, 1), (21, 20)]:
+            ops.append({'op': 'tick', 'n': n})
+            ops.append(cmd(guard, expect_result=1))
+            ops.append(cmd(f'/data get entity {target} Pos'))
+            eye = f'h225_eye_{i}_{ticks}'
+            ops += setup(f'/execute as {target} at @s anchored eyes run summon marker ^ ^ ^ {{Tags:["{eye}"]}}')
+            ops.append(cmd(f'/execute if entity @e[tag={eye},nbt={{Pos:[10.5d,201.29999995231628d,10.5d]}},limit=1]', expect_result=1))
+            ops.append(cmd(f'/data get entity @e[tag={eye},limit=1] Pos'))
+            ops.append(cmd(f'/execute at @e[tag={eye},limit=1] if block ~ ~ ~ {block}', expect_result=1))
+            hurts = block in ('stone', 'farmland', 'mud')
+            health = (9 if ticks == 1 else 7) if hurts else 10
+            ops.append(cmd(f'/data get entity {target} Health', expect_result=health))
+            ops += setup(f'/kill @e[tag={eye}]')
+        ops += setup(f'/kill {target}')
+        ops.append({'op': 'tick', 'n': 25})
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2452,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('mob partial block suffocation', mob_partial_block_suffocation()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
