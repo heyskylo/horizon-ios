@@ -6,7 +6,7 @@ the first kill's 12000 experience only when it has a fight, which only the End's
 (ServerLevel.getDragonFight); elsewhere it is worth 500 and ends nothing. A vanilla dedicated server and Horizon's
 each serve a fresh flat world; the console summons a dying dragon (Health 0, NoAI: LivingEntity.baseTick runs
 tickDeath while isDeadOrDying) in the overworld and waits past its 200 death ticks. Then, around 0 0, the
-dragon eggs, end portal, bedrock and end gateway blocks it left, and the experience its orbs hold, must match
+dragon egg, end portal and bedrock blocks of the exit portal it left, and the experience its orbs hold, must match
 vanilla's (none of the blocks; 500 experience).
 """
 import argparse
@@ -30,9 +30,10 @@ except ImportError:
     from test_server_world_gen_parity import escape
 
 MESSAGE = re.compile(r'\[Server thread/INFO\]: (?:System chat: )?(.*)$')
-# Where setDragonKilled builds: the exit portal and its egg on the column at 0 0 (above the flat world's bedrock).
+# Where setDragonKilled builds the exit portal and its egg: the column at 0 0 (above the flat world's bedrock).
+# Its gateway goes 96 blocks out, and only with gateways left, which a fight outside the End never loaded.
 BOX = '-4 -63 -4 4 100 4'
-BLOCKS = ['dragon_egg', 'end_portal', 'bedrock', 'end_gateway']
+BLOCKS = ['dragon_egg', 'end_portal', 'bedrock']
 FILLED = re.compile(r'Successfully filled (\d+) block')
 VALUE = re.compile(r'has the following entity data: (-?\d+)')
 
