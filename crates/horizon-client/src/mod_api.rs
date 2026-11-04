@@ -41,6 +41,8 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// The server's play packets `client_packet` hands over, decoded.
+pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{

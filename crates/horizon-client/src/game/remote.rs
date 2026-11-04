@@ -1815,6 +1815,7 @@ impl Game<'_> {
             if let Received::Event(Event::Packet(packet)) = &item
                 && let C::ForgetLevelChunk(p) = &**packet
             {
+                self.native_client_packet(packet);
                 forgotten.insert((p.pos[0], p.pos[1]));
                 continue;
             }
@@ -1844,6 +1845,7 @@ impl Game<'_> {
                             continue;
                         }
                     };
+                    self.native_client_packet(&packet);
                     if let C::LevelChunkWithLight(p) = *packet {
                         self.remote_chunk(&p, Some((&format, column)));
                     }
@@ -3066,6 +3068,7 @@ impl Game<'_> {
     }
 
     fn handle_packet(&mut self, packet: C) -> Result<()> {
+        self.native_client_packet(&packet);
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
