@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "the player's network entity id on `NativeServerPlayer` (`entity_id`).",
+  "doc_summary": "`NativeServerPlayer.entity_id` is the network entity id the player has this session (0 when not known), so hooks that only give entity ids (`living_incoming_damage`, `living_knockback`) can be matched to a player. Bundles need \"hooks\": @API:server_player_entity_id@."
+}

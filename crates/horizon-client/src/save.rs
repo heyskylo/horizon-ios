@@ -4847,22 +4847,10 @@ fn decode_lod_surfaces(
         }
     }
     // Spans are pushed top down, so the reverse puts the topmost last, as
-    // `Column::from_chunk` leaves them. Open water is then lit as open sky,
-    // exactly as the live path does: without it a saved column kept each
-    // water block's own faded skylight and drew a dark band through the sea
-    // where saved columns met the generator's (`grid`'s stride limit).
-    // Only where there is a sky to be lit by: the Nether's water must not
-    // gain skylight it never had.
-    let is_water = |state| {
-        sky_light
-            && assets
-                .registry
-                .state(state)
-                .is_some_and(|block| block.name == "minecraft:water")
-    };
+    // `Column::from_chunk` leaves them. Water keeps the chunk's own light,
+    // a level less per block, as the generator's far columns shade it.
     for column in &mut *columns {
         column.spans.reverse();
-        column.light_open_water_where(is_water);
     }
     Some(Arc::from(columns))
 }
@@ -5663,20 +5651,6 @@ mod tests {
         let underwater = surfaces[4 * 16 + 4].surface.unwrap();
         assert_eq!((underwater.height, underwater.state), (55, sand));
         assert_eq!(underwater.water, Some((64, water)));
-        // Open water reads as open sky, as the generator's far columns do.
-        // Saved columns that kept each block's own faded skylight drew a dark
-        // band through the sea where the two met.
-        let sea = &surfaces[4 * 16 + 4].spans;
-        let lit: Vec<_> = sea
-            .iter()
-            .filter(|span| span.state == water)
-            .map(|span| span.light & 0xf0)
-            .collect();
-        assert!(!lit.is_empty(), "the column keeps its water spans");
-        assert!(
-            lit.iter().all(|sky| *sky == 0xf0),
-            "saved open water is lit as open sky, got {lit:?}"
-        );
         let chorus_column = &surfaces[2 * 16 + 12];
         assert_eq!(
             chorus_column
@@ -7712,6 +7686,248 @@ mod tests {
                 "{address} {seed}: chunks read with a surface"
             );
             let _ = fs::remove_dir_all(&own);
+        }
+    }
+}
+
+/// Far-terrain floating-cell census on a real save: `HORIZON_TEST_RESOURCES`
+/// (prepared data), `HORIZON_FAR_SAVE` (a world folder), `HORIZON_FAR_SEED`
+/// and `HORIZON_FAR_AT` ("x,z", the camera). Samples the tiles each level
+/// draws around the camera as the far sampler gives them (saved chunks up to
+/// 16 blocks a cell, the seed beyond) and counts components of drawn cells
+/// that touch neither the world's bottom nor the tile's halo.
+#[cfg(test)]
+mod far_census {
+    use super::*;
+    use crate::lod::Column;
+    use crate::streaming::ChunkGenerator;
+
+    #[derive(Default, Debug)]
+    struct Census {
+        tiles: usize,
+        floating: usize,
+        cells: usize,
+        kinds: std::collections::BTreeMap<&'static str, usize>,
+        water_over_air: usize,
+    }
+
+    fn kind(name: &str) -> &'static str {
+        if name.ends_with("_leaves") {
+            "leaves"
+        } else if name.ends_with("_log") || name.ends_with("_wood") || name.contains("stem") {
+            "log"
+        } else if name == "minecraft:water" || name == "minecraft:lava" {
+            "fluid"
+        } else if name.contains("snow") || name.contains("ice") {
+            "snow/ice"
+        } else {
+            "ground"
+        }
+    }
+
+    /// `columns`: `side` x `side`, the outer ring a halo.
+    fn count(
+        columns: &[Column],
+        side: usize,
+        name: &dyn Fn(horizon_world::registry::BlockStateId) -> String,
+        out: &mut Census,
+        origin: (i32, i32, i32),
+    ) {
+        // Runs of touching spans, per column: (min, max, top state).
+        let runs: Vec<Vec<(i16, i16, horizon_world::registry::BlockStateId)>> = columns
+            .iter()
+            .map(|column| {
+                let mut runs: Vec<(i16, i16, _)> = Vec::new();
+                for span in column.spans.iter().filter(|s| s.min < s.max) {
+                    match runs.last_mut() {
+                        Some(run) if run.1 == span.min => {
+                            run.1 = span.max;
+                            run.2 = span.state;
+                        }
+                        _ => runs.push((span.min, span.max, span.state)),
+                    }
+                }
+                runs
+            })
+            .collect();
+        let mut first = Vec::with_capacity(runs.len());
+        let mut total = 0;
+        for column in &runs {
+            first.push(total);
+            total += column.len();
+        }
+        let mut parent: Vec<usize> = (0..total).collect();
+        fn find(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let union = |parent: &mut Vec<usize>, a: usize, b: usize| {
+            let (a, b) = (find(parent, a), find(parent, b));
+            if a != b {
+                parent[a] = b;
+            }
+        };
+        for z in 0..side {
+            for x in 0..side {
+                let i = z * side + x;
+                for j in [
+                    (x + 1 < side).then(|| i + 1),
+                    (z + 1 < side).then(|| i + side),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for (a, &(lo, hi, _)) in runs[i].iter().enumerate() {
+                        for (b, &(other_lo, other_hi, _)) in runs[j].iter().enumerate() {
+                            // Cells meeting at an edge (an acacia's
+                            // diagonal branch) look joined too.
+                            if lo <= other_hi && other_lo <= hi {
+                                union(&mut parent, first[i] + a, first[j] + b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Per component: grounded, touches the halo, cells, top state.
+        let mut grounded = vec![false; total];
+        let mut halo = vec![false; total];
+        let mut cells = vec![0usize; total];
+        let mut top = vec![None; total];
+        let mut at = vec![(0, 0); total];
+        for z in 0..side {
+            for x in 0..side {
+                let i = z * side + x;
+                let ring = x == 0 || z == 0 || x + 1 == side || z + 1 == side;
+                for (a, &(lo, hi, state)) in runs[i].iter().enumerate() {
+                    let root = find(&mut parent, first[i] + a);
+                    grounded[root] |= i32::from(lo) <= crate::chunk::MIN_Y;
+                    halo[root] |= ring;
+                    cells[root] += 1;
+                    if top[root].is_none_or(|(y, _)| hi > y) {
+                        top[root] = Some((hi, state));
+                        at[root] = (
+                            origin.0 + x as i32 * origin.2,
+                            origin.1 + z as i32 * origin.2,
+                        );
+                    }
+                }
+                if !ring {
+                    let spans = &columns[i].spans;
+                    for (k, span) in spans.iter().enumerate() {
+                        let n = name(span.state);
+                        if kind(&n) == "fluid" && (k == 0 || spans[k - 1].max < span.min) {
+                            out.water_over_air += 1;
+                            if std::env::var_os("HORIZON_FAR_DEBUG").is_some() {
+                                println!(
+                                    "  fluid over air at {} {} y {}..{} {n}",
+                                    origin.0 + x as i32 * origin.2,
+                                    origin.1 + z as i32 * origin.2,
+                                    span.min,
+                                    span.max
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for root in 0..total {
+            if find(&mut parent, root) != root || grounded[root] || halo[root] {
+                continue;
+            }
+            out.floating += 1;
+            out.cells += cells[root];
+            let (y, state) = top[root].unwrap();
+            *out.kinds.entry(kind(&name(state))).or_default() += 1;
+            if std::env::var_os("HORIZON_FAR_DEBUG").is_some() {
+                println!(
+                    "  floating at {:?} top {y} {} ({} cells)",
+                    at[root],
+                    name(state),
+                    cells[root]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires prepared data and a save (see the module docs)"]
+    fn far_floating_cells_per_level() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+        let root = PathBuf::from(var("HORIZON_TEST_RESOURCES"));
+        let world = PathBuf::from(var("HORIZON_FAR_SAVE"));
+        let seed: i64 = var("HORIZON_FAR_SEED").parse().unwrap();
+        let at: Vec<i32> = var("HORIZON_FAR_AT")
+            .split(',')
+            .map(|n| n.trim().parse().unwrap())
+            .collect();
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let registry = assets.registry;
+        let terrain = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(&root.join("worldgen"), registry, &biomes, seed)
+                .expect("terrain"),
+        );
+        let save = Arc::new(SaveDir::new(
+            world.join("dimensions/minecraft/overworld"),
+            LevelShape::OVERWORLD,
+        ));
+        let generator = Arc::new(Persistent {
+            inner: terrain,
+            save: save.clone(),
+            registry: assets.clone(),
+            biomes: biomes.clone(),
+        });
+        let mut sampler = ChunkGenerator::lod_sampler(generator);
+        let name = |state| {
+            registry
+                .state(state)
+                .map_or_else(String::new, |s| s.name.to_string())
+        };
+        let limit: usize = std::env::var("HORIZON_FAR_TILES")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(48);
+        for level in 1..=6u8 {
+            let size = 16 << level;
+            let width = size / 16;
+            // The ring this level is drawn in (`Plan::visit` splits a tile
+            // closer than 8 of its widths).
+            let (near, far) = (8 * size, 16 * size);
+            let mut tiles = Vec::new();
+            for tz in (at[1] - far).div_euclid(size)..=(at[1] + far).div_euclid(size) {
+                for tx in (at[0] - far).div_euclid(size)..=(at[0] + far).div_euclid(size) {
+                    let (cx, cz) = (tx * size + size / 2, tz * size + size / 2);
+                    let d = (((cx - at[0]) as f64).powi(2) + ((cz - at[1]) as f64).powi(2)).sqrt();
+                    if d >= f64::from(near) && d < f64::from(far) {
+                        tiles.push((tx, tz));
+                    }
+                }
+            }
+            let step = tiles.len().div_ceil(limit).max(1);
+            let mut saved = Census::default();
+            let mut seeded = Census::default();
+            let started = std::time::Instant::now();
+            for &(tx, tz) in tiles.iter().step_by(step) {
+                let (x, z) = (tx * size - width, tz * size - width);
+                let columns = sampler.grid(x, z, width, 18);
+                let all_saved = width <= SAVED_LOD_STRIDE
+                    && (x.div_euclid(16)..=(x + 18 * width - 1).div_euclid(16)).all(|cx| {
+                        (z.div_euclid(16)..=(z + 18 * width - 1).div_euclid(16))
+                            .all(|cz| save.lod_surfaces_shared(cx, cz, &assets, &biomes).is_some())
+                    });
+                let out = if all_saved { &mut saved } else { &mut seeded };
+                out.tiles += 1;
+                count(&columns, 18, &name, out, (x, z, width));
+            }
+            println!(
+                "level {level} (cells {width}, {near}..{far} blocks, {:.1}s): saved {saved:?} | seed {seeded:?}",
+                started.elapsed().as_secs_f32()
+            );
         }
     }
 }

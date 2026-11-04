@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "player_chat",
+      "target": "horizon_client_lib::lan::hub::chat::native_player_chat",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "net.neoforged.neoforge.event.ServerChatEvent (ICancellableEvent)",
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's chat message before it is sent (`native_player_chat`).",
+  "doc_summary": "A player's chat message is about to be sent to everyone: `native_player_chat(player, name, message, replies, cancel)` is heard once for each message a player sends, after the secure-chat chain and the chat filter took it and before anyone sees it. Set `cancel` to drop it for everybody; push lines to `replies` and they go to the sender as system chat (the sender is not told otherwise). The text cannot be changed, a signed message would no longer verify. Bundles need \"hooks\": @API:player_chat@.",
+  "comments": ["crates/horizon-client/src/lan/hub/chat.rs"]
+}
