@@ -2018,7 +2018,7 @@ where
         self.pipeline
             .old_world
             .get()
-            .is_some_and(|world| world.is_old_chunk_around(chunk, 0))
+            .is_some_and(|world| world.is_old_chunk(chunk.x, chunk.z))
     }
     fn saved_starts(&self, chunk: ChunkPos) -> Vec<super::blending::SavedStart> {
         self.pipeline
@@ -2459,6 +2459,16 @@ trait SeededPipeline: Send + Sync {
     ) -> Result<(), String>;
     fn forget_structure_starts(&self);
     fn ring_positions(&self, worker: &mut WorkerState, set: &str) -> Option<Vec<ChunkPos>>;
+    /// The structures whose random-spread set may start in `chunk`, each with whether a
+    /// search's start check lets it start there.
+    #[cfg(test)]
+    fn may_start_answers(
+        &self,
+        _worker: &mut WorkerState,
+        _chunk: ChunkPos,
+    ) -> Vec<(String, bool)> {
+        Vec::new()
+    }
     fn spawn_position(&self) -> Result<[i32; 2], GeneratorError>;
     fn region_random(&self, center: ChunkPos) -> Box<dyn super::structure::legacy::PieceRandom>;
     fn locate(
@@ -2626,6 +2636,20 @@ where
     fn forget_structure_starts(&self) {
         if let Some(structures) = &self.structures {
             structures.forget_starts();
+        }
+    }
+    #[cfg(test)]
+    fn may_start_answers(&self, worker: &mut WorkerState, chunk: ChunkPos) -> Vec<(String, bool)> {
+        match &self.structures {
+            Some(structures) => structures.may_start_answers(
+                &mut StructureQueries {
+                    pipeline: self,
+                    worker,
+                    valid: BTreeSet::new(),
+                },
+                chunk,
+            ),
+            None => Vec::new(),
         }
     }
     fn ring_positions(&self, worker: &mut WorkerState, set: &str) -> Option<Vec<ChunkPos>> {
@@ -3743,6 +3767,10 @@ impl GeneratorWorker {
     pub fn forget_structure_starts(&mut self) {
         self.pipeline.forget_structure_starts();
     }
+    #[cfg(test)]
+    fn may_start_answers(&mut self, chunk: ChunkPos) -> Vec<(String, bool)> {
+        self.pipeline.may_start_answers(&mut self.state, chunk)
+    }
     pub fn stage_timings(&self) -> StageTimings {
         self.state.timings
     }
@@ -4363,6 +4391,44 @@ mod tests {
         worker.forget_structure_starts();
         let after: Vec<_> = chunks.iter().map(|&c| summary(&mut worker, c)).collect();
         assert_eq!(before, after);
+    }
+
+    /// A map's structure search skips a chunk's starts when no wanted structure's start
+    /// piece and biome fit there (#8669). Over the candidate chunks of every random-spread
+    /// set around the camp TiesB2007's map went looking from, a skipped structure is never
+    /// one the chunk's full starts hold, and some are skipped.
+    #[test]
+    fn may_start_never_skips_a_start_the_chunk_holds() {
+        let Some(data) = prepared_data() else {
+            return;
+        };
+        let generator = OverworldGenerator::new(data, -3292718948513116954).expect("generator");
+        let mut worker = generator.worker();
+        let (mut held, mut skipped) = (0, 0);
+        for x in 212..332 {
+            for z in -481..-361 {
+                let chunk = ChunkPos::new(x, z);
+                let checks = worker.may_start_answers(chunk);
+                if checks.is_empty() {
+                    continue;
+                }
+                let starts: Vec<String> = (worker.structure_starts(chunk).iter())
+                    .map(|s| s.name.clone())
+                    .collect();
+                for (name, may_start) in checks {
+                    if starts.contains(&name) {
+                        assert!(
+                            may_start,
+                            "{name} starts in {chunk:?}, but its check skips it"
+                        );
+                        held += 1;
+                    } else if !may_start {
+                        skipped += 1;
+                    }
+                }
+            }
+        }
+        assert!(held > 0 && skipped > 0, "held {held}, skipped {skipped}");
     }
 
     /// Generators of one seed and dimension share their ring positions;
