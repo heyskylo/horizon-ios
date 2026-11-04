@@ -118,14 +118,15 @@ def scenarios():
     add('warden_creative', 300, ['player 4.5 -60 0.5 creative', 'mob minecraft:warden 0.5 -60 0.5 0 64 digcooldown'])
     add('warden_persistent', 400, ['player 7.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 65 persistent digcooldown'])
     add('warden_emerging', 300, ['player 6.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'])
-    # #8832: overlapping entities must not displace a warden while it emerges
-    # or digs. Reverse tick order to cover the other mob's pushability query.
-    for state, flags in [('emerging', 'emerge'), ('digging', '')]:
-        warden = f'mob minecraft:warden 0.5 -60 0.5 0 66 {flags}'
-        cow = 'mob minecraft:cow 1.0 -60 0.5 0 68 persistent noai'
-        add(f'warden_{state}_push_first', 5, [warden, cow])
-        add(f'warden_{state}_push_second', 5, [cow, warden])
-        add(f'warden_{state}_push_player', 5, ['player 1.0 -60 0.5 creative', warden])
+    # #8832: overlapping entities must not displace a warden while it emerges.
+    # Reverse tick order to cover the other mob's pushability query. The
+    # fixture has no flag that starts a dig, so digging is covered by
+    # `warden_push_tests` in mobs/ai.rs.
+    warden = 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'
+    cow = 'mob minecraft:cow 1.0 -60 0.5 0 68 persistent noai'
+    add('warden_emerging_push_first', 5, [warden, cow])
+    add('warden_emerging_push_second', 5, [cow, warden])
+    add('warden_emerging_push_player', 5, ['player 1.0 -60 0.5 creative', warden])
     add('warden_cow', 176, ['mob minecraft:warden 0.5 -60 0.5 0 67 digcooldown', 'mob minecraft:cow 4.5 -60 0.5 0 68 persistent'])
     # Two villagers gossip (TradeWithVillager): what one heard of the player
     # passes to the other, weakened, once in 1200 ticks; idle and at the bell.
