@@ -41,7 +41,7 @@ pub(super) fn read_shader_options(
     let chosen = chosen_shader_options(name);
     let pack = pack.with_chosen(chosen.clone());
     let text = pack.read_text("shaders.properties").unwrap_or_default();
-    let properties = Properties::parse(&text, &horizon_shaders::with_options(&pack, macros));
+    let properties = Properties::parse(&text, &horizon_shaders::properties_macros(&pack, macros));
     let screens = horizon_shaders::Screens::parse(&properties, &options);
     Some(ShaderOptions::new(
         name.to_owned(),
