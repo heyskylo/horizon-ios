@@ -3831,7 +3831,14 @@ impl Game<'_> {
     /// `HoneyBlock.showSlideParticles` (entity event 53): five honey block
     /// particles at the entity.
     fn honey_slide_particles(&mut self, at: [f64; 3]) {
+        self.honey_entity_particles(at, 53);
+    }
+    /// `HoneyBlock.showParticles`: the crumb count of entity event 53 or 54.
+    fn honey_entity_particles(&mut self, at: [f64; 3], event: i8) {
         use horizon_client::particles::{ParticleOptions, ParticleType};
+        let Some(count) = horizon_client::landing::honey_particle_count(event) else {
+            return;
+        };
         let Some(honey) = self
             .pack
             .assets
@@ -3846,7 +3853,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         ];
         if let Some((sprite, tint)) = self.particle_sprite(honey, block) {
-            for _ in 0..5 {
+            for _ in 0..count {
                 self.particles.add(
                     &ParticleOptions::block(ParticleType::Block, sprite.clone(), tint),
                     at,

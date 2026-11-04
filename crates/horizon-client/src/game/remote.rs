@@ -4214,9 +4214,10 @@ impl Game<'_> {
                 if p.event == super::combat::DROWN_EVENT {
                     self.remote_drown(p.id);
                 }
-                // Entity event 53: the honey slide particles of a player
-                // sliding down a honey block (HoneyBlock.showSlideParticles).
-                if p.event == 53 {
+                // Entity events 53 and 54: honey crumbs while sliding, and the
+                // ten from a landing (`HoneyBlock.showSlideParticles` /
+                // `showJumpParticles`).
+                if horizon_client::landing::honey_particle_count(p.event).is_some() {
                     let at = if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
                         self.player
                             .as_ref()
@@ -4228,7 +4229,7 @@ impl Game<'_> {
                             .map(|m| [m.position.x, m.position.y, m.position.z])
                     };
                     if let Some(at) = at {
-                        self.honey_slide_particles(at);
+                        self.honey_entity_particles(at, p.event);
                     }
                 }
                 if p.event == super::consume::USE_ITEM_COMPLETE_EVENT
@@ -6232,9 +6233,10 @@ impl Game<'_> {
                     self.audio
                         .play("minecraft:block.honey_block.slide", Some(feet), 1.0, 1.0);
                 }
-                // LivingEntity.causeFallDamage on the client's own level: the
-                // fall sound is heard here (LocalPlayer.playSound); the
-                // server's copy skips this player (Player.playSound).
+                // LivingEntity.causeFallDamage and HoneyBlock.fallOn on the
+                // client's own level: the fall and honey sounds are heard here
+                // (LocalPlayer.playSound); the server's copy skips this player
+                // (Player.playSound).
                 horizon_client::motion::MotionEvent::Fall(
                     horizon_client::landing::FallEvent::Sound {
                         sound,
@@ -6243,7 +6245,10 @@ impl Game<'_> {
                         ..
                     },
                 ) => {
-                    if let Some(name) = sound.player_fall_sound() {
+                    if let Some(name) = sound
+                        .player_fall_sound()
+                        .or_else(|| sound.honey_landing_sound())
+                    {
                         self.audio.play(name, Some(feet), volume, pitch);
                     }
                 }

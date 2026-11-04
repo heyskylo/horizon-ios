@@ -2705,10 +2705,13 @@ impl Game<'_> {
         if event == 21 && self.options.execution_role.is_client() {
             self.start_guardian_sound(id as u32);
         }
-        // Event 53: a mob sliding down a honey block sheds honey particles
-        // (HoneyBlock.showSlideParticles), drawn by the client that runs the world.
-        if event == 53 && self.options.execution_role.is_client() {
-            self.honey_slide_particles(at);
+        // Events 53 and 54: honey crumbs while sliding, and the landing burst
+        // (`HoneyBlock.showSlideParticles` / `showJumpParticles`), drawn by the
+        // client that runs the world.
+        if self.options.execution_role.is_client()
+            && horizon_client::landing::honey_particle_count(event).is_some()
+        {
+            self.honey_entity_particles(at, event);
         }
         // Event 2: a mob's spear hit felt; the same window hears its own mob's hit.
         if event == 2 && self.options.execution_role.is_client() {
