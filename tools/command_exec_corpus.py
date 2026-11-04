@@ -1039,6 +1039,60 @@ def summoned_fangs_levels():
     ]
 
 
+def entity_landing_sensors():
+    """Entity.checkFallDamage -> real Game dispatch -> a fresh sculk listener."""
+    ops = setup('/gamerule random_tick_speed 0', '/gamerule entity_drops false',
+                '/tp @s 6.5 200 7.5', '/forceload add 0 0 31 31',
+                '/scoreboard objectives add landing_probe dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 200 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze')
+    for kind, landing_tick in (('item', 13), ('armor_stand', 10)):
+        for no_gravity in (0, 1):
+            tag = f'landing_{kind}_{no_gravity}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
+                         '/tick step 25')
+            ops += [{'op': 'tick', 'n': 25}]
+            ops += setup('/fill 0 200 0 31 206 31 air',
+                         '/fill 0 199 0 31 199 31 stone',
+                         '/tp @s 6.5 200 7.5',
+                         '/setblock 9 200 10 sculk_sensor strict', '/tick step 2')
+            ops += [{'op': 'tick', 'n': 2}]
+            ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]', expect_result=1),
+                    cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0),
+                    cmd('/execute unless data block 9 200 10 listener.event', expect_result=1),
+                    cmd('/execute unless data block 9 200 10 listener.selector.event', expect_result=1),
+                    cmd('/execute if entity @s[nbt={Pos:[6.5d,200d,7.5d]}]', expect_result=1)]
+            item = ',Item:{id:"minecraft:stone",count:1},PickupDelay:32767' if kind == 'item' else ''
+            ops += setup(f'/summon {kind} 6.5 203 10.5 '
+                         f'{{Tags:["landing_actor","{tag}"],NoGravity:{no_gravity}b{item}}}')
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/data get entity {target} Pos'),
+                    cmd(f'/execute unless entity {target[:-1]},nbt={{OnGround:1b}}]', expect_result=1)]
+            for tick in range(1, 21):
+                ground = not no_gravity and tick >= landing_tick
+                active = not no_gravity and tick >= landing_tick + 3
+                phase, power = ('active', 10) if active else ('inactive', 0)
+                sign = 'if' if ground else 'unless'
+                ops += setup('/tick step 1')
+                ops += [{'op': 'tick', 'n': 1}]
+                # Flight height at milliblock precision: landing timing and
+                # final coordinates are exact controls; float-drag parity is separate.
+                ops += setup(f'/execute store result score landing_y landing_probe run data get entity {target} Pos[1] 1000')
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd('/scoreboard players get landing_y landing_probe'),
+                        cmd(f'/execute {sign} entity {target[:-1]},nbt={{OnGround:1b}}]', expect_result=1),
+                        cmd(f'/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase={phase},power={power}]', expect_result=1)]
+            y = 203 if no_gravity else 200
+            ops += [cmd(f'/execute if entity {target[:-1]},nbt={{Pos:[6.5d,{y}d,10.5d]}}]', expect_result=1),
+                    cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0 if no_gravity else 2)]
+    return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
+                       '/scoreboard objectives remove landing_probe',
+                       '/tick unfreeze', '/gamerule random_tick_speed 3')
+
+
 def bird_flap_sensors():
     # Real mob movement -> Game event dispatch -> sculk sensor. Silent birds
     # still emit vibrations; NoAI controls must keep the same positions too.
@@ -2423,6 +2477,7 @@ def groups():
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
         ('bird flap sensors', bird_flap_sensors()),
+        ('entity landing sensors', entity_landing_sensors()),
 
         ('loot set damage', loot_set_damage()),
 
