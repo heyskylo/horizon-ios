@@ -149,7 +149,7 @@ fn library_key(library: &Value) -> String {
 /// A version with what it `inheritsFrom` (a loader's profile on the game's version) merged in, as
 /// the official launcher reads it: the child's fields over the parent's, its libraries first (a
 /// parent's library it names again is left out), its arguments after the parent's, and the
-/// parent's client jar (`jar`).
+/// parent's client jar (`jar`) unless it names its own (Forge's copy of it).
 pub fn resolve(version: Value, minecraft: &Path) -> Result<Value, String> {
     resolve_from(version, minecraft, &mut Vec::new())
 }
@@ -169,8 +169,9 @@ fn resolve_from(version: Value, minecraft: &Path, seen: &mut Vec<String>) -> Res
         .join(mojang::relative(parent)?)
         .join(format!("{parent}.json"));
     let mut merged = resolve_from(read(&file)?, minecraft, seen)?;
-    let jar = merged["jar"]
+    let jar = version["jar"]
         .as_str()
+        .or(merged["jar"].as_str())
         .or(merged["id"].as_str())
         .unwrap_or(parent)
         .to_string();
