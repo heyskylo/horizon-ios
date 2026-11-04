@@ -164,6 +164,7 @@ impl Game<'_> {
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Projectile(id) => {
+                let uuid = self.uuid_for(id);
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
                 let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
@@ -176,10 +177,10 @@ impl Game<'_> {
                     .and_then(|a| a.last_state)
                     .map(|s| self.state_to_nbt(s));
                 let raw = self.persist.raw.get(&id);
-                entity_nbt::arrow_to_nbt(p, random_uuid(), owner, in_block, raw)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, raw))
-                    .or_else(|| entity_nbt::throwable_to_nbt(p, random_uuid(), owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, random_uuid(), owner, raw))?
+                entity_nbt::arrow_to_nbt(p, uuid, owner, in_block, raw)
+                    .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
+                    .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
+                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, raw))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
