@@ -6,6 +6,7 @@
 //! system message it produced, as styled spans, with the results reported to
 //! the player's `CommandResultCallback`; `tick` advances the game; `settle`
 //! waits until the terrain and entities around the player are loaded;
+//! `use_block` uses the main hand at a block top;
 //! `break` destroys a block as the server player; `portal` sends the player
 //! through the nether portal it stands in; `falling` counts physical falling
 //! blocks by dimension, block and gravity.
@@ -251,6 +252,47 @@ impl Game<'_> {
                         std::thread::sleep(Duration::from_millis(2));
                     }
                     self.harness_owner(|g| g.harness_settle(deadline))?;
+                }
+                "use_block" => {
+                    // Exercise the connected owner's normal server packet route.
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    let face = op["face"].as_i64().unwrap_or(1) as i32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItemOn(
+                                horizon_protocol::packets::play::UseItemOn {
+                                    hand: 0,
+                                    pos,
+                                    face,
+                                    cursor: [0.5, 1.0, 0.5],
+                                    inside: false,
+                                    world_border: false,
+                                    sequence: 0,
+                                },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
                 }
                 "break" => {
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);

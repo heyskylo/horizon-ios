@@ -55,6 +55,39 @@ def group_setup():
     ]
 
 
+def villager_wake_rotation():
+    """Use the occupied bed through the live player route, then observe pose."""
+    ops = setup('/fill 0 199 3 6 199 9 stone', '/gamemode survival', '/tp @s 4.5 200 4.5', '/time set noon')
+    ops.append({'op': 'settle'})
+    target = None
+    for n, pitch in enumerate((0, 23)):
+        if n:
+            ops += setup(f'/kill {target}')
+            ops.append({'op': 'tick', 'n': 2})
+        target = f'000000e7-0000-0000-0000-{n + 1:012x}'
+        ops += setup('/setblock 2 200 7 red_bed[facing=north,part=foot,occupied=true] strict',
+                     '/setblock 2 200 6 red_bed[facing=north,part=head,occupied=true] strict')
+        ops.append({'op': 'settle'})
+        ops += setup(f'/summon villager 2.5 200.6875 6.5 {{UUID:[I;231,0,0,{n + 1}],Tags:["h231"],NoAI:1b,Health:20f,sleeping_pos:[I;2,200,6],Rotation:[0f,{pitch}f]}}')
+        ops.append(cmd(f'/execute as {target} if entity @s[tag=h231,nbt={{Health:20f,NoAI:1b,Pos:[2.5d,200.6875d,6.5d]}}]', expect_result=1))
+        ops.append(cmd('/execute if entity @s[gamemode=survival,nbt={Pos:[4.5d,200d,4.5d]}]', expect_result=1))
+        for z in (6, 7):
+            ops.append(cmd(f'/execute if block 2 200 {z} red_bed[occupied=true]', expect_result=1))
+        ops.append(cmd(f'/data get entity {target} Rotation'))
+        ops.append({'op': 'use_block', 'pos': [2, 200, 6], 'face': 1})
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/execute as {target} if entity @s[tag=h231,nbt={{Health:20f,NoAI:1b,Pos:[3.5d,200d,6.5d]}}]', expect_result=1))
+        ops.append(cmd(f'/data get entity {target} Rotation'))
+        for z in (6, 7):
+            ops.append(cmd(f'/execute if block 2 200 {z} red_bed[occupied=false]', expect_result=1))
+        ops.append(cmd('/execute unless data entity @s sleeping_pos', expect_result=1))
+    ops += setup('/kill @e[tag=h231]', '/setblock 2 200 6 air strict',
+                 '/setblock 2 200 7 air strict', '/gamemode creative',
+                 '/tp @s 8.5 230 8.5', '/time set 1000')
+    ops.append({'op': 'settle'})
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2452,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('villager wake rotation', villager_wake_rotation()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
