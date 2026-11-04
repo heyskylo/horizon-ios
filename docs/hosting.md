@@ -289,12 +289,15 @@ horizon-server restore BACKUP [--dimension ID] [--yes]
 horizon-server service install|uninstall|print [--system]
 horizon-server panel                     a one-time login link for the web panel
 horizon-server import FILE               server.toml from a vanilla server.properties
-horizon-server import-resources DIR       copy prepared game files into place (below)
+horizon-server import-resources DIR      copy prepared game files into place (step 2)
 horizon-server config [--json]           the settings in server.toml
 horizon-server config set KEY=VALUE... [--json]
+                                         change settings, checked first (below)
 horizon-server update [--check [--json]] [--version TAG] [--timeout SECONDS]
-                                     --archive FILE --version NAME installs an archive you have
-horizon-server rollback [--timeout SECONDS]  back to the release used before
+                                         install the newest release and restart on it (below);
+                                         --archive FILE --version NAME installs an archive you have
+horizon-server rollback [--timeout SECONDS]
+                                         back to the release used before
 ```
 
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
