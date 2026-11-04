@@ -64,6 +64,8 @@ def main():
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--slot-codec-diagnostic', action='store_true',
+                        help='retain the separate invalid inline slot-range codec diagnostic')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -88,6 +90,9 @@ def main():
     groups = corpus_module.groups()
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.slot_codec_diagnostic:
+        groups.append(('slot source codec diagnostic', [corpus_module.cmd(
+            '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     script = []
     for _, lines in groups:
         script.extend(lines)
