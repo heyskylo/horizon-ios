@@ -378,6 +378,8 @@ pub struct MobType {
     pub jump_strength: f64,
     /// Every default attribute value of the type (`entity-types.json`).
     pub attributes: Arc<HashMap<String, f64>>,
+    /// Item defaults used when loading inventory-bearing mobs before a Game exists.
+    pub item_stack_limits: Arc<HashMap<String, u32>>,
     pub gravity: f64,
     pub safe_fall_distance: f64,
     pub fall_damage_multiplier: f64,
@@ -407,6 +409,22 @@ pub struct MobType {
     pub tempt: Arc<[String]>,
 }
 impl MobType {
+    pub fn inventory_stack_limit(&self, stack: &crate::items::ItemStack) -> u32 {
+        stack
+            .data()
+            .and_then(|d| d.other("minecraft:max_stack_size"))
+            .and_then(|t| match t {
+                horizon_world::nbt::Tag::Int(n) => u32::try_from(*n).ok(),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                self.item_stack_limits
+                    .get(stack.item.as_ref())
+                    .copied()
+                    .unwrap_or(64)
+            })
+    }
+
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
         self.layers.get(key)
     }
@@ -479,6 +497,26 @@ impl MobTypes {
             v.sort();
             v.into()
         };
+        // The Allay's InventoryCarrier loading needs item limits before a
+        // Game exists. Other mob-only resource sets need no item data.
+        let items: HashMap<String, Value> = if types.get("minecraft:allay").is_some() {
+            serde_json::from_slice(&fs::read(root.join("items.json"))?)?
+        } else {
+            HashMap::new()
+        };
+        let item_stack_limits: Arc<HashMap<String, u32>> = Arc::new(
+            items
+                .into_iter()
+                .map(|(id, components)| {
+                    (
+                        id,
+                        components["minecraft:max_stack_size"]
+                            .as_u64()
+                            .unwrap_or(64) as u32,
+                    )
+                })
+                .collect(),
+        );
         let mut out = HashMap::new();
         for def in species::ALL {
             let id = format!("minecraft:{}", def.name);
@@ -516,6 +554,7 @@ impl MobTypes {
                 id.clone(),
                 MobType {
                     species: def.species,
+                    item_stack_limits: item_stack_limits.clone(),
                     width: t["width"].as_f64().unwrap_or(0.6),
                     height: t["height"].as_f64().unwrap_or(1.8),
                     eye_height: t["eye_height"].as_f64().unwrap_or(1.6),
@@ -4169,6 +4208,7 @@ pub(crate) mod sensor_scan_tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
