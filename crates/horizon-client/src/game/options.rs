@@ -174,10 +174,30 @@ impl Game<'_> {
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
         self.watch_pack_folder();
+        let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
+        if ui.controller_open() {
+            ui.controller.context = context;
+        }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);
+    }
+    /// Whose controller settings these are and what this game sees (`controller_ui`): the
+    /// player's badge in splitscreen with its name, and its own controller.
+    fn controller_settings_context(&self) -> horizon_client::controller_ui::Context {
+        let name = self.options.player_name();
+        let player = match &self.split_hud.badge {
+            Some(badge) if *badge != name => format!("{badge} · {name}"),
+            _ => name,
+        };
+        horizon_client::controller_ui::Context {
+            player,
+            device: self.pad.device_or_virtual(),
+            detected: self.pad.style,
+            style: self.ui.options.pad_style,
+            by_letter: self.ui.options.pad_by_letter,
+        }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
     /// window goes fullscreen for it and back after, if it wasn't already.

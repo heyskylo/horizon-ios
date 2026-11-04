@@ -1,7 +1,11 @@
 //! Players coming and going: joining (P1's world through memory, or P1's server) as a profile
 //! it picks (`split_profiles`), dropping out.
 use super::*;
-use horizon_client::{gamepad::PadState, options_ui::Page};
+use horizon_client::{
+    controller_notice::{Notice, NoticeId, Priority},
+    gamepad::PadState,
+    options_ui::Page,
+};
 
 /// Whether `game` shows its profile page now.
 fn on_profiles(game: &Game<'_>) -> bool {
@@ -501,7 +505,7 @@ impl Split<'_> {
             || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
         if p1_left {
-            self.host.split_hud.notice = None;
+            self.host.split_hud.notice.clear();
         }
         for k in (0..self.guests.len()).rev() {
             let g = &mut self.guests[k];
@@ -519,8 +523,12 @@ impl Split<'_> {
                 .then(|| turned_away(&g.game))
                 .flatten();
             if let (true, Some(name), Some(why)) = (g.entered, &g.name, &why) {
-                self.host.split_hud.notice =
-                    Some(Notice::new(format!("{name} could not stay"), why.clone()));
+                self.host.split_hud.notice.raise(Notice::new(
+                    NoticeId::PlayerLeft,
+                    Priority::Attention,
+                    format!("{name} could not stay"),
+                    why.clone(),
+                ));
             } else if let Some(why) = why {
                 let old = self.guests[k].name.take();
                 if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
