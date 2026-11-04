@@ -456,7 +456,9 @@
   "runs {command} after": "koyrir {command} eftir",
   "downloaded": "heintað",
   "24/7 online": "24/7 á netinum",
-  "Updated to {version}. Restart the launcher to use it.": "Dagført til {version}. Endurbyrja sjósetaran fyri at brúka hann.",
+  "A new version is available": "Ein nýggj útgáva er tøk",
+  "Download again": "Tak niður aftur",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Hetta avritið av byrjaranum kann ikki skifta seg sjálvt út. Tak tað niður aftur eina ferð; eftir tað dagførir tað seg sjálvt.",
   "Any MCP client": "Ein og hvør MCP kundi",
   "{name}'s cape is kept.": "{name}'s kápa er hildin.",
   "Not reviewed by the Horizon registry": "Ikki ummælt av Horizon skrásetingini",
@@ -635,7 +637,6 @@
   "Copied": "Avritað",
   "Couldn't load patch notes. {error}": "Kundi ikki heinta plásturseðlar. {error}",
   "Couldn't load releases. {error}": "Kundi ikki heinta útgávur. {error}",
-  "Launcher updated to {version}": "Sjósetari dagførdur til {version}",
   "Launcher {version}": "Sjósetari {version}",
   "Launcher {version}  {percent}%": "Sjósetari {version} {percent}%",
   "Manage versions": "Umsita útgávur",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Okkurt gekk galið.",
   "Instances": "Uppsetingar",
   "Join the Discord": "Melda teg til Discord",
-  "Restart to update": "Endurbyrja fyri at dagføra",
   "Duplicate…": "Tvítøk...",
   "Create a desktop shortcut": "Stovna ein snarveg á skriviborði",
   "Remove the desktop shortcut": "Strika snarvegin á skriviborðinum",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Opna handilin",
-  "You don't own any cosmetics yet.": "Tú eigur enn einki kosmetikk."
+  "You don't own any cosmetics yet.": "Tú eigur enn einki kosmetikk.",
+  "Claim for free": "Fá ókeypis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Gjaldsveitarin hjá handlinum tænar ikki tínum landi, so tú kanst fáa Stovnara settið her ókeypis.",
+  "The Founder Set is yours.": "Stovnara settið er títt."
 }

@@ -456,7 +456,9 @@
   "runs {command} after": "na-agba {command} mgbe",
   "downloaded": "ebudatara",
   "24/7 online": "24/7 n'ịntanetị",
-  "Updated to {version}. Restart the launcher to use it.": "Emelitere ka {version}. Malitegharịa ihe mmalite ka iji ya.",
+  "A new version is available": "Ụdị ọhụrụ dị",
+  "Download again": "Budata ọzọ",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Mbipụta a nke launcher enweghị ike ịnọchi onwe ya. Budata ya ọzọ otu ugboro; mgbe nke ahụ gasịrị ọ na-emelite onwe ya.",
   "Any MCP client": "Onye ahịa MCP ọ bụla",
   "{name}'s cape is kept.": "A na-echekwa okpu {name}.",
   "Not reviewed by the Horizon registry": "Ndebanye aha Horizon enyochaghị ya",
@@ -635,7 +637,6 @@
   "Copied": "Eṅomiri",
   "Couldn't load patch notes. {error}": "Enweghị ike ibunye ndetu mkpọchi. {error}",
   "Couldn't load releases. {error}": "Enweghị ike ibunye mwepụta. {error}",
-  "Launcher updated to {version}": "Emelitere ihe mmalite ka ọ bụrụ {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version} {percent}%",
   "Manage versions": "Jikwaa ụdịdị",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Ọ nwere ihe adịghị mma.",
   "Instances": "Ihe atụ",
   "Join the Discord": "Soro na Discord",
-  "Restart to update": "Malitegharịa ekwentị ka emelite",
   "Duplicate…": "Megharịa…",
   "Create a desktop shortcut": "Mepụta ụzọ mkpirisi desktọpụ",
   "Remove the desktop shortcut": "Wepu ụzọ mkpirisi desktọpụ",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Mepee ụlọ ahịa",
-  "You don't own any cosmetics yet.": "Ị nweghị ihe ịchọ mma ọ bụla ugbu a."
+  "You don't own any cosmetics yet.": "Ị nweghị ihe ịchọ mma ọ bụla ugbu a.",
+  "Claim for free": "Nara ya n'efu",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Onye na-enye ịkwụ ụgwọ nke ụlọ ahịa anaghị arụ ọrụ na mba gị, ya mere ị nwere ike ịnara Ntọala ntọala ebe a n'efu.",
+  "The Founder Set is yours.": "Ntọala ntọala bụ nke gị."
 }

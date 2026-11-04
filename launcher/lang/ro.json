@@ -458,7 +458,9 @@
   "runs {command} after": "aleargă {command} după",
   "downloaded": "descărcat",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Actualizat la {version}. Reporniți lansatorul pentru a-l utiliza.",
+  "A new version is available": "Este disponibilă o versiune nouă",
+  "Download again": "Descarcă din nou",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Această copie a lansatorului nu se poate înlocui singură. Descarcă-l din nou o dată; după aceea se actualizează singur.",
   "Any MCP client": "Orice client MCP",
   "{name}'s cape is kept.": "Pelerina lui {name} este păstrată.",
   "Not reviewed by the Horizon registry": "Nu a fost examinat de registrul Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Copiat",
   "Couldn't load patch notes. {error}": "Nu s-au putut încărca note de corecție. {error}",
   "Couldn't load releases. {error}": "Nu s-au putut încărca versiunile. {error}",
-  "Launcher updated to {version}": "Lansatorul a fost actualizat la {version}",
   "Launcher {version}": "Lansatorul {version}",
   "Launcher {version}  {percent}%": "Lansatorul {version} {percent}%",
   "Manage versions": "Gestionați versiunile",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Ceva a mers prost.",
   "Instances": "Instanțe",
   "Join the Discord": "Alăturați-vă Discordului",
-  "Restart to update": "Reporniți pentru a actualiza",
   "Duplicate…": "Duplicați...",
   "Create a desktop shortcut": "Creați o comandă rapidă pe desktop",
   "Remove the desktop shortcut": "Eliminați comanda rapidă de pe desktop",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Deschide magazinul",
-  "You don't own any cosmetics yet.": "Încă nu ai produse cosmetice."
+  "You don't own any cosmetics yet.": "Încă nu ai produse cosmetice.",
+  "Claim for free": "Revendică gratuit",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Furnizorul de plăți al magazinului nu operează în țara ta, așa că poți revendica aici gratuit Setul fondator.",
+  "The Founder Set is yours.": "Setul fondator este al tău."
 }
