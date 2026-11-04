@@ -92,9 +92,8 @@ impl Game<'_> {
             return Ok(());
         };
         let grid: Vec<Option<ItemStack>> = crafter.items.to_vec();
-        // RecipeCache.get: the first crafting recipe that matches, assembled.
+        // RecipeCache.get: query the active world recipe manager, then assemble its first match.
         let found = self
-            .res
             .recipes()
             .find(&grid, 3)
             .map(|(name, result)| (name.to_owned(), result))

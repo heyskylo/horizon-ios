@@ -4537,6 +4537,77 @@ def bell_server_glow():
     return ops + setup('/scoreboard objectives remove bell_clock')
 
 
+def crafting_priority_recipes(group_names):
+    if 'crafting recipe priority' not in group_names:
+        return {}
+    def recipe(inputs, item, count=1):
+        return {'type': 'minecraft:crafting_shapeless', 'ingredients': ['minecraft:' + x for x in inputs],
+                'result': {'id': 'minecraft:' + item, 'count': count}}
+    # Write deliberately out of selection order; resource registration decides priority.
+    return {'parity:zzz_star': recipe(['gunpowder', 'red_dye'], 'emerald'),
+            'parity:aaa_star': recipe(['gunpowder', 'blue_dye'], 'diamond'),
+            'a_priority:z_h295_pick': recipe(['gold_nugget', 'paper'], 'diamond'),
+            'z_priority:a_h295_pick': recipe(['gold_nugget', 'paper'], 'emerald'),
+            'z_priority:h295_equal': recipe(['coal', 'paper'], 'emerald'),
+            'a_priority:h295_equal': recipe(['coal', 'paper'], 'gold_nugget', 3),
+            'parity:h295_resource': recipe(['clay_ball', 'paper'], 'brick'),
+            'parity:h295_resource-early': recipe(['clay_ball', 'paper'], 'nether_brick'),
+            'minecraft:oak_planks': recipe(['oak_log'], 'gold_ingot', 2),
+            'parity:zzzz_h295_unique': recipe(['apple', 'amethyst_shard'], 'quartz', 5)}
+
+
+def crafting_recipe_priority(world=True):
+    """Fresh natural crafters distinguish world selection, resource order and ID replacement."""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone',
+                '/tp @s 8.5 200 8.5 0 0', '/clear @s', '/recipe take @s *',
+                '/scoreboard objectives add recipe_order dummy',
+                '/data modify storage h295:identity uuid set from entity @s UUID')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
+    if world:
+        for id in crafting_priority_recipes(['crafting recipe priority']):
+            ops += [cmd('/recipe give @s ' + id, expect_result=1)]
+        cases = [('early', ['gunpowder', 'blue_dye'], 'diamond', 1),
+                 ('late', ['gunpowder', 'red_dye'], 'firework_star', 1),
+                 ('path_before_namespace', ['gold_nugget', 'paper'], 'emerald', 1),
+                 ('same_path_namespace', ['coal', 'paper'], 'gold_nugget', 3),
+                 ('resource_file_prefix', ['clay_ball', 'paper'], 'nether_brick', 1),
+                 ('base_id_replacement', ['oak_log'], 'gold_ingot', 2),
+                 ('late_world_only', ['apple', 'amethyst_shard'], 'quartz', 5),
+                 ('ordinary', ['birch_log'], 'birch_planks', 4)]
+    else:
+        cases = [('base_star', ['gunpowder', 'blue_dye'], 'firework_star', 1),
+                 ('base_planks', ['oak_log'], 'oak_planks', 4),
+                 ('ordinary', ['birch_log'], 'birch_planks', 4)]
+    for label, inputs, output, count in cases:
+        ops += setup('/setblock 4 200 5 air', '/setblock 4 200 4 air', '/setblock 4 200 3 air',
+                     '/setblock 4 200 3 chest[facing=south]', '/setblock 4 200 4 crafter[orientation=north_up]')
+        for i, item in enumerate(inputs):
+            ops += setup(f'/item replace block 4 200 4 container.{i} with minecraft:{item} 1')
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+                cmd('/execute if block 4 199 4 stone', expect_result=1),
+                cmd('/execute if block 4 200 4 crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if block 4 200 3 chest[facing=south]', expect_result=1),
+                cmd('/data get block 4 200 4 id'), cmd('/data get block 4 200 4 Items'),
+                cmd('/data get block 4 200 4 disabled_slots'), cmd('/data get block 4 200 3 Items')]
+        for i, item in enumerate(inputs):
+            ops += [cmd(f'/execute if items block 4 200 4 container.{i} minecraft:{item}', expect_result=1)]
+        ops += setup('/execute store result score start recipe_order run time query gametime')
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                cmd('/execute if block 4 200 4 crafter[triggered=true]', expect_result=1),
+                {'op': 'tick', 'n': 10}, cmd('/data get block 4 200 4 Items'),
+                cmd('/execute unless data block 4 200 4 Items[]', expect_result=1),
+                cmd('/data get block 4 200 3 Items'),
+                cmd(f'/execute if items block 4 200 3 container.0 minecraft:{output}', expect_result=count),
+                cmd(f'/execute if data block 4 200 3 Items[{{Slot:0b,id:"minecraft:{output}",count:{count}}}]', expect_result=1)]
+        ops += setup('/execute store result score elapsed recipe_order run time query gametime',
+                     '/scoreboard players operation elapsed recipe_order -= start recipe_order')
+        ops += [cmd('/scoreboard players get elapsed recipe_order', expect_result=10)]
+    ops += setup('/execute store success score identity_changed recipe_order run data modify storage h295:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get identity_changed recipe_order', expect_result=0)]
+    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove recipe_order')
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4544,6 +4615,8 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('crafting recipe priority', crafting_recipe_priority()),
+        ('crafting base recipe control', crafting_recipe_priority(False)),
         ('bell server glow', bell_server_glow()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
