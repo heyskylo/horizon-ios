@@ -1297,11 +1297,18 @@ mod tests {
         let core = pack("minecraft", "core", horizon_protocol::GAME_VERSION);
         let offered = vec![
             core.clone(),
-            pack("minecraft", "trade_rebalance", horizon_protocol::GAME_VERSION),
+            pack(
+                "minecraft",
+                "trade_rebalance",
+                horizon_protocol::GAME_VERSION,
+            ),
             pack("example", "server_pack", "1"),
         ];
         assert_eq!(select_known_packs(offered), vec![core]);
-        assert_eq!(select_known_packs(vec![pack("minecraft", "core", "1.21.11")]), vec![]);
+        assert_eq!(
+            select_known_packs(vec![pack("minecraft", "core", "1.21.11")]),
+            vec![]
+        );
         assert_eq!(select_known_packs(vec![]), vec![]);
     }
 
@@ -1315,13 +1322,25 @@ mod tests {
             br#"{"message_id": "inFire", "exhaustion": 0.1, "scaling": "when_caused_by_living_non_player"}"#,
         )
         .unwrap();
-        let sent = Tag::compound(vec![("message_id", Tag::String(JavaString::from("custom")))]);
+        let sent = Tag::compound(vec![(
+            "message_id",
+            Tag::String(JavaString::from("custom")),
+        )]);
         let mut r = cfg::RegistryData {
             registry: "minecraft:damage_type".into(),
             entries: vec![
-                cfg::RegistryEntry { id: "minecraft:in_fire".into(), data: None },
-                cfg::RegistryEntry { id: "minecraft:custom".into(), data: Some(sent.clone()) },
-                cfg::RegistryEntry { id: "minecraft:missing".into(), data: None },
+                cfg::RegistryEntry {
+                    id: "minecraft:in_fire".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:custom".into(),
+                    data: Some(sent.clone()),
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:missing".into(),
+                    data: None,
+                },
             ],
         };
         fill_known_entries(&mut r, &root);
