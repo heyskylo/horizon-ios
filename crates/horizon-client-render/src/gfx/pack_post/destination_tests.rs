@@ -151,14 +151,14 @@ fn pack(
     post
 }
 
-struct Fixture {
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub(super) struct Fixture {
+    pub(super) adapter: wgpu::Adapter,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
 }
 
 impl Fixture {
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("Post destination test skipped: no GPU adapter");
@@ -198,7 +198,7 @@ impl Fixture {
             .create_view(&Default::default())
     }
 
-    fn build(&self, post: Post) -> PackPost {
+    pub(super) fn build(&self, post: Post) -> PackPost {
         let lightmap = self.texture([1, 1], T::Rgba8Unorm);
         let post = PackPost::new(
             &self.device,
@@ -208,6 +208,7 @@ impl Fixture {
             T::Rgba8Unorm,
             World {
                 atlas: None,
+                material_maps: None,
                 lightmap,
                 terrain: None,
                 block_ids: &[],
@@ -226,7 +227,7 @@ impl Fixture {
         post
     }
 
-    fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+    pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -346,8 +347,8 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
     let Some(gpu) = Fixture::new() else { return };
     for clear in [true, false] {
         let mut post = gpu.build(pack(Coverage::Full, false, false, Some(clear), false));
-        // Every frame changes which physical image is main. The other image is fully
-        // seeded red before the partial write, independent of its initial clearing.
+        // The other image is fully seeded red before the partial write, independent of its
+        // initial clearing.
         for frame in 0..3 {
             let actual = gpu.render(&mut post, [16, 16]);
             assert!(
@@ -433,6 +434,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -454,3 +456,73 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
 
 #[path = "clear_budget_tests.rs"]
 mod clear_budget_tests;
+
+/// A cleared buffer written three times a frame flips an odd number of times, so its first write
+/// goes to the texture that was "main" the frame before, which a later program wrote after that
+/// frame's clear. Where that first write discards, Iris 1.11.7 reads the clear value (a probe
+/// pack of our own with these three programs reads 0 there, not the previous frame's 0.25).
+#[test]
+fn a_cleared_buffer_starts_every_frame_cleared_on_both_textures() {
+    let Some(gpu) = Fixture::new() else { return };
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut add = |name: &str, source: &str| {
+        zip.start_file(
+            format!("shaders/{name}"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(source.as_bytes()).unwrap();
+    };
+    for (program, fragment) in [
+        (
+            "composite",
+            "#version 120\nvarying vec2 uv;\n/* RENDERTARGETS:4 */\n\
+             void main() { if(uv.x>0.5) discard; gl_FragData[0]=vec4(0.5,0.5,0.5,1); }\n",
+        ),
+        (
+            "composite1",
+            "#version 120\nuniform sampler2D colortex4;\nvarying vec2 uv;\n/* RENDERTARGETS:4,5 */\n\
+             void main() { gl_FragData[0]=vec4(0.25,0.25,0.25,1); gl_FragData[1]=texture2D(colortex4,uv); }\n",
+        ),
+        (
+            "composite2",
+            "#version 120\n/* RENDERTARGETS:4 */\nvoid main() { gl_FragData[0]=vec4(0.125,0.125,0.125,1); }\n",
+        ),
+        (
+            "final",
+            "#version 120\nuniform sampler2D colortex5;\nvarying vec2 uv;\n\
+             void main() { gl_FragColor=vec4(texture2D(colortex5,uv).rgb,1); }\n",
+        ),
+    ] {
+        add(&format!("{program}.vsh"), VERTEX);
+        add(&format!("{program}.fsh"), fragment);
+    }
+    let pack = horizon_shaders::Pack::from_zip_bytes(
+        "both-textures-cleared",
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    let mut macros = horizon_shaders::Macros::standard();
+    let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
+    let post = horizon_shaders::load_post(&pack, "", &properties, &macros, &Default::default());
+    let mut post = gpu.build(post);
+    for frame in 0..3 {
+        let actual = gpu.render(&mut post, [16, 16]);
+        let wrong: Vec<_> = (actual.iter().enumerate())
+            .filter(|(n, p)| {
+                let expected = if n % 16 < 8 {
+                    [128, 128, 128, 255]
+                } else {
+                    [0, 0, 0, 255]
+                };
+                p.iter().zip(expected).any(|(a, b)| a.abs_diff(b) > 1)
+            })
+            .map(|(n, p)| (n, *p))
+            .take(4)
+            .collect();
+        assert!(wrong.is_empty(), "frame {frame}: {wrong:?}");
+    }
+}
+
+#[path = "clear_false_tests.rs"]
+mod clear_false_tests;

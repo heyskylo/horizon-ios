@@ -265,6 +265,13 @@ pub const NAMES: &[&str] = &[
     "playerMood",
     "constantMood",
     "centerDepthSmooth",
+    "alphaTestRef",
+    "entityId",
+    "blockEntityId",
+    "entityColor",
+    GBUFFERS_FOG_MODE,
+    GBUFFERS_FOG_SHAPE,
+    GBUFFERS_CENTER_DEPTH,
     "isRightHanded",
     "is_on_ground",
     "bedrockLevel",
@@ -276,6 +283,13 @@ pub const NAMES: &[&str] = &[
     "isElytraFlying",
     "cloudHeight",
 ];
+
+/// What programs that draw the game's geometry (gbuffers, shadow) read as `fogMode`,
+/// `fogShape` and `centerDepthSmooth`: no GLSL name can hold a dot, so no pack reads these
+/// directly.
+const GBUFFERS_FOG_MODE: &str = "gbuffers.fogMode";
+const GBUFFERS_FOG_SHAPE: &str = "gbuffers.fogShape";
+const GBUFFERS_CENTER_DEPTH: &str = "gbuffers.centerDepthSmooth";
 
 /// Values carried from frame to frame.
 pub struct FrameUniforms {
@@ -472,18 +486,16 @@ impl FrameUniforms {
             });
         }
         let center_depth = self.center_depth.unwrap_or(1.0);
-        // Vanilla fades by the stronger of two linear fogs; a pack gets one: the pair (start
-        // and end together) of the one that is complete nearer (OQ-36). Mixing the nearer start
-        // of one with the nearer end of the other made fog begin at the camera on clear days.
+        // Vanilla fades by the stronger of two linear fogs; a pack gets the environmental one
+        // (`FogData::environmental_start`/`environmental_end`), as Iris 1.11.7 gives it in every
+        // program kind: 0 to 1024 on a clear day, -160 to 768 in rain, -8 to 96 under water, 10
+        // to 96 in the Nether (measured with a probe pack).
         let (fog_color, fog_start, fog_end) = match &frame.fog {
-            Some(f) => {
-                let (start, end) = if f.environmental_end < f.render_distance_end {
-                    (f.environmental_start, f.environmental_end)
-                } else {
-                    (f.render_distance_start, f.render_distance_end)
-                };
-                ([f.color[0], f.color[1], f.color[2]], start, end)
-            }
+            Some(f) => (
+                [f.color[0], f.color[1], f.color[2]],
+                f.environmental_start,
+                f.environmental_end,
+            ),
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
@@ -545,12 +557,22 @@ impl FrameUniforms {
                 "thunderStrength" => Value::f(&[inputs.thunder]),
                 "fogColor" => Value::f(&fog_color),
                 "skyColor" => Value::f(&frame.sky.sky_color),
-                // GL_LINEAR: vanilla's fog is linear.
-                "fogMode" => Value::i(&[9729]),
+                // Iris 1.11.7, measured: programs that draw no geometry read no fog mode (0) and
+                // shape (-1); those that do read GL_LINEAR and a cylinder (1). The density is 0.
+                "fogMode" => Value::i(&[0]),
+                GBUFFERS_FOG_MODE => Value::i(&[9729]),
                 "fogStart" => Value::f(&[fog_start]),
                 "fogEnd" => Value::f(&[fog_end]),
-                "fogDensity" => Value::f(&[1.0]),
-                "fogShape" => Value::i(&[0]),
+                "fogDensity" => Value::f(&[0.0]),
+                "fogShape" => Value::i(&[-1]),
+                GBUFFERS_FOG_SHAPE => Value::i(&[1]),
+                // Iris 1.11.7 gives gbuffers programs 0 (measured in 16 scenes).
+                GBUFFERS_CENTER_DEPTH => Value::f(&[0.0]),
+                // Outside a draw (gbuffers programs get these per draw), as Iris 1.11.7 gives
+                // them to composite and final programs (measured).
+                "alphaTestRef" => Value::f(&[0.1]),
+                "blockEntityId" => Value::i(&[-1]),
+                "entityColor" => Value::f(&[0.0; 4]),
                 "isEyeInWater" => Value::i(&[inputs.eye_in]),
                 "blindness" => Value::f(&[inputs.blindness]),
                 "nightVision" => Value::f(&[frame.night_vision]),
@@ -690,6 +712,7 @@ fn components(name: &str) -> usize {
         | "skyColor"
         | "endFlashPosition" => 3,
         "eyeBrightness" | "eyeBrightnessSmooth" | "atlasSize" => 2,
+        "entityColor" => 4,
         n if n.starts_with("gbuffer") || n.starts_with("shadow") && n != "shadowAngle" => 16,
         _ => 1,
     }
@@ -698,6 +721,18 @@ fn components(name: &str) -> usize {
 /// The position of `name` in [`NAMES`].
 pub fn index(name: &str) -> Option<usize> {
     NAMES.iter().position(|n| *n == name)
+}
+
+/// The position in [`NAMES`] of the value a program reads as `name`; `geometry`: the program
+/// draws the game's geometry (gbuffers, shadow), which reads its own fog mode and shape and no
+/// centre depth.
+pub fn index_in(name: &str, geometry: bool) -> Option<usize> {
+    match name {
+        "fogMode" if geometry => index(GBUFFERS_FOG_MODE),
+        "fogShape" if geometry => index(GBUFFERS_FOG_SHAPE),
+        "centerDepthSmooth" if geometry => index(GBUFFERS_CENTER_DEPTH),
+        _ => index(name),
+    }
 }
 
 #[cfg(test)]
@@ -1178,6 +1213,64 @@ mod initial_history_tests {
         }
     }
 
+    fn int(u: &FrameUniforms, at: usize) -> i32 {
+        match u.values[at] {
+            Value::I(v) => v[0],
+            _ => panic!("integer uniform expected"),
+        }
+    }
+
+    /// Iris 1.11.7, read back exactly with a probe pack on a clear day (render distance 12,
+    /// cloud range 64): fogStart 0 and fogEnd 1024 (the environmental fog, not the render
+    /// distance's 172.8 to 192), fogDensity 0; composite and final programs read alphaTestRef
+    /// 0.1, blockEntityId -1, fogMode 0 and fogShape -1.
+    #[test]
+    fn fog_and_draw_uniforms_outside_a_draw_follow_iris() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        f.fog = Some(crate::fog::FogData {
+            color: [0.7, 0.8, 1.0, 1.0],
+            environmental_start: 0.0,
+            environmental_end: 1024.0,
+            render_distance_start: 172.8,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 1024.0,
+        });
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(float(&u, "fogStart")[0], 0.0);
+        assert_eq!(float(&u, "fogEnd")[0], 1024.0);
+        assert_eq!(float(&u, "fogDensity")[0], 0.0);
+        assert_eq!(float(&u, "alphaTestRef")[0], 0.1);
+        assert_eq!(int(&u, index("blockEntityId").unwrap()), -1);
+        assert_eq!(int(&u, index("entityId").unwrap()), 0);
+        assert_eq!(int(&u, index("fogMode").unwrap()), 0);
+        assert_eq!(int(&u, index("fogShape").unwrap()), -1);
+    }
+
+    /// Iris 1.11.7 (probe pack): gbuffers programs read fogMode GL_LINEAR (9729) and fogShape 1
+    /// (cylinder) where composite and final programs read 0 and -1.
+    #[test]
+    fn programs_that_draw_geometry_read_their_own_fog_and_centre_depth() {
+        let hud = HudBatch::new([800, 450]);
+        let mut u = FrameUniforms::default();
+        u.update(&frame(&hud), &PackInputs::default(), [800, 450]);
+        let at = |name, geometry| index_in(name, geometry).unwrap();
+        assert_eq!(int(&u, at("fogMode", true)), 9729);
+        assert_eq!(int(&u, at("fogShape", true)), 1);
+        assert_eq!(int(&u, at("fogMode", false)), 0);
+        assert_eq!(int(&u, at("fogShape", false)), -1);
+        assert_eq!(at("fogStart", true), at("fogStart", false));
+        // Iris 1.11.7 (probe pack): `centerDepthSmooth` reads 0 in gbuffers programs.
+        let depth = |geometry| match u.values[at("centerDepthSmooth", geometry)] {
+            Value::F(v) => v[0],
+            _ => panic!("float uniform expected"),
+        };
+        assert_eq!(depth(true), 0.0);
+        assert_eq!(depth(false), 1.0);
+    }
+
     /// Iris 1.11.7, read frame by frame with a probe pack: eyeBrightnessSmooth falls by half
     /// in 1 s and is rounded down; wetness takes 60 s to rise halfway and 20 s to fall; the
     /// centre depth 0.1 s.
@@ -1295,6 +1388,7 @@ mod initial_history_tests {
             celestial: &[],
             stars: None,
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: 70.0,
             screen: &[],
             pack: Default::default(),
