@@ -255,7 +255,11 @@ impl ParsingContext<'_> {
                     init.and_then(|expr| ctx.ctx.lift_up_const_expression(expr).ok());
                 late_initializer = None;
             } else if let Some(init) = init {
-                if ctx.is_inside_loop || !ctx.ctx.local_expression_kind_tracker.is_const(init) {
+                // A loop runs a declaration again on each pass; a `const` keeps its value.
+                let is_const = ctx.qualifiers.storage.0 == StorageQualifier::Const;
+                if (ctx.is_inside_loop && !is_const)
+                    || !ctx.ctx.local_expression_kind_tracker.is_const(init)
+                {
                     decl_initializer = None;
                     late_initializer = Some(init);
                 } else {

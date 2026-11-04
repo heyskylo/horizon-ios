@@ -11,6 +11,7 @@ use crate::{
     block_entity_anim::{self, EnchantingBook},
     breaking::entity_geometry,
     fast_hash::FxHashMap,
+    font::Glyph,
     gfx::mark_oit,
     hud::Rect,
     mesher::{CULL_BACK, Vertex},
@@ -660,7 +661,7 @@ fn sign_text_calls(
     } else {
         (dark, 0, vertex_light(packed))
     };
-    let advance = |c: char| (scene.glyph)(c).1;
+    let advance = |c: char| (scene.glyph)(c).advance;
     let width = |s: &str| s.chars().map(advance).sum::<f32>().ceil();
     text.lines
         .iter()
@@ -702,19 +703,24 @@ fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
 /// text of `call` as glyph quads in its matrix's plane, 1 unit a font pixel,
 /// y down as the font's, with its outline when it has one. A native mod's
 /// block entity draws its text this way (`native_draw_text`).
-pub fn text_vertices(
-    glyph: &dyn Fn(char) -> (Option<Rect>, f32),
-    call: &TextCall,
-    out: &mut Vec<Vertex>,
-) {
+pub fn text_vertices(glyph: &dyn Fn(char) -> Glyph, call: &TextCall, out: &mut Vec<Vertex>) {
     let mut emit = |dx: f32, dy: f32, z: f32, argb: u32| {
         let mut x = call.x + dx;
         let y0 = call.y + dy;
         for ch in call.text.chars() {
-            let (cell, advance) = glyph(ch);
-            if let Some(r) = cell {
-                let corners = [(x, y0 + 8.0), (x + 8.0, y0 + 8.0), (x + 8.0, y0), (x, y0)];
-                let uvs = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
+            let g = glyph(ch);
+            if let Some(cell) = g.rect {
+                // BakedSheetGlyph: the glyph's own box from the pen, not a
+                // fixed 8x8 cell (a Unifont glyph is 0.5 units per texel).
+                let (x0, x1) = (x + g.left, x + g.right);
+                let (top, bottom) = (y0 + g.top, y0 + g.bottom);
+                let corners = [(x0, bottom), (x1, bottom), (x1, top), (x0, top)];
+                let uvs = [
+                    [cell.u0, cell.v1],
+                    [cell.u1, cell.v1],
+                    [cell.u1, cell.v0],
+                    [cell.u0, cell.v0],
+                ];
                 let c =
                     0xFF00_0000 | (argb & 255) << 16 | (argb >> 8 & 255) << 8 | (argb >> 16 & 255);
                 for ((cx, cy), uv) in corners.into_iter().zip(uvs) {
@@ -733,7 +739,7 @@ pub fn text_vertices(
                     });
                 }
             }
-            x += advance;
+            x += g.advance;
         }
     };
     if call.outline != 0 {
@@ -830,8 +836,8 @@ pub struct Scene<'a> {
     /// profile → skin): a downloaded `skins/<sha1>` slot or the profile's
     /// `DefaultPlayerSkin` fallback; None keeps `SKIN_BY_TYPE` (`DefaultPlayerSkin.getDefaultTexture`, slim steve).
     pub skull: &'a dyn Fn([i32; 3]) -> Option<String>,
-    /// Font glyph cell (none for blank glyphs such as the space) and advance.
-    pub glyph: &'a dyn Fn(char) -> (Option<Rect>, f32),
+    /// Font glyph: atlas cell (none for blank glyphs such as the space), box and advance.
+    pub glyph: &'a dyn Fn(char) -> Glyph,
     /// Changes whenever `glyph` may answer differently (`Font::epoch`): sign
     /// text laid out under another value is laid out again.
     pub glyphs: u64,
@@ -3354,7 +3360,7 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
         };
         // Compare the cached world path with the original model renderer,
@@ -3622,7 +3628,13 @@ mod tests {
                 w: 8,
                 h: 8,
             };
-            (Some(rect), 6.0)
+            Glyph {
+                rect: Some(rect),
+                right: 8.0,
+                bottom: 8.0,
+                advance: 6.0,
+                ..Glyph::default()
+            }
         };
         let scene = Scene {
             camera: DVec3::ZERO,
@@ -3670,6 +3682,78 @@ mod tests {
         draw_text(&scene, &call, &mut out);
         assert_eq!(out.len(), 2 * 4);
         assert!(out.iter().all(|v| v.pos[2] == 0.0));
+    }
+
+    /// BakedSheetGlyph draws a glyph over its own box from the pen
+    /// (x + left .. x + right, y + up .. y + down), not a fixed 8x8 cell. With
+    /// Force Unicode Font a Latin letter is an 8x16 Unifont glyph at half
+    /// scale: 4 units wide and 8 tall, advancing 5 (#8699).
+    #[test]
+    fn sign_text_draws_each_glyph_over_its_own_box() {
+        let world = World::new(BlockStateId(0), 1);
+        let sprites = HashMap::new();
+        let glyph = |_: char| Glyph {
+            rect: Some(Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.0625,
+                v1: 0.125,
+                w: 8,
+                h: 16,
+            }),
+            left: 0.0,
+            top: 0.0,
+            right: 4.0,
+            bottom: 8.0,
+            advance: 5.0,
+            offset: 0.5,
+        };
+        let scene = Scene {
+            camera: DVec3::ZERO,
+            orientation: Quat::IDENTITY,
+            anim: &|_| BlockAnim::default(),
+            texts: None,
+            partial: 0.0,
+            game_time: 0,
+            max_y: 320,
+            world: &world,
+            sprites: &sprites,
+            emissive: &Default::default(),
+            translucent_sprites: &HashSet::new(),
+            atlas_revision: 1,
+            nether: false,
+            lid: &|_| 0.0,
+            sign: &|_| None,
+            banner: &|_| Vec::new(),
+            skull: &|_| None,
+            glyph: &glyph,
+            glyphs: 0,
+        };
+        let call = TextCall {
+            matrix: Mat4::IDENTITY,
+            x: 10.0,
+            y: 2.0,
+            text: "ab".into(),
+            color: 0xFF00_0000,
+            outline: 0,
+            light: 240 | 240 << 8,
+        };
+        let mut out = Vec::new();
+        draw_text(&scene, &call, &mut out);
+        let boxes: Vec<_> = out
+            .chunks(4)
+            .map(|q| {
+                let xs = q.iter().map(|v| v.pos[0]);
+                let ys = q.iter().map(|v| v.pos[1]);
+                [
+                    xs.clone().fold(f32::MAX, f32::min),
+                    xs.fold(f32::MIN, f32::max),
+                    ys.clone().fold(f32::MAX, f32::min),
+                    ys.fold(f32::MIN, f32::max),
+                ]
+            })
+            .collect();
+        assert_eq!(boxes, [[10.0, 14.0, 2.0, 10.0], [15.0, 19.0, 2.0, 10.0]]);
     }
 
     #[test]
@@ -3726,7 +3810,13 @@ mod tests {
                 w: 8,
                 h: 8,
             };
-            ((c != ' ').then_some(rect), wide.get())
+            Glyph {
+                rect: (c != ' ').then_some(rect),
+                right: 8.0,
+                bottom: 8.0,
+                advance: wide.get(),
+                ..Glyph::default()
+            }
         };
         let (first_sign, changed_sign, glowing_sign) = (
             |_| Some(&first_text),
@@ -3891,7 +3981,7 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
         };
         let mut verts = Vec::new();
@@ -3976,7 +4066,7 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
         };
         // A closed single chest of `block` drawn by `renderer`: positions and UVs.

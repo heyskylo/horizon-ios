@@ -579,7 +579,7 @@ impl Game<'_> {
         let mut x = at[0];
         for span in &text.spans {
             let shown = horizon_client::bidi::visual_str(&span.text).into_owned();
-            let width: f32 = shown.chars().map(|c| glyph(c).1).sum();
+            let width: f32 = shown.chars().map(|c| glyph(c).advance).sum();
             let call = TextCall {
                 matrix,
                 x,
