@@ -222,6 +222,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.graphics_api(),
         settings.translucent_batching,
         false,
+        false,
     ))?;
     let state = &scene.renderer;
     let [width, height] = o.size.unwrap_or(state.size);
