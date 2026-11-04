@@ -12694,7 +12694,7 @@ impl Game<'_> {
             return;
         };
         for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
-            let _ = player.set_modifier(&attribute, &id, 0.0, "add_value", false);
+            let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
         }
         let slots = ["head", "chest", "legs", "feet"];
         let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
@@ -12716,13 +12716,14 @@ impl Game<'_> {
                     continue;
                 }
                 if player
-                    .set_modifier(attribute, id, *amount, op, true)
+                    .set_modifier_unclamped(attribute, id, *amount, op, true)
                     .is_ok()
                 {
                     self.applied_modifiers.push((attribute.clone(), id.clone()));
                 }
             }
         }
+        let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
     }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from

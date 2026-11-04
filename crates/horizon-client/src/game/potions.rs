@@ -1041,11 +1041,13 @@ impl Game<'_> {
             && let Some(p) = self.player.as_mut()
         {
             for (attr, id, _, op) in &self.potions.applied {
-                let _ = p.set_modifier(attr, id, 0.0, op, false);
+                let _ = p.set_modifier_unclamped(attr, id, 0.0, op, false);
             }
             for (attr, id, amount, op) in &modifiers {
-                let _ = p.set_modifier(attr, id, *amount, op, true);
+                let _ = p.set_modifier_unclamped(attr, id, *amount, op, true);
             }
+            // onAttributeUpdated, once the batch settled: a lost health_boost.
+            let _ = p.clamp_health_to_max();
             self.potions.applied = modifiers;
         }
         if let Some(p) = self.player.as_mut()
