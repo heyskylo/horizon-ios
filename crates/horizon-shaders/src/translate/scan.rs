@@ -41,6 +41,8 @@ pub(super) struct Stage<'p> {
     /// Name, type with its array suffix, token of the type.
     pub(super) uniforms: Vec<(String, String, usize)>,
     pub(super) samplers: Vec<(String, String)>,
+    /// Uniform names with constant initializers retained as compiler constants.
+    pub(super) defaults: Vec<(String, usize)>,
     pub(super) images: Vec<ImageDecl>,
     /// The bindings of the SSBOs (`buffer` blocks), in set 4.
     pub(super) buffers: BTreeSet<u32>,
@@ -65,6 +67,9 @@ pub(super) struct Stage<'p> {
     /// (`dot(float, float)`, `normalize(float)`) and naga lacks go in the prelude.
     pub(super) scalar_dot: bool,
     pub(super) scalar_normalize: bool,
+    /// `min3`, `max3` and `mid3` the stage calls with GL_AMD_shader_trinary_minmax enabled and
+    /// doesn't define itself: naga lacks them, so ours are in the prelude.
+    pub(super) trinary: Vec<&'p str>,
     /// The pack's functions that take samplers: which parameters are samplers.
     pub(super) sampler_functions: HashMap<String, Vec<bool>>,
     /// The pack's structs: each member's type and name with its array suffix.
@@ -297,6 +302,7 @@ impl<'p> Stage<'p> {
             tokens: lex(&pp.code),
             removed: Vec::new(),
             uniforms: Vec::new(),
+            defaults: Vec::new(),
             samplers: Vec::new(),
             images: Vec::new(),
             buffers: BTreeSet::new(),
@@ -310,6 +316,7 @@ impl<'p> Stage<'p> {
             query_lod: false,
             scalar_dot: false,
             scalar_normalize: false,
+            trinary: Vec::new(),
             sampler_functions: HashMap::new(),
             structs: HashMap::new(),
             outputs: BTreeSet::new(),
@@ -325,6 +332,12 @@ impl<'p> Stage<'p> {
         let (mut start, mut depth, mut parens) = (0, 0usize, 0usize);
         let mut own_inverse = false;
         let (mut own_dot, mut own_normalize) = (false, false);
+        let mut own_trinary = Vec::new();
+        let trinary_enabled = pp.extensions.iter().any(|e| {
+            e.split_once(':').is_some_and(|(name, behavior)| {
+                name.trim() == "GL_AMD_shader_trinary_minmax" && behavior.trim() != "disable"
+            })
+        });
         for i in 0..s.tokens.len() {
             match s.tokens[i] {
                 "(" => parens += 1,
@@ -376,6 +389,20 @@ impl<'p> Stage<'p> {
                         own_normalize |= defines;
                     }
                 }
+                name @ ("min3" | "max3" | "mid3") if trinary_enabled => {
+                    if !s.trinary.contains(&name) {
+                        s.trinary.push(name);
+                    }
+                    // A definition at the top level: `float max3(float a, ...)`.
+                    if depth == 0
+                        && s.tokens[..i]
+                            .iter()
+                            .rfind(|t| significant(t))
+                            .is_some_and(|t| is_ident(t))
+                    {
+                        own_trinary.push(name);
+                    }
+                }
                 "inverse" => {
                     s.inverse = true;
                     // `mat4 inverse(mat4 m)`: a pack for GLSL 1.20, which has none, wrote its own.
@@ -401,6 +428,7 @@ impl<'p> Stage<'p> {
         s.inverse &= !own_inverse;
         s.scalar_dot &= !own_dot;
         s.scalar_normalize &= !own_normalize;
+        s.trinary.retain(|name| !own_trinary.contains(name));
         if s.gather_offsets {
             // Its sampler is passed as a texture and a sampler, as to the pack's own functions.
             s.sampler_functions
@@ -481,26 +509,35 @@ impl<'p> Stage<'p> {
 
     /// Core names share the compatibility state for geometry, including shadow transforms.
     /// Authored non-uniform globals (or uniforms of another type) keep their own meaning.
+    /// `normalMatrix` is the core profile's only (ShaderDoc's `gl_NormalMatrix`, as #9136 quotes
+    /// it): in a compatibility-profile stage it stays a uniform of the frame, read as zero.
     /// `textureMatrix` is `gl_TextureMatrix[0]` in the vertex stage only: our probes read the
     /// identity in Iris 1.11.7's terrain and shadow vertex stages, and zero in the terrain
     /// fragment stage (#9080).
     pub(super) fn core_matrix(&self, name: &str) -> Option<&'static str> {
-        let matrix = match name {
-            "projectionMatrix" => "hz_ProjectionMatrix",
-            "modelViewMatrix" => "hz_ModelViewMatrix",
-            "textureMatrix" if self.kind == ShaderStage::Vertex => "hz_TextureMatrix[0]",
+        let (matrix, ty) = match name {
+            "projectionMatrix" => ("hz_ProjectionMatrix", "mat4"),
+            "modelViewMatrix" => ("hz_ModelViewMatrix", "mat4"),
+            "normalMatrix" if self.core_profile() => ("hz_NormalMatrix", "mat3"),
+            "textureMatrix" if self.kind == ShaderStage::Vertex => ("hz_TextureMatrix[0]", "mat4"),
             _ => return None,
         };
         if !self.gbuffers
             || (self.globals.contains(name)
-                && !self
-                    .uniforms
-                    .iter()
-                    .any(|(n, ty, _)| n == name && ty == "mat4"))
+                && !self.uniforms.iter().any(|(n, t, _)| n == name && t == ty))
         {
             return None;
         }
         Some(matrix)
+    }
+
+    /// The stage is in the core profile: a `#version` of 150 or later that doesn't name the
+    /// compatibility profile. A fit of our #9136 probe's Iris 1.11.7 pictures (`normalMatrix` set
+    /// at `330 core`, `330` and `150`, zero at `330 compatibility`), not Iris's rule. Below 150 is
+    /// unmeasured (Iris drew no geometry for the `140` probe) and stays as before.
+    fn core_profile(&self) -> bool {
+        matches!(&self.pp.version, Some((version, profile))
+            if *version >= 150 && profile.as_deref() != Some("compatibility"))
     }
 
     /// Remember names without interpreting their values. Commas inside constructors and array
@@ -607,6 +644,7 @@ impl<'p> Stage<'p> {
         }
         // Declarators: name [array] [= init], separated by commas.
         let mut declarators: Vec<(String, String)> = Vec::new();
+        let mut defaults = String::new();
         let mut j = k + 1;
         while let Some(&n) = words.get(j) {
             let name = self.tokens[n].to_owned();
@@ -621,9 +659,27 @@ impl<'p> Stage<'p> {
                     _ => {}
                 }
                 if self.tokens[t] == "=" && nesting == 0 {
-                    // An initializer: uniforms are set by the game, so it is dropped.
-                    while words.get(j).is_some_and(|&t| self.tokens[t] != ",") {
+                    let start = j + 1;
+                    j += 1;
+                    let mut depth = 0;
+                    while let Some(&token) = words.get(j) {
+                        match self.tokens[token] {
+                            "," if depth == 0 => break,
+                            "(" | "[" => depth += 1,
+                            ")" | "]" => depth -= 1,
+                            _ => {}
+                        }
                         j += 1;
+                    }
+                    if storage == "uniform" && !is_sampler_type(&ty) && !ty.contains("image") {
+                        let value = words[start..j]
+                            .iter()
+                            .map(|&i| self.tokens[i])
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        write!(defaults, "const {ty} hz_default_{name}{array} = {value}; ")
+                            .unwrap();
+                        self.defaults.push((name.clone(), n));
                     }
                     break;
                 }
@@ -636,6 +692,9 @@ impl<'p> Stage<'p> {
         let fragment = self.kind == ShaderStage::Fragment;
         let input = matches!(storage, "in" | "attribute") || (storage == "varying" && fragment);
         self.removed.push(from..to + 1);
+        if !defaults.is_empty() {
+            self.replaced.insert(words[0], defaults);
+        }
         for (name, array) in declarators {
             let decl = format!("{interpolation}{ty} @{array};");
             match storage {
