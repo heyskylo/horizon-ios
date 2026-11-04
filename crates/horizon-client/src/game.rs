@@ -270,6 +270,7 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod pumpkin;
+mod pvp;
 mod quick_actions;
 mod raids;
 mod random_textures;
@@ -2938,6 +2939,8 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
+    /// The PvP & HUD options' state (`game/pvp.rs`).
+    pvp: pvp::PvpState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
@@ -8664,7 +8667,14 @@ impl Game<'_> {
                 });
                 let draws = hud_layout::crosshair(wi, hi, attack, full);
                 self.gui_layer("minecraft:crosshair", &mut batch, |g, batch| {
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    // The custom crosshair takes the sprite's place (the first draw); the
+                    // attack indicator stays.
+                    if g.custom_crosshair() {
+                        g.draw_custom_crosshair(batch, wi, hi);
+                        hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
+                    } else {
+                        hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    }
                 });
             }
             self.gui_layer("minecraft:hotbar", &mut batch, |g, batch| {
@@ -19341,6 +19351,7 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             extras: Default::default(),
+            pvp: Default::default(),
             mods: Default::default(),
             recipe_tables: Default::default(),
             panel: Default::default(),
