@@ -44,6 +44,38 @@ fn cloud_hits(at: [f64; 3], radius: f32, bounds: Aabb, pos: Vec3) -> bool {
     bounds.intersects(area) && dx * dx + dz * dz <= f64::from(radius * radius)
 }
 
+/// `AreaEffectCloud.WAIT_TIME` default: the cloud is inert for its first 20
+/// ticks (no radius growth, no effects).
+const BREATH_WAIT: i32 = 20;
+
+/// `AreaEffectCloud.serverTick`: discarded once `tickCount - waitTime >=
+/// duration`, so the wait does not count against the duration.
+pub(super) fn breath_expired(age: i32, duration: i32) -> bool {
+    age - BREATH_WAIT >= duration
+}
+
+/// `AreaEffectCloud.serverTick` victims: every 5 ticks after the wait, drop
+/// entries whose delay (`reapplicationDelay` 20) has passed, then return the
+/// candidates not in the map, recording them until `age + 20`.
+fn breath_victims(
+    age: i32,
+    victims: &mut Vec<(FightWho, i32)>,
+    candidates: impl IntoIterator<Item = FightWho>,
+) -> Vec<FightWho> {
+    if age < BREATH_WAIT || age % 5 != 0 {
+        return Vec::new();
+    }
+    victims.retain(|&(_, until)| age < until);
+    let mut hit = Vec::new();
+    for who in candidates {
+        if !victims.iter().any(|&(v, _)| v == who) {
+            victims.push((who, age + 20));
+            hit.push(who);
+        }
+    }
+    hit
+}
+
 /// `DragonFireball.onHit`: the cloud moves to the first living entity in the
 /// fireball's box inflated by (4, 2, 4) that is within 4 blocks of it.
 /// `feet` is the fireball's position (the bottom of its 1x1x1 box).
@@ -106,6 +138,15 @@ enum Respawn {
     Preparing,
     Pillars,
     Summoning,
+}
+impl Fight {
+    /// `EnderDragonFight.tick`'s ticket condition: the fight's boss bar has a
+    /// player (`dragonEvent.getPlayers()` is not empty), which holds the
+    /// arena's `TicketType.DRAGON` ticket. The bar is scanned every 20 ticks,
+    /// as `updatePlayers` is.
+    pub(super) fn arena_watched(&self) -> bool {
+        self.players
+    }
 }
 impl Respawn {
     fn name(self) -> &'static str {
@@ -655,29 +696,29 @@ impl Dragon {
             Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
         )
     }
-    fn explosion_push(&mut self, center: [f64; 3], radius: f32, exposure: f32) {
+    fn explosion_knockback(
+        &self,
+        center: [f64; 3],
+        radius: f32,
+        exposure: f32,
+    ) -> Option<[f64; 3]> {
         let diameter = f64::from(radius * 2.0);
         let p = self.position;
         let at = |y: f64| [p.x - center[0], y - center[1], p.z - center[2]];
         let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         let dist = len(at(p.y)) / diameter;
         if dist > 1.0 {
-            return;
+            return None;
         }
         // The dragon's eye is 0.85 of its 8 block height, in floats.
         let away = at(p.y + f64::from(8.0f32 * 0.85f32));
         let l = len(away);
         // `Vec3.normalize` gives zero below 1.0E-5F, then `scale(power)`.
         if l < 9.999_999_747_378_752e-6 {
-            return;
+            return Some([0.0; 3]);
         }
-        let dir = [away[0] / l, away[1] / l, away[2] / l];
         let power = (1.0 - dist) * f64::from(exposure);
-        self.velocity = Vec3::new(
-            self.velocity.x + dir[0] * power,
-            self.velocity.y + dir[1] * power,
-            self.velocity.z + dir[2] * power,
-        );
+        Some(away.map(|d| d / l * power))
     }
     /// `DragonHoldingPatternPhase.onCrystalDestroyed`: strafe `player` if
     /// the dragon can attack them (`EnderDragon.canAttack`, on Peaceful too).
@@ -1900,6 +1941,7 @@ impl Game<'_> {
                         age: 0,
                         duration: 200,
                         from_dragon: true,
+                        victims: Vec::new(),
                         potion: None,
                     });
                 }
@@ -2508,6 +2550,7 @@ impl Game<'_> {
                     age: 0,
                     duration: 600,
                     from_dragon: false,
+                    victims: Vec::new(),
                     potion: None,
                 });
                 // DragonFireball.onHit: level event 2006 (the burst of dragon
@@ -2559,10 +2602,10 @@ impl Game<'_> {
                 return false;
             }
             c.age += 1;
-            if c.age >= c.duration {
+            if breath_expired(c.age, c.duration) {
                 return false;
             }
-            if !c.from_dragon {
+            if !c.from_dragon && c.age >= BREATH_WAIT {
                 // DragonFireball's cloud: radius per tick (7 - 3) / duration.
                 c.radius += (7.0 - 3.0) / c.duration as f32;
             }
@@ -2583,16 +2626,16 @@ impl Game<'_> {
                     true,
                 );
             }
-            // AreaEffectCloud: after its 20-tick wait, every 20 ticks per entity.
-            if c.age >= 20 && c.age % 20 == 0 {
-                // Instant damage I from the flame cloud, II from a fireball's,
-                // both at the cloud's 0.5 scale.
-                let amount = harm_amount(u32::from(!c.from_dragon));
-                for p in &players {
-                    if cloud_hits(c.at, r, p.bounds, p.position) {
-                        harmed.push((p.who, amount));
-                    }
-                }
+            // AreaEffectCloud: after its wait, each entity every 20 ticks.
+            // Instant damage I from the flame cloud, II from a fireball's,
+            // both at the cloud's 0.5 scale.
+            let amount = harm_amount(u32::from(!c.from_dragon));
+            let inside = players
+                .iter()
+                .filter(|p| cloud_hits(c.at, r, p.bounds, p.position))
+                .map(|p| p.who);
+            for who in breath_victims(c.age, &mut c.victims, inside) {
+                harmed.push((who, amount));
             }
             true
         });
@@ -2798,6 +2841,8 @@ pub(super) struct Breath {
     pub(super) age: i32,
     pub(super) duration: i32,
     pub(super) from_dragon: bool,
+    /// Who it hit and until which age (`AreaEffectCloud.victims`).
+    pub(super) victims: Vec<(FightWho, i32)>,
     /// A lingering potion's cloud (`ThrownLingeringPotion`): what it applies.
     pub(super) potion: Option<super::potions::PotionCloud>,
 }
@@ -3234,7 +3279,12 @@ impl Crystal {
 impl Game<'_> {
     /// `ServerExplosion.hurtEntities`: crystals in reach are removed without
     /// another blast; explosions always hurt dragons.
-    pub(super) fn explosion_hits_special(&mut self, center: [f64; 3], radius: f32) {
+    pub(super) fn explosion_hits_special(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        blocks: &[[i32; 3]],
+    ) {
         let diameter = f64::from(radius * 2.0);
         let in_reach = |p: Vec3| {
             ((p.x - center[0]).powi(2) + (p.y - center[1]).powi(2) + (p.z - center[2]).powi(2))
@@ -3269,8 +3319,20 @@ impl Game<'_> {
         for (part, amount) in hits {
             self.hurt_dragon(part, amount, true, by, DamageKind::Explosion);
         }
-        if let Some(d) = self.dragon.as_mut().filter(|d| d.alive()) {
-            d.explosion_push(center, radius, exposure);
+        let Some((id, mut push)) = self
+            .dragon
+            .as_ref()
+            .and_then(|d| Some((d.id, d.explosion_knockback(center, radius, exposure)?)))
+        else {
+            return;
+        };
+        self.native_explosion_knockback(self.dim.id(), center, blocks, Some(id), &mut push);
+        if let Some(d) = self.dragon.as_mut() {
+            d.velocity = Vec3::new(
+                d.velocity.x + push[0],
+                d.velocity.y + push[1],
+                d.velocity.z + push[2],
+            );
         }
     }
 }
@@ -3933,6 +3995,8 @@ impl Game<'_> {
             // from tick 180 to 200; the server removes it.
             d.death_time += 1;
             let (t, p) = (d.death_time, d.position);
+            // `EnderDragon.aiStep` still growls when the phase is not sitting.
+            let sitting = d.phase.sitting();
             if (180..=200).contains(&t) {
                 let r = &mut d.random;
                 let o = [
@@ -3952,6 +4016,40 @@ impl Game<'_> {
                     part.0.y += 0.1;
                 }
             }
+            // `EnderDragon.aiStep` after `tickDeath`: the client growl is
+            // before the `isDeadOrDying` branch, then a dead dragon adds
+            // `ParticleTypes.EXPLOSION` every tick. Both use the risen spot.
+            let mut growl = None;
+            if let Some(d) = self.dragon.as_mut()
+                && !sitting
+            {
+                d.growl -= 1;
+                if d.growl < 0 {
+                    // `this.random`: pitch, then `nextInt(200)`, before the puff.
+                    let pitch = 0.8 + d.random.next_float() * 0.3;
+                    d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
+                    growl = Some(([d.position.x, d.position.y, d.position.z], pitch));
+                }
+            }
+            if let Some((at, pitch)) = growl {
+                self.audio
+                    .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+            }
+            let Some(d) = self.dragon.as_mut() else {
+                return;
+            };
+            let p = d.position;
+            let r = &mut d.random;
+            let o = [
+                f64::from((r.next_float() - 0.5) * 8.0),
+                f64::from((r.next_float() - 0.5) * 4.0),
+                f64::from((r.next_float() - 0.5) * 8.0),
+            ];
+            self.particles.add(
+                &ParticleOptions::simple(ParticleType::Explosion),
+                [p.x + o[0], p.y + 2.0 + o[1], p.z + o[2]],
+                [0.0; 3],
+            );
             return;
         }
         // processFlappingMovement and onFlap: its wing beats, and their sound.
@@ -4175,6 +4273,28 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    #[test]
+    fn breath_lifetime_excludes_the_wait() {
+        assert!(!breath_expired(219, 200));
+        assert!(breath_expired(220, 200));
+        assert!(!breath_expired(619, 600));
+        assert!(breath_expired(620, 600));
+    }
+
+    #[test]
+    fn breath_victims_cadence() {
+        let (a, b) = (FightWho::Host, FightWho::Guest(1));
+        let mut v = Vec::new();
+        assert!(breath_victims(15, &mut v, [a]).is_empty());
+        assert_eq!(breath_victims(20, &mut v, [a]), vec![a]);
+        assert!(breath_victims(25, &mut v, [a]).is_empty());
+        // A newcomer is hit at the next 5-tick check, not the next 20.
+        assert_eq!(breath_victims(30, &mut v, [a, b]), vec![b]);
+        assert!(breath_victims(35, &mut v, [a, b]).is_empty());
+        assert_eq!(breath_victims(40, &mut v, [a, b]), vec![a]);
+        assert_eq!(breath_victims(50, &mut v, [a, b]), vec![b]);
     }
 
     #[test]
@@ -4662,13 +4782,14 @@ mod tests {
         d.position = Vec3::new(0.0, 70.0, 0.0);
         d.velocity = Vec3::ZERO;
         // Power 5 right under the dragon: it is thrown up, away from the blast.
-        d.explosion_push([0.0, 66.0, 0.0], 5.0, 1.0);
-        assert!(d.velocity.y > 0.0 && d.velocity.x == 0.0 && d.velocity.z == 0.0);
-        let up = d.velocity.y;
+        let push = d.explosion_knockback([0.0, 66.0, 0.0], 5.0, 1.0).unwrap();
+        assert!(push[1] > 0.0 && push[0] == 0.0 && push[2] == 0.0);
         // Out of reach or fully covered: no push.
-        d.explosion_push([0.0, 40.0, 0.0], 5.0, 1.0);
-        d.explosion_push([0.0, 66.0, 0.0], 5.0, 0.0);
-        assert_eq!(d.velocity.y, up);
+        assert_eq!(d.explosion_knockback([0.0, 40.0, 0.0], 5.0, 1.0), None);
+        assert_eq!(
+            d.explosion_knockback([0.0, 66.0, 0.0], 5.0, 0.0),
+            Some([0.0; 3])
+        );
     }
 
     #[test]

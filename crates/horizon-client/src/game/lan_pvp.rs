@@ -5,6 +5,7 @@
 //! (`ServerPlayer.canHarmPlayer`, `isPvpAllowed`). A player's arrow on
 //! another player lands the same way.
 use super::{Game, lan::LanHost, lan_mobs::guest_bounds, mace::Spared};
+use horizon_client::enchant::EffectContext;
 
 use horizon_client::{
     Result,
@@ -64,6 +65,9 @@ pub(super) struct Strike {
     /// The attacker's main-hand item with a custom name, for the death
     /// message's `.item` form.
     item: Option<horizon_client::text::Text>,
+    /// The weapon's `minecraft:ignite` (Fire Aspect) on the victim, in
+    /// seconds (`EnchantmentHelper.doPostAttackEffects`).
+    ignite: f32,
 }
 
 /// A player's blow on another player as the native hooks name it: the hit's
@@ -151,6 +155,22 @@ impl Game<'_> {
             self.attack_item_info()
                 .map_or(0.0, |i| i.disable_blocking_seconds)
         };
+        let ignite = self.held().map_or(0.0, |held| {
+            let ctx = EffectContext {
+                this: Some("minecraft:player"),
+                attacker: Some("minecraft:player"),
+                direct_attacker: Some("minecraft:player"),
+                is_direct: true,
+                items: Some(world_items!(self)),
+                ..Default::default()
+            };
+            let mut random = self.world.random.clone();
+            world_stations!(self).enchantments.ignite_seconds(
+                held.enchantments(),
+                &ctx,
+                &mut random,
+            )
+        });
         Some(Strike {
             attacker: self.lan_acting,
             amount,
@@ -164,6 +184,7 @@ impl Game<'_> {
             knockback_attack,
             team: self.player_team().cloned(),
             item: self.main_hand_custom_name(),
+            ignite,
         })
     }
 
@@ -284,7 +305,10 @@ impl Game<'_> {
                 .guest(conn)
                 .map(|a| (a.entity_id, self.player_text(&a.name, a.uuid)))
         });
+        let attacker_id = self.player.as_ref().map_or(0, |p| p.entity_id);
         let land = |g: &mut Self| {
+            let _attacker =
+                g.knockback_scope(attacker_note.as_ref().map_or(attacker_id, |(id, _)| *id));
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
             if let Some((id, name)) = attacker_note.clone() {
                 g.note_player_attacker("minecraft:player_attack", id as u32, name, s.item.clone());
@@ -294,6 +318,14 @@ impl Game<'_> {
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {
                 g.knock_back_player(f64::from(strength), xd, zd, PVP_SOURCE);
+            }
+            // Entity.igniteForSeconds on the victim: the fire timer only
+            // rises, and a fire-immune victim (no player is by type) is spared.
+            if hurt
+                && s.ignite > 0.0
+                && let Some(p) = g.player.as_mut()
+            {
+                let _ = p.ignite_for_ticks((s.ignite * 20.0) as i32);
             }
             // The victim's thorns, dealt to the attacker below.
             let thorns = if hurt { g.thorns_damage() } else { Vec::new() };
@@ -468,7 +500,10 @@ impl Game<'_> {
         }
         let (xd, zd) = sweep.knockback;
         let attacker = self.player_attacker(host, sweep.attacker);
+        let attacker_id = self.player.as_ref().map_or(0, |p| p.entity_id);
         let land = |g: &mut Self| {
+            let _attacker =
+                g.knockback_scope(attacker.as_ref().map_or(attacker_id, |(id, _)| *id as i32));
             if let Some((id, name)) = &attacker {
                 g.note_named_attacker("minecraft:player_attack", *id, name.clone());
             }
