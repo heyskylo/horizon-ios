@@ -979,6 +979,7 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
+                    "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
                     "agent" => Page::Agent,
