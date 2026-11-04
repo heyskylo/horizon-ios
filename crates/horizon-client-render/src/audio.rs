@@ -775,6 +775,29 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
         _ => true,
     }
 }
+/// The cpal `StreamConfig` to open an output stream with. On Linux the ALSA
+/// backend's `BufferSize::Default` means a ~100 ms buffer, so sound effects
+/// come out about 100 ms late: request a short fixed buffer there. Other
+/// platforms keep cpal's default behaviour.
+#[cfg(feature = "audio")]
+fn audio_stream_config(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
+    #[cfg(target_os = "linux")]
+    {
+        let range = match config.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => (*min, *max),
+            cpal::SupportedBufferSize::Unknown => (256, 4096),
+        };
+        let target = 1024u32.clamp(range.0, range.1);
+        let mut sc = config.config();
+        sc.buffer_size = cpal::BufferSize::Fixed(target);
+        sc
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        config.config()
+    }
+}
+
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
@@ -785,8 +808,13 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let channels = config.channels() as usize;
     let mut scratch = Vec::new();
     let on_error = mixer.clone();
+    // On Linux cpal's default ALSA stream uses a ~100 ms (25 ms period,
+    // 100 ms buffer) configuration, which delays sound effects by about that
+    // much. Request a short fixed buffer instead so playback starts promptly.
+    // Keep the default behaviour elsewhere.
+    let stream_config = audio_stream_config(config);
     let stream = device.build_output_stream(
-        &config.config(),
+        &stream_config,
         move |data: &mut [T], _| {
             scratch.resize(data.len(), 0.0f32);
             if let Ok(mut m) = mixer.lock() {
