@@ -550,11 +550,10 @@ impl Launcher {
             .min_w_0()
             .when(wide, |d| d.flex_none())
             .when(!wide, |d| d.flex_shrink(1.).overflow_hidden())
-            .child(
-                tabs.id("nav-pages")
-                    .relative()
-                    .when(!wide, |d| d.overflow_x_scroll()),
-            );
+            .child(tabs.id("nav-pages").relative().when(!wide, |d| {
+                d.overflow_x_scroll()
+                    .on_scroll(|_, _, cx| cx.stop_propagation())
+            }));
 
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {

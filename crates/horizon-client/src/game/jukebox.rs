@@ -105,6 +105,29 @@ impl Game<'_> {
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
     }
+    pub(super) fn jukebox_set_item(&mut self, pos: [i32; 3], stack: Option<ItemStack>) {
+        let song = stack
+            .as_ref()
+            .and_then(|s| self.res.items().get(&s.item))
+            .and_then(|info| info.jukebox_song.clone());
+        let has_record = stack.is_some();
+        let Some(BlockEntity::Jukebox(j)) =
+            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        else {
+            return;
+        };
+        let was_playing = j.playing;
+        j.items[0] = stack;
+        j.playing = song.is_some();
+        j.ticks = 0;
+        self.set_has_record(pos, has_record);
+        match song {
+            Some(song) => self.start_song(pos, &song),
+            None if was_playing => self.stop_song(pos),
+            None => {}
+        }
+        self.jukebox_changed(pos);
+    }
     /// `JukeboxBlock.useItemOn` / `useWithoutItem` on the jukebox at `pos`.
     pub(super) fn use_jukebox(&mut self, pos: [i32; 3], held: Option<&ItemStack>) -> bool {
         if &*self

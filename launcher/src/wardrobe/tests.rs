@@ -20,6 +20,8 @@ struct Mock {
     down: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
+    /// The file every `?hash=` request answers, whatever its path says.
+    item: Option<Value>,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -55,7 +57,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 json!({"session": "svc-session", "uuid": UUID, "name": v["name"], "expires_in": m.expires_in}),
             )
         }
-        (_, "/v1/me" | "/v1/claim" | "/v1/equipped" | "/v1/visible") if !signed_in => {
+        (_, "/v1/me" | "/v1/equipped" | "/v1/visible") if !signed_in => {
             (401, json!({"error": "no_session"}))
         }
         ("PUT", "/v1/equipped" | "/v1/visible") if m.down => (503, json!({"error": "down"})),
@@ -67,8 +69,6 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             (200, me)
         }
         ("GET", "/v1/me") => (200, me(m.claim, json!([]), json!({}))),
-        ("POST", "/v1/claim") if m.claim != "open" => (403, json!({"error": "claim_closed"})),
-        ("POST", "/v1/claim") => (200, me("open", json!(["hat", "owl"]), json!({}))),
         ("PUT", "/v1/equipped") => {
             let v: Value = serde_json::from_str(body).unwrap();
             match v["item"].as_str() {
@@ -81,6 +81,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             json!({"open": m.claim == "open", "state": m.claim, "preview": false,
                    "starts_at": 100, "ends_at": 200, "now": 150, "items": ["hat"]}),
         ),
+        ("GET", p) if p.contains("?hash=") && m.item.is_some() => (200, m.item.clone().unwrap()),
         _ => (404, json!({"error": "not_found"})),
     }
 }
@@ -198,18 +199,13 @@ fn signing_in_goes_through_mojang_and_sends_the_service_no_token() {
 }
 
 #[test]
-fn claiming_and_equipping_follow_the_window_and_ownership() {
+fn equipping_follows_ownership() {
     let (m, service) = serve(|m| m.claim = "not_yet");
     let catalogue = service.catalogue().unwrap();
     assert_eq!(catalogue.claim.state, ClaimState::NotYet);
     assert_eq!(catalogue.items[0].name("fr_fr"), "Chapeau");
     assert_eq!(catalogue.items[0].name("ja_jp"), "Hat");
     let session = sign_in(&m, &service);
-    assert_eq!(service.claim(&session).unwrap_err(), Error::ClaimClosed);
-    m.lock().unwrap().claim = "open";
-    let me = service.claim(&session).unwrap();
-    assert_eq!(me.owned, ["hat", "owl"]);
-    assert_eq!(me.claim.claimed, Some(true));
     let me = service.equip(&session, "head", Some("hat")).unwrap();
     assert_eq!(me.equipped.get("head").map(String::as_str), Some("hat"));
     assert_eq!(
@@ -293,19 +289,8 @@ fn changes_made_offline_wait_on_disk_and_go_out_in_order() {
 #[test]
 fn an_item_file_is_kept_by_its_hash() {
     let dir = scratch("items");
-    let entry = Entry {
-        id: "hat".into(),
-        hash: "ab12".into(),
-        slot: "head".into(),
-        names: BTreeMap::new(),
-        theme: None,
-        lines: BTreeMap::new(),
-    };
-    let file = format!(
-        r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
-        png_8x8()
-    );
-    std::fs::write(dir.join("hat-ab12.json"), &file).unwrap();
+    let entry = entry("hat", "ab12");
+    std::fs::write(dir.join("hat-ab12.json"), item_file("hat")).unwrap();
     // Offline, the kept file is read; another hash would need the service.
     let offline = Service::at("http://127.0.0.1:9");
     assert_eq!(offline.item_cached(&entry, &dir).unwrap().id, "hat");
@@ -317,6 +302,77 @@ fn an_item_file_is_kept_by_its_hash() {
         offline.item_cached(&newer, &dir).unwrap_err(),
         Error::Offline
     );
+}
+
+#[test]
+fn a_real_catalogue_entry_is_fetched_kept_and_read_back() {
+    let dir = scratch("real");
+    let (_, service) = serve(|m| m.item = serde_json::from_str(&item_file("founder_visor")).ok());
+    // An id and hash as the live catalogue has them.
+    let entry = entry("founder_visor", "66e9e963f1958c22");
+    let item = service.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+    assert!(dir.join("founder_visor-66e9e963f1958c22.json").is_file());
+    let offline = Service::at("http://127.0.0.1:9");
+    let item = offline.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+}
+
+#[test]
+fn an_entry_that_could_leave_the_cache_is_refused() {
+    let root = scratch("traversal");
+    let cache = root.join("items");
+    // A file a traversal could read, and a service that would send one to write.
+    std::fs::write(root.join("kept-ab12.json"), item_file("hat")).unwrap();
+    let (m, service) = serve(|m| m.item = serde_json::from_str(&item_file("hat")).ok());
+    let absolute = root.join("absolute").display().to_string();
+    for (id, hash) in [
+        ("../kept", "ab12"),
+        ("../escape", "ab12"),
+        ("..\\escape", "ab12"),
+        ("hat", "x/../../escape"),
+        ("hat", "x\\..\\..\\escape"),
+        (absolute.as_str(), "ab12"),
+        ("..", "ab12"),
+        ("hat", ".."),
+        ("hat:x", "ab12"),
+        ("hat", "c:"),
+        ("hat\0", "ab12"),
+        ("hat", "ab12\0"),
+        ("", "ab12"),
+        ("hat", ""),
+    ] {
+        assert_eq!(
+            service.item_cached(&entry(id, hash), &cache).unwrap_err(),
+            Error::Service(200),
+            "{id:?} {hash:?}"
+        );
+    }
+    assert!(m.lock().unwrap().log.is_empty());
+    let beside_the_cache: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != "items")
+        .collect();
+    assert_eq!(beside_the_cache, ["kept-ab12.json"]);
+}
+
+fn entry(id: &str, hash: &str) -> Entry {
+    Entry {
+        id: id.into(),
+        hash: hash.into(),
+        slot: "head".into(),
+        names: BTreeMap::new(),
+        theme: None,
+    }
+}
+
+/// A valid item file, as the service sends it.
+fn item_file(id: &str) -> String {
+    format!(
+        r#"{{"format": 1, "id": "{id}", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
+        png_8x8()
+    )
 }
 
 /// An 8×8 transparent PNG, base64.
@@ -356,26 +412,35 @@ fn the_shop_status_is_asked_without_a_session() {
 }
 
 #[test]
-fn a_claim_through_paddle_brings_a_checkout_and_the_history_its_orders() {
+fn a_state_this_launcher_does_not_know_still_reads() {
+    let (m, service) = serve(|m| m.claim = "paused");
+    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
+    assert_eq!(
+        service.catalogue().unwrap().claim.state,
+        ClaimState::Unknown
+    );
+    let me = service.me(&sign_in(&m, &service)).unwrap();
+    assert_eq!(me.claim.state, ClaimState::Unknown);
+    // Kept on disk, it reads back the same.
+    let kept = serde_json::to_vec(&me).unwrap();
+    assert_eq!(serde_json::from_slice::<Me>(&kept).unwrap(), me);
+}
+
+#[test]
+fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
     let answer = json!({
         "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,
         "claim": {"state": "open", "items": ["hat"], "starts_at": 1, "ends_at": 2, "claimed": false, "open": true},
         "purchases": [
             {"transaction_id": "txn_b", "item": "top_hat", "amount": 330, "currency": "EUR", "status": "refunded", "at": 9},
             {"transaction_id": "txn_a", "item": "founder_set", "amount": 0, "currency": "CHF", "status": "paid", "at": 5}
-        ],
-        "checkout": {"transaction_id": "txn_c", "checkout_url": "https://playhorizon.dev/shop/pay?_ptxn=txn_c"}
+        ]
     });
     let me: Me = serde_json::from_value(answer).unwrap();
-    assert_eq!(
-        me.checkout.as_ref().and_then(|c| c.url()),
-        Some("https://playhorizon.dev/shop/pay?_ptxn=txn_c")
-    );
     assert_eq!(me.purchases[0].price().as_deref(), Some("3.30 EUR"));
     assert_eq!(me.purchases[1].price(), None);
-    // The checkout is never kept on disk; the history is.
+    // What is kept on disk reads back the same.
     let kept: Me = serde_json::from_str(&serde_json::to_string(&me).unwrap()).unwrap();
-    assert!(kept.checkout.is_none());
     assert_eq!(kept.purchases, me.purchases);
     // An answer from before sales still reads.
     let old: Me = serde_json::from_value(json!({
@@ -383,25 +448,5 @@ fn a_claim_through_paddle_brings_a_checkout_and_the_history_its_orders() {
         "claim": {"state": "not_yet", "items": [], "starts_at": null, "ends_at": null}
     }))
     .unwrap();
-    assert!(old.purchases.is_empty() && old.checkout.is_none());
-}
-
-#[test]
-fn only_horizons_checkout_page_is_opened() {
-    let at = |u: &str| Checkout {
-        transaction_id: "txn".into(),
-        checkout_url: u.into(),
-    };
-    assert!(at("https://www.playhorizon.dev/shop/pay?_ptxn=txn_1")
-        .url()
-        .is_some());
-    for bad in [
-        "https://evil.example/shop/pay?_ptxn=txn_1",
-        "https://playhorizon.dev.evil.example/shop/pay?_ptxn=1",
-        "http://playhorizon.dev/shop/pay?_ptxn=txn_1",
-        "https://playhorizon.dev/shop/pay?_ptxn=a b",
-        "file:///etc/passwd",
-    ] {
-        assert!(at(bad).url().is_none(), "{bad}");
-    }
+    assert!(old.purchases.is_empty());
 }

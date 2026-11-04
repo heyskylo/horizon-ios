@@ -935,6 +935,17 @@ def levels():
         cmd('/execute if dimension minecraft:the_nether run say through the portal'),
         cmd('/data get entity @e[tag=remote_cow,limit=1] Pos'),
         cmd('/data get entity @e[tag=remote_cow,distance=..128,limit=1] Pos'),
+        # The unbounded selector reaches the Overworld cow while the player is
+        # in the Nether: /attribute acts on the entity in its own level, as
+        # AttributeCommand does on the entity it was given.
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:max_health get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base set 21'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base reset'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier add harness:xdim 0.5 add_value'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier remove harness:xdim'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:overworld run say back through the portal'),
@@ -1303,6 +1314,103 @@ def item_nbt_count_bounds():
                 cmd(f'/data get block {chest} Items[0].count'),
             ]
     return ops + setup('/kill @e[tag=h085]', f'/setblock {chest} minecraft:air strict',
+                       '/tick unfreeze')
+
+
+def item_block_containers():
+    at = '12 222 8'
+    chest = '12 222 10'
+    ops = setup('/tick freeze', f'/setblock {chest} minecraft:air strict', f'/setblock {chest} minecraft:chest strict')
+    for block, size in (('minecraft:furnace', 3), ('minecraft:blast_furnace', 3), ('minecraft:smoker', 3),
+                        ('minecraft:brewing_stand', 5), ('minecraft:crafter', 9),
+                        ('minecraft:chiseled_bookshelf', 6), ('minecraft:oak_shelf', 3), ('minecraft:jukebox', 1)):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:book 2'),
+            cmd(f'/item replace block {at} container.{size - 1} with minecraft:enchanted_book'),
+            cmd(f'/item replace block {at} container.{size} with minecraft:book'),
+            cmd(f'/execute if items block {at} container.* minecraft:book'),
+            cmd(f'/execute if items block {at} container.* *'),
+            cmd(f'/item modify block {at} container.0 {{type:"minecraft:set_count",count:1}}'),
+            cmd(f'/item replace block {chest} container.0 from block {at} container.0'),
+            cmd(f'/data get block {chest} Items[0]'),
+            cmd(f'/data get block {at} Items'),
+            cmd(f'/item replace block {at} container.0 with minecraft:air'),
+            cmd(f'/execute if items block {at} container.* *'),
+        ]
+    for block in ('minecraft:furnace', 'minecraft:blast_furnace', 'minecraft:smoker'):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:iron_ore'),
+            cmd(f'/data get block {at} cooking_total_time'),
+        ]
+        ops += setup(f'/data merge block {at} {{cooking_time_spent:50}}')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:iron_ore 3'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/item replace block {at} container.1 with minecraft:coal'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/item replace block {at} container.0 with minecraft:beef'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/data get block {at} cooking_total_time'),
+        ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:crafter strict',
+                 f'/data merge block {at} {{disabled_slots:[I;0,4]}}')
+    ops += [
+        cmd(f'/item replace block {at} container.0 with minecraft:stone'),
+        cmd(f'/data get block {at} disabled_slots'),
+        cmd(f'/item replace block {at} container.4 with minecraft:air'),
+        cmd(f'/data get block {at} disabled_slots'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:chiseled_bookshelf strict')
+    ops += [
+        cmd(f'/item replace block {at} container.2 with minecraft:stone'),
+        cmd(f'/execute if items block {at} container.* *'),
+        cmd(f'/item replace block {at} container.2 with minecraft:writable_book'),
+        cmd(f'/execute if block {at} minecraft:chiseled_bookshelf[slot_2_occupied=true]'),
+        cmd(f'/data get block {at} last_interacted_slot'),
+        cmd(f'/item replace block {at} container.2 with minecraft:air'),
+        cmd(f'/execute if block {at} minecraft:chiseled_bookshelf[slot_2_occupied=false]'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:jukebox strict')
+    ops += [
+        cmd(f'/item replace block {at} container.0 with minecraft:music_disc_cat'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=true]'),
+        cmd(f'/data get block {at} RecordItem'),
+        cmd(f'/item replace block {at} container.0 with minecraft:stone'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=true]'),
+        cmd(f'/item replace block {at} container.0 with minecraft:air'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=false]'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:furnace strict')
+    ops += [
+        cmd(f'/loot insert {at} loot minecraft:blocks/cobblestone'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/coal_block'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/stone'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/oak_planks'),
+        cmd(f'/data get block {at} Items'),
+        cmd(f'/loot replace block {at} container.2 loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.1 loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.0 loot minecraft:blocks/dirt'),
+        cmd(f'/data get block {at} Items'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:chiseled_bookshelf strict')
+    ops += [
+        cmd(f'/loot insert {at} loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.3 loot minecraft:blocks/dirt'),
+        cmd(f'/execute if items block {at} container.* *'),
+    ]
+    for block in ('minecraft:oak_sign', 'minecraft:lectern', 'minecraft:campfire', 'minecraft:beacon',
+                  'minecraft:stone'):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/loot insert {at} loot minecraft:blocks/dirt'),
+            cmd(f'/item replace block {at} container.0 with minecraft:book'),
+            cmd(f'/item modify block {at} container.0 {{type:"minecraft:set_count",count:1}}'),
+            cmd(f'/item replace block {chest} container.0 from block {at} container.0'),
+            cmd(f'/execute if items block {at} container.* *'),
+        ]
+    return ops + setup(f'/setblock {at} minecraft:air strict', f'/setblock {chest} minecraft:air strict',
                        '/tick unfreeze')
 
 
@@ -4450,6 +4558,7 @@ def groups():
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
         ('item NBT count bounds', item_nbt_count_bounds()),
+        ('item block containers', item_block_containers()),
         ('world', world_misc()),
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),

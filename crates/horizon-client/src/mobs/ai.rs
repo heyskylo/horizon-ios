@@ -2181,7 +2181,11 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
 /// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
 /// locked). Tamed wolves and cats only sit or stand when it does not.
 pub fn takes_food(m: &Mob) -> bool {
-    (m.extra.age == 0 && m.extra.in_love <= 0) || (m.extra.age < 0 && !m.extra.age_locked)
+    // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
+    // turtle that already carries an egg refuses its food instead of breeding.
+    let breedable =
+        m.extra.in_love <= 0 && !(m.species() == Species::Turtle && super::turtle::has_egg(m));
+    (m.extra.age == 0 && breedable) || (m.extra.age < 0 && !m.extra.age_locked)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
 /// love does, a baby grows up by a tenth, and either plays its eating sound
@@ -3892,6 +3896,38 @@ mod feed_tests {
             m.extra.age = 6000;
             assert!(!takes_food(&m), "{id}: breeding cooldown");
         }
+    }
+
+    /// `Turtle.canFallInLove` (#8612): a turtle that already carries an egg
+    /// cannot fall in love, so `Animal.mobInteract` refuses its food — it is
+    /// neither eaten nor turned into love mode.
+    #[test]
+    fn a_turtle_carrying_an_egg_refuses_its_food() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let mut level = LegacyRandom::new(0);
+        let kind = Arc::new(data.types.get("minecraft:turtle").unwrap().clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        m.extra.age = 0;
+
+        m.extra.flag = true;
+        assert!(crate::mobs::turtle::has_egg(&m));
+        assert!(!takes_food(&m), "an egg-carrying turtle refuses its food");
+        assert!(
+            feed_animal(&mut m, &mut level, None).is_none(),
+            "and does not enter love mode"
+        );
+        assert_eq!(m.extra.in_love, 0);
+
+        m.extra.flag = false;
+        assert!(takes_food(&m), "a turtle without an egg takes it");
+        assert!(feed_animal(&mut m, &mut level, None).is_some());
+        assert_eq!(m.extra.in_love, 600);
     }
 }
 
