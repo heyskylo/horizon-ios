@@ -109,6 +109,11 @@ pub(super) struct PotionCloud {
     /// Who its instant damage names (`indirectMagic(cloud, owner)`): the
     /// thrower, else the cloud.
     source: Text,
+    /// `AreaEffectCloud.getOwner`: the thrower (`ThrownLingeringPotion.onHitAsPotion`), whose
+    /// kill a mob's death to its instant damage is.
+    owner: Option<Who>,
+    /// On a server, the guest (by connection) who threw it.
+    guest: Option<u32>,
 }
 impl PotionCloud {
     /// `AreaEffectCloud.updateParticle`: an entity effect in the potion's colour.
@@ -131,6 +136,18 @@ pub(super) struct PotionOwner {
     attacker: Option<u32>,
     /// A player threw it: the water damage `indirectMagic` deals is theirs.
     player: bool,
+    /// On a server, the guest (by connection) who threw it: whose kill the mobs it hurts are
+    /// (`LivingEntity.lastHurtByPlayer`).
+    guest: Option<u32>,
+}
+impl PotionOwner {
+    /// The owner as a damage source's causing entity.
+    fn who(&self) -> Option<Who> {
+        match self.attacker {
+            Some(id) => Some(Who::Mob(id)),
+            None => self.player.then_some(Who::Player),
+        }
+    }
 }
 /// A mob's effect ids carry the `minecraft:` namespace; a mod's has its own.
 pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
@@ -140,6 +157,9 @@ pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
 /// `WitherSkeleton` shrug off wither, `Spider` and `AbstractNautilus` poison,
 /// `Parched` weakness): the immune-to-infested and immune-to-oozing tags
 /// decide first, then the tag of mobs that ignore poison and regeneration.
+/// `WitherBoss.addEffect` refusing everything is `Mob::add_effect`'s: a cloud
+/// still takes the wither as a victim (`AreaEffectCloud` asks `canBeAffected`),
+/// so its instant effects land and it shrinks.
 pub(super) fn mob_can_be_affected(
     tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     kind: &str,
@@ -1238,7 +1258,15 @@ impl Game<'_> {
                 }
             }
             if let Some((p, mob, block)) = hit {
-                landed.push((t.stack.clone(), p, mob, block, t.age, t.owner.clone()));
+                landed.push((
+                    t.stack.clone(),
+                    p,
+                    mob,
+                    block,
+                    t.age,
+                    t.owner.clone(),
+                    t.guest,
+                ));
                 return false;
             }
             t.position = next;
@@ -1250,7 +1278,7 @@ impl Game<'_> {
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
-        for (stack, at, mob, block, age, owner) in landed {
+        for (stack, at, mob, block, age, owner, guest) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
             let heard = if mob.is_some() {
@@ -1266,6 +1294,7 @@ impl Game<'_> {
                 player: owner.is_some(),
                 name: owner,
                 attacker: None,
+                guest,
             };
             self.splash(&stack, at, mob, block, age, &owner);
             if item != "minecraft:experience_bottle" {
@@ -1356,6 +1385,7 @@ impl Game<'_> {
                 (&potion.hidden, &potion.ambient),
                 c.at,
                 &potion.source,
+                (potion.owner, potion.guest),
             );
             // setRadiusOnUse(-0.5).
             c.radius -= 0.5;
@@ -1393,6 +1423,8 @@ impl Game<'_> {
                 color,
                 victims: Vec::new(),
                 source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
+                owner: None,
+                guest: None,
             }),
         });
     }
@@ -1406,6 +1438,7 @@ impl Game<'_> {
         (hidden, ambient): (&[&'static str], &[&'static str]),
         at: [f64; 3],
         source: &Text,
+        (owner, guest): (Option<Who>, Option<u32>),
     ) {
         // `indirectMagic(cloud, owner)` names the cloud in the death message
         // (it gives no kill credit).
@@ -1460,8 +1493,13 @@ impl Game<'_> {
                             let amount =
                                 |base: i32| (0.5 * f64::from(base << amp) + 0.5) as i32 as f32;
                             if (*id == "instant_damage") != inverted {
-                                let harm = m.potion_harm(amount(6));
-                                m.hurt(harm, Some(at), &mut self.world.random);
+                                // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(cloud, owner).
+                                let source = Damage::indirect_magic(owner, at);
+                                if m.damage_by(amount(6), source, "minecraft:area_effect_cloud")
+                                    && owner == Some(Who::Player)
+                                {
+                                    self.last_hurt_by_player.insert(mob, guest);
+                                }
                             } else {
                                 m.heal(amount(4));
                             }
@@ -1657,11 +1695,13 @@ impl Game<'_> {
                 name: Some(self.player_display_text()),
                 attacker: None,
                 player: true,
+                guest: self.lan_acting,
             },
             Some(Who::Mob(id)) => PotionOwner {
                 name: self.mob_display_name(id),
                 attacker: Some(id),
                 player: false,
+                guest: None,
             },
             None => PotionOwner::default(),
         }
@@ -1764,6 +1804,8 @@ impl Game<'_> {
                         source: owner.name.clone().unwrap_or_else(|| {
                             Text::translate("entity.minecraft.area_effect_cloud", &[])
                         }),
+                        owner: owner.who(),
+                        guest: owner.guest,
                     }),
                 });
             }
@@ -1804,8 +1846,13 @@ impl Game<'_> {
                 };
                 let m = &mut self.mobs[i];
                 if harm {
-                    let harm = m.potion_harm((intensity * f64::from(6 << amp) + 0.5) as i32 as f32);
-                    m.hurt(harm, Some([at.x, at.y, at.z]), &mut self.world.random);
+                    // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
+                    let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
+                    let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
+                    if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
+                        let id = m.id;
+                        self.last_hurt_by_player.insert(id, owner.guest);
+                    }
                 } else {
                     m.heal((intensity * f64::from(4 << amp) + 0.5) as i32 as f32);
                 }
@@ -1906,6 +1953,21 @@ mod tests {
     use super::super::sculk::darkness_blend_added;
     use super::*;
     use horizon_client::screen_effects::nausea_blend_added;
+
+    /// `WitherBoss.canBeAffected` refuses only the wither effect: its `addEffect`
+    /// refuses the rest, but a cloud of strength or healing still counts the boss
+    /// as a victim (`AreaEffectCloud.serverTick` asks `canBeAffected`).
+    #[test]
+    fn a_cloud_still_counts_the_wither_as_a_victim() {
+        let tags = std::collections::HashMap::new();
+        for effect in ["strength", "instant_health"] {
+            assert!(
+                mob_can_be_affected(&tags, "minecraft:wither", effect),
+                "{effect}"
+            );
+        }
+        assert!(!mob_can_be_affected(&tags, "minecraft:wither", "wither"));
+    }
 
     /// #5876: a potion thrown straight up from inside its thrower's box does
     /// not hit them while it climbs out, then hits them on the way down;
@@ -2070,6 +2132,8 @@ mod tests {
                 color: 0,
                 victims: Vec::new(),
                 source: Text::empty(),
+                owner: None,
+                guest: None,
             }),
         }];
         assert!(!collect_dragon_breath(player_box, &mut lingering));
