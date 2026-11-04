@@ -4714,8 +4714,10 @@ def advancement_reward_functions():
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
+        from .gateway_passenger_corpus import gateway_passengers
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
+        from gateway_passenger_corpus import gateway_passengers
     return [
         ('setup', group_setup()),
         ('bell server glow', bell_server_glow()),
@@ -4766,6 +4768,7 @@ def groups():
         ('riding teleport', riding_teleport()),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
+        ('gateway passengers', gateway_passengers(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),

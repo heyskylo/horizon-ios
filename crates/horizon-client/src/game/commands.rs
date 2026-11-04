@@ -1516,7 +1516,7 @@ impl Game<'_> {
         // An entity in another level is teleported in the level that holds it.
         let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
     }
-    fn teleport_to_in_level(
+    pub(super) fn teleport_to_in_level(
         &mut self,
         t: Target,
         pos: [f64; 3],
