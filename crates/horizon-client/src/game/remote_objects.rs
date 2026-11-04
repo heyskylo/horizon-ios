@@ -364,6 +364,17 @@ impl Game<'_> {
                     [0.0; 3],
                 );
             }
+            // MinecartTNT.tick: a primed cart counts its fuse down and sheds
+            // smoke. The server explodes it; this copy only shows the fuse
+            // (`TntMinecartRenderer`'s flash and swell).
+            if c.kind == super::minecarts::CartKind::Tnt && c.fuse > 0 {
+                c.fuse -= 1;
+                self.particles.add(
+                    &ParticleOptions::simple(ParticleType::Smoke),
+                    [c.position.x, c.position.y + 0.5, c.position.z],
+                    [0.0; 3],
+                );
+            }
         }
         // The boat the player drives moves here, not where the server says.
         let driven = self.riding;
