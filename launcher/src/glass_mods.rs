@@ -6,10 +6,14 @@
 //! instance).
 //!
 //! The mockup's tabs are its sources (Horizon, Modrinth, CurseForge soon); the launcher's page
-//! is by kind (mods and shader packs from Horizon's registry, resource packs and modpacks from
-//! Modrinth), each kind with its sources, so the tabs are the kinds, CurseForge after them as
-//! coming soon. Not in the mockup, kept in its patterns: Show everything, the source switch, the
-//! filters and the sort, which instance or world installs go to (under the search); the
+//! is by kind (mods, modpacks, resource packs, shader packs, data packs), each with its sources,
+//! so the tabs are the kinds and the sources are a switch under the search: Horizon's registry
+//! or Modrinth, CurseForge beside them as coming soon, on the kinds both serve (`switches`):
+//! shader packs are Horizon's registry's only, data packs Modrinth's only, and a Java
+//! instance's files always Modrinth's. Modrinth's Java mods are offered to a Horizon instance
+//! too, each marked Works, Partly or Doesn't run in Horizon. Not in the mockup, kept in its
+//! patterns: Show everything, the filters, which instance or world installs go to (under the
+//! search); the
 //! project's page, its rating and why it runs or not (in the project's card); adding a native mod
 //! from GitHub, the instance's installed list and its native build, imported modpacks and the
 //! install's progress (cards under the two).
@@ -36,7 +40,9 @@ impl Launcher {
                 &[("count", &m.results.len().to_string())],
             )
             .into()
-        } else if m.source == SourceId::Modrinth {
+        } else if m.source == SourceId::Modrinth
+            && matches!(m.kind, PackKind::ResourcePack | PackKind::Modpack)
+        {
             tr("Search resource packs and modpacks").into()
         } else {
             tr("Search, then Enter").into()
@@ -59,10 +65,7 @@ impl Launcher {
         .mb_0();
         let open = self.mods.kind;
         let mut tabs = div().flex().flex_none().items_center().gap(px(4.));
-        for (kind, label, _) in KINDS
-            .into_iter()
-            .filter(|&(kind, ..)| SHOWN.contains(&kind) || kind == open)
-        {
+        for (kind, label, _) in KINDS {
             tabs = tabs.child(
                 small_tab(
                     SharedString::from(format!("mods-tab-{label}")),
@@ -76,37 +79,32 @@ impl Launcher {
                 })),
             );
         }
-        // CurseForge: shown, inert, never searched, as in the mockup.
-        tabs = tabs.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .h(px(32.))
-                .px(px(12.))
-                .text_size(px(13.))
-                .text_color(white(0.35))
-                .child("CurseForge")
-                .child(tr("soon").to_string()),
-        );
         let header = div()
             .flex()
             .items_end()
             .justify_between()
             .gap(px(20.))
-            .pt(px(40.))
+            .pt(px(40. - crate::glass::CONTENT_INSET))
             .mb(px(28.))
             .child(head.min_w_0())
             .child(tabs);
 
+        // Installation can pause for consent in either view. Keep the notice before
+        // the project or results, rather than below a potentially long detail card.
+        let notice = self.native_notice(cx).map(|notice| notice.mb(px(20.)));
         // A project's own page replaces the two cards, as before.
         if let Some(project) = self.mods_project_page(cx) {
-            return div().flex().flex_col().child(header).child(
-                crate::glass::plate(radius::PANEL)
-                    .p(px(20.))
-                    .children(self.mods_busy_plate())
-                    .child(project),
-            );
+            return div()
+                .flex()
+                .flex_col()
+                .child(header)
+                .children(notice)
+                .child(
+                    crate::glass::plate(radius::PANEL)
+                        .p(px(20.))
+                        .children(self.mods_busy_plate())
+                        .child(project),
+                );
         }
 
         let java = self.mods.java_for(self.mods.kind).is_some();
@@ -141,34 +139,49 @@ impl Launcher {
                         })),
                 )
             })
-            .when(
-                source_for(self.mods.kind) == SourceId::Modrinth && !java,
-                |d| d.child(div().flex().child(self.mods_source_switch(cx))),
-            )
+            .when(switches(self.mods.kind) && !java, |d| {
+                d.child(self.glass_source_switch(cx))
+            })
             .children((!registry).then(|| self.mods_filters(cx)))
-            .children(registry.then(|| self.mods_sort_bar(cx)))
             .children(self.mods_target_line(cx));
+        // The search, and the sort on its right.
+        let search = div()
+            .m(px(4.))
+            .mb(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1().min_w_0().child(self.mods_field(cx)))
+            .child(self.glass_mods_sort(cx));
         let list = crate::glass::plate(radius::PANEL)
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
             .p(px(8.))
-            .child(div().m(px(4.)).mb(px(8.)).child(self.mods_field(cx)))
+            .child(search)
             .child(extras)
             .child(self.glass_mods_list(cx));
-        let detail = self.glass_mod_detail(&instance, cx);
+        // The card stays in view as the list scrolls (`lg:sticky lg:top-0`, `sticky.rs`).
+        let detail = self.glass_mod_detail(&instance, cx).map(|d| {
+            let down = self.mods_sticky.offset(&self.content_scroll.handle);
+            d.flex_none()
+                .w(px(DETAIL))
+                .top(px(down))
+                .child(self.mods_sticky.panel())
+        });
         let cards = div()
+            .relative()
             .flex()
             .items_start()
             .gap(px(10.))
+            .child(self.mods_sticky.row(&self.content_scroll.handle))
             .child(list)
-            .children(detail.map(|d| d.flex_none().w(px(DETAIL))));
+            .children(detail);
 
         // What the mockup doesn't have, as cards under the two.
         let card = |inner: Div| crate::glass::plate(radius::PANEL).p(px(20.)).child(inner);
         let mut more: Vec<Div> = Vec::new();
-        more.extend(self.native_notice(cx).map(card));
         more.extend(self.mods_busy_plate().into_iter().map(card));
         if self.mods.kind == PackKind::Modpack {
             more.push(card(self.imported_packs(cx)));
@@ -177,14 +190,147 @@ impl Launcher {
             more.push(card(self.github_panel(cx)));
         }
         more.extend(self.mods_installed_list(cx).map(card));
-        div().flex().flex_col().child(header).child(cards).child(
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .children(notice)
+            .child(cards)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .mt(px(10.))
+                    .children(more),
+            )
+    }
+
+    /// The source switch (`switches`): Horizon's registry or Modrinth as small tabs, CurseForge
+    /// after them as coming soon, shown, inert, never searched, as in the mockup.
+    fn glass_source_switch(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let current = self.mods.source;
+        let mut row = div().flex().items_center().gap(px(4.));
+        for (source, label) in SOURCES {
+            row = row.child(
+                small_tab(
+                    SharedString::from(format!("mods-source-{label}")),
+                    source == current,
+                    &t,
+                )
+                .child(tr(label).to_string())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if this.mods.source != source {
+                        this.mods.source = source;
+                        this.mods.browse.filters = Default::default();
+                        this.mods.browse.open = None;
+                        this.mods.picked = None;
+                        this.mods_search(0);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        row.child(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(10.))
-                .mt(px(10.))
-                .children(more),
+                .items_center()
+                .gap(px(6.))
+                .h(px(32.))
+                .px(px(12.))
+                .text_size(px(13.))
+                .text_color(white(0.35))
+                .child("CurseForge")
+                .child(tr("soon").to_string()),
         )
+    }
+
+    /// The "Sort by" dropdown beside the search: as tall and as round as the search, white at
+    /// 7 % like it; the choices on a glass popover under it, the chosen one ticked.
+    fn glass_mods_sort(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let sorts = self.mods_sorts();
+        let current = self.mods.browse.filters.sort;
+        // A sort the source can't do (Follows, picked on Modrinth) reads as the default.
+        let shown = sorts
+            .iter()
+            .find(|(value, _)| *value == current)
+            .or(sorts.first())
+            .map(|(value, _)| *value);
+        let name = sorts
+            .iter()
+            .find(|(value, _)| Some(*value) == shown)
+            .map_or("", |(_, label)| *label);
+        let open = self.mods.browse.sort_menu;
+        let button = keyboard(
+            div()
+                .id("mods-sort")
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .h(px(44.))
+                .px(px(14.))
+                .rounded(px(12.))
+                .bg(white(if open { 0.11 } else { 0.07 }))
+                .hover(|s| s.bg(white(0.11)))
+                .cursor_pointer()
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+                .text_color(white(ink::FULL))
+                .child(trf("Sort by: {order}", &[("order", tr(name))]))
+                .child(
+                    ui::icon("arrow-down-01", 16., white(ink::NOTE)).with_transformation(
+                        gpui::Transformation::rotate(gpui::radians(if open {
+                            std::f32::consts::PI
+                        } else {
+                            0.
+                        })),
+                    ),
+                )
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    if this.closed_by_this_press(event) {
+                        return;
+                    }
+                    this.mods.browse.sort_menu = !this.mods.browse.sort_menu;
+                    cx.notify();
+                })),
+            &t,
+        );
+        let mut wrap = div().relative().flex_none().child(button);
+        if open {
+            let mut menu = ui::popover(220.)
+                .id("mods-sort-menu")
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    this.mods.browse.sort_menu = false;
+                    this.menu_closed_at = Some(event.position);
+                    cx.notify();
+                }));
+            for &(value, label) in &sorts {
+                menu = menu.child(
+                    ui::pick_row(
+                        SharedString::from(format!("mods-sort-pick-{label}")),
+                        tr(label).to_string(),
+                        Some(value) == shown,
+                        &t,
+                    )
+                    .on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.mods.browse.sort_menu = false;
+                            this.mods_filter(|f| f.sort = value);
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            wrap = wrap.child(
+                gpui::deferred(div().absolute().top(px(52.)).right_0().child(menu))
+                    .with_priority(1),
+            );
+        }
+        wrap
     }
 
     /// The search's results as the mockup's rows (`ROW`): a click picks one for the card beside.

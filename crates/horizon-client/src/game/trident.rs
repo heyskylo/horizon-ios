@@ -10,7 +10,7 @@ use horizon_client::{
     enchant::EffectContext,
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Damage, DamageKind, Who, anim::Poses},
+    mobs::{Damage, DamageKind, Species, Who, anim::Poses},
     projectiles::ProjectileWorld,
 };
 use horizon_core::{
@@ -45,8 +45,10 @@ pub(super) struct ThrownTrident {
     pub(super) fire_ticks: i32,
     /// Water membership from the preceding `baseTick` (not updated while stuck).
     was_touching_water: bool,
-    /// `Entity.random`, used for the extinguishing sound.
+    /// `Entity.random`, used for the extinguishing sound and a breeze's turn.
     random: horizon_core::random::LegacyRandom,
+    /// `Projectile.lastDeflectedBy`: the breeze that already turned this trident.
+    deflected_by: Option<u32>,
     /// `Entity.tickCount`: `ProjectileUtil.computeMargin` grows with it.
     age: u32,
     /// The entity id a server sent as its owner (the one Loyalty returns it to).
@@ -133,6 +135,7 @@ impl ThrownTrident {
             age: 0,
             owner: 0,
             guest: None,
+            deflected_by: None,
         }
     }
     /// `ThrownTrident.tick`'s Loyalty return: pulled up and towards the
@@ -203,6 +206,15 @@ impl ThrownTrident {
     }
 }
 const HALF: f64 = 0.25;
+/// `Breeze.PROJECTILE_DEFLECTION`: `ProjectileDeflection.REVERSE` at power
+/// `(1, 1, 1)`. Each axis is multiplied by `-0.5`, and the yaw turns by
+/// `170 + nextFloat * 20`.
+fn breeze_deflect(velocity: Vec3, yaw: f32, jitter: f32) -> (Vec3, f32) {
+    (
+        Vec3::new(velocity.x * -0.5, velocity.y * -0.5, velocity.z * -0.5),
+        yaw + 170.0 + jitter * 20.0,
+    )
+}
 /// The entry distance of a segment into a box, if it crosses it.
 fn segment_box(from: Vec3, d: Vec3, b: Aabb) -> Option<f64> {
     let (lo, hi) = (b.min_position(), b.max_position());
@@ -230,18 +242,24 @@ fn segment_box(from: Vec3, d: Vec3, b: Aabb) -> Option<f64> {
     (t0 <= t1).then_some(t0)
 }
 impl Game<'_> {
+    /// The trident stack's maximum damage component, else its item's default.
+    pub(super) fn trident_max_damage(&self, stack: &ItemStack) -> u32 {
+        stack
+            .data()
+            .and_then(|data| match data.other("minecraft:max_damage") {
+                Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok(),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.items().get(&stack.item).map_or(250, |i| i.max_damage))
+    }
     /// `TridentItem.use`: start the throw unless one more use would break it.
     pub(super) fn use_trident(&mut self, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:trident" {
             return false;
         }
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(250, |i| i.max_damage);
+        let max = self.trident_max_damage(stack);
         let riptide = stack.enchantment_level("minecraft:riptide") > 0;
-        if stack.damage + 1 >= max || (riptide && !self.in_water_or_rain()) {
+        if stack.damage >= max.saturating_sub(1) || (riptide && !self.in_water_or_rain()) {
             return true;
         }
         self.start_using_item();
@@ -344,15 +362,18 @@ impl Game<'_> {
             return;
         };
         let riptide = stack.enchantment_level("minecraft:riptide");
+        // `releaseUsing` checks the wet/passenger conditions, then nextDamageWillBreak again.
+        if riptide > 0 && (!self.in_water_or_rain() || self.riding.is_some()) {
+            return;
+        }
+        if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1) {
+            return;
+        }
         let at = self
             .player
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         if riptide > 0 {
-            // `isInWaterOrRain() && !isPassenger()`.
-            if !self.in_water_or_rain() || self.riding.is_some() {
-                return;
-            }
             // `hurtWithoutBreaking` and the sound belong to the server; a server's
             // client only launches.
             let server_client = self.remote.is_some();
@@ -456,6 +477,7 @@ impl Game<'_> {
             age: 0,
             owner: 0,
             guest: self.lan_acting,
+            deflected_by: None,
         });
         self.player_projectile_shot();
         self.audio
@@ -677,110 +699,136 @@ impl Game<'_> {
                     // No damage, sound or deflection: it flies on.
                 } else if let Some((id, d)) = hit_mob {
                     // The trident stops where it met the box.
-                    t.position = Vec3::new(
+                    let at = Vec3::new(
                         t.position.x + t.velocity.x * d,
                         t.position.y + t.velocity.y * d,
                         t.position.z + t.velocity.z * d,
                     );
-                    // ThrownTrident.getDamage: `EnchantmentHelper.modifyDamage` on 8
-                    // (impaling hits `#sensitive_to_impaling`, the aquatic tag).
-                    let victim = self
+                    t.position = at;
+                    // `Breeze.deflection`: a trident is not a wind charge, so
+                    // `PROJECTILE_DEFLECTION` turns it around. `onHit` does not
+                    // run, so the breeze takes no damage and Channeling never fires.
+                    let breeze = self
                         .mobs
                         .iter()
-                        .find(|m| m.id == id)
-                        .map(|m| m.kind.id.clone())
-                        .or_else(|| {
-                            self.boats
-                                .iter()
-                                .find(|b| b.id == id)
-                                .map(|b| b.entity_type())
-                        })
-                        .or_else(|| {
-                            self.carts
-                                .iter()
-                                .find(|c| c.id == id)
-                                .map(|c| c.kind.id().to_owned())
-                        });
-                    let ctx = EffectContext {
-                        this: victim.as_deref(),
-                        attacker: Some("minecraft:player"),
-                        direct_attacker: Some("minecraft:trident"),
-                        is_direct: true,
-                        damage_type: Some("minecraft:trident"),
-                        items: Some(world_items!(self)),
-                        ..Default::default()
-                    };
-                    let damage = world_stations!(self).enchantments.modify_value(
-                        Some(&t.stack),
-                        "minecraft:damage",
-                        &ctx,
-                        &mut self.world.random,
-                        8.0,
-                    );
-                    t.dealt_damage = true;
-                    let mut hurt_at = None;
-                    let aim = self.attacker_aim(Some(Who::Player));
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage_projectile(
-                            damage,
-                            Damage {
-                                kind: DamageKind::Arrow,
-                                attacker: Some(Who::Player),
-                                from,
-                            },
-                            aim,
-                            [t.velocity.x, t.velocity.z],
-                        );
-                        if hurt {
-                            hurt_at = Some([m.position.x, m.position.y, m.position.z]);
+                        .find(|m| m.id == id && m.alive() && m.species() == Species::Breeze);
+                    if let Some(breeze) = breeze {
+                        if t.deflected_by != Some(id) {
+                            let sound_at =
+                                [breeze.position.x, breeze.position.y, breeze.position.z];
+                            self.audio.play(
+                                "minecraft:entity.breeze.deflect",
+                                Some(sound_at),
+                                1.0,
+                                1.0,
+                            );
+                            let jitter = t.random.next_float();
+                            let (velocity, yaw) = breeze_deflect(t.velocity, t.yaw, jitter);
+                            t.velocity = velocity;
+                            t.yaw = yaw;
+                            t.deflected_by = Some(id);
                         }
-                    }
-                    // ThrownTrident.onHitEntity on a boat or minecart:
-                    // VehicleEntity.hurtServer takes the damage.
-                    let creative = t.guest.is_none() && self.creative;
-                    if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                        self.hurt_boat(i, damage, creative);
-                    } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-                        self.hurt_cart(i, damage, creative, false);
-                    }
-                    // `minecraft:post_attack` of Channeling, on the victim.
-                    if let Some(at) = hurt_at
-                        && t.stack.enchantment_level("minecraft:channeling") > 0
-                    {
-                        self.channel_lightning(at, t.guest);
-                    }
-                    if hurt_at.is_some()
-                        && let Some(m) = self.mobs.iter().find(|m| m.id == id)
-                    {
-                        // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
-                        let victim = self.mob_entity(m);
-                        let direct = horizon_client::advancements::EntityView {
-                            kind: "minecraft:trident".into(),
-                            position: [t.position.x, t.position.y, t.position.z],
+                    } else {
+                        // ThrownTrident.getDamage: `EnchantmentHelper.modifyDamage` on 8
+                        // (impaling hits `#sensitive_to_impaling`, the aquatic tag).
+                        let victim = self
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == id)
+                            .map(|m| m.kind.id.clone())
+                            .or_else(|| {
+                                self.boats
+                                    .iter()
+                                    .find(|b| b.id == id)
+                                    .map(|b| b.entity_type())
+                            })
+                            .or_else(|| {
+                                self.carts
+                                    .iter()
+                                    .find(|c| c.id == id)
+                                    .map(|c| c.kind.id().to_owned())
+                            });
+                        let ctx = EffectContext {
+                            this: victim.as_deref(),
+                            attacker: Some("minecraft:player"),
+                            direct_attacker: Some("minecraft:trident"),
+                            is_direct: true,
+                            damage_type: Some("minecraft:trident"),
+                            items: Some(world_items!(self)),
                             ..Default::default()
                         };
-                        self.thrower_hit(t.guest, &victim, direct, damage);
+                        let damage = world_stations!(self).enchantments.modify_value(
+                            Some(&t.stack),
+                            "minecraft:damage",
+                            &ctx,
+                            &mut self.world.random,
+                            8.0,
+                        );
+                        t.dealt_damage = true;
+                        let mut hurt_at = None;
+                        let aim = self.attacker_aim(Some(Who::Player));
+                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                            let from = Some([t.position.x, t.position.y, t.position.z]);
+                            let hurt = m.damage_projectile(
+                                damage,
+                                Damage {
+                                    kind: DamageKind::Arrow,
+                                    attacker: Some(Who::Player),
+                                    from,
+                                },
+                                aim,
+                                [t.velocity.x, t.velocity.z],
+                            );
+                            if hurt {
+                                hurt_at = Some([m.position.x, m.position.y, m.position.z]);
+                            }
+                        }
+                        // ThrownTrident.onHitEntity on a boat or minecart:
+                        // VehicleEntity.hurtServer takes the damage.
+                        let creative = t.guest.is_none() && self.creative;
+                        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                            self.hurt_boat(i, damage, creative);
+                        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                            self.hurt_cart(i, damage, creative, false);
+                        }
+                        // `minecraft:post_attack` of Channeling, on the victim.
+                        if let Some(at) = hurt_at
+                            && t.stack.enchantment_level("minecraft:channeling") > 0
+                        {
+                            self.channel_lightning(at, t.guest);
+                        }
+                        if hurt_at.is_some()
+                            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+                        {
+                            // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
+                            let victim = self.mob_entity(m);
+                            let direct = horizon_client::advancements::EntityView {
+                                kind: "minecraft:trident".into(),
+                                position: [t.position.x, t.position.y, t.position.z],
+                                ..Default::default()
+                            };
+                            self.thrower_hit(t.guest, &victim, direct, damage);
+                        }
+                        // Projectile.onHit: the landing is heard, at the hit.
+                        self.projectile_event(
+                            "minecraft:projectile_land",
+                            Some(Who::Player),
+                            [t.position.x, t.position.y, t.position.z],
+                        );
+                        self.audio.play(
+                            "minecraft:item.trident.hit",
+                            Some([t.position.x, t.position.y, t.position.z]),
+                            1.0,
+                            1.0,
+                        );
+                        // ProjectileDeflection.REVERSE (half, reversed) scaled by
+                        // (0.02, 0.2, 0.02).
+                        t.velocity = Vec3::new(
+                            t.velocity.x * (-0.02 * 0.5),
+                            t.velocity.y * (-0.2 * 0.5),
+                            t.velocity.z * (-0.02 * 0.5),
+                        );
                     }
-                    // Projectile.onHit: the landing is heard, at the hit.
-                    self.projectile_event(
-                        "minecraft:projectile_land",
-                        Some(Who::Player),
-                        [t.position.x, t.position.y, t.position.z],
-                    );
-                    self.audio.play(
-                        "minecraft:item.trident.hit",
-                        Some([t.position.x, t.position.y, t.position.z]),
-                        1.0,
-                        1.0,
-                    );
-                    // ProjectileDeflection.REVERSE (half, reversed) scaled by
-                    // (0.02, 0.2, 0.02).
-                    t.velocity = Vec3::new(
-                        t.velocity.x * (-0.02 * 0.5),
-                        t.velocity.y * (-0.2 * 0.5),
-                        t.velocity.z * (-0.02 * 0.5),
-                    );
                 } else {
                     // AbstractArrow.tick: a zero-width ray clip of the movement
                     // (`ClipContext.Block.COLLIDER`, no fluids), then
@@ -1016,3 +1064,84 @@ impl Game<'_> {
     }
 }
 horizon_client::impl_joined!(ThrownTrident);
+
+#[cfg(test)]
+mod tests {
+    use super::breeze_deflect;
+    use horizon_core::geometry::Vec3;
+
+    /// `ProjectileDeflection.REVERSE` at power 1: half speed, the other way,
+    /// and a turn of 170 degrees plus a fifth of the random draw.
+    #[test]
+    fn a_breeze_turns_a_trident_around_at_half_speed() {
+        let (velocity, yaw) = breeze_deflect(Vec3::new(4.0, -2.0, 1.0), 10.0, 0.25);
+        assert_eq!(velocity, Vec3::new(-2.0, 1.0, -0.5));
+        assert_eq!(yaw, 185.0);
+    }
+
+    /// A stack can reach its final durability point after use began. The release
+    /// guard is independent of admission, and short charges still do nothing.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn trident_release_rechecks_stack_durability_after_charge() {
+        use crate::game::{Audio, Options, PlayerMotion, Progress, Settings, load_resources};
+        use horizon_world::nbt::Tag;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = super::Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player =
+            Some(PlayerMotion::new(game.motion, super::Vec3::new(4.5, 200.0, 4.5)).unwrap());
+        let mut stack = super::ItemStack::new("minecraft:trident", 1);
+        stack.damage = 8;
+        stack
+            .data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(10)));
+        *game.held_mut() = Some(stack.clone());
+        assert!(game.use_trident(&stack));
+        assert!(game.using.is_some());
+        game.held_mut().as_mut().unwrap().damage = 9;
+        game.release_trident(10);
+        assert!(game.tridents.is_empty());
+        assert_eq!(game.held().unwrap().damage, 9);
+        game.using = None;
+
+        stack.damage = 249;
+        stack
+            .data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(500)));
+        *game.held_mut() = Some(stack.clone());
+        assert!(game.use_trident(&stack));
+        assert!(game.using.is_some());
+        game.release_trident(9);
+        assert!(game.tridents.is_empty());
+        assert_eq!(game.held().unwrap().damage, 249);
+        game.release_trident(10);
+        assert_eq!(game.tridents.len(), 1);
+        assert_eq!(game.tridents[0].stack.damage, 250);
+        assert!(game.held().is_none());
+    }
+}

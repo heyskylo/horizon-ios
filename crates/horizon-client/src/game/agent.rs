@@ -348,6 +348,11 @@ impl Game<'_> {
         {
             v["sign"] = json!({ "front": sign.front.lines, "back": sign.back.lines });
         }
+        // A block a piston moves, as this client animates it: its own
+        // PistonMovingBlockEntity, which a block event's moveBlocks made.
+        if let Some((_, piston)) = self.world.moving_pistons.iter().find(|(p, _)| *p == pos) {
+            v["moving"] = json!({ "progress": piston.progress, "extending": piston.extending });
+        }
         v
     }
     pub(super) fn stack_value(&self, s: &ItemStack) -> Value {

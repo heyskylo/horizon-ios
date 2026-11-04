@@ -19,6 +19,12 @@ pub(super) fn cardinal(nether: bool, face: D) -> f32 {
         D::West | D::East => 0.6,
     }
 }
+/// A face's brightness when a shader pack lights the faces (`Mesher::shader_pack_lighting`): no
+/// directional shading, every face at the dimension's up-face value (1.0, the Nether's 0.9).
+/// Our probe pack's Iris 1.11.7 values fit this: 0.9 on every Nether face, 1.0 in the overworld.
+pub(super) fn pack_flat(nether: bool) -> f32 {
+    cardinal(nether, D::Up)
+}
 fn normal(face: D) -> [i32; 3] {
     match face {
         D::Down => [0, -1, 0],

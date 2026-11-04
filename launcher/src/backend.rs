@@ -1637,21 +1637,15 @@ pub fn java_game(
         download_version_for_owner(&version.id, &version.sha1, log)?;
         fs::write(&marker, "").map_err(|e| format!("{}: {e}", marker.display()))?;
     }
-    let mut start = game.minecraft.clone();
-    if let Some(loader) = &game.loader {
-        start = loader.kind.profile_id(&loader.version, &game.minecraft);
-        let marker = downloaded(&start)?;
-        if !marker.is_file() {
-            start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
-            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
-        }
-    }
-    let file = minecraft
-        .join("versions")
-        .join(mojang::relative(&start)?)
-        .join(format!("{start}.json"));
-    let version = crate::java_launch::resolve(crate::java_launch::read(&file)?, &minecraft)?;
-    let need = crate::java::Need::of(&version);
+    // The Java the game needs, which also runs a loader's installer.
+    let file = |id: &str| -> Result<PathBuf, String> {
+        Ok(minecraft
+            .join("versions")
+            .join(mojang::relative(id)?)
+            .join(format!("{id}.json")))
+    };
+    let vanilla = crate::java_launch::read(&file(&game.minecraft)?)?;
+    let need = crate::java::Need::of(&crate::java_launch::resolve(vanilla, &minecraft)?);
     let found = crate::java::pick(
         &need,
         game.home.as_deref(),
@@ -1665,6 +1659,24 @@ pub fn java_game(
             crate::java::install(&need, log)?
         }
     };
+    let mut start = game.minecraft.clone();
+    if let Some(loader) = &game.loader {
+        start = loader.kind.profile_id(&loader.version, &game.minecraft);
+        let marker = downloaded(&start)?;
+        if !marker.is_file() {
+            start = crate::loaders::install(
+                loader,
+                &game.minecraft,
+                &minecraft,
+                &runtime.java(),
+                &get_bytes,
+                log,
+            )?;
+            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
+        }
+    }
+    let version =
+        crate::java_launch::resolve(crate::java_launch::read(&file(&start)?)?, &minecraft)?;
     let jvm_args: Vec<String> = game.jvm_args.split_whitespace().map(String::from).collect();
     fs::create_dir_all(&instance.home).map_err(|e| format!("{}: {e}", instance.home.display()))?;
     crate::java_launch::command(
@@ -3440,6 +3452,10 @@ pub struct Settings {
     /// the mockup's 24.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur: Option<f32>,
+    /// The launcher theme (`themes::theme`): its sky behind the light appearance. Unset is
+    /// Horizon's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4222,7 +4238,7 @@ pub fn {f}("
         assert_eq!(Settings::parse("{}").language, None);
         let fr = Settings::parse(r#"{"language": "fr"}"#);
         assert_eq!(fr.language(), Language::French);
-        let future = Settings::parse(r#"{"language": "eo", "game_args": "--x"}"#);
+        let future = Settings::parse(r#"{"language": "tlh", "game_args": "--x"}"#);
         assert_eq!((future.language, future.game_args.as_str()), (None, "--x"));
         let saved = serde_json::to_value(Settings::default()).unwrap();
         assert!(saved.get("language").is_none(), "unset is left out");

@@ -61,6 +61,9 @@ pub struct Tree {
     /// those naming none in `recipes_any`.
     by_recipe: HashMap<String, Vec<(usize, usize)>>,
     recipes_any: Vec<(usize, usize)>,
+    /// The triggers with a criterion that may test what the player looks at
+    /// (`index_looking_at`).
+    looking_at_triggers: BTreeSet<String>,
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -141,6 +144,7 @@ impl Tree {
             }
         }
         tree.index_recipes();
+        tree.index_looking_at();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -159,12 +163,29 @@ impl Tree {
             match self.list[ai].criteria[ci].conditions.read()["recipes"].as_str() {
                 Some(r) => self
                     .by_recipe
-                    .entry(r.to_owned())
+                    .entry(full(r).into_owned())
                     .or_default()
                     .push((ai, ci)),
                 None => self.recipes_any.push((ai, ci)),
             }
         }
+    }
+    /// Index the triggers whose criteria name `looking_at`, or a
+    /// `minecraft:reference` to a predicate file that might: the text is
+    /// searched, nothing is read.
+    pub fn index_looking_at(&mut self) {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        self.looking_at_triggers = (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                json.contains("\"looking_at\"") || reference.iter().any(|r| json.contains(r))
+            })
+            .map(|c| c.trigger.clone())
+            .collect();
+    }
+    /// Whether a criterion of `trigger` may test what the player looks at.
+    pub fn may_look(&self, trigger: &str) -> bool {
+        self.looking_at_triggers.contains(trigger)
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
@@ -198,8 +219,8 @@ impl InventoryIndex {
         fn ids<'t>(v: &Value, tag: &impl Fn(&str) -> Vec<&'t str>, out: &mut Vec<String>) {
             match v {
                 Value::String(s) => match s.strip_prefix('#') {
-                    Some(t) => out.extend(tag(t).into_iter().map(str::to_owned)),
-                    None => out.push(s.clone()),
+                    Some(t) => out.extend(tag(&full(t)).into_iter().map(str::to_owned)),
+                    None => out.push(full(s).into_owned()),
                 },
                 Value::Array(a) => a.iter().for_each(|x| ids(x, tag, out)),
                 _ => {}
@@ -253,7 +274,9 @@ fn parse(id: &str, v: &Value) -> Option<Advancement> {
         .iter()
         .map(|(name, c)| Criterion {
             name: name.clone(),
-            trigger: c["trigger"].as_str().unwrap_or("").to_owned(),
+            trigger: c["trigger"]
+                .as_str()
+                .map_or(String::new(), |t| full(t).into_owned()),
             conditions: LazyJson::new(&c["conditions"]),
         })
         .collect();
@@ -500,13 +523,21 @@ fn range_f(v: &Value, x: f64) -> bool {
 pub fn range_i(v: &Value, x: i64) -> bool {
     range_f(v, x as f64)
 }
+/// `Identifier.parse`: an id written without a namespace is a `minecraft:` one.
+pub fn full(id: &str) -> std::borrow::Cow<'_, str> {
+    if id.contains(':') {
+        id.into()
+    } else {
+        format!("minecraft:{id}").into()
+    }
+}
 /// A registry id, `#tag`, or list matched against one id.
 pub fn id_matches(v: &Value, registry: &str, id: &str, w: &dyn World) -> bool {
     match v {
         Value::Null => true,
         Value::String(s) => match s.strip_prefix('#') {
-            Some(tag) => w.in_tag(registry, tag, id),
-            None => s == id,
+            Some(tag) => w.in_tag(registry, &full(tag), id),
+            None => full(s) == id,
         },
         Value::Array(a) => a.iter().any(|x| id_matches(x, registry, id, w)),
         _ => false,
@@ -538,12 +569,14 @@ pub fn potions(v: &Value, potion: Option<&str>, w: &dyn World) -> bool {
     // `MobEffectsPredicate.test`: the one listed effect, amplifier and duration.
     let test = |pred: &Value, e: &(String, i32, i32)| {
         pred.as_object().is_some_and(|m| {
-            m.get(&e.0).is_some_and(|want| {
-                range_i(&want["amplifier"], i64::from(e.1))
-                    && range_i(&want["duration"], i64::from(e.2))
-                    && want["ambient"].as_bool().is_none_or(|b| !b)
-                    && want["visible"].as_bool().is_none_or(|b| b)
-            })
+            m.iter()
+                .find(|(k, _)| full(k) == e.0)
+                .is_some_and(|(_, want)| {
+                    range_i(&want["amplifier"], i64::from(e.1))
+                        && range_i(&want["duration"], i64::from(e.2))
+                        && want["ambient"].as_bool().is_none_or(|b| !b)
+                        && want["visible"].as_bool().is_none_or(|b| b)
+                })
         })
     };
     c["contains"]
@@ -654,7 +687,7 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
         return false;
     }
     if let Some(d) = v["dimension"].as_str()
-        && d != w.dimension()
+        && full(d) != w.dimension()
     {
         return false;
     }
@@ -699,13 +732,6 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
 /// `DataComponentExactPredicate.test` on an entity: every expected
 /// component equals what the entity reports (absent ones never match).
 fn components(expected: &Value, have: &[(String, String)]) -> bool {
-    let full = |id: &str| {
-        if id.contains(':') {
-            id.to_owned()
-        } else {
-            format!("minecraft:{id}")
-        }
-    };
     expected.as_object().is_some_and(|o| {
         o.iter().all(|(id, want)| {
             let id = full(id);
@@ -737,14 +763,15 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
         return false;
     };
     for (key, p) in o {
-        let ok = match key.as_str() {
-            "minecraft:entity_type" | "type" => id_matches(p, "entity_type", &e.kind, w),
-            "minecraft:location" | "location" => location(p, e.position, w),
+        // `EntityPredicate.CODEC`: the keys are sub-predicate type ids.
+        let ok = match &*full(key) {
+            "minecraft:entity_type" => id_matches(p, "entity_type", &e.kind, w),
+            "minecraft:location" => location(p, e.position, w),
             "minecraft:stepping_on" => {
                 location(p, [e.position[0], e.position[1] - 0.5, e.position[2]], w)
             }
-            "minecraft:distance" | "distance" => distance(p, e.position, origin),
-            "minecraft:flags" | "flags" => {
+            "minecraft:distance" => distance(p, e.position, origin),
+            "minecraft:flags" => {
                 let f = |k: &str, have: bool| p[k].as_bool().is_none_or(|want| want == have);
                 f("is_on_fire", e.on_fire)
                     && f("is_sneaking", e.sneaking)
@@ -754,7 +781,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                     && f("is_baby", e.baby)
                     && f("is_on_ground", e.on_ground)
             }
-            "minecraft:equipment" | "equipment" => {
+            "minecraft:equipment" => {
                 let slots = [
                     "mainhand", "offhand", "head", "chest", "legs", "feet", "body",
                 ];
@@ -765,19 +792,19 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                             .is_some_and(|it| item(&p[*s], it, w))
                 })
             }
-            "minecraft:vehicle" | "vehicle" => e
+            "minecraft:vehicle" => e
                 .vehicle
                 .as_ref()
                 .is_some_and(|veh| entity(p, veh, w, origin)),
             // PassengerPredicate.matches: any passenger matches the nested predicate.
-            "minecraft:passenger" | "passenger" => e
+            "minecraft:passenger" => e
                 .passengers
                 .iter()
                 .any(|passenger| entity(p, passenger, w, origin)),
-            "minecraft:effects" | "effects" => p.as_object().is_some_and(|m| {
+            "minecraft:effects" => p.as_object().is_some_and(|m| {
                 m.iter().all(|(id, want)| {
                     e.effects.iter().any(|(eid, amp, dur)| {
-                        eid == id
+                        *eid == full(id)
                             && range_i(&want["amplifier"], i64::from(*amp))
                             && range_i(&want["duration"], i64::from(*dur))
                     })
@@ -899,9 +926,8 @@ pub fn damage_source(ty: &Value, d: &DamageView, w: &dyn World, origin: [f64; 3]
         return true;
     }
     let tags_ok = ty["tags"].as_array().into_iter().flatten().all(|t| {
-        let tag = t["id"].as_str().unwrap_or("");
-        let tag = tag.strip_prefix('#').unwrap_or(tag);
-        w.in_tag("damage_type", tag, &d.kind) == t["expected"].as_bool().unwrap_or(true)
+        // `TagPredicate`: a `HolderSet`, like `id_matches`.
+        id_matches(&t["id"], "damage_type", &d.kind, w) == t["expected"].as_bool().unwrap_or(true)
     });
     let direct_ok = ty["direct_entity"].is_null()
         || d.direct
@@ -970,7 +996,7 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                 .or_else(|| o.get("type"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            match ty {
+            match &*full(ty) {
                 "minecraft:entity_properties" => ctx
                     .this
                     .is_some_and(|e| entity(&v["predicate"], e, w, ctx.origin)),
@@ -1701,6 +1727,170 @@ mod tests {
             ..ctx
         };
         assert!(!conditions(&stone, &absent, &Flat));
+    }
+    /// Data pack ids, tags and registry keys written without a namespace are
+    /// `minecraft:` ones (`Identifier.parse`), wherever a predicate reads one.
+    #[test]
+    fn bare_ids_and_tags_mean_minecraft() {
+        let w = Flat;
+        let player = EntityView {
+            kind: "minecraft:player".into(),
+            position: [0.5, 64.0, 0.5],
+            effects: vec![("minecraft:speed".into(), 0, 100)],
+            ..Default::default()
+        };
+        let stone = ItemView {
+            id: "minecraft:cobblestone".into(),
+            count: 1,
+            ..Default::default()
+        };
+        let ctx = Entities {
+            this: Some(&player),
+            origin: player.position,
+            tool: None,
+            block_pos: None,
+        };
+        let arrow = DamageView {
+            kind: "minecraft:arrow".into(),
+            ..Default::default()
+        };
+        let o = [0.0; 3];
+        let j = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let cases = [
+            (
+                "item id",
+                id_matches(&j(r#""cobblestone""#), "item", &stone.id, &w),
+            ),
+            (
+                "item tag",
+                id_matches(&j(r##""#stone_tool_materials""##), "item", &stone.id, &w),
+            ),
+            (
+                "item list",
+                id_matches(&j(r#"["dirt", "cobblestone"]"#), "item", &stone.id, &w),
+            ),
+            (
+                "item predicate",
+                item(&j(r#"{"items": "cobblestone"}"#), &stone, &w),
+            ),
+            (
+                "dimension",
+                location(&j(r#"{"dimension": "overworld"}"#), player.position, &w),
+            ),
+            (
+                "biome",
+                location(&j(r#"{"biomes": "plains"}"#), player.position, &w),
+            ),
+            (
+                "entity type",
+                entity(&j(r#"{"minecraft:entity_type": "player"}"#), &player, &w, o),
+            ),
+            (
+                "sub-predicate key",
+                entity(&j(r#"{"entity_type": "minecraft:player"}"#), &player, &w, o),
+            ),
+            (
+                "effect key",
+                entity(
+                    &j(r#"{"minecraft:effects": {"speed": {}}}"#),
+                    &player,
+                    &w,
+                    o,
+                ),
+            ),
+            (
+                "damage tag",
+                damage_source(
+                    &j(r##"{"tags": [{"id": "#is_projectile", "expected": true}]}"##),
+                    &arrow,
+                    &w,
+                    o,
+                ),
+            ),
+            (
+                "condition type",
+                conditions(
+                    &j(r#"{"type": "entity_properties", "entity": "this",
+                        "predicate": {"minecraft:entity_type": "minecraft:player"}}"#),
+                    &ctx,
+                    &w,
+                ),
+            ),
+            // `TagPredicate.id` is a holder set: one damage type is that type.
+            (
+                "damage type",
+                damage_source(&j(r#"{"tags": [{"id": "arrow"}]}"#), &arrow, &w, o),
+            ),
+            // Near misses stay misses.
+            (
+                "other item",
+                !id_matches(&j(r#"["dirt", "stone"]"#), "item", &stone.id, &w),
+            ),
+            (
+                "other dimension",
+                !location(&j(r#"{"dimension": "the_nether"}"#), player.position, &w),
+            ),
+            (
+                "other effect",
+                !entity(&j(r#"{"effects": {"slowness": {}}}"#), &player, &w, o),
+            ),
+            (
+                "other damage type",
+                !damage_source(&j(r#"{"tags": [{"id": "fireball"}]}"#), &arrow, &w, o),
+            ),
+            (
+                "the type key is no sub-predicate",
+                !entity(&j(r#"{"type": "player"}"#), &player, &w, o),
+            ),
+        ];
+        let failed: Vec<&str> = cases.iter().filter(|c| !c.1).map(|c| c.0).collect();
+        assert!(
+            failed.is_empty(),
+            "bare ids not read as minecraft: {failed:?}"
+        );
+    }
+    /// A bare trigger, item or recipe id reaches the indexes as `minecraft:`.
+    #[test]
+    fn bare_ids_reach_the_trigger_and_item_indexes() {
+        let a = parse(
+            "test:a",
+            &serde_json::json!({"criteria": {
+                "items": {"trigger": "inventory_changed",
+                    "conditions": {"items": [{"items": ["cobblestone", "#planks"]}]}},
+                "recipe": {"trigger": "recipe_unlocked", "conditions": {"recipes": "stick"}}
+            }}),
+        )
+        .unwrap();
+        let mut tree = Tree::default();
+        for (ci, c) in a.criteria.iter().enumerate() {
+            tree.by_trigger
+                .entry(c.trigger.clone())
+                .or_default()
+                .push((0, ci));
+        }
+        tree.list.push(a);
+        tree.index_recipes();
+        let index = InventoryIndex::build(&tree, |tag| match tag {
+            "minecraft:planks" => vec!["minecraft:oak_planks"],
+            _ => Vec::new(),
+        });
+        let mut failed = Vec::new();
+        if !tree.by_trigger.contains_key("minecraft:inventory_changed") {
+            failed.push("trigger");
+        }
+        if index.candidates(["minecraft:cobblestone"]).is_empty() {
+            failed.push("item index id");
+        }
+        if index.candidates(["minecraft:oak_planks"]).is_empty() {
+            failed.push("item index tag");
+        }
+        if tree.recipe_criteria("minecraft:stick").is_empty() {
+            failed.push("recipe index");
+        }
+        assert!(
+            failed.is_empty(),
+            "bare ids not read as minecraft: {failed:?}"
+        );
     }
     #[test]
     fn predicates_match_tags_ranges_and_locations() {

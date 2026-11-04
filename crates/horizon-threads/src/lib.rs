@@ -283,7 +283,11 @@ pub fn catch_stop_signals() {
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only touches an atomic and calls _exit, both async-signal-safe.
         unsafe {
-            libc::signal(signal, handler as libc::sighandler_t);
+            // A signal ignored from the start stays ignored, as the JVM leaves it (`nohup`'s SIGHUP:
+            // a server started that way outlives its terminal).
+            if libc::signal(signal, handler as libc::sighandler_t) == libc::SIG_IGN {
+                libc::signal(signal, libc::SIG_IGN);
+            }
         }
     }
 }
