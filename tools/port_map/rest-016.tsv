@@ -117,7 +117,7 @@ ItemCommands.wrapSetItems	port	crates/horizon-command/src/tree_misc.rs::item	/it
 ItemCommands.setItems	port	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item	item replace
 ItemCommands.modifyItems	port	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item_modify	item modify
 ItemCommands.getItems	inline	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item	from-source branch
-ItemCommands.getSlotsFromProvider	port	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	slot name matching
+ItemCommands.getSlotsFromProvider	port	crates/horizon-client/src/game/commands/items.rs::Game::command_slots	inline groups/ranges/filters/limits and named ranges; gap: minor: registered holder/tag sources and contents component adapters remain unsupported
 DedicatedPlayerList.saveIpBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::save	ban and list saves go through UserList::save
 DedicatedPlayerList.saveUserBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::save	
 DedicatedPlayerList.loadIpBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::load	

@@ -3974,6 +3974,58 @@ def zombie_nautilus_ignored_age():
 
 
 
+def structured_item_slots():
+    range3 = '{type:"minecraft:slot_range",slots:"container.3"}'
+    range5 = '{type:"minecraft:slot_range",slots:"container.5"}'
+    group = '[' + range3 + ',' + range5 + ']'
+    all_slots = '{type:"minecraft:slot_range",slots:"container.*"}'
+    limit = '{type:"minecraft:limit_slots",limit:2,slot_source:' + all_slots + '}'
+    filtered = '{type:"minecraft:filtered",item_filter:{items:"minecraft:apple"},slot_source:' + all_slots + '}'
+    ops = [*setup('/setblock 4 200 4 chest', '/setblock 6 200 4 chest'),
+           cmd('/execute if block 4 200 4 chest', expect_result=1)]
+    def state():
+        return [cmd('/data get block 4 200 4 Items'), cmd('/data get block 6 200 4 Items')]
+    def clear():
+        return setup('/item override block 4 200 4 container.* with air')
+    ops += clear() + [cmd('/item fill block 4 200 4 ' + group + ' with apple')] + state()
+    ops += [cmd('/item fill block 4 200 4 ' + limit + ' with gold_ingot')] + state()
+    ops += [cmd('/item fill block 4 200 4 ' + filtered + ' with diamond')] + state()
+    ops += [cmd('/item fill block 4 200 4 ' + filtered + ' with emerald')] + state()
+    ops += clear() + [cmd('/item replace block 4 200 4 ' + group + ' with apple')] + state()
+    ops += [cmd('/item override block 4 200 4 ' + group + ' with gold_ingot')] + state()
+    ops += [cmd('/item fill block 4 200 4 ' + group + ' with apple'),
+            cmd('/item modify block 4 200 4 ' + group + ' {type:"minecraft:set_count",count:3}')] + state()
+    ops += [cmd('/item replace block 6 200 4 container.0 from block 4 200 4 ' + group)] + state()
+    ops += [cmd('/execute if slots block 4 200 4 ' + group),
+            cmd('/execute if items block 4 200 4 ' + group + ' apple'),
+            cmd('/item fill block 4 200 4 {type:"minecraft:empty"} with diamond'),
+            cmd('/item fill block 4 200 4 [] with diamond'),
+            cmd('/item fill block 4 200 4 audit_missing:no_source with diamond')]
+    for i, x in enumerate((4.5, 8.5), 1):
+        ops += [cmd(f'/summon zombie {x} 200 8.5 {{UUID:[I;247,0,0,{i}],NoAI:1b,NoGravity:1b,Tags:["h247"]}}'),
+                cmd(f'/execute if entity 000000f7-0000-0000-0000-{i:012x}', expect_result=1)]
+    feet = '{type:"minecraft:limit_slots",limit:1,slot_source:{type:"minecraft:slot_range",slots:"armor.feet"}}'
+    ops += [cmd('/item fill entity @e[tag=h247,sort=nearest] ' + feet + ' with iron_boots')]
+    for i in (1, 2):
+        ops += [cmd(f'/execute if items entity 000000f7-0000-0000-0000-{i:012x} armor.feet iron_boots')]
+    # Named controls and composition boundaries; all expected replies come
+    # from the same fresh official server, including rejection callbacks.
+    ops += clear() + [cmd('/item fill block 4 200 4 container.3 with apple'),
+                      cmd('/item replace block 4 200 4 container.5 with apple')]
+    explicit_group = '{type:"minecraft:group",terms:' + group + '}'
+    ops += [cmd('/item fill block 4 200 4 ' + explicit_group + ' with emerald')] + state()
+    ops += clear() + setup('/item fill block 4 200 4 container.5 with apple')
+    limited_filter = '{type:"minecraft:limit_slots",limit:1,slot_source:' + filtered + '}'
+    ops += [cmd('/item modify block 4 200 4 ' + limited_filter + ' {type:"minecraft:set_count",count:7}')] + state()
+    # The repeated filtered slot stops matching after its first write.
+    repeated_filter = '{type:"minecraft:filtered",item_filter:{items:"minecraft:apple"},slot_source:[' + range5 + ',' + range5 + ']}'
+    ops += [cmd('/item fill block 4 200 4 ' + repeated_filter + ' with diamond')] + state()
+    ops += [cmd('/item fill block 4 200 4 container.99 with diamond'),
+            cmd('/item replace block 6 200 4 container.0 from block 4 200 4 {type:"minecraft:empty"}')]
+    return ops
+
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -3981,6 +4033,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('client commands', client_commands()),
