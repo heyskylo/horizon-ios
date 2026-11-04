@@ -256,7 +256,15 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     match ImageFormat::sniff(data) {
         Some(ImageFormat::WebP) => decode_webp(data),
         Some(ImageFormat::Jpeg) => decode_jpeg(data),
-        Some(ImageFormat::Png) | None => decode_bytes(data),
+        // A PNG's IHDR states the size before the decoder sizes its pixel
+        // buffer, so it is checked there like the WebP and JPEG headers: the
+        // PNG reader alone would trust the header and allocate it.
+        Some(ImageFormat::Png) | None => {
+            if let Some((width, height)) = png_bytes_size(data) {
+                check_fetched_size(u64::from(width), u64::from(height))?;
+            }
+            decode_bytes(data)
+        }
     }
 }
 
@@ -308,15 +316,19 @@ fn within_budget(files: &[&PathBuf], budget: u64) -> HashSet<PathBuf> {
         .map(|p| (*p).clone())
         .collect()
 }
+/// A PNG's width and height from its first 24 bytes (`IHDR`), before any
+/// pixel buffer is made.
+fn png_bytes_size(data: &[u8]) -> Option<(u32, u32)> {
+    let header = data.get(..24)?;
+    if header[..8] != *b"\x89PNG\r\n\x1a\n" || header[12..16] != *b"IHDR" {
+        return None;
+    }
+    let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
+    Some((field(16), field(20)))
+}
 /// A PNG's width and height, from its header alone.
 fn png_size(path: &Path) -> Option<(u32, u32)> {
-    let header: [u8; 24] = horizon_core::prepared_files::read_head(path, 24)
-        .ok()?
-        .try_into()
-        .ok()?;
-    let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
-    (header[..8] == *b"\x89PNG\r\n\x1a\n" && header[12..16] == *b"IHDR")
-        .then(|| (field(16), field(20)))
+    png_bytes_size(&horizon_core::prepared_files::read_head(path, 24).ok()?)
 }
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     // A prepared root's folder: from its data file, without listing the disk.
@@ -2903,6 +2915,41 @@ mod tests {
         assert!(check_fetched_size(4096, 4096).is_ok());
         assert!(check_fetched_size(4097, 4096).is_err());
         assert!(check_fetched_size(16_383, 16_383).is_err());
+    }
+
+    /// A fetched PNG is refused by the size its own header claims, before the
+    /// reader makes the pixel buffer: a few hundred bytes of payload would
+    /// otherwise ask for 64 MiB or much more.
+    #[test]
+    fn a_fetched_png_is_refused_by_the_size_its_header_claims() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[7; 16]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(matches!(
+            ImageFormat::sniff(&encoded),
+            Some(ImageFormat::Png)
+        ));
+        assert_eq!(
+            decode_image_bytes(&encoded).expect("a small PNG decodes").0,
+            2
+        );
+
+        // The same image, its IHDR claiming one pixel row past the limit: the
+        // CRC is ignored on purpose, so this stands in for a hostile header.
+        let ihdr = encoded.windows(4).position(|w| w == b"IHDR").expect("IHDR");
+        encoded[ihdr + 4..ihdr + 8].copy_from_slice(&4097u32.to_be_bytes());
+        encoded[ihdr + 8..ihdr + 12].copy_from_slice(&4096u32.to_be_bytes());
+        let refused = decode_image_bytes(&encoded).expect_err("the size is refused");
+        assert!(
+            refused.to_string().contains("too large to decode"),
+            "{refused}"
+        );
     }
 
     /// Only the network path reads WebP and JPEG: a resource pack's texture
