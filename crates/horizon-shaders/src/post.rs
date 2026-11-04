@@ -1424,12 +1424,15 @@ fn scale(properties: &Properties, program: &str, group: Group) -> [f32; 3] {
     }
 }
 
-/// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional.
+/// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional, in any case.
 fn higher_shadowcolor(properties: &Properties) -> bool {
     ["iris.features.required", "iris.features.optional"]
         .iter()
         .filter_map(|k| properties.get(k))
-        .any(|v| v.split_whitespace().any(|w| w == "HIGHER_SHADOWCOLOR"))
+        .any(|v| {
+            v.split_whitespace()
+                .any(|w| w.eq_ignore_ascii_case("HIGHER_SHADOWCOLOR"))
+        })
 }
 
 /// `flip.<program>.<buffer>=<bool>` keys of one program.
@@ -2258,6 +2261,12 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert_eq!(s.colors[7].clear_color, Some([1.0; 4]));
         let optional = "iris.features.optional = HIGHER_SHADOWCOLOR\n";
         let post = load(optional, Some("0,1,2,3,4"));
+        assert_eq!(buffers(&post).1, Some(vec![0, 1, 2, 3, 4]));
+        // Iris 1.11.7 takes the name in any case (#8996, a probe pack of our own).
+        let post = load(
+            "iris.features.optional = higher_shadowcolor\n",
+            Some("0,1,2,3,4"),
+        );
         assert_eq!(buffers(&post).1, Some(vec![0, 1, 2, 3, 4]));
         // No directive: shadowcolor0 and 1, as without the feature.
         let post = load(required, None);
