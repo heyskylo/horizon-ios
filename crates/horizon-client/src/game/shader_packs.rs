@@ -293,9 +293,15 @@ impl Game<'_> {
                             table.len() / 3,
                             started_ids.elapsed().as_millis()
                         );
-                        if let Some((programs, notes)) =
-                            renderer.set_shader_pack(dimension, Some(post), &table)
-                        {
+                        let report = renderer
+                            .set_shader_pack(dimension, Some(post), &table)
+                            .map_err(|refused| {
+                                for note in refused.notes {
+                                    log::warn!("shader pack {name}: {note}");
+                                }
+                                refused.reason
+                            })?;
+                        if let Some((programs, notes)) = report {
                             for note in notes {
                                 log::warn!("shader pack {name}: {note}");
                             }
@@ -310,12 +316,15 @@ impl Game<'_> {
                     Err(e) => {
                         self.pack_ids = None;
                         log::warn!("shader pack {name}: {e}");
-                        renderer.set_shader_pack(dimension, None, &[]);
+                        // Without a pack this can't fail.
+                        let _ = renderer.set_shader_pack(dimension, None, &[]);
                     }
                 }
+                Ok(())
             });
-            if let Err(panic) = loaded {
-                self.shader_pack_failed(name, dimension, &panic);
+            // A pack that can't run is turned off like one that panics.
+            if let Err(error) = loaded.flatten() {
+                self.shader_pack_failed(name, dimension, &error);
             }
         }
         let lerp = |(old, new): (f32, f32)| old + (new - old) * partial;
@@ -445,14 +454,16 @@ impl Game<'_> {
         }
     }
 
-    /// Turns off the pack `name` after loading it panicked: nothing runs in its place, it is no
-    /// longer the picked pack (so the next start does not load it again), and the chat says so.
+    /// Turns off the pack `name` after loading it panicked or failed: nothing runs in its place,
+    /// it is no longer the picked pack (so the next start does not load it again), and the chat
+    /// says so.
     fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
         log::error!("shader pack {name}: turned off: {error}");
         self.pack_ids = None;
         if let Some(renderer) = &mut self.renderer {
-            // Marks this dimension as loaded, without a pack, so it is not tried again.
-            renderer.set_shader_pack(dimension, None, &[]);
+            // Marks this dimension as loaded, without a pack, so it is not tried again (without
+            // a pack this can't fail).
+            let _ = renderer.set_shader_pack(dimension, None, &[]);
         }
         if self.settings.horizon.shader_pack == name {
             self.settings.horizon.shader_pack.clear();

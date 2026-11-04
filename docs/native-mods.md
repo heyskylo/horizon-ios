@@ -2,6 +2,8 @@
 
 API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client each tick for the local player's FOV scale, after vanilla effects and before zoom and camera easing. `player` contains the calculation inputs and `base` is the original scale. Non-finite modifiers or values outside 0.01..=10 fall back to `base`. It does not affect a spectator camera on a mob. Bundles need "hooks": 362.
 
+The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": @API:client_packet@.
+
 The client hook `native_render_name_tag(entity_id, kind, vanilla_visible, visible, text)` runs at player and mob, armor stand, and item frame name decisions before shared geometry. Set `visible` to override vanilla and `text` to `Some` literal replacement text (NeoForge `RenderNameTagEvent`). Distance and entity availability still apply; the local player's tag is considered only when its own camera and settings gates allow it. Bundles need "hooks": 372.
 
 Native mods are **mixin bundles** that change the game's own Rust source before it is compiled, with
@@ -2834,6 +2836,18 @@ is trimmed first, as the chat screen trims it. It isn't added to the chat histor
 state (not connected, not joined yet or being reconfigured), when the trimmed message is empty, and when the Chat option
 blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
 typed chat. Bundles need `"hooks": @API:send_chat@`.
+
+### Packets a client mod sends
+
+API @API:send_packet@, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
+serverbound play packet (`mod_api::ServerboundPlayPacket`, Horizon's `play::Serverbound`) to any server, a vanilla one
+included. The usual one is a plugin channel's `ServerboundPlayPacket::CustomPayload`, for a server plugin or a Java mod
+that listens on that channel; its data is at most 32767 bytes (`ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`), past
+which a server disconnects. The packet goes out as it is: nothing counts it, and the game doesn't apply it on its side,
+so a packet that needs a sequence number, a signature or the client's own state (a block placed, a slot clicked, signed
+chat) is the mod's to get right. It is an error when the player isn't in a server's play state (not connected, not
+joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
+Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": @API:send_packet@`.
 
 ### Server menus
 

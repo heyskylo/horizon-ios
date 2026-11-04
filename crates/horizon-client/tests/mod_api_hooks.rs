@@ -132,3 +132,46 @@ fn received_chat_is_replaced_in_order_and_cancel_stops_later_mods() {
     // A cancelled line keeps its text: the second mod never ran.
     assert_eq!(receive(false, "drop me"), ("drop me".to_owned(), true));
 }
+
+#[test]
+fn client_packet_hands_a_mod_the_decoded_packet() {
+    use horizon_client::mod_api::{
+        ClientPacketEvent, ClientboundPlayPacket, dispatch_client_packet,
+    };
+    use horizon_protocol::packets::configuration::{CustomPayload, Ping};
+    use std::sync::Mutex;
+    static HEARD: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+    struct TestHost;
+    impl Host for TestHost {}
+    // A plugin-channel listener, matching the packet by the name `mod_api` exports.
+    struct Channels;
+    impl Hooks for Channels {
+        fn client_packet(&self, _host: &mut dyn Host, event: &mut ClientPacketEvent<'_>) {
+            if let ClientboundPlayPacket::CustomPayload(p) = event.packet {
+                HEARD
+                    .lock()
+                    .unwrap()
+                    .push((p.channel.clone(), p.data.clone()));
+            }
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Channels)];
+    dispatch_client_packet(
+        &mut TestHost,
+        &mods,
+        &ClientboundPlayPacket::Ping(Ping { id: 7 }),
+    );
+    let payload = CustomPayload {
+        channel: "voicechat:secret".into(),
+        data: vec![1, 2, 3],
+    };
+    dispatch_client_packet(
+        &mut TestHost,
+        &mods,
+        &ClientboundPlayPacket::CustomPayload(payload),
+    );
+    assert_eq!(
+        *HEARD.lock().unwrap(),
+        [("voicechat:secret".to_string(), vec![1, 2, 3])]
+    );
+}

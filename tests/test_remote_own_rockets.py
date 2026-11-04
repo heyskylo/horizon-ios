@@ -44,6 +44,14 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (p, y) = (f64::from(pitch).to_radians(), f64::from(-yaw).to_radians());
     [y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
 }
+mod horizon_world {
+    pub mod view_direction {
+        pub fn view_vector(pitch: f32, yaw: f32) -> crate::Vec3 {
+            let [x, y, z] = crate::view_vector(yaw, pitch);
+            crate::Vec3::new(x, y, z)
+        }
+    }
+}
 struct ItemStack { item: String }
 struct Remote { entity_id: i32 }
 mod horizon_core {
