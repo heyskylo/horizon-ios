@@ -3104,42 +3104,17 @@ impl PackPost {
                 continue;
             }
             let group = self.bind(device, queue, encoder, pass, size);
-            // End portal faces bind `end_portal.png` as the atlas, a texture of its own, so packs
-            // that wrap it with their own coordinates sample the portal sprite only.
-            let portal_group = if geometry
-                .draws
-                .iter()
-                .any(|d| d.pack && d.program == program && d.portal)
-                && let Some(atlas) = pass.atlas.clone().or_else(|| self.atlas.clone())
-                && self.portal_rect[2] > 0.0
-            {
-                if self
-                    .portal_texture
-                    .as_ref()
-                    .is_none_or(|(rect, _)| *rect != self.portal_rect)
-                {
-                    pass.portal_groups.clear();
-                    let view = super::pack_weather::copy_sprite(
-                        device,
-                        encoder,
-                        atlas.texture(),
-                        self.portal_rect,
-                    );
-                    self.portal_texture = Some((self.portal_rect, view));
-                }
-                let view = self.portal_texture.as_ref().map(|p| p.1.clone());
-                // `bind` caches groups by a key without the atlas: the portal groups are kept
-                // in a cache of their own, swapped in with the texture.
-                let saved = std::mem::replace(&mut pass.atlas, view);
-                let groups =
-                    std::mem::replace(&mut pass.groups, std::mem::take(&mut pass.portal_groups));
-                let g = self.bind(device, queue, encoder, pass, size);
-                pass.portal_groups = std::mem::replace(&mut pass.groups, groups);
-                pass.atlas = saved;
-                Some(g)
-            } else {
-                None
-            };
+            let portal_group = self.portal_group(
+                device,
+                queue,
+                encoder,
+                pass,
+                size,
+                geometry
+                    .draws
+                    .iter()
+                    .any(|d| d.pack && d.program == program && d.portal),
+            );
             {
                 let mut rp = self.begin(encoder, pass);
                 rp.set_pipeline(pass.render());
@@ -3171,6 +3146,47 @@ impl PackPost {
         self.entities = Some(entities);
     }
 
+    /// End portal faces bind `end_portal.png` as the atlas, a texture of its own, so packs that
+    /// wrap it with their own coordinates sample the portal sprite only. `None` when no portal
+    /// face draws in this pass.
+    fn portal_group(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        pass: &mut Pass,
+        size: [u32; 2],
+        wanted: bool,
+    ) -> Option<wgpu::BindGroup> {
+        let atlas = pass.atlas.clone().or_else(|| self.atlas.clone())?;
+        if !wanted || self.portal_rect[2] <= 0.0 {
+            return None;
+        }
+        if self
+            .portal_texture
+            .as_ref()
+            .is_none_or(|(rect, _)| *rect != self.portal_rect)
+        {
+            let view = super::pack_weather::copy_sprite(
+                device,
+                encoder,
+                atlas.texture(),
+                self.portal_rect,
+            );
+            self.portal_texture = Some((self.portal_rect, view));
+            pass.portal_groups.clear();
+        }
+        // `bind` caches groups by a key without the atlas: the portal groups are kept in a cache
+        // of their own, swapped in with the texture.
+        let view = self.portal_texture.as_ref().map(|p| p.1.clone());
+        let saved = std::mem::replace(&mut pass.atlas, view);
+        let groups = std::mem::replace(&mut pass.groups, std::mem::take(&mut pass.portal_groups));
+        let group = self.bind(device, queue, encoder, pass, size);
+        pass.portal_groups = std::mem::replace(&mut pass.groups, groups);
+        pass.atlas = saved;
+        Some(group)
+    }
+
     /// Entities and block entities into the shadow map, each run with the per-draw uniforms
     /// of its gbuffers draw (2.4): opaque, so before the `shadowtex1` copy.
     fn draw_shadow_entities(
@@ -3195,6 +3211,15 @@ impl PackPost {
                 continue;
             }
             let group = self.bind(device, queue, encoder, pass, size);
+            let portal_group = self.portal_group(
+                device,
+                queue,
+                encoder,
+                pass,
+                size,
+                (geometry.draws.iter()).any(|d| d.shadow && d.program == program && d.portal),
+            );
+            let mut on_portal = false;
             let mut rp = self.begin(encoder, pass);
             rp.set_pipeline(pass.render());
             rp.set_bind_group(0, &group, &[]);
@@ -3207,6 +3232,12 @@ impl PackPost {
             rp.set_vertex_buffer(0, geometry.vertices());
             rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
             for d in draws {
+                if let Some(portal) = &portal_group
+                    && d.portal != on_portal
+                {
+                    rp.set_bind_group(0, if d.portal { portal } else { &group }, &[]);
+                    on_portal = d.portal;
+                }
                 if pass.draw {
                     rp.set_bind_group(2, &geometry.group, &[geometry.offset(d.slot)]);
                 }
