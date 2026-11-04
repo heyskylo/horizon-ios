@@ -8,12 +8,14 @@ use std::collections::BTreeMap;
 /// "Separate Hardware Shadow Samplers"): `shadowtex0`/`shadowtex1` stay plain depth samplers when
 /// hardware filtering is on, `shadowtex0HW`/`shadowtex1HW` compare; Horizon picks a comparison
 /// sampler by the declared type (`sampler2DShadow`), so they always are. `HIGHER_SHADOWCOLOR`:
-/// `shadowcolor2` to `shadowcolor7` beside the first two.
-const FEATURES: [&str; 8] = [
+/// `shadowcolor2` to `shadowcolor7` beside the first two. `FADE_VARIABLE`: terrain vertex
+/// programs can read the section's visibility transition as `mc_chunkFade`.
+const FEATURES: [&str; 9] = [
     "BLOCK_EMISSION_ATTRIBUTE",
     "COMPUTE_SHADERS",
     "CUSTOM_IMAGES",
     "ENTITY_TRANSLUCENT",
+    "FADE_VARIABLE",
     "HIGHER_SHADOWCOLOR",
     "REVERSED_CULLING",
     "SEPARATE_HARDWARE_SAMPLERS",
