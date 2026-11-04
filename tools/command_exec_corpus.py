@@ -1603,6 +1603,65 @@ def test_command():
     ]
 
 
+def hopper_empty_slot_limits():
+    """Real item/hopper ticks: setItem clamps an empty slot and consumes the input.
+
+    The harness holds time between operations; only the explicit ticks below run.
+    Keep the owner far away so these are hopper transfers, not player pickups.
+    """
+    apple = '00000110-0000-0000-0000-000000000001'
+    stick = '00000110-0000-0000-0000-000000000002'
+    pearl = '00000110-0000-0000-0000-000000000003'
+    ops = setup('/forceload add 0 0 15 15',
+                '/fill 0 99 0 3 99 3 stone', '/fill 0 100 0 3 104 3 air',
+                '/setblock 0 100 0 hopper',
+                '/scoreboard objectives add hopper_clock dummy',
+                '/execute store result score before hopper_clock run time query gametime')
+    ops += [cmd('/execute if loaded 0 100 0', expect_result=1),
+            cmd('/execute if block 0 100 0 minecraft:hopper', expect_result=1),
+            cmd('/data get block 0 100 0 id'),
+            cmd('/data get block 0 100 0 Items'),
+            cmd('/execute positioned 0.5 101 0.5 unless entity @a[distance=..8]', expect_result=1)]
+    for number, item, count in ((1, 'apple', 70), (2, 'stick', 3)):
+        target = (apple, stick)[number - 1]
+        ops += setup('/summon item 0.5 101 0.5 '
+                     f'{{UUID:[I;272,0,0,{number}],Item:{{id:"minecraft:{item}",count:{count}}},'
+                     'PickupDelay:0s,Motion:[0d,0d,0d]}')
+        ops += [cmd(f'/execute if entity @e[type=item,nbt={{UUID:[I;272,0,0,{number}]}}]', expect_result=1)]
+        for field in ('UUID', 'Item.id', 'Item.count', 'Pos', 'Motion', 'PickupDelay'):
+            ops.append(cmd(f'/data get entity {target} {field}',
+                           expect_result=count if field == 'Item.count' else None))
+    elapsed = 0
+    for tick in (1, 2, 10, 18, 48):
+        ops.append({'op': 'tick', 'n': tick - elapsed})
+        ops += setup('/execute store result score elapsed hopper_clock run time query gametime',
+                     '/scoreboard players operation elapsed hopper_clock -= before hopper_clock')
+        ops += [cmd('/scoreboard players get elapsed hopper_clock', expect_result=tick),
+                cmd('/data get block 0 100 0 Items'),
+                cmd('/data get block 0 100 0 Items[{Slot:0b}].count', expect_result=64),
+                cmd(f'/execute if entity {apple}'),
+                cmd(f'/execute if entity {stick}')]
+        if tick <= 2:
+            ops.append(cmd(f'/data get entity {stick} Item.count', expect_result=3))
+        else:
+            ops.append(cmd('/data get block 0 100 0 Items[{Slot:1b}].count', expect_result=3))
+        elapsed = tick
+    # An ordinary stack limit other than 64 guards against a constant clamp.
+    ops += setup('/setblock 2 100 0 hopper',
+                 '/summon item 2.5 101 0.5 '
+                 '{UUID:[I;272,0,0,3],Item:{id:"minecraft:ender_pearl",count:20},'
+                 'PickupDelay:0s,Motion:[0d,0d,0d]}')
+    ops += [cmd('/execute if entity @e[type=item,nbt={UUID:[I;272,0,0,3]}]', expect_result=1),
+            cmd('/data get block 2 100 0 Items'),
+            cmd(f'/data get entity {pearl} Item.id'),
+            cmd(f'/data get entity {pearl} Item.count', expect_result=20),
+            {'op': 'tick', 'n': 1},
+            cmd('/data get block 2 100 0 Items'),
+            cmd('/data get block 2 100 0 Items[{Slot:0b}].count', expect_result=16),
+            cmd(f'/execute if entity {pearl}')]
+    return ops + setup('/scoreboard objectives remove hopper_clock')
+
+
 def server_clock():
     """Only explicit tick operations advance the script's authoritative clock."""
     return [
@@ -2406,6 +2465,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('server clock', server_clock()),
+        ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),
