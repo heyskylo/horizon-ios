@@ -21,22 +21,22 @@ SimpleExplosionDamageCalculator.getBlockExplosionResistance	inline	crates/horizo
 SimpleExplosionDamageCalculator.getKnockbackMultiplier	inline	crates/horizon-client/src/game/wind.rs::Game::wind_push_player	creative-flying zero is here; the enchantment multiplier is in post_attack_bursts (enchant_effects.rs)
 TicketStorage.activateAllDeactivatedTickets	skip:other		no deactivated-ticket state; ticket_levels.rs recomputes from players and forced chunks
 TicketStorage.addTicket	port	crates/horizon-client/src/ticket_levels.rs::ChunkTickets::add_portal	the PORTAL ticket `Entity.placePortalTicket` adds: same type and level restarts the 300-tick timeout (`Ticket.resetTicksLeft`), else the ticket is added
-TicketStorage.addTicketWithRadius	inline	crates/horizon-client/src/ticket_levels.rs::ChunkTickets::add_portal	the one radius add is `addTicketWithRadius(PORTAL, pos, 3)`, so the radius is the fixed `PORTAL_RADIUS` and the level is `FULL - 3` in ticket_levels::compute
+TicketStorage.addTicketWithRadius	inline	crates/horizon-client/src/ticket_levels.rs::compute	the two radius adds: `addTicketWithRadius(PORTAL, pos, 3)` (level `FULL - 3`) and `addTicketWithRadius(DRAGON, new ChunkPos(0, 0), 9)` (level `FULL - 9`, while the fight's boss bar has a player; `Game::update_chunk_tickets` sets the source)
 TicketStorage.canTicketExpire	skip:other		ticket expiry is not modelled; no timed tickets in ticket_levels.rs
 TicketStorage.deactivateTicketsOnClosing	skip:other		chunk-unload bookkeeping; no per-ticket state
 TicketStorage.forEachTicket	skip:other		iteration over stored tickets; ticket_levels.rs walks its own sources
 TicketStorage.fromPacked	skip:other		saved tickets are not read; Horizon does not save chunk tickets
 TicketStorage.getAllChunksWithTicketThat	skip:other		query over stored tickets; ticket_levels.rs answers per chunk
-TicketStorage.getLowestTicket	port	crates/horizon-client/src/ticket_levels.rs::Map::get	gap: minor: lowest level from player and forced sources only
+TicketStorage.getLowestTicket	port	crates/horizon-client/src/ticket_levels.rs::Map::get	gap: minor: lowest level from the player, forced, PORTAL and dragon-fight arena sources; no saved tickets
 TicketStorage.getOrCreateTickets	skip:java		per-chunk cache of tickets
 TicketStorage.getTicketDebugString	skip:debug		debug text
-TicketStorage.getTicketLevelAt	port	crates/horizon-client/src/ticket_levels.rs::Map::get	gap: minor: levels from player and forced sources only
+TicketStorage.getTicketLevelAt	port	crates/horizon-client/src/ticket_levels.rs::Map::get	gap: minor: levels from the player, forced, PORTAL and dragon-fight arena sources; no saved tickets
 TicketStorage.isTicketSameTypeAndLevel	skip:other		compares stored tickets; Horizon stores none, levels come from ticket_levels.rs
 TicketStorage.packTickets	skip:other		saves stored tickets; Horizon saves forced chunks as their own file (save.rs save_forced_chunks)
-TicketStorage.purgeStaleTickets	skip:other		drops expired tickets; ticket_levels.rs has no timed tickets
+TicketStorage.purgeStaleTickets	port	crates/horizon-client/src/ticket_levels.rs::ChunkTickets::tick_portal	the timed tickets are the PORTAL ones (`PORTAL_TIMEOUT` 300 ticks, dropped a tick later as `TicketType.PORTAL` does)
 TicketStorage.removeTicket	inline	crates/horizon-client/src/game/commands/terrain_cmds.rs::Game::cmd_forceload	gap: minor: only the forced-chunk path; portal and teleport tickets are not modelled
 TicketStorage.removeTicketIf	skip:other		predicate removal over stored tickets; forced chunks are changed by cmd_forceload
-TicketStorage.removeTicketWithRadius	missing		unsure: radius tickets (portal, teleport) are not modelled
+TicketStorage.removeTicketWithRadius	port	crates/horizon-client/src/ticket_levels.rs::ChunkTickets::update	the levels are rebuilt from the sources each tick, so the fight's arena ticket is held only while `EnderDragonFight.tick` reports a watcher (`Game::update_chunk_tickets` clears the source, which is the removal of the radius-9 DRAGON ticket)
 TicketStorage.replaceTicketLevelOfType	skip:other		re-levels stored tickets; ticket_levels.rs computes levels from positions
 TicketStorage.shouldKeepDimensionActive	port	crates/horizon-client/src/game/levels.rs::Game::levels_to_tick	a dimension with a portal ticket keeps ticking with no player in it
 TicketStorage.updateChunkForced	inline	crates/horizon-client/src/game/commands/terrain_cmds.rs::Game::cmd_forceload	the per-chunk add or remove of a forced chunk
@@ -74,7 +74,7 @@ BambooSaplingBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::
 BambooSaplingBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
 BarrelBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 BarrelBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	
-BarrelBlock.tick	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::barrel_openers_changed	gap: minor: recheckOpen is the open-viewer count, checked where the lid state is set
+BarrelBlock.tick	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	the scheduled recheck; the open or close a menu sees is crates/horizon-client/src/game/block_entity_anims.rs::Game::barrel_openers_changed
 BarrelBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	
 BarrierBlock.canPlaceLiquid	port	crates/horizon-world/src/level/fluids.rs::Sim::can_place_liquid	
 BarrierBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::RegistryFluidWorld::fluid_state	

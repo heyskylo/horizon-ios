@@ -37,6 +37,9 @@ const SOURCES: [(SourceId, &str); 2] = [
 ];
 const PAGE: usize = 20;
 
+#[path = "glass_mods.rs"]
+mod glass_mods;
+
 pub(super) enum Event {
     /// A search's answer, for the search it was (stale answers are dropped) at that offset.
     Found(u64, usize, Result<Vec<Project>, String>),
@@ -51,6 +54,8 @@ pub(super) enum Event {
     TakenDown(Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
+    /// The palette's registry mods for its search of that number.
+    Palette(u64, Vec<Project>),
 }
 
 /// Where a Java mod's check is.
@@ -94,6 +99,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// The project the glass look's detail card shows; the first result when none is.
+    pub(super) picked: Option<String>,
+    /// The project the glass detail card showed last.
+    pub(super) shown: Option<Project>,
     /// A native mod's Install waiting for the one-time trust notice (`native_status::NOTICE`).
     native_notice: Option<(SourceId, String, Option<Project>)>,
     /// The selected instance's native build state, and the `native_status::fingerprint` it was
@@ -182,6 +191,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            picked: None,
+            shown: None,
             checks: HashMap::new(),
             about: HashMap::new(),
             browse: Default::default(),
@@ -313,6 +324,11 @@ impl Launcher {
             changed = true;
             let m = &mut self.mods;
             match event {
+                Event::Palette(search, found) => {
+                    if let Some(p) = self.palette.as_mut().filter(|p| p.search == search) {
+                        p.mods = found;
+                    }
+                }
                 Event::Found(search, offset, result) if search == m.search => {
                     m.searching = false;
                     m.searched = true;
@@ -347,6 +363,9 @@ impl Launcher {
                 Event::Done(result, modpack) => {
                     done = true;
                     m.busy = None;
+                    if let Ok(said) = &result {
+                        crate::glass_toast::say(said.clone());
+                    }
                     m.message = Some(result);
                     m.installed = installed::Installed::load(&m.home()).entries;
                     m.installed_list.reset();
@@ -820,10 +839,15 @@ impl Launcher {
         });
     }
 
-    fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let m = &self.mods;
         let focused = m.focused;
+        let placeholder = if t.glass {
+            self.mods_placeholder()
+        } else {
+            tr("Search, then Enter").into()
+        };
         let field = div()
             .id("mods-search")
             .track_focus(&m.focus)
@@ -839,14 +863,19 @@ impl Launcher {
             .bg(t.well)
             .text_size(px(theme::UI.px))
             .cursor_text()
-            .child(blocks::icon("search", 18., t.muted))
-            .child(line_edit::content(
+            .child(if t.glass {
+                crate::glass_ui::icon("search-01", 17., crate::glass_ui::white(0.55))
+                    .into_any_element()
+            } else {
+                blocks::icon("search", 18., t.muted).into_any_element()
+            })
+            .child(line_edit::content_with(
                 &m.text,
                 &t,
                 focused,
                 false,
                 false,
-                tr("Search, then Enter"),
+                placeholder,
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.mods.focus, cx);
@@ -862,6 +891,20 @@ impl Launcher {
                 cx.stop_propagation();
                 cx.notify();
             }));
+        // The glass look's: `rounded-[12px] h-11 bg-white/[0.07] px-3.5`, a 17 px search icon.
+        let field = if t.glass {
+            field
+                .w_full()
+                .h(px(44.))
+                .px(px(14.))
+                .border_0()
+                .rounded(px(12.))
+                .bg(crate::glass_ui::white(if focused { 0.11 } else { 0.07 }))
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+        } else {
+            field
+        };
         line_edit::mouse(field, cx, |this| &mut this.mods.text)
     }
 
@@ -892,12 +935,82 @@ impl Launcher {
         }
     }
 
+    /// Opens a kind's tab: its first source, its own filters, a new search.
+    pub(super) fn mods_set_kind(&mut self, kind: PackKind) {
+        if self.mods.kind != kind {
+            self.mods.kind = kind;
+            self.mods.source = source_for(kind);
+            // Categories and loaders differ by kind.
+            self.mods.browse.filters = Default::default();
+            self.mods.browse.open = None;
+            self.mods.picked = None;
+            self.mods_search(0);
+        }
+    }
+
+    /// Remove, then Remove for good: an installed project leaves the instance on the second
+    /// click.
+    pub(super) fn mods_remove_click(&mut self, id: String) {
+        if self.mods.confirm_remove.as_ref() == Some(&id) {
+            let _ = self.mods_remove(&id);
+        } else {
+            self.mods.confirm_remove = Some(id);
+        }
+    }
+
+    /// The project `id` leaves the selected instance now; what happened, for the page's notice.
+    pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
+        let home = self.mods.home();
+        let removed = match self.mods.java {
+            Some(_) => java_instance::remove(&home, id),
+            None => installed::remove(&home, id),
+        }
+        .map(|e| trf("Removed {name}.", &[("name", &e.title)]));
+        if let Ok(said) = &removed {
+            crate::glass_toast::say(said.clone());
+        }
+        self.mods.message = Some(removed.clone());
+        self.mods.installed = installed::Installed::load(&home).entries;
+        self.mods.installed_list.reset();
+        self.mods.confirm_remove = None;
+        removed
+    }
+
+    /// The palette's search (`glass_palette`): up to four of Horizon's registry mods for `text`,
+    /// answered as [`Event::Palette`]. None for a Java instance, which takes Modrinth's files.
+    pub(super) fn palette_mods(&mut self, text: &str, search: u64) {
+        self.mods_load();
+        if self.mods.java.is_some() {
+            return;
+        }
+        let tx = self.mods.tx.clone();
+        let query = Query {
+            limit: 4,
+            ..Query::new(text, PackKind::Mod)
+        };
+        std::thread::spawn(move || {
+            let found = browser::source(SourceId::Horizon)
+                .ok_or_else(|| "not set up".to_string())
+                .and_then(|s| s.search(&query))
+                .unwrap_or_default();
+            let _ = tx.send(Event::Palette(search, found));
+        });
+    }
+
+    /// Whether the selected instance has `p` (the palette's Install or Remove).
+    pub(super) fn mods_has(&self, p: &Project) -> bool {
+        self.mods.entry(p).is_some()
+    }
+
     pub(super) fn mods_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         self.mods_load();
         if !self.mods.asked {
             self.mods.asked = true;
             self.mods_search(0);
+        }
+        if t.glass {
+            return self.glass_mods_page(cx);
         }
         let header = page_header(
             "Mods",
@@ -916,14 +1029,7 @@ impl Launcher {
             let this = this.clone();
             move |kind, _, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    if this.mods.kind != kind {
-                        this.mods.kind = kind;
-                        this.mods.source = source_for(kind);
-                        // Categories and loaders differ by kind.
-                        this.mods.browse.filters = Default::default();
-                        this.mods.browse.open = None;
-                        this.mods_search(0);
-                    }
+                    this.mods_set_kind(kind);
                     cx.notify();
                 });
             }
@@ -1092,7 +1198,7 @@ impl Launcher {
                             button("native-notice-install", "Install", Kind::Primary, &t).on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.settings.native_mods_noticed = true;
-                                    this.settings.save();
+                                    this.save_settings();
                                     if let Some((source, id, known)) =
                                         this.mods.native_notice.take()
                                     {
@@ -1250,20 +1356,7 @@ impl Launcher {
             )
             .when(confirming, |b| b.text_color(t.danger))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if this.mods.confirm_remove.as_ref() == Some(&id) {
-                    let home = this.mods.home();
-                    let removed = match this.mods.java {
-                        Some(_) => java_instance::remove(&home, &id),
-                        None => installed::remove(&home, &id),
-                    };
-                    this.mods.message =
-                        Some(removed.map(|e| trf("Removed {name}.", &[("name", &e.title)])));
-                    this.mods.installed = installed::Installed::load(&home).entries;
-                    this.mods.installed_list.reset();
-                    this.mods.confirm_remove = None;
-                } else {
-                    this.mods.confirm_remove = Some(id.clone());
-                }
+                this.mods_remove_click(id.clone());
                 cx.notify();
             }));
             let on = match &self.mods.java {
@@ -1307,7 +1400,7 @@ impl Launcher {
                     )
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&folder);
-                        cx.open_with_system(&folder);
+                        crate::glass_toast::open(cx, &folder);
                     }),
                 );
             }
@@ -1548,7 +1641,7 @@ impl Launcher {
                         this.settings.native_profile = Some(choice);
                         this.settings.native_release = false;
                         this.native_done = None;
-                        this.settings.save();
+                        this.save_settings();
                         cx.notify();
                     });
                 }
