@@ -402,7 +402,7 @@ impl ItemEntity {
     }
     /// `Entity.updateFluidInteraction`: entering water after the first tick
     /// runs `doWaterSplashEffect`.
-    pub(crate) fn water_entry<F: FnMut(ItemSplash)>(
+    pub fn water_entry<F: FnMut(ItemSplash)>(
         &mut self,
         in_water: bool,
         first_tick: bool,
