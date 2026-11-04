@@ -396,7 +396,10 @@ impl Game<'_> {
             horizon_core::release::VERSION.into(),
         );
         match r.session.start_recording(&path, meta) {
-            Ok(()) => Ok(json!({ "ok": true, "path": path.display().to_string() })),
+            Ok(()) => {
+                self.dump_world_snapshot_to_recorder();
+                Ok(json!({ "ok": true, "path": path.display().to_string() }))
+            }
             Err(e) => Ok(json!({ "ok": false, "error": e.to_string() })),
         }
     }
@@ -467,5 +470,138 @@ impl Game<'_> {
                 Ok(json!({ "ok": false, "error": e.to_string() }))
             }
         }
+    }
+    pub(super) fn close_studio_replay(&mut self) -> Result<Value> {
+        self.studio_replay = None;
+        self.studio_replay_path = None;
+        self.capture(false);
+        if self.integrated.is_none() && self.lan.is_none() {
+            let _ = self.close_world();
+            if let Some(t) = self.title.as_mut() {
+                t.mode = horizon_client::title::Mode::Main;
+            }
+        }
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Dump current player pose, dimension login, center chunk, and resident loaded chunks
+    /// into the recording stream at timestamp 0ms so replays accurately reconstruct the world.
+    pub(super) fn dump_world_snapshot_to_recorder(&self) {
+        let Some(r) = self.remote.as_ref() else {
+            return;
+        };
+        if !r.session.is_recording() {
+            return;
+        }
+
+        let record_cb = |pkt: horizon_protocol::packets::play::Clientbound| {
+            let encoded = pkt.encode();
+            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+            if let Ok(id) = reader.varint() {
+                let payload = reader.rest();
+                r.session.record_packet_at(0, id, payload);
+            }
+        };
+
+        // 1. C::Login packet baseline
+        let login = horizon_protocol::packets::play::Clientbound::Login(
+            horizon_protocol::packets::play::Login {
+                player_id: 1,
+                hardcore: self.level.hardcore,
+                levels: vec!["minecraft:overworld".into()],
+                max_players: 20,
+                chunk_radius: self.settings.render_distance as i32,
+                simulation_distance: self.settings.simulation_distance as i32,
+                reduced_debug_info: false,
+                show_death_screen: true,
+                limited_crafting: false,
+                spawn: horizon_protocol::packets::play::SpawnInfo {
+                    dimension_type: 0,
+                    dimension: "minecraft:overworld".into(),
+                    seed: 0,
+                    game_type: 0,
+                    previous_game_type: None,
+                    debug: false,
+                    flat: false,
+                    last_death: None,
+                    portal_cooldown: 0,
+                    sea_level: 63,
+                },
+                online_mode: false,
+                enforces_secure_chat: false,
+            },
+        );
+        record_cb(login);
+
+        // 2. Center chunk and player position
+        let (pos, yaw, pitch) = if let Some(p) = &self.player {
+            (
+                glam::DVec3::new(p.position.x, p.position.y, p.position.z),
+                self.yaw,
+                self.pitch,
+            )
+        } else {
+            (glam::DVec3::ZERO, self.yaw, self.pitch)
+        };
+        let chunk_x = (pos.x.floor() as i32) >> 4;
+        let chunk_z = (pos.z.floor() as i32) >> 4;
+
+        let center_chunk = horizon_protocol::packets::play::Clientbound::SetChunkCacheCenter(
+            horizon_protocol::packets::play::SetChunkCacheCenter {
+                x: chunk_x,
+                z: chunk_z,
+            },
+        );
+        record_cb(center_chunk);
+
+        let player_pos = horizon_protocol::packets::play::Clientbound::PlayerPosition(
+            horizon_protocol::packets::play::PlayerPosition {
+                teleport: 0,
+                position: [pos.x, pos.y, pos.z],
+                delta: [0.0, 0.0, 0.0],
+                yaw,
+                pitch,
+                relatives: 0,
+            },
+        );
+        record_cb(player_pos);
+
+        // 3. Encode resident loaded chunks into LevelChunkWithLight packets
+        let biome_names: Vec<String> = world_biomes!(self)
+            .list
+            .iter()
+            .map(|b| b.name.clone())
+            .collect();
+        let registry: Vec<String> = r
+            .registries
+            .registries
+            .get("minecraft:worldgen/biome")
+            .map(|v| v.iter().map(|(n, _)| n.clone()).collect())
+            .unwrap_or_else(|| biome_names.clone());
+
+        let encoder = crate::lan::chunks::ChunkEncoder::with_signs(
+            self.res.facts().states.iter().map(|s| {
+                (
+                    s.name.clone(),
+                    s.fluid_level > 0 || s.waterlogged,
+                    s.sign_form(),
+                )
+            }),
+            &r.builtin,
+            &biome_names,
+            &registry,
+        );
+
+        let mut count = 0;
+        for chunk in self.world.chunks.values() {
+            let level_chunk = encoder.encode(chunk, &self.world.block_entities);
+            record_cb(
+                horizon_protocol::packets::play::Clientbound::LevelChunkWithLight(level_chunk),
+            );
+            count += 1;
+        }
+        log::info!(
+            "Studio Recorder: Dumped initial world snapshot ({count} chunks) at timestamp 0ms"
+        );
     }
 }

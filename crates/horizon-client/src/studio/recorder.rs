@@ -164,6 +164,15 @@ impl StudioRecorder {
         }
     }
 
+    /// Record a clientbound packet at an explicit timestamp (e.g. 0ms for initial world baseline).
+    pub fn record_packet_at(&self, timestamp_ms: u32, id: i32, payload: &[u8]) {
+        if !self.active.load(Ordering::Relaxed) {
+            return;
+        }
+        let pkt = TimestampedPacket::new(timestamp_ms, id, payload.to_vec());
+        let _ = self.sender.send(RecordCommand::Packet(pkt));
+    }
+
     /// Check if currently recording.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)

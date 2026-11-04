@@ -313,6 +313,12 @@ impl Session {
     pub fn recorder_status(&self) -> Option<RecorderStatus> {
         self.recorder.lock().unwrap().as_ref().map(|r| r.status())
     }
+    /// Record an explicit packet into the active recording session at `timestamp_ms`.
+    pub fn record_packet_at(&self, timestamp_ms: u32, id: i32, payload: &[u8]) {
+        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+            rec.record_packet_at(timestamp_ms, id, payload);
+        }
+    }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
     /// proxy switching servers). Vanilla's `handleConfigurationStart` clears
