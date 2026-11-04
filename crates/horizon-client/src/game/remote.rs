@@ -3100,13 +3100,9 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
-                let info = self
-                    .settings
-                    .client_information(client_view_distance(self.render_distance_in_use()));
-                if let Some(r) = self.remote.as_mut() {
-                    r.sent_info = info.clone();
-                }
-                self.send(S::ClientInformation(info));
+                // No ClientInformation here: the configuration phase sent it,
+                // and ClientPacketListener.broadcastClientInformation sends it
+                // again only when an option changes it.
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
