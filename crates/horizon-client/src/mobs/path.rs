@@ -1025,12 +1025,18 @@ impl<'a, 'w> Finder<'a, 'w> {
         let malus =
             |s: &Self, n: Option<u32>| n.is_some_and(|n| s.nodes[n as usize].cost_malus >= 0.0);
         // Direction.values(): down, up, north, south, west, east.
-        let dirs = [(0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1), (-1, 0, 0), (1, 0, 0)];
+        let dirs = [
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+            (-1, 0, 0),
+            (1, 0, 0),
+        ];
         let mut by_dir: [Option<u32>; 6] = [None; 6];
-        for i in 0..dirs.len() {
-            let (dx, dy, dz) = dirs[i];
+        for (slot, (dx, dy, dz)) in by_dir.iter_mut().zip(dirs) {
             let n = self.swim_accepted(px + dx, py + dy, pz + dz);
-            by_dir[i] = n;
+            *slot = n;
             if open(self, n) {
                 out.push(n.unwrap_or_default());
             }
