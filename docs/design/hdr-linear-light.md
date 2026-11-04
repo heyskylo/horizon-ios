@@ -144,9 +144,10 @@ Each shader that marks the frame today writes the light instead:
   keeps the world as drawn, light above white included, and clips the frame to white with its alpha at 0, so the
   HUD, the crosshair (which inverts what is under it, vanilla's `BlendFunction.INVERT`) and the menu blur work on the
   same clipped picture as today. The display pass takes covered pixels from the frame at UI Brightness, and uncovered
-  ones from the kept world, scaled by how much the frame darkened since: the vignette and other screen-wide tints draw
-  after `keep_world` and leave alpha at 0, so the frame over the clipped world (the factor `shows_world` measures
-  today) carries them onto the light above white. A HUD target of its own is later work, with answers for the
+  ones from the kept world, scaled channel by channel by how much the frame darkened since. The vignette and other
+  screen-wide tints draw after `keep_world`, multiply the frame and leave alpha at 0, and the world border's warning
+  tints the vignette red, so each channel's factor is the frame over the clipped world in that channel (1 where the
+  clipped world is 0, which leaves that channel at 0). A HUD target of its own is later work, with answers for the
   crosshair and the blur.
 
 The target look for HDR on without a pack is today's, within the offscreen checks' tolerance, at Auto (203 and 1000
@@ -193,8 +194,8 @@ may need a tone-weighted resolve so bright pixels don't sparkle. Frame generatio
 2. **Golden Hour (0.1) against main**: the same capture in SDR, and the offscreen HDR capture in HDR, identical.
 3. **HDR on, HDR Lighting off, against SDR**: the offscreen HDR capture ([#8947](https://github.com/horizon-rust/horizon/pull/8947)),
    within one 8-bit step outside the spots vanilla clips.
-4. **HDR look against today**: the same captures within a tolerance, including a scene under the vignette, with
-   screenshots in the pull request.
+4. **HDR look against today**: the same captures within a tolerance, including a scene under the vignette and one
+   under the world border's red warning over bright light, with screenshots in the pull request.
 5. **Cost**: GPU time and memory, HDR on, against today at 1080p and 1440p, on a desktop GPU and an integrated one.
 
 ## Steps
