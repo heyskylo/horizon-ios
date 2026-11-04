@@ -7,9 +7,18 @@ import UIKit
 final class SkinHead: ObservableObject {
     @Published private(set) var face: UIImage?
     private var faces: [String: UIImage] = [:]
+    private var revision = UUID()
+    typealias Fetch = @MainActor (String) async -> UIImage?
+    private let fetch: Fetch
+
+    init(fetch: @escaping Fetch = { await SkinHead.fetch($0) }) {
+        self.fetch = fetch
+    }
 
     @MainActor
     func load(_ name: String?) async {
+        revision = UUID()
+        let requested = revision
         guard let name, !name.isEmpty else {
             face = nil
             return
@@ -20,7 +29,7 @@ final class SkinHead: ObservableObject {
             return
         }
         face = nil
-        guard let found = await Self.fetch(name) else {
+        guard let found = await fetch(name), requested == revision, !Task.isCancelled else {
             return
         }
         faces[key] = found

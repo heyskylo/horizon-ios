@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import LauncherPreview
 
 final class FormattingTests: XCTestCase {
@@ -368,5 +369,70 @@ final class AutomaticGameFilesTests: XCTestCase {
         XCTAssertEqual(imports, 0)
         XCTAssertEqual(model.state, .done("Game files are already installed."))
         XCTAssertEqual(try Data(contentsOf: marker), Data("manual-transfer-fixture".utf8))
+    }
+}
+
+
+@MainActor
+final class SkinHeadTests: XCTestCase {
+    private func image(_ color: UIColor) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+    }
+
+    func testOldLookupCannotReplaceNewAccountFace() async {
+        let oldFace = image(.red), newFace = image(.blue)
+        var pending: [String: CheckedContinuation<UIImage?, Never>] = [:]
+        let head = SkinHead { name in
+            await withCheckedContinuation { pending[name] = $0 }
+        }
+        let old = Task { await head.load("Old") }
+        while pending["Old"] == nil { await Task.yield() }
+        let current = Task { await head.load("Current") }
+        while pending["Current"] == nil { await Task.yield() }
+        pending.removeValue(forKey: "Current")?.resume(returning: newFace)
+        await current.value
+        XCTAssertTrue(head.face === newFace)
+        pending.removeValue(forKey: "Old")?.resume(returning: oldFace)
+        await old.value
+        XCTAssertTrue(head.face === newFace, "A previous account lookup must not replace the selected account")
+    }
+
+    func testCachedAndClearedSelectionInvalidatePendingLookup() async {
+        let cached = image(.green), oldFace = image(.red)
+        var pending: CheckedContinuation<UIImage?, Never>?
+        let head = SkinHead { name in
+            if name == "Cached" { return cached }
+            return await withCheckedContinuation { pending = $0 }
+        }
+        await head.load("Cached")
+        let old = Task { await head.load("Old") }
+        while pending == nil { await Task.yield() }
+        await head.load("Cached")
+        pending?.resume(returning: oldFace); pending = nil
+        await old.value
+        XCTAssertTrue(head.face === cached)
+
+        let other = Task { await head.load("Other") }
+        while pending == nil { await Task.yield() }
+        await head.load(nil)
+        pending?.resume(returning: oldFace); pending = nil
+        await other.value
+        XCTAssertNil(head.face)
+    }
+
+    func testCancelledLookupDoesNotPublishFace() async {
+        let face = image(.red)
+        var pending: CheckedContinuation<UIImage?, Never>?
+        let head = SkinHead { _ in
+            await withCheckedContinuation { pending = $0 }
+        }
+        let load = Task { await head.load("Cancelled") }
+        while pending == nil { await Task.yield() }
+        load.cancel(); pending?.resume(returning: face)
+        await load.value
+        XCTAssertNil(head.face)
     }
 }
