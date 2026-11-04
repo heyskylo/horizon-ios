@@ -138,8 +138,11 @@ impl BlockEntityDraw {
             *pose *= m;
         }
     }
-    fn pose(&self) -> Mat4 {
+    pub(super) fn pose(&self) -> Mat4 {
         self.poses.last().copied().unwrap_or(Mat4::IDENTITY)
+    }
+    pub(super) fn vertices_mut(&mut self) -> &mut Vec<Vertex> {
+        &mut self.vertices
     }
     /// A quad of `corners` (blocks, under the pose) with unit UVs, shaded as
     /// vanilla's block entity models are (`Lighting`'s two lights).

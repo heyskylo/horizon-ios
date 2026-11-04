@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "world_submit",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_world_submit",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {"contract": "listen"}
+    }
+  ],
+  "helpers": [
+    {"name": "world_quad", "target": "horizon_client::game::native_world_draw::Game<'_>::native_world_quad", "mod_api": {}},
+    {"name": "world_text", "target": "horizon_client::game::native_world_draw::Game<'_>::native_world_text", "mod_api": {}}
+  ],
+  "rust_summary": "a world-space text/quad canvas (`native_world_submit`, `native_world_quad`, `native_world_text`).",
+  "doc_summary": "`native_world_submit(draw)` runs once per extracted client world frame. `NativeWorldDraw` supplies the camera, partial tick, game time, light and a pose stack starting camera-relative; `translate_world([x,y,z])` subtracts the f64 camera before converting to f32. `native_world_quad(draw,sprite,corners,uv,rgba)` draws an unshaded atlas quad (UVs in 16 texels per sprite side; RGBA is four bytes). `native_world_text(draw,text,color,outline)` draws the actual styled font at (0,0), with ARGB colors and an optional eight-offset outline, and returns its advance. Both use lightmap light, normal fog, back-face culling, alpha blending and ordinary depth testing/writes. The outlined text's front uses the existing polygon-offset text pipeline. Geometry draws after particles, independently of block entities or source blocks, before the hand/HUD. No GPU objects are exposed. Bundles need \"hooks\": @API:world_canvas@.",
+  "comments": ["crates/horizon-client/src/game/native_world_draw.rs"]
+}

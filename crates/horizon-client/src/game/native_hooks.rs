@@ -880,6 +880,7 @@ use super::{
     native_configs::{NativeConfig, NativeConfigFile},
     native_mob_draw::{NativeMobRender, NativePlayerRender},
     native_panel_recipes::RecipePage,
+    native_world_draw::NativeWorldDraw,
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
@@ -3017,6 +3018,14 @@ impl Game<'_> {
             entity,
             bounds,
         );
+    }
+    /// Submit depth-tested world text and textured quads, after particles and
+    /// before the hand/HUD. The pose starts camera-relative; use
+    /// `draw.translate_world` for a world position. Called independently of
+    /// block entities and chunks, so transient overlays may outlive their
+    /// source block. API @API:world_canvas@.
+    pub(super) fn native_world_submit(&self, draw: &mut NativeWorldDraw) {
+        mod_api::dispatch_world_submit(self, mod_api::mods(), draw);
     }
     /// Draw the mob `mob` (its id, kind, custom name and the frame's body
     /// and head turns and walk cycle, `LivingEntityRenderState`) on this

@@ -1892,7 +1892,7 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, false)
+        self.styled_text(atlas, text, x, y, color, shadow, false, None)
     }
     /// `text_styled` for text drawn in the world (`TextRenderable.render`
     /// with `flat` false): each quad's `depth` is its z in text units, the
@@ -1908,7 +1908,42 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, true)
+        self.styled_text(atlas, text, x, y, color, shadow, true, None)
+    }
+    /// `Font.drawInBatch8xOutline`: eight glyph offsets in the outline color,
+    /// then the original text. Returns (advance, first front-text vertex), so
+    /// world rendering can use POLYGON_OFFSET for the front and NORMAL for
+    /// its outline. Offsets use each glyph's own shadow offset (unihex: 0.5).
+    pub fn text_styled_outline_world(
+        &mut self,
+        atlas: &HudAtlas,
+        text: &crate::text::Text,
+        x: f32,
+        y: f32,
+        color: u32,
+        outline: u32,
+    ) -> (f32, usize) {
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if dx != 0 || dy != 0 {
+                    self.styled_text(
+                        atlas,
+                        text,
+                        x,
+                        y,
+                        color,
+                        false,
+                        true,
+                        Some((outline, [dx as f32, dy as f32])),
+                    );
+                }
+            }
+        }
+        let front = self.vertices.len();
+        (
+            self.styled_text(atlas, text, x, y, color, false, true, None),
+            front,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn styled_text(
@@ -1920,6 +1955,7 @@ impl HudBatch {
         color: u32,
         shadow: bool,
         world: bool,
+        outline: Option<(u32, [f32; 2])>,
     ) -> f32 {
         // StringDecomposer.iterateFormatted inside Font.drawInternal:
         // `§` codes inside a span restyle what follows and are not drawn.
@@ -1987,10 +2023,11 @@ impl HudBatch {
         }
         self.patches.extend(font.take_patches());
         let white = font.white();
-        let has_shadow = shadow
-            || glyphs
-                .iter()
-                .any(|glyph| glyph.3.is_some_and(|color| color != 0));
+        let has_shadow = outline.is_none()
+            && (shadow
+                || glyphs
+                    .iter()
+                    .any(|glyph| glyph.3.is_some_and(|color| color != 0)));
         let passes: &[bool] = if has_shadow { &[true, false] } else { &[false] };
         // ARGB.scaleRGB(color, 0.25): the default shadow colour.
         let shade = |c: u32| {
@@ -2025,8 +2062,9 @@ impl HudBatch {
                 } else {
                     shade(*c)
                 };
-                let has_shadow = (custom_shadow.is_some_and(|argb| argb != 0)
-                    || custom_shadow.is_none() && shadow)
+                let has_shadow = outline.is_none()
+                    && (custom_shadow.is_some_and(|argb| argb != 0)
+                        || custom_shadow.is_none() && shadow)
                     && !(world && shadow_color == 0);
                 if is_shadow && !has_shadow {
                     continue;
@@ -2036,7 +2074,11 @@ impl HudBatch {
                 } else {
                     (0.0, *c)
                 };
-                let (px, py) = (*gx + dx, y + dx);
+                let (px, py, col) = if let Some((color, [dx, dy])) = outline {
+                    (*gx + dx * g.offset, y + dy * g.offset, color)
+                } else {
+                    (*gx + dx, y + dx, col)
+                };
                 if let Some(object) = object {
                     // `PlainTextRenderable.render`: sprite glyphs use the same
                     // shadow colour and offset as text, with the front at SHADOW_DEPTH.
@@ -3735,6 +3777,44 @@ texture=wide",
         let width = full.font.width("abba");
         assert!(width > 0.0);
         assert_eq!(fonts.font.width("abba"), width);
+    }
+    #[test]
+    fn outlined_world_text_keeps_font_metrics_and_overrides_outline_color() {
+        let root = two_glyph_font("world-outline");
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let mut batch = HudBatch::new([1, 1]);
+        let text = crate::text::Text::colored("ab", 0xff0000);
+        let outline = rgba(1, 2, 3, 128);
+        let (advance, front) =
+            batch.text_styled_outline_world(&atlas, &text, 10.0, 20.0, u32::MAX, outline);
+        assert_eq!((advance, front, batch.vertices.len()), (10.0, 96, 108));
+        assert!(batch.vertices[..front].iter().all(|v| v.color == outline));
+        assert!(
+            batch.vertices[front..]
+                .iter()
+                .all(|v| v.color == rgba(255, 0, 0, 255))
+        );
+        // Eight independently offset silhouettes, retaining both glyphs and
+        // the bitmap font's advance (a=4, b=6); front text has no shadow.
+        for (i, [dx, dy]) in [
+            [-1.0, -1.0],
+            [-1.0, 0.0],
+            [-1.0, 1.0],
+            [0.0, -1.0],
+            [0.0, 1.0],
+            [1.0, -1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = batch.vertices[i * 12].pos;
+            let main = batch.vertices[front].pos;
+            assert_eq!(at, [main[0] + dx, main[1] + dy]);
+            assert_eq!(batch.vertices[i * 12 + 6].pos[0] - at[0], 4.0);
+        }
     }
     #[test]
     fn obfuscated_glyphs_keep_the_width() {
