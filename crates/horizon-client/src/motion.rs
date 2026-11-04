@@ -717,6 +717,23 @@ impl PlayerMotion {
         operation: &str,
         present: bool,
     ) -> Result<()> {
+        self.set_modifier_unclamped(attribute, id, amount, operation, present)?;
+        if attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
+        Ok(())
+    }
+    /// `set_modifier` without the max_health clamp, for a remove-all/re-add
+    /// batch that ends with one `clamp_health_to_max` (vanilla only removes
+    /// the modifiers that really went away, so the hearts must survive it).
+    pub fn set_modifier_unclamped(
+        &mut self,
+        attribute: &str,
+        id: &str,
+        amount: f64,
+        operation: &str,
+        present: bool,
+    ) -> Result<()> {
         let Some(key) = self.attributes.key(attribute) else {
             return Ok(());
         };
@@ -742,6 +759,16 @@ impl PlayerMotion {
                 Ok(())
             })
             .map_err(attribute_error)?;
+        Ok(())
+    }
+    /// `LivingEntity.onAttributeUpdated` for `max_health`: a health above the
+    /// new maximum drops to it (#8573: health_boost ending at 24/24 leaves 20).
+    pub fn clamp_health_to_max(&mut self) -> Result<()> {
+        let max = self.attribute("minecraft:max_health")? as f32;
+        let health = self.health.health();
+        if health > max {
+            self.set_health(max, false)?;
+        }
         Ok(())
     }
     /// `AttributeMap.pack` in `AttributeInstance.Packed.LIST_CODEC`'s form: the
@@ -3031,6 +3058,87 @@ mod tests {
         assert!(!p.is_sweep_attack(1.0, false, true));
         p.velocity = Vec3::new(f64::from(p.speed) * 2.5, 0.0, 0.0);
         assert!(!p.is_sweep_attack(1.0, false, true));
+    }
+
+    #[test]
+    fn max_health_modifier_changes_clamp_health() {
+        // #8573: LivingEntity.onAttributeUpdated clamps health to max_health
+        // for every modifier change, with no explicit clamp call.
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped health clamp: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        let boost = "minecraft:effect.health_boost";
+        // Health boost I: +4 max health, and the hearts are filled.
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        // An unrelated attribute change leaves the boosted hearts alone.
+        p.set_modifier("minecraft:armor", "minecraft:x", 2.0, "add_value", true)
+            .unwrap();
+        assert_eq!(p.health.health(), 24.0);
+        p.set_modifier("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        assert_eq!(p.attribute("minecraft:max_health").unwrap(), 20.0);
+        assert_eq!(p.health.health(), 20.0);
+        // Below the maximum a lost modifier never raises or lowers health.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            6.0,
+            "add_value",
+            true,
+        )
+        .unwrap();
+        p.set_health(7.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_value",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 7.0);
+        // An equipment-style multiplier is covered the same way.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.5,
+            "add_multiplied_base",
+            true,
+        )
+        .unwrap();
+        p.set_health(30.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_multiplied_base",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 20.0);
+        // A remove-all/re-add batch keeps boosted hearts (unrelated effect).
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.clamp_health_to_max().unwrap();
+        assert_eq!(p.health.health(), 24.0);
     }
 
     #[test]
