@@ -1091,5 +1091,19 @@
   "Its mods made for {loader} stay in its folder but won't load.": "I sò mod fà per {loader} resten in la soa cartella, ma se cargaran minga.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I sò mond hinn staa salvaa de Minecraft {from}: {to} i aggiorna per semper, e el po minga dervii se l'è pussee vegg.",
   "Save changes switches it. Nothing in its folder is deleted.": "«Salva i modifich» la cambia. Nagott in la soa cartella el ven eliminaa.",
-  "What this change can't keep": "Quell che quest cambiament el po minga tegnì"
+  "What this change can't keep": "Quell che quest cambiament el po minga tegnì",
+  "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
+  "Choose data folder": "Choose data folder",
+  "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",
+  "Could not choose data folder: {error}": "Could not choose data folder: {error}",
+  "Could not open the data folder: {error}": "Could not open the data folder: {error}",
+  "Could not start data move: {error}": "Could not start data move: {error}",
+  "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.": "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.",
+  "Data move failed: {error}": "Data move failed: {error}",
+  "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.": "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.",
+  "Move all data to {path}?": "Move all data to {path}?",
+  "Move and restart": "Move and restart",
+  "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
+  "Move…": "Move…",
+  "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself."
 }
