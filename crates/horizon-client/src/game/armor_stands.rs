@@ -1784,11 +1784,9 @@ mod push_tests {
 
     #[test]
     fn a_rideable_minecart_inside_the_0_2_gate_is_shoved() {
+        // 0.25² is inside the 0.2 gate; 0.5² is not. The function's Some/None is the check.
         let near = Vec3::new(0.25, 0.0, 0.0);
         let far = Vec3::new(0.5, 0.0, 0.0);
-        // Written here, not taken from the shove: 0.25² is inside 0.2, 0.5² is not.
-        assert!(0.25 * 0.25 <= 0.2);
-        assert!(0.5 * 0.5 > 0.2);
         let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
         let shove = armor_stand_cart_shove(
             Vec3::ZERO,
