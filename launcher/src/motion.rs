@@ -74,7 +74,7 @@ fn slide(id: &str, on: bool, now: Instant) -> Option<Instant> {
 /// A switch's knob at `left` px when off and `left + travel` when on, sliding there when the
 /// switch `id` changed in the last 200 ms.
 pub fn knob(id: &str, on: bool, knob: Div, left: f32, travel: f32) -> AnyElement {
-    let at = |p: f32| left + travel * if on { p } else { 1. - p };
+    let at = move |p: f32| left + travel * if on { p } else { 1. - p };
     match slide(id, on, Instant::now()) {
         Some(since) => {
             // Each slide gets its own animation id, from when it started, so it plays once.
@@ -109,6 +109,9 @@ mod tests {
             Some(flip),
             "the same slide while it runs"
         );
-        assert_eq!(slide("test-a", false, flip + Duration::from_millis(250)), None);
+        assert_eq!(
+            slide("test-a", false, flip + Duration::from_millis(250)),
+            None
+        );
     }
 }

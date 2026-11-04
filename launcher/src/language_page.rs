@@ -42,9 +42,9 @@ impl Launcher {
                     choice == self.settings.language,
                     &t,
                 )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.pick_language(choice, cx)
-                })),
+                .on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| this.pick_language(choice, cx)),
+                ),
             );
         }
         let menu = ui::popover(220.)

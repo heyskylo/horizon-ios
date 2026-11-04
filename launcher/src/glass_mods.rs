@@ -291,7 +291,7 @@ impl Launcher {
                         .right_0()
                         .child(crate::motion::pop("mods-sort-pop", menu)),
                 )
-                    .with_priority(1),
+                .with_priority(1),
             );
         }
         wrap

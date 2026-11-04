@@ -943,8 +943,8 @@ impl Launcher {
                     .position(point(px(x), px(y)))
                     .child(crate::motion::pop("row-menu-pop", menu)),
             )
-                .with_priority(1)
-                .into_any_element(),
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 }

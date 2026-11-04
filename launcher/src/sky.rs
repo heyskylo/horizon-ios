@@ -459,7 +459,11 @@ fn bands(n: &Night, h: f32) -> Vec<(f32, f32, u32)> {
     for (i, share) in SHARES.iter().enumerate() {
         let span = (share * rows).round().max(STEPS as f32);
         let Some(&next) = n.sky.get(i + 1) else {
-            out.push((at * TEXEL, (h / TEXEL - at).max(span) * TEXEL, wash(n.sky[i])));
+            out.push((
+                at * TEXEL,
+                (h / TEXEL - at).max(span) * TEXEL,
+                wash(n.sky[i]),
+            ));
             break;
         };
         let mut from = at;

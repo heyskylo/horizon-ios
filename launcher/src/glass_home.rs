@@ -484,7 +484,14 @@ impl Launcher {
                 });
             }
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("play-menu-pop", menu))).with_priority(1),
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(TALL + 8.))
+                        .left_0()
+                        .child(crate::motion::pop("play-menu-pop", menu)),
+                )
+                .with_priority(1),
             );
         }
         wrap
@@ -597,7 +604,14 @@ impl Launcher {
                 })),
             );
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("version-menu-pop", menu))).with_priority(1),
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(TALL + 8.))
+                        .left_0()
+                        .child(crate::motion::pop("version-menu-pop", menu)),
+                )
+                .with_priority(1),
             );
         }
         wrap
@@ -724,7 +738,14 @@ impl Launcher {
                 ));
             }
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("folder-menu-pop", menu))).with_priority(1),
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(TALL + 8.))
+                        .left_0()
+                        .child(crate::motion::pop("folder-menu-pop", menu)),
+                )
+                .with_priority(1),
             );
         }
         Some(wrap)
