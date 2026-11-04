@@ -199,18 +199,26 @@ const FACE: &str = "    uint hz_q = (uint(gl_VertexIndex) & ~3u) * 6u;\n    \
 /// `terrain` (`PackAtlas::terrain_inputs`) drawing only solid terrain, then only cutout terrain:
 /// each leaves the other part's quads outside the clip volume. Solid: the quads over opaque
 /// texels and opaque leaves (`mesher::OPAQUE_LAYER`), as vanilla picks `ChunkSectionLayer.SOLID`
-/// per quad (`FaceBakery.computeMaterialTransparency`, `SectionCompiler.compile`), and lava (a
-/// fluid face, `mesher::fluid_face`, among the solid draws), which Iris 1.11.7 drew with
-/// `gbuffers_terrain_solid` in our probe.
+/// per quad (`FaceBakery.computeMaterialTransparency`, `SectionCompiler.compile`), and lava's
+/// faces (sprite layers `lava`, its still and flowing sprites), which Iris 1.11.7 drew with
+/// `gbuffers_terrain_solid` in our probes, with and without `separateAo`.
+///
+/// The test reads only the vertex's sprite layer, which all four vertices of a quad share: a
+/// quad lands whole in one part. The colour's alpha can't decide it, as with `separateAo` it
+/// holds each vertex's own ambient occlusion.
 pub fn terrain_parts(
     terrain: &horizon_shaders::GbuffersInputs,
+    lava: &[u16],
 ) -> [horizon_shaders::GbuffersInputs; 2] {
     let opaque = crate::mesher::OPAQUE_LAYER;
+    let lava: String = lava
+        .iter()
+        .map(|l| format!(" || hz_v_layer == {l}u"))
+        .collect();
     let part = |solid: bool| {
         let mut inputs = terrain.clone();
         inputs.after.push_str(&format!(
-            "    uint hz_part = uint(round(hz_v_color.a * 255.0)) >> 4u;\n    \
-             bool hz_solid = (hz_v_layer & {opaque}u) != 0u || (hz_part >= 8u && (hz_part & 7u) < 6u);\n    \
+            "    bool hz_solid = (hz_v_layer & {opaque}u) != 0u{lava};\n    \
              if (hz_solid != {solid}) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n"
         ));
         inputs

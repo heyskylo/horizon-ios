@@ -225,6 +225,16 @@ impl Game<'_> {
                             .get("separateAo")
                             .is_some_and(|v| v.trim() == "true");
                         renderer.set_separate_ao(separate_ao);
+                        // Lava's faces draw with the solid terrain's program.
+                        renderer.set_pack_lava_layers(
+                            ["lava_still", "lava_flow"]
+                                .iter()
+                                .filter_map(|f| {
+                                    let name = format!("minecraft:block/{f}");
+                                    self.pack.render.sprite_layers.get(&name).map(|&l| l as u16)
+                                })
+                                .collect(),
+                        );
                         let folder = dimension_folder_named(&pack, self.dim.id(), dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);

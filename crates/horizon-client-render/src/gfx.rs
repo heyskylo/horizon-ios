@@ -1375,6 +1375,8 @@ pub struct Renderer {
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
+    /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
+    pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
     /// Vanilla's menu background blur, made on first use.
     menu_blur: Option<crate::menu_blur::MenuBlur>,
@@ -4640,6 +4642,7 @@ impl Renderer {
             pack_material_atlases: None,
             pack_terrain_flat: false,
             separate_ao: false,
+            pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
             post_effects: None,
@@ -6333,6 +6336,10 @@ impl Renderer {
             }
         }
     }
+    /// Lava's sprite layers (still and flowing), whose faces a pack's solid terrain draws.
+    pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
+        self.pack_lava_layers = layers;
+    }
     /// Runs the sky, material and post stages of one of Horizon's own shader packs from now
     /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
     /// stages' labels; on an error the pack that ran keeps running.
@@ -6396,7 +6403,9 @@ impl Renderer {
                 }
             });
         horizon_shaders::GameInputs {
-            terrain_parts: terrain.as_ref().map(pack_atlas::terrain_parts),
+            terrain_parts: terrain
+                .as_ref()
+                .map(|t| pack_atlas::terrain_parts(t, &self.pack_lava_layers)),
             terrain,
             terrain_geometry,
             entity_geometry: Some(pack_entities::geometry_inputs()),
