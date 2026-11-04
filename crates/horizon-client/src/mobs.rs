@@ -2831,6 +2831,7 @@ impl Mob {
             _ => self.extra.pick_up_loot,
         }
     }
+    #[inline]
     pub fn bounds(&self) -> Aabb {
         self.bounds_at(self.position)
     }
@@ -2860,12 +2861,14 @@ impl Mob {
         };
         self.combat.record(entry, self.age);
     }
+    #[inline]
     pub fn alive(&self) -> bool {
         self.health > 0.0
     }
     pub fn hostile(&self) -> bool {
         self.kind.category == "monster"
     }
+    #[inline]
     pub fn species(&self) -> Species {
         self.kind.species
     }
