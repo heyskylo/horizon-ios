@@ -2281,7 +2281,19 @@ impl Renderer {
                 view_formats: vec![format],
                 color_space: wgpu::SurfaceColorSpace::default(),
             };
-            (config, Vec::new(), None)
+            let hdr_output = hdr::offscreen_output();
+            // Only where one is named: splitscreen's views draw offscreen too, and their
+            // window's renderer offers what its display does.
+            if let Some(output) = hdr_output {
+                crate::graphics::offer_hdr(true);
+                if previous.is_none() {
+                    log::info!(
+                        "Horizon renderer: HDR output {} offscreen (HORIZON_HDR_OUTPUT)",
+                        output.name()
+                    );
+                }
+            }
+            (config, Vec::new(), hdr_output)
         };
         let offscreen = surface
             .is_none()
@@ -5817,6 +5829,8 @@ impl Renderer {
     }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
+    /// Offscreen (`hdr::offscreen_output`) the frame is drawn the same and its HDR screenshot
+    /// taken, but nothing is presented, and Auto takes its defaults: no display reports.
     pub fn set_hdr(
         &mut self,
         on: bool,
@@ -5826,21 +5840,28 @@ impl Renderer {
         ui: f32,
         marker: &std::path::Path,
     ) {
-        let output = self.hdr_output.filter(|_| on && self.surface.is_some());
+        let output = self
+            .hdr_output
+            .filter(|_| on && (self.surface.is_some() || self.offscreen.is_some()));
         if output.is_some() != self.hdr.is_some() {
             // If the game dies before HDR output shows a frame, the marker is still there at
             // the next start, which then comes up with HDR off.
             if output.is_some() {
-                let _ = std::fs::write(marker, "HDR output was being switched on\n");
-                self.hdr_marker = Some(marker.to_owned());
+                if self.surface.is_some() {
+                    let _ = std::fs::write(marker, "HDR output was being switched on\n");
+                    self.hdr_marker = Some(marker.to_owned());
+                }
             } else if let Some(marker) = self.hdr_marker.take() {
                 let _ = std::fs::remove_file(marker);
             }
             // Only HDR output asks the system about the display, so with HDR off the
             // game never waits on the compositor for it.
             self.display = if output.is_some() {
-                let (watch, now) =
-                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
+                let (watch, now) = if self.surface.is_some() {
+                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter)
+                } else {
+                    (DisplayWatch::default(), None)
+                };
                 crate::graphics::report(now);
                 self.display_fresh = true;
                 watch
@@ -6629,19 +6650,24 @@ impl Renderer {
         let size = [self.config.width, self.config.height];
         let target_texture = match (&surface_frame, &mut self.hdr) {
             _ if let Some((real, _)) = &fg_frames => real.clone(),
-            (Some(_), Some(hdr)) => hdr.frame(&self.device, size),
+            (_, Some(hdr)) => hdr.frame(&self.device, size),
             // A screenshot of a swapchain without COPY_SRC (OpenGL), and a 16-bit frame
-            // with HDR off, draw into a texture of their own, then onto the swapchain.
-            (Some(f), None) => self
-                .readback
-                .target(
-                    &self.device,
-                    &f.texture,
-                    self.frame_format,
-                    self.screenshot.is_some(),
-                )
-                .unwrap_or_else(|| f.texture.clone()),
-            (None, _) => self.offscreen.clone().ok_or("no offscreen target")?,
+            // with HDR off, draw into a texture of their own, then onto the swapchain or
+            // the offscreen target.
+            (f, None) => {
+                let image = match f {
+                    Some(f) => f.texture.clone(),
+                    None => self.offscreen.clone().ok_or("no offscreen target")?,
+                };
+                self.readback
+                    .target(
+                        &self.device,
+                        &image,
+                        self.frame_format,
+                        self.screenshot.is_some(),
+                    )
+                    .unwrap_or(image)
+            }
         };
         // One command buffer for the frame, after the section copies staged
         // since the last one: Metal commits every command buffer wgpu-core
@@ -9828,18 +9854,30 @@ impl Renderer {
             self.section_copy_bytes = 0;
             self.section_uploads.finish(&encoder);
         }
-        if let Some(f) = &surface_frame {
-            self.readback
-                .present(&self.device, &mut encoder, &f.texture);
+        if let Some(image) = surface_frame
+            .as_ref()
+            .map(|f| &f.texture)
+            .or(self.offscreen.as_ref())
+        {
+            self.readback.present(&self.device, &mut encoder, image);
         }
-        if let (Some(hdr), Some(f)) = (&self.hdr, &surface_frame) {
-            hdr.present(
+        match (&self.hdr, &surface_frame) {
+            (Some(hdr), Some(f)) => hdr.present(
                 &self.queue,
                 &mut encoder,
                 &f.texture,
                 !frame.title,
                 self.own_timing.as_mut(),
-            );
+            ),
+            // Offscreen nothing shows HDR: the target gets the frame as SDR shows it, for
+            // splitscreen's compositor.
+            (Some(_), None) => {
+                if let Some(image) = &self.offscreen {
+                    self.readback
+                        .draw_onto(&self.device, &mut encoder, &target_texture, image);
+                }
+            }
+            (None, _) => {}
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
