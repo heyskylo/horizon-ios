@@ -2237,7 +2237,9 @@ impl Game<'_> {
             c.hurt_dir = -c.hurt_dir;
             c.hurt_time = 10;
             c.damage += damage * 10.0;
-            creative || c.damage > 40.0
+            // MinecartTNT.shouldSourceDestroy: fire and explosions destroy
+            // (so ignite) a TNT cart whatever damage it has taken.
+            cart_is_destroyed(creative, c.damage, fire && c.kind == CartKind::Tnt)
         };
         if destroyed {
             let speed = self.carts[i].velocity.x * self.carts[i].velocity.x
@@ -2750,6 +2752,13 @@ impl Minecart {
     }
 }
 
+/// `VehicleEntity.hurtServer`'s destroy test: a creative player, damage past
+/// 40, or (`MinecartTNT.shouldSourceDestroy`) fire or an explosion hitting a
+/// TNT cart.
+fn cart_is_destroyed(creative: bool, damage: f32, ignites_tnt: bool) -> bool {
+    creative || damage > 40.0 || ignites_tnt
+}
+
 /// `MinecartTNT.tick`'s collision detonation: a cart still moving at a tenth
 /// of a block a tick or more when a block stops it blows up.
 fn tnt_ignites_by_collision(horizontal_collision: bool, speed_sqr: f64) -> bool {
@@ -2771,6 +2780,15 @@ mod tests {
             super::cart_push_from(Vec3::new(0.13, 0.0, 0.0), Vec3::new(0.5, 0.0, 0.0)).unwrap();
         assert!((xa + 0.05).abs() < 1e-6 && za == 0.0, "{xa} {za}");
         assert!(super::cart_push_from(Vec3::ZERO, Vec3::ZERO).is_none());
+    }
+    /// Issue #6431: a blast too weak to push a cart past 40 damage still
+    /// primes a TNT cart.
+    #[test]
+    fn a_blast_ignites_a_tnt_cart_however_little_damage_it_does() {
+        assert!(cart_is_destroyed(false, 10.0, true));
+        assert!(!cart_is_destroyed(false, 10.0, false));
+        assert!(cart_is_destroyed(false, 40.5, false));
+        assert!(!cart_is_destroyed(false, 40.0, false));
     }
     /// The collision detonation of a TNT minecart needs both the collision and
     /// a cart that was still moving: a nudge below a tenth of a block a tick
