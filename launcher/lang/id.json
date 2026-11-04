@@ -1075,5 +1075,21 @@
   "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
   "Opened {path}": "Dibuka: {path}",
   "Saved {name}": "{name} disimpan",
-  "My Horizon": "Horizon Saya"
+  "My Horizon": "Horizon Saya",
+  "Game log": "Log game",
+  "1 line": "1 baris",
+  "{count} lines": "{count} baris",
+  "{count} min": "{count} mnt",
+  "1 hour": "1 jam",
+  "{count} hours": "{count} jam",
+  "just now": "baru saja",
+  "{count} min ago": "{count} mnt lalu",
+  "1 hour ago": "1 jam lalu",
+  "{count} hours ago": "{count} jam lalu",
+  "{count} on the official SMP": "{count} di SMP resmi",
+  "What this change can't keep": "Yang tidak bisa dipertahankan perubahan ini",
+  "Save changes switches it. Nothing in its folder is deleted.": "Simpan perubahan akan menggantinya. Tidak ada yang dihapus dari foldernya.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Mod-nya untuk {loader} tetap ada di foldernya, tetapi tidak akan dimuat.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Mod-nya untuk Minecraft {from} tetap ada di foldernya; beberapa mungkin tidak dimuat di {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dunianya disimpan oleh Minecraft {from}: {to} meningkatkannya secara permanen, dan tidak bisa membukanya jika versinya lebih lama."
 }

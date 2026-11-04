@@ -340,6 +340,9 @@ pub struct Guest {
     pub post_effects_dirty: bool,
     /// `ServerPlayer.recipeBook`.
     pub recipe_book: crate::recipe_book::Settings,
+    /// `PlayerAdvancements.lastSelectedTab`: the advancement tab the player
+    /// last opened, as its id, when the server kept it (a root with a display).
+    pub selected_tab: Option<String>,
     /// `PlayerAdvancements`: the criteria obtained, whether they came from
     /// the player's file, the advancements the client was last told it may
     /// see (empty before the first packet), and those whose progress
@@ -496,6 +499,7 @@ impl Guest {
             post_effects: Vec::new(),
             post_effects_dirty: true,
             recipe_book: Default::default(),
+            selected_tab: None,
             advancements: Default::default(),
             advancements_loaded: false,
             advancements_visible: Vec::new(),

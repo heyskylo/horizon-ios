@@ -524,7 +524,14 @@ mod tests {
 
     #[test]
     fn the_shell_reads_the_target_of_the_shortcut_it_gets() {
-        let dir = std::env::temp_dir().join(format!("horizon-link-{}", std::process::id()));
+        // GitHub's Windows runners give TEMP as an 8.3 short path (C:\Users\RUNNER~1\...), which the
+        // shell hands back expanded: start from the long path, as an install folder is.
+        let temp = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let temp = temp
+            .to_str()
+            .and_then(|t| t.strip_prefix(r"\\?\"))
+            .map_or(temp.clone(), PathBuf::from);
+        let dir = temp.join(format!("horizon-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let exe = dir.join("Horizon Launcher").join("horizon-launcher.exe");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();

@@ -14,13 +14,15 @@ address), op and deop, the whitelist, and metrics as Prometheus text.
 | --- | --- |
 | Commands | 30 (`init`, `run`, `start`, `stop`, `restart`, `status`, `cmd`, `logs`, `console`, `backup`, `backups`, `restore`, `service`, `panel`, `update`, `rollback`, `config`, `config set`, `import`, `mcp`, `op`, `deop`, `whitelist`, `players`, `kick`, `ban`, `pardon`, `ban-ip`, `pardon-ip`, `version`) |
 | `server.toml` keys | 25 in 7 sections, plus `[properties]` for any other vanilla key |
-| Control API endpoints | 28 under `/api/v1` |
+| Control API endpoints | 30 under `/api/v1` |
 
 ## Guide
 
 1. `horizon-server init` in an empty folder, then `horizon-server start` ([hosting.md](../hosting.md)).
 2. From a script: `horizon-server status --json`, `horizon-server cmd say hi`, `horizon-server backup`. By hand:
    `horizon-server console` attaches to the running server (live log, status header, command line).
+   When the game is stopped, the supervisor and API remain available: `POST /api/v1/start` (or
+   `horizon-server start`) starts it again.
    From an AI agent: `horizon-server --dir /srv/minecraft mcp` is an MCP server on stdio with a tool per endpoint
    (`players`, `ban`, `events`, `set_config`...); add it to the agent's MCP servers, run as the server's user.
 3. From a program: read `.horizon/api.json` (address and token), then `GET /api/v1/status` with
@@ -73,8 +75,6 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 
 ## Not there yet
 
-- **Players**: editing the lists while the game is stopped through the API (the CLI's `op`, `deop` and
-  `whitelist` already do).
 - **Metrics**: entities and per-dimension counts in the Prometheus text.
 - **Mods on a dedicated server**: turn on and off, and their settings, once native mods can be built for the
   server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)). `GET /api/v1/mods` lists the native
@@ -87,10 +87,11 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 ## Changelog
 
 - `api::ROUTES` lists the endpoints; the reference is generated from it.
-- `/api/v1`: status, metrics, logs, command, stop, restart, backups, restore, update, panel login.
+- `/api/v1`: status, metrics, logs, command, start, stop, restart, backups, restore, update, panel login.
 - Commands: `players`, `kick`, `ban`, `pardon`, `ban-ip`, `pardon-ip`.
 - `/api/v1` additions: `players`, `players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `whitelist`,
-  `whitelist/{add,remove}`, `metrics/prometheus`, `GET`/`PATCH config`, `DELETE backups`, `GET backups/download`;
+  `whitelist/{add,remove}`, stopped-server list edits, `metrics/prometheus`, `GET`/`PATCH config`,
+  `DELETE backups`, `GET backups/download`; `POST start` resumes a stopped supervisor;
   `server.toml` gets `[api]` (`bind`, `token`, `allow_public`); `GET events` (server-sent events, or JSON).
 - RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.
 - GS4 query (`enable-query`, `query.port`): vanilla's UDP query (handshake, basic and full stat), served by the

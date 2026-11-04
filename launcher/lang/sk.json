@@ -1075,5 +1075,21 @@
   "Shader pack": "Balík shaderov",
   "soon": "čoskoro",
   "{support} in Horizon": "{support} v Horizone",
-  "My Horizon": "Môj Horizon"
+  "My Horizon": "Môj Horizon",
+  "Game log": "Denník hry",
+  "1 line": "1 riadok",
+  "{count} lines": "{count} riadkov",
+  "{count} min": "{count} min",
+  "1 hour": "1 hodina",
+  "{count} hours": "{count} hodín",
+  "just now": "práve teraz",
+  "{count} min ago": "pred {count} min",
+  "1 hour ago": "pred hodinou",
+  "{count} hours ago": "pred {count} hodinami",
+  "{count} on the official SMP": "{count} na oficiálnom SMP",
+  "What this change can't keep": "Čo táto zmena nedokáže zachovať",
+  "Save changes switches it. Nothing in its folder is deleted.": "Uložiť zmeny ju prepne. Z jej priečinka sa nič nezmaže.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Jej módy pre {loader} zostanú v jej priečinku, ale nenačítajú sa.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Jej módy pre Minecraft {from} zostanú v jej priečinku; niektoré sa v {to} možno nenačítajú.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Jej svety uložil Minecraft {from}: {to} ich natrvalo aktualizuje a ak je starší, nedokáže ich otvoriť."
 }

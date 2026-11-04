@@ -1075,5 +1075,21 @@
   "Launcher settings are back to their defaults": "Die Launcher-Einstellungen sind wieder auf Standard",
   "Opened {path}": "{path} geöffnet",
   "Saved {name}": "{name} gespeichert",
-  "My Horizon": "Mein Horizon"
+  "My Horizon": "Mein Horizon",
+  "Game log": "Spielprotokoll",
+  "1 line": "1 Zeile",
+  "{count} lines": "{count} Zeilen",
+  "{count} min": "{count} Min.",
+  "1 hour": "1 Stunde",
+  "{count} hours": "{count} Stunden",
+  "just now": "gerade eben",
+  "{count} min ago": "vor {count} Min.",
+  "1 hour ago": "vor 1 Stunde",
+  "{count} hours ago": "vor {count} Stunden",
+  "{count} on the official SMP": "{count} auf dem offiziellen SMP",
+  "What this change can't keep": "Was diese Änderung nicht behalten kann",
+  "Save changes switches it. Nothing in its folder is deleted.": "„Änderungen speichern“ stellt sie um. In ihrem Ordner wird nichts gelöscht.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Ihre Mods für {loader} bleiben in ihrem Ordner, laden aber nicht.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Ihre Mods für Minecraft {from} bleiben in ihrem Ordner; manche laden in {to} vielleicht nicht.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Ihre Welten wurden von Minecraft {from} gespeichert: {to} aktualisiert sie endgültig und kann sie nicht öffnen, wenn es älter ist."
 }

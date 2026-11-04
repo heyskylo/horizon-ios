@@ -1075,5 +1075,21 @@
   "Shader pack": "Shaderpakke",
   "soon": "snart",
   "{support} in Horizon": "{support} i Horizon",
-  "My Horizon": "Mit Horizon"
+  "My Horizon": "Mit Horizon",
+  "Game log": "Spillog",
+  "1 line": "1 linje",
+  "{count} lines": "{count} linjer",
+  "{count} min": "{count} min.",
+  "1 hour": "1 time",
+  "{count} hours": "{count} timer",
+  "just now": "lige nu",
+  "{count} min ago": "for {count} min. siden",
+  "1 hour ago": "for 1 time siden",
+  "{count} hours ago": "for {count} timer siden",
+  "{count} on the official SMP": "{count} på den officielle SMP",
+  "What this change can't keep": "Hvad denne ændring ikke kan beholde",
+  "Save changes switches it. Nothing in its folder is deleted.": "Gem ændringer skifter den. Intet i dens mappe slettes.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Dens mods lavet til {loader} bliver i dens mappe, men indlæses ikke.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dens mods lavet til Minecraft {from} bliver i dens mappe; nogle indlæses måske ikke i {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dens verdener blev gemt af Minecraft {from}: {to} opgraderer dem for altid og kan ikke åbne dem, hvis den er ældre."
 }
