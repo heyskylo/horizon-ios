@@ -2661,6 +2661,7 @@ impl Game<'_> {
                     // passes null): the composter fill (1500), the egg's
                     // teleport, bone meal's growth, anvil result sounds, a
                     // finished brushing or an eye inserted in a portal frame,
+                    // a zombie's infection and a finished cure (1026, 1027),
                     // and the digger's own crack and hit sound (2019, 2020).
                     let except = level_event_except(
                         *id,
@@ -2695,6 +2696,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 16: zombie villagers play their cure sound on each client.
+        if event == 16 && self.options.execution_role.is_client() {
+            self.zombie_villager_cure_sound(id as u32);
         }
         // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
         if event == 63 && self.options.execution_role.is_client() {
@@ -3104,7 +3109,20 @@ fn event_kind(event: &HostEvent) -> EventKind {
 fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
     if matches!(
         id,
-        2015 | 1500 | 1501 | 1503 | 1505 | 1029 | 1030 | 1045 | 1052 | 2019 | 2020 | 3000 | 3008
+        2015 | 1500
+            | 1501
+            | 1503
+            | 1505
+            | 1026
+            | 1027
+            | 1029
+            | 1030
+            | 1045
+            | 1052
+            | 2019
+            | 2020
+            | 3000
+            | 3008
     ) || collateral_break
     {
         None
