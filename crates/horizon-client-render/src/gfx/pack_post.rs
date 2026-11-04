@@ -2156,7 +2156,9 @@ impl PackPost {
             ids: None,
             cull: false,
         });
-        let hand_geometry = world.hand.then(|| super::pack_hand::PackHand::new(device));
+        let hand_geometry = world
+            .hand
+            .then(|| super::pack_hand::PackHand::new(device, &draws.layout));
         let hand = post.hand.zip(hand_geometry).and_then(|(p, geometry)| {
             let g = Geometry {
                 buffers: &entity_buffers,
@@ -3359,7 +3361,7 @@ impl PackPost {
             size[0] as f32 / size[1].max(1) as f32,
             frame.depth_far,
         ) * unspin;
-        geometry.prepare(device, queue, frame.hand, projection);
+        geometry.prepare(device, queue, frame.hand, frame.hand_items, projection);
         if geometry.quads > 0 {
             let group = self.bind(device, queue, encoder, &mut pass, size);
             {
@@ -3372,12 +3374,15 @@ impl PackPost {
                     rp.set_bind_group(4, g, &[]);
                 }
                 rp.set_bind_group(1, &geometry.group, &[]);
-                if pass.draw {
-                    self.draws.bind(&mut rp, "HAND_SOLID");
-                }
                 rp.set_vertex_buffer(0, geometry.vertices());
                 rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
-                rp.draw_indexed(0..geometry.quads * 6, 0, 0..1);
+                // The arm and each held item: their own `currentRenderedItemId`.
+                for &(first, quads, offset) in &geometry.runs {
+                    if pass.draw {
+                        rp.set_bind_group(2, &geometry.slot_group, &[offset]);
+                    }
+                    rp.draw_indexed(first * 6..(first + quads) * 6, 0, 0..1);
+                }
             }
             self.mips_valid &= !pass.written;
         }

@@ -1388,6 +1388,7 @@ mod initial_history_tests {
             celestial: &[],
             stars: None,
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: 70.0,
             screen: &[],
             pack: Default::default(),

@@ -90,11 +90,12 @@ pub struct ComputeProgram {
 }
 
 /// The uniforms a gbuffers program reads per draw (5.3's "D"), in a block of their own
-/// (`HzDraw`, std140: three ints, a pad, a vec4; 32 bytes) the game sets for each draw.
-pub const DRAW_UNIFORMS: [(&str, &str); 4] = [
+/// (`HzDraw`, std140: four ints, a vec4; 32 bytes) the game sets for each draw.
+pub const DRAW_UNIFORMS: [(&str, &str); 5] = [
     ("renderStage", "int"),
     ("entityId", "int"),
     ("blockEntityId", "int"),
+    ("currentRenderedItemId", "int"),
     ("entityColor", "vec4"),
 ];
 
@@ -154,6 +155,9 @@ pub struct GbuffersInputs {
     /// The alpha test applied to output 0 (`gl_FragData[0]`, `gl_FragColor`), the loader's
     /// (3.2 `alphaTest.<program>`): `None` keeps every fragment.
     pub alpha_test: Option<AlphaTest>,
+    /// The program may read `currentRenderedItemId` without declaring it, as Iris 1.11.7
+    /// lets the hand's (observed with probe packs; terrain's may not).
+    pub item_id_declared: bool,
 }
 
 /// A fragment stays when its output 0's alpha compares to `reference` as `op` says (a GLSL
@@ -228,6 +232,13 @@ const GBUFFERS_MATRICES: &str = "    hz_ModelViewMatrix = gbufferModelView;\n   
      hz_NormalMatrix = mat3(gbufferModelView);\n    \
      mat4 hz_light = mat4(vec4(1.0 / 256.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0 / 256.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0 / 32.0, 1.0 / 32.0, 0.0, 1.0));\n    \
      hz_TextureMatrix = mat4[8](mat4(1.0), hz_light, hz_light, mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0));\n";
+
+/// Whether `code` names `name` (a whole identifier).
+fn uses_name(code: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(name)
+        .any(|(at, _)| !code[..at].ends_with(ident) && !code[at + name.len()..].starts_with(ident))
+}
 
 fn translate(
     vertex: &Preprocessed,
@@ -315,6 +326,14 @@ fn translate(
                 draw = true;
             }
         }
+        // Where Iris declares `currentRenderedItemId` itself, a program may read it undeclared;
+        // `HzDraw` declares it.
+        let item = "currentRenderedItemId";
+        draw |= gbuffers.is_some_and(|g| g.item_id_declared)
+            && !uniforms.contains_key(item)
+            && [vertex, fragment]
+                .iter()
+                .any(|pp| uses_name(&pp.code, item));
     }
     let samplers: Vec<Sampler> = samplers
         .into_iter()
@@ -385,7 +404,7 @@ fn translate(
         if draw {
             h.push_str(
                 "layout(set = 2, binding = 0) uniform HzDraw { int renderStage; int entityId; \
-                 int blockEntityId; int hz_draw_pad; vec4 entityColor; };\n",
+                 int blockEntityId; int currentRenderedItemId; vec4 entityColor; };\n",
             );
         }
         let direction = if stage.kind == ShaderStage::Vertex {
@@ -1406,6 +1425,89 @@ fn block_layout(module: &naga::Module) -> (u32, Vec<(String, u32)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gbuffers program whose fragment stage writes `float(<name>)` after `decl`.
+    fn item_program(
+        program: &str,
+        decl: &str,
+        name: &str,
+        game: &GbuffersInputs,
+    ) -> Result<Program, Vec<Error>> {
+        let vsh = "#version 330 compatibility\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = format!(
+            "#version 330 compatibility\n{decl}\nlayout(location = 0) out vec4 c;\n\
+             void main() {{ c = vec4(float({name})); }}\n"
+        );
+        let (v, f) = (format!("{program}.vsh"), format!("{program}.fsh"));
+        let files = [
+            (format!("shaders/{v}"), vsh.to_owned()),
+            (format!("shaders/{f}"), fsh),
+        ];
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let m = Macros::standard();
+        translate_gbuffers(
+            &preprocess(&pack, &v, &m),
+            &preprocess(&pack, &f, &m),
+            Target::Buffers,
+            game,
+        )
+    }
+
+    fn item_game() -> GbuffersInputs {
+        GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 game_pos;".into(),
+            body: "    hz_Vertex = vec4(game_pos, 1.0);\n".into(),
+            ..Default::default()
+        }
+    }
+
+    /// `currentRenderedItemId` is set per draw, in `HzDraw`, as `entityId` is.
+    #[test]
+    fn the_rendered_item_id_is_a_per_draw_value() {
+        let decl = "uniform int currentRenderedItemId;";
+        let p = item_program("gbuffers_hand", decl, "currentRenderedItemId", &item_game())
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let names: Vec<&str> = p
+            .interface
+            .uniforms
+            .iter()
+            .map(|u| u.name.as_str())
+            .collect();
+        assert!(
+            p.interface.draw && !names.contains(&"currentRenderedItemId"),
+            "{names:?}"
+        );
+    }
+
+    /// The hand's programs may read `currentRenderedItemId` without declaring it, as Iris lets
+    /// them; terrain's may not, nor a longer name that begins with it.
+    #[test]
+    fn the_hand_may_read_the_rendered_item_id_undeclared() {
+        let hand = GbuffersInputs {
+            item_id_declared: true,
+            ..item_game()
+        };
+        let p = item_program("gbuffers_hand", "", "currentRenderedItemId", &hand)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(p.interface.draw);
+        assert!(
+            item_program(
+                "gbuffers_terrain",
+                "",
+                "currentRenderedItemId",
+                &item_game()
+            )
+            .is_err()
+        );
+        let longer = "uniform int currentRenderedItemId2;";
+        let p = item_program("gbuffers_hand", longer, "currentRenderedItemId2", &hand)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(!p.interface.draw);
+    }
 
     #[test]
     fn compute_dispatch_splats_absolute_vector_constants() {
