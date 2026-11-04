@@ -6726,19 +6726,18 @@ impl Game<'_> {
         if out.len() == entity_start {
             if let Some((lo, hi)) = corners
                 && self.cull_entity_camera_bounds(lo, hi)
+                && let Some((mark, _)) = skinned
             {
-                if let Some((mark, _)) = skinned {
-                    if self.pack_shadow_casters.0 {
-                        let mut frame = self.skin_frame.borrow_mut();
-                        let end = frame.vertices as usize;
-                        horizon_client::gfx::pack_draw::EntitySpan::hide(
-                            &mut frame.spans,
-                            mark.2 as usize,
-                            end,
-                        );
-                    } else {
-                        self.skin_frame.borrow_mut().truncate(mark);
-                    }
+                if self.pack_shadow_casters.0 {
+                    let mut frame = self.skin_frame.borrow_mut();
+                    let end = frame.vertices as usize;
+                    horizon_client::gfx::pack_draw::EntitySpan::hide(
+                        &mut frame.spans,
+                        mark.2 as usize,
+                        end,
+                    );
+                } else {
+                    self.skin_frame.borrow_mut().truncate(mark);
                 }
             }
             return;
