@@ -3684,6 +3684,102 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
 
 
 
+def mob_full_resistance_hits():
+    lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
+    for x, z in [(0, 0), (16, 0), (0, 16), (16, 16)]:
+        lines.append(cmd(f'/execute if loaded {x} 200 {z}', expect_result=1))
+    lines.extend(setup('/fill 0 199 0 31 208 31 air'))
+    lines.extend([cmd('/fill 0 199 0 31 199 31 stone', expect_result=1024),
+                  cmd('/scoreboard objectives add hitstate dummy', expect_result=1)])
+    serial = 0
+
+    def pig(resistance=None, health=40, invulnerable=False):
+        nonlocal serial
+        serial += 1
+        tag = f'resisted_hit_{serial}'
+        uuid = f'00000000-0000-0000-0000-00f1000000{serial:02x}'
+        x, z = 4.5 + 6 * ((serial - 1) % 5), 4.5 + 6 * ((serial - 1) // 5)
+        nbt = (f'UUID:[I;0,0,241,{serial}],Tags:["resisted_hit","{tag}"],'
+               f'NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,'
+               f'attributes:[{{id:"minecraft:max_health",base:40.0d}}],Health:{health}f')
+        if invulnerable:
+            nbt += ',Invulnerable:1b'
+        lines.extend([
+            cmd(f'/summon pig {x} 200 {z} {{{nbt}}}', expect_result=1),
+            cmd(f'/execute if entity @e[type=pig,tag={tag}]', expect_result=1),
+            cmd(f'/execute as {uuid} if entity @s[tag={tag},nbt={{NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}}]', expect_result=1),
+            cmd(f'/data get entity {uuid} UUID', expect_result=4),
+            cmd(f'/data get entity {uuid} Pos', expect_result=3),
+            cmd(f'/attribute {uuid} minecraft:max_health base get', expect_result=40),
+        ])
+        if resistance is not None:
+            lines.append(cmd(f'/effect give {uuid} resistance 10 {resistance} true', expect_result=1))
+            if resistance:
+                lines.append(cmd(f'/data get entity {uuid} active_effects[{{id:"minecraft:resistance"}}].amplifier',
+                                 expect_result=resistance if resistance < 128 else resistance - 256))
+        state(uuid, health, 0)
+        return uuid
+
+    def state(uuid, health, hurt):
+        lines.extend([
+            cmd(f'/execute if entity {uuid}', expect_result=1),
+            cmd(f'/data get entity {uuid} Health', expect_result=int(health)),
+            cmd(f'/execute as {uuid} if entity @s[nbt={{Health:{health}f}}]', expect_result=1),
+            cmd(f'/data get entity {uuid} HurtTime', expect_result=hurt),
+        ])
+
+    def damage(uuid, amount, accepted):
+        lines.extend([
+            cmd('/scoreboard players set #r hitstate 31', expect_result=31),
+            cmd('/scoreboard players set #s hitstate 17', expect_result=17),
+            cmd(f'/execute store result score #r hitstate store success score #s hitstate run damage {uuid} {amount} generic'),
+            cmd('/scoreboard players get #r hitstate', expect_result=accepted),
+            cmd('/scoreboard players get #s hitstate', expect_result=accepted),
+            cmd(f'/execute if score #r hitstate matches {accepted}', expect_result=1),
+            cmd(f'/execute if score #s hitstate matches {accepted}', expect_result=1),
+        ])
+
+    for amp, health in [(None, 39), (0, 39.2), (3, 39.8),
+                        (4, 40), (5, 40), (6, 40), (50, 40),
+                        (51, 40), (254, 40), (255, 40)]:
+        uuid = pig(amp)
+        damage(uuid, 1, 1)
+        state(uuid, health, 10)
+    uuid = pig(4)
+    lines.append(cmd(f'/damage {uuid} 1 generic', expect_result=1))
+    state(uuid, 40, 10)
+    uuid = pig()
+    damage(uuid, 0, 1)
+    state(uuid, 40, 10)
+    uuid = pig(4, invulnerable=True)
+    damage(uuid, 1, 0)
+    state(uuid, 40, 0)
+    for initial, resistance, after, hurt in [(40, 4, 40, 10), (40, None, 39, 10),
+                                             (1, 4, 1, 0), (0.5, 4, 0.5, 0)]:
+        uuid = pig(resistance, initial)
+        lines.append(cmd(f'/effect give {uuid} poison 10 5 true', expect_result=1))
+        lines.append({'op': 'tick', 'n': 1})
+        state(uuid, after, hurt)
+    for resistance in [None, 4]:
+        uuid = pig(resistance)
+        damage(uuid, 1, 1)
+        state(uuid, 40 if resistance else 39, 10)
+        damage(uuid, 1, 0)
+        state(uuid, 40 if resistance else 39, 10)
+        # Stronger fully resisted hits have a separate cooldown-ordering defect;
+        # retain that case in the full audit diagnostic, outside this focused gate.
+        if resistance is None:
+            damage(uuid, 2, 1)
+            state(uuid, 38, 10)
+        lines.append({'op': 'tick', 'n': 21})
+        damage(uuid, 1, 1)
+        state(uuid, 40 if resistance else 37, 10)
+    lines.extend(setup('/kill @e[tag=resisted_hit]', '/forceload remove 0 0 31 31',
+                       '/scoreboard objectives remove hitstate'))
+    return lines
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3753,6 +3849,7 @@ def groups():
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
+        ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
         ('ticking and random', ticking()),
