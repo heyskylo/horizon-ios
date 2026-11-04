@@ -1063,6 +1063,10 @@ pub struct Renderer {
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
     sprite_minimum_size: u32,
+    /// Each sprite layer's own side, before the arrays scaled it up (`mipmap::Settings::native_size`).
+    sprite_native: Vec<u32>,
+    /// The Mipmap Levels option (`set_mipmap_levels`), which sets a shader pack atlas's padding.
+    mipmap_option: u32,
     indices: wgpu::Buffer,
     index_quads: u32,
     instances: wgpu::Buffer,
@@ -4355,6 +4359,8 @@ impl Renderer {
             shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
             sprite_minimum_size,
+            sprite_native: sprite_mips.iter().map(|s| s.native_size).collect(),
+            mipmap_option: 4,
             indices,
             index_quads,
             instances,
@@ -6133,6 +6139,13 @@ impl Renderer {
     }
 
     fn pack_terrain_inputs(&mut self) -> Option<horizon_shaders::GbuffersInputs> {
+        // Flat draws whenever the device has them (`render` keeps them on with a pack).
+        let flat = self.flat.is_some() && self.flat_on;
+        // Flat draws read each sprite's place from a table: the atlas is stitched as the game's.
+        // Other draws need the grid.
+        if !flat && self.pack_atlas.as_ref().is_some_and(|a| a.is_stitched()) {
+            self.pack_atlas = None;
+        }
         if self.pack_atlas.is_none() {
             let mut encoder = self.device.create_command_encoder(&Default::default());
             let layers = self
@@ -6140,22 +6153,49 @@ impl Renderer {
                 .iter()
                 .map(|t| t.depth_or_array_layers())
                 .sum();
-            let mut atlas = pack_atlas::PackAtlas::new(
-                &self.device,
-                &mut encoder,
-                &self.sprite_textures,
-                self.sprite_split,
-                layers,
-                self.sprite_textures[0].width(),
-            );
+            let sprite = self.sprite_textures[0].width();
+            // Vanilla's padding counts the anisotropy bit only with anisotropic filtering.
+            let anisotropy_bit = if self.texture_filtering == 2 {
+                u32::from(self.max_anisotropy).trailing_zeros()
+            } else {
+                0
+            };
+            let stitched = flat
+                .then(|| {
+                    pack_atlas::PackAtlas::stitched(
+                        &self.device,
+                        &mut encoder,
+                        &self.sprite_textures,
+                        self.sprite_split,
+                        sprite,
+                        &self.sprite_native,
+                        self.mipmap_option,
+                        anisotropy_bit,
+                    )
+                })
+                .flatten();
+            if flat && stitched.is_none() {
+                log::warn!(
+                    "shader pack block atlas: the sprites don't stitch on this device, a grid instead"
+                );
+            }
+            let mut atlas = stitched.or_else(|| {
+                pack_atlas::PackAtlas::new(
+                    &self.device,
+                    &mut encoder,
+                    &self.sprite_textures,
+                    self.sprite_split,
+                    layers,
+                    sprite,
+                )
+            });
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
-        // Flat draws whenever the device has them (`render` keeps them on with a pack).
-        self.pack_terrain_flat = self.flat.is_some() && self.flat_on;
+        self.pack_terrain_flat = flat;
         Some(
             self.pack_atlas
                 .as_ref()?
@@ -6268,6 +6308,7 @@ impl Renderer {
     /// The Mipmap Levels option: block textures sample at most `levels`
     /// reduced copies (0: none).
     pub fn set_mipmap_levels(&mut self, levels: u32) {
+        self.mipmap_option = levels;
         let levels = crate::sprites::sprite_mipmap_limit(
             levels,
             self.sprite_textures[0].width(),
