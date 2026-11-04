@@ -1298,12 +1298,10 @@ mod tests {
         );
 
         let mut cleared = ItemStack::new("minecraft:cobblestone", 1);
-        cleared
-            .data_mut()
-            .set_other(
-                "!minecraft:max_stack_size",
-                Some(Tag::Compound(Default::default())),
-            );
+        cleared.data_mut().set_other(
+            "!minecraft:max_stack_size",
+            Some(Tag::Compound(Default::default())),
+        );
         let wire = crate::lan::guest::stack_to_network(
             |name| builtin.get("minecraft:item").unwrap().id(name).unwrap(),
             |_, _| None,
