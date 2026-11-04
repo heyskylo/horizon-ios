@@ -26,6 +26,8 @@ pub(super) struct PvpState {
     server: Widget<Option<String>>,
     combo: Combo,
     combo_count: Widget<u32>,
+    /// The open chat's box holds a chat search's query (Ctrl+F).
+    pub(super) chat_search: bool,
 }
 /// `GuiGraphicsExtractor`'s grey for a detail line (an effect's time left).
 const DETAIL: u32 = 0xFF7F_7F7F;

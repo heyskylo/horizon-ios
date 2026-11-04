@@ -105,3 +105,15 @@ fog (`Game::view_day_time`, `Game::view_weather` in `game/pvp.rs`). The world's 
 that plays by them (mobs, crops, beds, riptide, rain sounds), stay the server's, and nothing is sent to it.
 The moon keeps the world's phase. Only a client of a server draws it (single player's window is one), in the
 Overworld.
+
+## Chat (each default off)
+
+| Option | Key | What it does |
+|---|---|---|
+| Timestamps | `chatTimestamps` | The local time a message came in, before it, in grey (`horizon.chat.timestamp`). |
+| Compact chat | `chatCompact` | A message equal to the one before it (same text, kind and tag, neither signed) raises that one's count, "(x3)", instead of adding lines. |
+| Copy on click | `chatCopy` | In the open chat, a click on a message where the click has no action of its own copies the message's text (without time or count). |
+| Chat search | `chatSearch` | Ctrl+F in the open chat: the box takes a query and only the messages holding it (any case) show. Enter, Esc or Ctrl+F again stops. |
+
+They change how `chat::Chat` lays its lines out (`ChatQol`, `set_search`): the 100 messages it keeps are the same,
+so turning an option off shows them as before. Code: `chat.rs`, `game/chat.rs`.

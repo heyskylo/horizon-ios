@@ -34,6 +34,7 @@ fn add(chat: &mut Chat, font: &Font, content: Text) {
                 added: 0,
                 content,
                 tag: None,
+                message: "".into(),
             },
         );
     }
@@ -51,6 +52,7 @@ fn smooth_chat_slides_a_line_in_and_can_hide_the_indicator() {
         tag: Some(std::sync::Arc::new(Tag::system_single_player(
             SYSTEM_INDICATOR,
         ))),
+        message: "hi".into(),
     });
     let text_alpha = |draws: &[GuiDraw]| {
         draws.iter().find_map(|d| match d {
@@ -700,4 +702,87 @@ fn a_chat_message_is_cut_to_the_256_utf16_units_the_packet_holds() {
     // A cut between the halves of a pair keeps the character below it.
     let mixed = format!("{}\u{1f600}", "b".repeat(255));
     assert_eq!(normalize_chat_message(&mixed), "b".repeat(255));
+}
+
+/// PvP & HUD's chat options: the time before each message, and a repeated message counted on
+/// its own lines instead of filling the chat.
+#[test]
+fn timestamps_and_compact_chat_change_the_lines_not_the_messages() {
+    let font = font();
+    let mut chat = Chat {
+        clock: Some((9, 5)),
+        ..Chat::default()
+    };
+    chat.qol.compact = true;
+    let says = |chat: &mut Chat, text: &str| {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    };
+    let shown =
+        |chat: &Chat| -> Vec<String> { chat.lines.iter().map(|l| l.content.plain()).collect() };
+    says(&mut chat, "gg");
+    says(&mut chat, "gg");
+    says(&mut chat, "gg");
+    assert_eq!(shown(&chat), ["gg (x3)"]);
+    says(&mut chat, "wp");
+    says(&mut chat, "gg");
+    assert_eq!(shown(&chat), ["gg", "wp", "gg (x3)"]);
+    assert_eq!(chat.received, 5, "every message still counts as received");
+    chat.qol.timestamps = true;
+    chat.rewrap(&font);
+    assert_eq!(
+        shown(&chat),
+        ["[09:05] gg", "[09:05] wp", "[09:05] gg (x3)"]
+    );
+    // Copying takes the message as it came: no time, no count.
+    assert_eq!(&*chat.lines[2].message, "gg");
+    // Turned off, the history shows each repeat as it was counted.
+    chat.qol = ChatQol::default();
+    chat.rewrap(&font);
+    assert_eq!(shown(&chat), ["gg", "wp", "gg (x3)"]);
+}
+
+/// PvP & HUD's chat search: only the messages holding the query show, in any case; clearing
+/// it brings every line back.
+#[test]
+fn the_chat_search_keeps_the_matching_messages() {
+    let font = font();
+    let mut chat = Chat::default();
+    for text in ["Alpha one", "beta", "ALPHABET soup"] {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    let shown =
+        |chat: &Chat| -> Vec<String> { chat.lines.iter().map(|l| l.content.plain()).collect() };
+    chat.set_search_with(&font, Some("alpha"));
+    assert!(chat.searching());
+    assert_eq!(shown(&chat), ["ALPHABET soup", "Alpha one"]);
+    // A new message that doesn't match stays out of sight until the search ends.
+    chat.add_message(
+        &font,
+        Text::literal("gamma"),
+        None,
+        ChatSource::Server,
+        0,
+        false,
+    );
+    assert_eq!(shown(&chat).len(), 2);
+    chat.set_search_with(&font, Some("  "));
+    assert!(!chat.searching());
+    assert_eq!(
+        shown(&chat),
+        ["gamma", "ALPHABET soup", "beta", "Alpha one"]
+    );
 }

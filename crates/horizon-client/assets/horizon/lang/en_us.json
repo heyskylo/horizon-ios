@@ -682,5 +682,18 @@
   "horizon.pvp.time.midnight": "Midnight",
   "horizon.pvp.weather.clear": "Clear",
   "horizon.pvp.weather.rain": "Rain",
-  "horizon.pvp.weather.thunder": "Thunder"
+  "horizon.pvp.weather.thunder": "Thunder",
+  "horizon.chat.timestamp": "[%s] ",
+  "horizon.chat.repeats": " (x%s)",
+  "horizon.pvp.header.chat": "Chat",
+  "horizon.chat.copied": "Message copied",
+  "horizon.chat.search": "Search chat:",
+  "horizon.pvp.chat_timestamps": "Timestamps",
+  "horizon.pvp.chat_timestamps.tooltip": "The time each message came in, before it.",
+  "horizon.pvp.chat_compact": "Compact chat",
+  "horizon.pvp.chat_compact.tooltip": "A message repeated in a row shows once, with how many times it came: (x3).",
+  "horizon.pvp.chat_copy": "Copy on click",
+  "horizon.pvp.chat_copy.tooltip": "Clicking a message in the open chat copies its text, unless the click does something else.",
+  "horizon.pvp.chat_search": "Chat search",
+  "horizon.pvp.chat_search.tooltip": "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops."
 }
