@@ -1162,5 +1162,7 @@
   "Charged back": "Tilbageført af banken",
   "Paid": "Betalt",
   "Order {id}": "Ordre {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Anmodningen gik ikke igennem: checkoutets adresse er ikke Horizons."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Anmodningen gik ikke igennem: checkoutets adresse er ikke Horizons.",
+  "Paste a friend's invite code": "Indsæt en vens invitationskode",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spiller {build}, bygget på Horizon {commit}, det commit {mods} fastlåser, ikke på {version}."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Trökgeboekt door de bank",
   "Paid": "Betaald",
   "Order {id}": "Bestèlling {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "De aanspraak is neet geslaag: 't adres van de checkout is neet dat van Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "De aanspraak is neet geslaag: 't adres van de checkout is neet dat van Horizon.",
+  "Paste a friend's invite code": "Plak de uitnodigingscode van 'ne vriend",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Speelt {build}, geboewd op Horizon {commit}, de commit dae {mods} vastzet, neet op {version}."
 }

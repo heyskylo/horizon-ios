@@ -1162,5 +1162,7 @@
   "Charged back": "Върнато от банката",
   "Paid": "Платено",
   "Order {id}": "Поръчка {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявката не мина: адресът на плащането не е на Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявката не мина: адресът на плащането не е на Horizon.",
+  "Paste a friend's invite code": "Поставете кода за покана на приятел",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Играе {build}, изградено върху Horizon {commit}, къмита, закачен от {mods}, а не върху {version}."
 }

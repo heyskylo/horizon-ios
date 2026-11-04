@@ -1162,5 +1162,7 @@
   "Charged back": "Afturført av bankanum",
   "Paid": "Goldið",
   "Order {id}": "Pantan {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Kravið gekk ikki gjøgnum: adressan á útrokningini er ikki hjá Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Kravið gekk ikki gjøgnum: adressan á útrokningini er ikki hjá Horizon.",
+  "Paste a friend's invite code": "Set boðkotu hjá vini inn",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Leikur {build}, bygt á Horizon {commit}, commit sum {mods} festir, ikki á {version}."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Банк каялла илнӗ",
   "Paid": "Тӳленӗ",
   "Order {id}": "Хушу {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ыйту иртмерӗ: тӳлев адресӗ Horizon адресӗ мар."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ыйту иртмерӗ: тӳлев адресӗ Horizon адресӗ мар.",
+  "Paste a friend's invite code": "Тусӑн йыхрав кодне ҫыпӑҫтарӑр",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} вылять: {version} ҫинче мар, {mods} ҫирӗплетнӗ Horizon {commit} коммичӗ ҫинче тунӑ."
 }

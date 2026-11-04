@@ -1162,5 +1162,7 @@
   "Charged back": "A argentaria revocatum",
   "Paid": "Solutum",
   "Order {id}": "Mandatum {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Postulatio non successit: inscriptio solutionis non est Horizontis."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Postulatio non successit: inscriptio solutionis non est Horizontis.",
+  "Paste a friend's invite code": "Codicem invitationis amici insere",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ludit {build}, structum in Horizon {commit}, commisso a {mods} fixo, non in {version}."
 }

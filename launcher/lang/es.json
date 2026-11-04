@@ -1162,5 +1162,7 @@
   "Charged back": "Contracargo",
   "Paid": "Pagado",
   "Order {id}": "Pedido {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La reclamación no se completó: la dirección del pago no es la de Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La reclamación no se completó: la dirección del pago no es la de Horizon.",
+  "Paste a friend's invite code": "Pega el código de invitación de un amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Juega {build}, compilado sobre Horizon {commit}, el commit fijado por {mods}, no sobre {version}."
 }

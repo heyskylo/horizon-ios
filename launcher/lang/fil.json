@@ -1162,5 +1162,7 @@
   "Charged back": "Na-chargeback",
   "Paid": "Bayad na",
   "Order {id}": "Order {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Hindi natuloy ang claim: hindi sa Horizon ang address ng checkout."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Hindi natuloy ang claim: hindi sa Horizon ang address ng checkout.",
+  "Paste a friend's invite code": "I-paste ang invite code ng isang kaibigan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Naglalaro ng {build}, na binuo sa Horizon {commit}, ang commit na naka-pin ng {mods}, hindi sa {version}."
 }

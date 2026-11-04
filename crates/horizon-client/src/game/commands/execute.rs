@@ -653,7 +653,7 @@ impl Game<'_> {
             _ => return Err(err("command.unknown.command", &[])),
         })
     }
-    /// The entities `on <relation>` reaches from the source entity.
+    /// `ExecuteCommand.createRelationOperations`: the entities `on <relation>` reaches.
     fn relation(&mut self, c: &Context, s: Source) -> Vec<Source> {
         let Some(entity) = s.entity else {
             return Vec::new();
@@ -714,18 +714,29 @@ impl Game<'_> {
                     .projectiles
                     .iter()
                     .find(|p| p.id == id)
-                    .and_then(|p| match (p.owner?, p.guest) {
-                        // A guest's shot: `Who::Player` is them.
-                        (horizon_client::mobs::Who::Player, Some(conn))
-                            if self.lan_acting == Some(conn) =>
-                        {
-                            Some(Target::Player)
+                    .and_then(|p| {
+                        // Projectile.getOwner resolves EntityReference<Entity>,
+                        // including loaded owners that cannot be a Who.
+                        let Some(owner) = p.owner else {
+                            return p.owner_uuid.and_then(|uuid| {
+                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
+                                    uuid,
+                                ))
+                            });
+                        };
+                        match (owner, p.guest) {
+                            // A guest's shot: `Who::Player` is them.
+                            (horizon_client::mobs::Who::Player, Some(conn))
+                                if self.lan_acting == Some(conn) =>
+                            {
+                                Some(Target::Player)
+                            }
+                            (horizon_client::mobs::Who::Player, Some(conn)) => {
+                                Some(Target::Guest(conn))
+                            }
+                            (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
+                            (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                         }
-                        (horizon_client::mobs::Who::Player, Some(conn)) => {
-                            Some(Target::Guest(conn))
-                        }
-                        (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
-                        (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                     })
                     .into_iter()
                     .collect(),
