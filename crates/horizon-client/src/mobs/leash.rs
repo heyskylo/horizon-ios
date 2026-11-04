@@ -904,7 +904,7 @@ mod tests {
             };
             let empty = new();
             let mut full = new();
-            full.extra.head = Some("minecraft:stone".into());
+            full.extra.body = Some("minecraft:stone".into());
             for m in [&empty, &full] {
                 let o = leash_offset(m);
                 let h = f64::from(m.height() / 2.0);
