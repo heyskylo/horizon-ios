@@ -4805,9 +4805,11 @@ def check_piston_slide(host, guest, out):
     again = (f'execute if block {head} minecraft:air if block {x} {y} {z} minecraft:piston[extended=false] '
              f'if block {x - 1} {y} {z} minecraft:air run setblock {head} minecraft:stone')
     host('command', command=f'setblock {x} {y} {z - 2} minecraft:repeating_command_block[facing=up]'
-         f'{{auto:1b,Command:"{again}"}}')
+         f'{{Command:"{again}"}}')
     host('command', command=f'setblock {x} {y + 1} {z - 2} minecraft:chain_command_block[facing=up,conditional=true]'
          f'{{auto:1b,Command:"setblock {x - 1} {y} {z} minecraft:redstone_block"}}')
+    # Powered from below, two blocks from the piston: it runs every tick.
+    host('command', command=f'setblock {x} {y - 1} {z - 2} minecraft:redstone_block')
     host.wait(5)
     host('command', command='tick rate 1')
     sample = ['wait 1', f'block {head}', 'status']
@@ -4816,7 +4818,7 @@ def check_piston_slide(host, guest, out):
                               + [f'command setblock {x - 1} {y} {z} minecraft:air'] + sample * 9, every=True)
     finally:
         host('command', command='tick rate 20')
-        host('command', command=f'fill {x - 1} {y} {z - 2} {x + 3} {y + 1} {z} minecraft:air')
+        host('command', command=f'fill {x - 1} {y - 1} {z - 2} {x + 3} {y + 1} {z} minecraft:air')
 
     def moves(replies):
         seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))
