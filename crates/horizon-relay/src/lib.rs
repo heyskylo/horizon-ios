@@ -44,6 +44,10 @@ pub struct Config {
     pub global_unknown_burst: f64,
     /// Read a PROXY protocol v1 line before anything else.
     pub proxy_protocol: bool,
+    /// The load balancers allowed to send that line (`RELAY_PROXY_FROM`, addresses or CIDR ranges).
+    /// A connection from anywhere else is closed unanswered: its line would be a client choosing its
+    /// own address. The relay refuses to start with `proxy_protocol` and none listed ([`Config::check`]).
+    pub proxy_from: Vec<Net>,
     pub idle: Duration,
     pub ping_every: Duration,
     pub host_timeout: Duration,
@@ -65,6 +69,7 @@ impl Default for Config {
             global_unknown_per_min: 120.0,
             global_unknown_burst: 30.0,
             proxy_protocol: false,
+            proxy_from: Vec::new(),
             idle: Duration::from_secs(120),
             ping_every: Duration::from_secs(20),
             host_timeout: Duration::from_secs(60),
@@ -75,8 +80,9 @@ impl Default for Config {
     }
 }
 impl Config {
-    /// The defaults with the `RELAY_*` environment variables applied.
-    pub fn from_env() -> Self {
+    /// The defaults with the `RELAY_*` environment variables applied: an error for a setting the relay
+    /// can't run with as given ([`Config::check`]).
+    pub fn from_env() -> Result<Self, String> {
         fn var<T: std::str::FromStr>(name: &str) -> Option<T> {
             std::env::var(name).ok()?.trim().parse().ok()
         }
@@ -111,7 +117,83 @@ impl Config {
         if let Some(v) = var::<u8>("RELAY_PROXY_PROTOCOL") {
             c.proxy_protocol = v != 0;
         }
-        c
+        if let Ok(list) = std::env::var("RELAY_PROXY_FROM") {
+            c.proxy_from = Net::parse_list(&list).map_err(|e| format!("RELAY_PROXY_FROM: {e}"))?;
+        }
+        c.check()?;
+        Ok(c)
+    }
+
+    /// Why the relay must not start with these settings, if it mustn't.
+    pub fn check(&self) -> Result<(), String> {
+        if self.proxy_protocol && self.proxy_from.is_empty() {
+            return Err("RELAY_PROXY_PROTOCOL=1 needs RELAY_PROXY_FROM: the load balancers' addresses or \
+                        ranges (e.g. 10.0.0.0/8). Without it any client could send a PROXY line and choose \
+                        the address its limits count."
+                .into());
+        }
+        Ok(())
+    }
+}
+
+/// An address or a CIDR range: `10.1.2.3`, `10.0.0.0/8`, `fd00::/8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Net {
+    address: std::net::IpAddr,
+    prefix: u8,
+}
+impl Net {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        let (address, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (text, None),
+        };
+        let address: std::net::IpAddr = address
+            .parse()
+            .map_err(|_| format!("{text:?} is not an address or a range"))?;
+        let bits = if address.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => bits,
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= bits)
+                .ok_or_else(|| format!("{text:?}: the prefix is 0 to {bits}"))?,
+        };
+        Ok(Self { address, prefix })
+    }
+
+    /// A comma-separated list; empty entries are skipped, a bad one is an error.
+    pub fn parse_list(text: &str) -> Result<Vec<Self>, String> {
+        text.split(',')
+            .filter(|t| !t.trim().is_empty())
+            .map(Self::parse)
+            .collect()
+    }
+
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        // An IPv4 client of a dual-stack listener arrives as ::ffff:a.b.c.d.
+        let ip = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            v4 => v4,
+        };
+        match (self.address, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        }
     }
 }
 
@@ -333,6 +415,15 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     let _ = stream.set_nodelay(true);
     let mut line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     if state.config.proxy_protocol {
+        if !state
+            .config
+            .proxy_from
+            .iter()
+            .any(|net| net.contains(peer.ip()))
+        {
+            // Not from our load balancer: its PROXY line would be the client's own say.
+            return Ok(());
+        }
         peer = proxy_line(&line)
             .map(unmap)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no PROXY line"))?;
@@ -744,6 +835,41 @@ mod tests {
         );
         let v6: SocketAddr = "[2001:db8::1]:5000".parse().unwrap();
         assert_eq!(unmap(v6), v6);
+    }
+
+    #[test]
+    fn proxy_protocol_needs_its_load_balancers() {
+        let on = Config {
+            proxy_protocol: true,
+            ..Config::default()
+        };
+        assert!(on.check().unwrap_err().contains("RELAY_PROXY_FROM"));
+        let listed = Config {
+            proxy_from: Net::parse_list("10.0.0.0/8, 2001:db8::/32,192.0.2.7").unwrap(),
+            ..on
+        };
+        assert!(listed.check().is_ok());
+        assert!(Config::default().check().is_ok());
+        for bad in ["10.0.0.0/33", "nope", "10.0.0.1/x", "::/129"] {
+            assert!(Net::parse_list(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ranges_hold_their_addresses() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let ten = Net::parse("10.0.0.0/8").unwrap();
+        assert!(ten.contains(ip("10.200.3.4")) && !ten.contains(ip("11.0.0.1")));
+        assert!(
+            ten.contains(ip("::ffff:10.1.1.1")),
+            "IPv4 on a dual-stack listener"
+        );
+        let one = Net::parse("192.0.2.7").unwrap();
+        assert!(one.contains(ip("192.0.2.7")) && !one.contains(ip("192.0.2.8")));
+        let v6 = Net::parse("2001:db8::/32").unwrap();
+        assert!(v6.contains(ip("2001:db8:1::5")) && !v6.contains(ip("2001:db9::1")));
+        assert!(!v6.contains(ip("10.0.0.1")));
+        assert!(Net::parse("0.0.0.0/0").unwrap().contains(ip("203.0.113.1")));
     }
 
     #[test]
