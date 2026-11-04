@@ -41,7 +41,7 @@ impl Default for Metadata {
             custom_server_name: None,
             duration: 0,
             date: 0,
-            mcversion: "26.3".to_owned(),
+            mcversion: horizon_core::VANILLA_VERSION.to_owned(),
             file_format: "MCPR".to_owned(),
             file_format_version: 14,
             protocol: horizon_protocol::PROTOCOL_VERSION,
@@ -226,11 +226,13 @@ impl McprReader {
             }
             let timestamp_ms = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
             let length = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as u64;
-
-            packet_index.push((timestamp_ms, offset));
-            if cursor.seek(SeekFrom::Current(length as i64)).is_err() {
+            // A packet cut short (a recording that stopped mid-write) is not
+            // indexed: seeking to it could only fail to read it.
+            if offset + 8 + length > total_len {
                 break;
             }
+            packet_index.push((timestamp_ms, offset));
+            cursor.set_position(offset + 8 + length);
         }
 
         let tmcpr_data = Cursor::new(tmcpr_bytes);
@@ -356,6 +358,38 @@ mod tests {
         let seeked = reader.next_packet().unwrap().unwrap();
         assert_eq!(seeked.timestamp_ms, 50);
         assert_eq!(seeked.id, 0x24);
+
+        let _ = fs::remove_file(mcpr_path);
+        let _ = fs::remove_dir(temp_dir);
+    }
+
+    /// A recording whose last packet was cut short indexes only the whole ones.
+    #[test]
+    fn a_truncated_last_packet_is_not_indexed() {
+        let temp_dir = std::env::temp_dir().join(format!("mcpr_cut_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("cut.mcpr");
+        let mut tmcpr = Vec::new();
+        tmcpr.extend_from_slice(&7u32.to_be_bytes());
+        tmcpr.extend_from_slice(&3u32.to_be_bytes());
+        tmcpr.extend_from_slice(&[0x01, 10, 20]);
+        tmcpr.extend_from_slice(&9u32.to_be_bytes());
+        tmcpr.extend_from_slice(&100u32.to_be_bytes());
+        tmcpr.extend_from_slice(&[0x02, 1, 2]);
+        let mut zip = zip::ZipWriter::new(File::create(&mcpr_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("metaData.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(&Metadata::default()).unwrap())
+            .unwrap();
+        zip.start_file("recording.tmcpr", options).unwrap();
+        zip.write_all(&tmcpr).unwrap();
+        zip.finish().unwrap();
+
+        let mut reader = McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(reader.total_packets(), 1);
+        assert_eq!(reader.seek_to_timestamp(50).unwrap(), Some(7));
+        let first = reader.next_packet().unwrap().unwrap();
+        assert_eq!((first.id, first.payload), (0x01, vec![10, 20]));
 
         let _ = fs::remove_file(mcpr_path);
         let _ = fs::remove_dir(temp_dir);
