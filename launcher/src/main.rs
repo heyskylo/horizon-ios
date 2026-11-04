@@ -70,6 +70,7 @@ mod shortcut_page;
 mod skin_page;
 mod sky;
 mod specimen;
+mod sticky;
 mod switch_page;
 mod theme;
 mod themes_page;
@@ -208,6 +209,8 @@ struct Launcher {
     content_scroll: Scrollbar,
     /// The glass Settings page's own scroll: its sections beside their list.
     settings_pane: gpui::ScrollHandle,
+    /// The Mods page's project card, kept in view beside its list.
+    mods_sticky: sticky::Sticky,
     /// The rows of the page's long list (Versions, Patch notes) last drawn.
     long_list: cull::Cull,
     opening: Option<Opening>,
@@ -544,6 +547,7 @@ impl Launcher {
             switches: 0,
             content_scroll: Scrollbar::default(),
             settings_pane: gpui::ScrollHandle::new(),
+            mods_sticky: sticky::Sticky::default(),
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
@@ -828,6 +832,7 @@ impl Launcher {
             self.switches += 1;
             self.content_scroll = Scrollbar::default();
             self.long_list = cull::Cull::default();
+            self.mods_sticky.reset();
             if page == Page::Mods {
                 self.mods.reset_lists();
             }
@@ -1096,7 +1101,7 @@ impl Launcher {
                     self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
-                        let (file, offline) = match session {
+                        let account::GameSession { file, offline, env } = match session {
                             Ok(pass) => pass,
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
@@ -1115,6 +1120,7 @@ impl Launcher {
                         if let Some(file) = file {
                             cmd.arg("--session-file").arg(file);
                         }
+                        cmd.envs(env);
                         // Still play, offline, and say why.
                         if let Some(e) = offline {
                             self.client_error = Some(format!("Playing offline: {e}"));
@@ -1145,6 +1151,7 @@ impl Launcher {
                         };
                         if let Err(e) = profile {
                             self.client_error = Some(e);
+                            account::discard_unread_sessions();
                             continue;
                         }
                         if let Some(code) = self.joining.take() {
@@ -1176,8 +1183,14 @@ impl Launcher {
                                 self.client_run = run.map(|id| (id, Instant::now()));
                                 self.step_aside(cx);
                             }
-                            Err(e) => self.client_error = Some(e),
+                            Err(e) => {
+                                self.client_error = Some(e);
+                                account::discard_unread_sessions();
+                            }
                         }
+                    } else {
+                        // The start was called off: the sessions written for it go.
+                        account::discard_unread_sessions();
                     }
                 }
                 Msg::Progress(tag, p) => {
@@ -1351,6 +1364,8 @@ impl Launcher {
                         }
                         Job::Client => {
                             self.client = None;
+                            // Any session file the game didn't read (it crashed first).
+                            account::discard_unread_sessions();
                             self.come_back(cx);
                             // The game saved: last played, sizes and pictures changed.
                             self.worlds.stale();
@@ -3259,6 +3274,9 @@ impl Launcher {
                 None,
                 &t,
             )),
+            // The glass look's Overview ends with the screenshots and the patch log: Prepare is in
+            // Play's ⋯ menu, the Minecraft folder in the folder menu, signing in in the top bar.
+            None if t.glass => rows,
             None => rows
                 .child(index_row(
                     2,
@@ -5138,6 +5156,24 @@ impl Render for Launcher {
                                             .flex_1()
                                             .min_h_0()
                                             .overflow_y_scroll()
+                                            // A scrolled page is drawn from its layer, not
+                                            // rendered: the Mods page's card asks, once the
+                                            // offset has moved, whether it must follow.
+                                            .on_scroll(cx.listener(
+                                                |this, _: &gpui::ScrollEvent, window, cx| {
+                                                    if this.page != Page::Mods {
+                                                        return;
+                                                    }
+                                                    cx.on_next_frame(window, |this, _, cx| {
+                                                        if this
+                                                            .mods_sticky
+                                                            .moved(&this.content_scroll.handle)
+                                                        {
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                },
+                                            ))
                                             .child(
                                                 div()
                                                     .flex()

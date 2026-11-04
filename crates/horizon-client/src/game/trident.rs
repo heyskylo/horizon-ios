@@ -230,18 +230,24 @@ fn segment_box(from: Vec3, d: Vec3, b: Aabb) -> Option<f64> {
     (t0 <= t1).then_some(t0)
 }
 impl Game<'_> {
+    /// The trident stack's maximum damage component, else its item's default.
+    pub(super) fn trident_max_damage(&self, stack: &ItemStack) -> u32 {
+        stack
+            .data()
+            .and_then(|data| match data.other("minecraft:max_damage") {
+                Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok(),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.items().get(&stack.item).map_or(250, |i| i.max_damage))
+    }
     /// `TridentItem.use`: start the throw unless one more use would break it.
     pub(super) fn use_trident(&mut self, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:trident" {
             return false;
         }
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(250, |i| i.max_damage);
+        let max = self.trident_max_damage(stack);
         let riptide = stack.enchantment_level("minecraft:riptide") > 0;
-        if stack.damage + 1 >= max || (riptide && !self.in_water_or_rain()) {
+        if stack.damage >= max.saturating_sub(1) || (riptide && !self.in_water_or_rain()) {
             return true;
         }
         self.start_using_item();
@@ -344,15 +350,18 @@ impl Game<'_> {
             return;
         };
         let riptide = stack.enchantment_level("minecraft:riptide");
+        // `releaseUsing` checks the wet/passenger conditions, then nextDamageWillBreak again.
+        if riptide > 0 && (!self.in_water_or_rain() || self.riding.is_some()) {
+            return;
+        }
+        if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1) {
+            return;
+        }
         let at = self
             .player
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         if riptide > 0 {
-            // `isInWaterOrRain() && !isPassenger()`.
-            if !self.in_water_or_rain() || self.riding.is_some() {
-                return;
-            }
             // `hurtWithoutBreaking` and the sound belong to the server; a server's
             // client only launches.
             let server_client = self.remote.is_some();
@@ -1016,3 +1025,72 @@ impl Game<'_> {
     }
 }
 horizon_client::impl_joined!(ThrownTrident);
+
+#[cfg(test)]
+mod tests {
+    /// A stack can reach its final durability point after use began. The release
+    /// guard is independent of admission, and short charges still do nothing.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn trident_release_rechecks_stack_durability_after_charge() {
+        use crate::game::{Audio, Options, PlayerMotion, Progress, Settings, load_resources};
+        use horizon_world::nbt::Tag;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = super::Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player =
+            Some(PlayerMotion::new(game.motion, super::Vec3::new(4.5, 200.0, 4.5)).unwrap());
+        let mut stack = super::ItemStack::new("minecraft:trident", 1);
+        stack.damage = 8;
+        stack
+            .data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(10)));
+        *game.held_mut() = Some(stack.clone());
+        assert!(game.use_trident(&stack));
+        assert!(game.using.is_some());
+        game.held_mut().as_mut().unwrap().damage = 9;
+        game.release_trident(10);
+        assert!(game.tridents.is_empty());
+        assert_eq!(game.held().unwrap().damage, 9);
+        game.using = None;
+
+        stack.damage = 249;
+        stack
+            .data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(500)));
+        *game.held_mut() = Some(stack.clone());
+        assert!(game.use_trident(&stack));
+        assert!(game.using.is_some());
+        game.release_trident(9);
+        assert!(game.tridents.is_empty());
+        assert_eq!(game.held().unwrap().damage, 249);
+        game.release_trident(10);
+        assert_eq!(game.tridents.len(), 1);
+        assert_eq!(game.tridents[0].stack.damage, 250);
+        assert!(game.held().is_none());
+    }
+}
