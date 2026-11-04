@@ -133,4 +133,21 @@ impl Game<'_> {
         let instance = SoundInstance::guardian_attack(&sound, SoundEngine::unseeded());
         self.audio.play_instance(instance, false);
     }
+
+    /// `ClientPacketListener.handleEntityEvent` 63: a sniffer's digging
+    /// sound loop starts (`SnifferSoundInstance`).
+    pub(super) fn start_sniffer_digging_sound(&mut self, id: u32) {
+        let Some(m) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id && m.species() == Species::Sniffer)
+        else {
+            return;
+        };
+        if m.silent {
+            return;
+        }
+        let instance = SoundInstance::sniffer(id, SoundEngine::unseeded());
+        self.audio.play_instance(instance, false);
+    }
 }

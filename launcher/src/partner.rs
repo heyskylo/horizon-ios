@@ -203,10 +203,8 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
         .flex_none()
         .w(px(width))
         .bg(rgb(CARD))
-        .border_1()
-        .border_color(rgba(CYAN, 0.22))
         .rounded(px(10.))
-        .group_hover(id, |s| s.top(px(-2.)).border_color(rgba(CYAN, 0.5)));
+        .group_hover(id, |s| s.top(px(-2.)));
     let logo = |height: f32| {
         img(LOGO.clone())
             .flex_none()
