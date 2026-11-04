@@ -2692,7 +2692,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        horizon_client::save::consume_container_loot(&mut extras, key);
         chunk.saved = Some(std::sync::Arc::new(extras));
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));
     }

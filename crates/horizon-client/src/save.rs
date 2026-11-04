@@ -52,6 +52,8 @@ use std::{
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 mod gateway;
+#[cfg(test)]
+mod loot_tests;
 
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
@@ -525,6 +527,25 @@ impl SaveTables {
 }
 
 pub use crate::chunk::{ChunkExtras, RolledLoot, SavedProto};
+
+/// A container was opened: its eager roll is now the container's own inventory.
+pub fn consume_container_loot(extras: &mut ChunkExtras, pos: (i32, i32, i32)) {
+    let before = extras.rolled_loot.len();
+    extras.rolled_loot.retain(|r| r.pos != pos);
+    if extras.rolled_loot.len() == before {
+        return;
+    }
+    // The source compound participates in the save overlay. Once opened,
+    // even an emptied chest must not inherit its old loot table from there.
+    for (source_pos, source) in &mut extras.block_entity_sources {
+        if *source_pos == pos
+            && let Tag::Compound(map) = source
+        {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+    }
+}
 
 fn tick_list(ticks: &[SavedTick], name: impl Fn(u32) -> Option<String>) -> Tag {
     Tag::List(
