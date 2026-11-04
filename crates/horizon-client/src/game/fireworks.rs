@@ -29,6 +29,8 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
@@ -64,6 +66,7 @@ impl Rocket {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position,
@@ -90,6 +93,7 @@ impl Rocket {
     ) -> horizon_world::nbt::Tag {
         horizon_client::entity_nbt::firework_rocket_to_nbt(
             &horizon_client::entity_nbt::RocketSave {
+                rotation: self.rotation,
                 position: self.position,
                 motion: self.velocity,
                 life: self.life,
@@ -114,6 +118,7 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id: 0,
             position: r.position,
@@ -231,6 +236,7 @@ impl Game<'_> {
         // Entity.<init>: the id comes from the one counter at construction.
         let id = self.take_entity_id();
         Rocket {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position: at,
