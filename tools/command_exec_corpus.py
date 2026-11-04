@@ -3105,6 +3105,46 @@ def hurting_projectile_float_inertia():
     return ops
 
 
+def allay_invalid_brain_retention():
+    """Live failed Brain loads retain LIKED_PLAYER; valid empty memories clear it."""
+    ops = setup('/setblock 6 199 6 stone', '/scoreboard objectives add h226 dummy',
+                '/execute store result score before h226 run time query gametime')
+    ops.append(cmd('/execute if loaded 6 200 6', expect_result=1))
+    edits = [
+        ('remove', 'Brain', True),
+        ('modify', 'Brain set value 0', True),
+        ('modify', 'Brain set value "bad"', True),
+        ('modify', 'Brain set value {}', True),
+        ('remove', 'Brain.memories', True),
+        ('modify', 'Brain.memories set value 0', True),
+        ('remove', 'Brain.memories."minecraft:liked_player"', False),
+        ('modify', 'Brain set value {memories:{}}', False),
+        ('modify', 'Brain.memories set value {}', False),
+    ]
+    memory = '{memories:{"minecraft:liked_player":{value:[I;1,2,3,4]}}}'
+    for i, (mode, edit, retain) in enumerate(edits):
+        target = f'000000e2-0000-0000-0000-{i + 1:012x}'
+        tag = f'h226_{i}'
+        ops += setup(f'/summon allay 6.5 200.5 6.5 {{UUID:[I;226,0,0,{i + 1}],Tags:["{tag}"],NoAI:1b,NoGravity:1b}}')
+        ops.append(cmd(f'/data modify entity {target} Brain set value {memory}', expect_result=1))
+        guard = f'/execute as {target} if entity @s[tag={tag},nbt={{Pos:[6.5d,200.5d,6.5d],Health:20f,NoAI:1b,NoGravity:1b}}]'
+        ops.append(cmd(guard, expect_result=1))
+        ops.append(cmd(f'/execute as {target} if entity @s[nbt={{Brain:{memory}}}]', expect_result=1))
+        ops.append(cmd(f'/data {mode} entity {target} {edit}', expect_result=1))
+        ops.append(cmd(guard, expect_result=1))
+        # A valid empty map is success with result 0; a missing key is failure 0.
+        for path, result, success in [
+            ('Brain.memories', int(retain), 1),
+            ('Brain.memories."minecraft:liked_player"', int(retain), int(retain)),
+        ]:
+            ops.append(cmd(f'/execute store result score result h226 store success score success h226 run data get entity {target} {path}'))
+            ops.append(cmd('/scoreboard players get result h226', expect_result=result))
+            ops.append(cmd('/scoreboard players get success h226', expect_result=success))
+    ops += setup('/execute store result score after h226 run time query gametime')
+    ops.append(cmd('/execute if score after h226 = before h226', expect_result=1))
+    return ops
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3159,6 +3199,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('allay invalid Brain retention', allay_invalid_brain_retention()),
         ('hurting projectile float inertia', hurting_projectile_float_inertia()),
         ('primed TNT block state', primed_tnt_block_state()),
         ('allay pocket inventory', allay_pocket_inventory()),

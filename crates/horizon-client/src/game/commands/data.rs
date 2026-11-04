@@ -303,8 +303,20 @@ impl Game<'_> {
                 )
                 .ok_or_else(stale)?;
                 if let Some(slot) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    // LivingEntity.readAdditionalSaveData only replaces a decoded
+                    // Brain. Keep the Allay's modeled LIKED_PLAYER when the
+                    // required root memory map cannot load; valid empty maps clear it.
+                    let keep_liked_player = slot.species() == horizon_client::mobs::Species::Allay
+                        && !matches!(
+                            tag.get("Brain").and_then(|brain| brain.get("memories")),
+                            Some(Tag::Compound(_))
+                        );
                     // Runtime-only state (AI, animation) carries over.
                     let old = std::mem::replace(slot, new);
+                    if keep_liked_player {
+                        slot.extra.tame = old.extra.tame;
+                        slot.extra.owner = old.extra.owner;
+                    }
                     slot.ai = old.ai;
                     slot.extra.armor_attributes = old.extra.armor_attributes;
                     slot.age = old.age;
