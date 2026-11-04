@@ -505,6 +505,7 @@ fn mob_meta(
     let e = &m.extra;
     let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
     mob_variant_meta(m, hub, meta, defaults);
+    mob_raider_meta(m, meta, defaults);
     match kind {
         "minecraft:guardian" | "minecraft:elder_guardian" => {
             // Guardian.DATA_ID_MOVING and DATA_ID_ATTACK_TARGET.
@@ -1065,6 +1066,21 @@ fn unhappy_counter(
         meta.push((18, serializer::INT, Value::Int(m.extra.ints[0])));
     }
     defaults.push((18, serializer::INT, Value::Int(0)));
+}
+
+/// Raider.IS_CELEBRATING: also list false so tracking sends the end of a celebration.
+pub(super) fn mob_raider_meta(
+    m: &Mob,
+    meta: &mut Vec<(u8, i32, Value)>,
+    defaults: &mut Vec<(u8, i32, Value)>,
+) {
+    use horizon_client::mobs::raider;
+    if raider::is_raider(m.species()) {
+        if raider::state(m).is_some_and(|state| state.celebrating) {
+            meta.push((16, serializer::BOOLEAN, Value::Bool(true)));
+        }
+        defaults.push((16, serializer::BOOLEAN, Value::Bool(false)));
+    }
 }
 
 /// What a client shakes a mob by: Entity.DATA_TICKS_FROZEN (7), whose full
