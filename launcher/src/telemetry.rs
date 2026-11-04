@@ -91,10 +91,9 @@ fn official_server() -> String {
         .unwrap_or_else(|| crate::server_list::OFFICIAL_ADDRESS.to_owned())
 }
 
-/// How many play on the official server now: its server-list status ping, as the game's
-/// Multiplayer list sends it (through the address's SRV record), with a 3-second timeout. None
-/// when it doesn't answer or there is no official server.
-pub fn official_players(address: &str) -> Option<u64> {
+/// A server's players by its server-list status ping, as the game's Multiplayer list sends it
+/// (through the address's SRV record), with a 3-second timeout. None when it doesn't answer.
+pub fn server_players(address: &str) -> Option<horizon_telemetry::server_status::Players> {
     let (host, port) = horizon_telemetry::server_status::split_address(address)?;
     let (host, port) = horizon_protocol::server_redirect(&host, port);
     horizon_telemetry::server_status::players_at(
@@ -103,7 +102,12 @@ pub fn official_players(address: &str) -> Option<u64> {
         std::time::Duration::from_secs(3),
     )
     .ok()
-    .map(|players| players.online)
+}
+
+/// How many play on the official server now ([`server_players`]). None when it doesn't answer
+/// or there is no official server.
+pub fn official_players(address: &str) -> Option<u64> {
+    server_players(address).map(|players| players.online)
 }
 
 /// Sends [`official_players`] to the window as `Msg::OfficialPlayers` now and every minute, on
