@@ -1029,11 +1029,6 @@ mod initial_history_tests {
     #[test]
     #[ignore = "requires a host GPU; run with --ignored --nocapture"]
     fn core_matrix_inputs_render_provider_values() {
-        use horizon_shaders::{
-            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
-        };
-        use std::io::Write;
-        use wgpu::util::DeviceExt;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         eprintln!("Core matrix GPU: {:?}", adapter.get_info());
@@ -1093,137 +1088,7 @@ mod initial_history_tests {
                  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
                  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
             );
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            for (path, source) in [
-                ("shaders/gbuffers_line.vsh", vertex.as_str()),
-                (
-                    "shaders/gbuffers_line.fsh",
-                    "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
-                ),
-            ] {
-                zip.start_file(path, zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(source.as_bytes()).unwrap();
-            }
-            let pack = Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner())
-                .unwrap();
-            let macros = Macros::standard();
-            let program = translate_gbuffers(
-                &preprocess(&pack, "gbuffers_line.vsh", &macros),
-                &preprocess(&pack, "gbuffers_line.fsh", &macros),
-                Target::Buffers,
-                &GbuffersInputs::default(),
-            )
-            .unwrap();
-            let mut bytes = vec![0; program.interface.uniform_size as usize];
-            for uniform in &program.interface.uniforms {
-                if let Some(i) = index(&uniform.name) {
-                    values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
-                }
-            }
-            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: &bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let module = |module| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-                })
-            };
-            let vs = module(program.vertex);
-            let fs = module(program.fragment);
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: &vs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &fs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                }],
-            });
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&Default::default());
-            let read = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 256,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = device.create_command_encoder(&Default::default());
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            encoder.copy_texture_to_buffer(
-                texture.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &read,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: None,
-                    },
-                },
-                texture.size(),
-            );
-            queue.submit([encoder.finish()]);
-            read.slice(..)
-                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let mapped = read.slice(..).get_mapped_range().unwrap();
+            let mapped = draw_line_program(&device, &queue, &values, &vertex);
             // Independent result: translated point (1, .5, -2), perspective (aspect 2,
             // vertical FOV 90): clip (.5, .5, z, 2), hence (.25, .25, .5, 1).
             for (actual, expected) in mapped[..4].iter().zip(expected) {
@@ -1234,6 +1099,203 @@ mod initial_history_tests {
                 );
             }
         }
+    }
+
+    /// `normalMatrix` in a core-profile gbuffers program is the view's rotation; in the
+    /// compatibility profile it stays zero (the issue's Iris 1.11.7 probes, #9136).
+    #[test]
+    #[ignore = "requires a host GPU; run with --ignored --nocapture"]
+    fn core_normal_matrix_renders_the_view_rotation() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("Normal matrix GPU: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let hud = HudBatch::new([800, 400]);
+        let mut f = frame(&hud);
+        // Facing west (-X), level: view space looks down -Z with +X to the right (north).
+        f.yaw = 90.0;
+        f.pitch = 0.0;
+        let mut values = FrameUniforms::default();
+        values.update(&f, &PackInputs::default(), [800, 400]);
+        for (profile, world, expected) in [
+            // East (behind the camera) is view +Z.
+            ("330 core", "vec3(1.0, 0.0, 0.0)", [128u8, 128, 255, 255]),
+            // South (to the left) is view -X; up stays up.
+            ("330 core", "vec3(0.0, 0.0, 1.0)", [0, 128, 128, 255]),
+            ("330 core", "vec3(0.0, 1.0, 0.0)", [128, 255, 128, 255]),
+            (
+                "330 compatibility",
+                "vec3(1.0, 0.0, 0.0)",
+                [128, 128, 128, 255],
+            ),
+        ] {
+            let vertex = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nout vec3 result;\n\
+                 void main() {{\n\
+                 result = normalMatrix * {world} * 0.5 + 0.5;\n\
+                 vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
+                 gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
+            );
+            let pixel = draw_line_program(&device, &queue, &values, &vertex);
+            eprintln!("{profile} {world}: {pixel:?}");
+            for (actual, expected) in pixel.iter().zip(expected) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "{profile} {world}: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    /// Draws one fragment through a translated `gbuffers_line` program with `vertex` and the
+    /// provider's `values`, and reads it back.
+    fn draw_line_program(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        values: &FrameUniforms,
+        vertex: &str,
+    ) -> [u8; 4] {
+        use horizon_shaders::{
+            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
+        };
+        use std::io::Write;
+        use wgpu::util::DeviceExt;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, source) in [
+            ("shaders/gbuffers_line.vsh", vertex),
+            (
+                "shaders/gbuffers_line.fsh",
+                "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
+            ),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(source.as_bytes()).unwrap();
+        }
+        let pack =
+            Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner()).unwrap();
+        let macros = Macros::standard();
+        let program = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_line.vsh", &macros),
+            &preprocess(&pack, "gbuffers_line.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        let mut bytes = vec![0; program.interface.uniform_size as usize];
+        for uniform in &program.interface.uniforms {
+            if let Some(i) = index(&uniform.name) {
+                values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
+            }
+        }
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: &bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let module = |module| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            })
+        };
+        let vs = module(program.vertex);
+        let fs = module(program.fragment);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &vs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let mapped = read.slice(..).get_mapped_range().unwrap();
+        let pixel = mapped[..4].try_into().unwrap();
+        drop(mapped);
+        read.unmap();
+        pixel
     }
 
     fn int(u: &FrameUniforms, at: usize) -> i32 {
@@ -1411,6 +1473,7 @@ mod initial_history_tests {
             celestial: &[],
             stars: None,
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: 70.0,
             screen: &[],
             pack: Default::default(),

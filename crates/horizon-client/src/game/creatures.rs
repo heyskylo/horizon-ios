@@ -311,7 +311,7 @@ impl Game<'_> {
             swimming: p.swimming,
             look: view_vector(self.yaw, self.pitch),
             main_hand: self.held().map(|s| s.item.clone()),
-            off_hand: None,
+            off_hand: self.offhand.as_ref().map(|s| s.item.clone()),
             head: self.armor[0].as_ref().map(|s| s.item.clone()),
             armor_cover: self.armor.iter().filter(|a| a.is_some()).count() as f32 / 4.0,
             invisible: self.potions.effects.get("invisibility").is_some(),
@@ -812,6 +812,7 @@ impl Game<'_> {
             fluid_tables: &self.motion.fluids,
             movement: &self.motion.blocks,
             collision: self.collision,
+            suffocation: self.mob_suffocation(),
             data: self.res.mob_data(),
             controlling_player_movement: None,
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
@@ -1187,6 +1188,7 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);
         }
+        self.tick_boarding();
         self.sync_riders();
         self.tick_skeleton_traps();
         self.tick_apparition();
@@ -1321,7 +1323,7 @@ impl Game<'_> {
                 self.for_player(who, |g| {
                     // CatalystListener: trigger(player, killedEntity, damageSource).
                     let view = g.mob_entity(m);
-                    let blow = m.last_damage.map(|(d, _)| g.damage_view(d));
+                    let blow = g.last_blow(m);
                     g.trigger_killed_as(
                         "minecraft:kill_mob_near_sculk_catalyst",
                         &view,
@@ -1413,8 +1415,23 @@ impl Game<'_> {
         self.award_custom_stat("mob_kills", 1);
         self.score_player_killed(super::commands::Target::Mob(m.id));
         let view = self.mob_entity(m);
-        let blow = m.last_damage.map(|(d, _)| self.damage_view(d));
+        let blow = self.last_blow(m);
         self.trigger_killed(&view, blow.as_ref());
+    }
+    /// The damage source a mob died to (`die`'s), its direct entity included when the mob
+    /// recorded one ([`Mob::last_direct`]).
+    fn last_blow(&self, m: &Mob) -> Option<horizon_client::advancements::DamageView> {
+        let (d, _) = m.last_damage?;
+        let mut view = self.damage_view(d);
+        if let Some(kind) = m.last_direct {
+            view.direct = Some(horizon_client::advancements::EntityView {
+                kind: kind.into(),
+                position: d.from.unwrap_or_default(),
+                ..Default::default()
+            });
+            view.is_direct = false;
+        }
+        Some(view)
     }
     /// A mob's damage source as advancement predicates see it: its type, the
     /// causing entity, and the projectile when one dealt it.
@@ -2000,6 +2017,13 @@ impl Game<'_> {
                         m.id == source && matches!(m.species(), Species::Chicken | Species::Parrot)
                     }) =>
                 {
+                    let ctx = self.who_context(Some(Who::Mob(source)), None);
+                    self.post_game_event(event, at, ctx);
+                }
+                // Armadillo.rollUp/rollOut: `gameEvent(ENTITY_ACTION)`.
+                MobEvent::GameEvent {
+                    event, at, source, ..
+                } if event == "minecraft:entity_action" => {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
@@ -2843,8 +2867,9 @@ impl Game<'_> {
                     effect,
                     ticks,
                     amplifier,
+                    ambient,
                 } => {
-                    self.give_player_effect(effect, ticks, amplifier);
+                    self.give_mob_effect(effect, ticks, amplifier, ambient);
                 }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
@@ -3715,15 +3740,16 @@ impl Game<'_> {
     }
     /// A status effect from a mob, arrow or splash potion (`addEffect`).
     pub(super) fn give_player_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
-        if self.creative || self.spectator() {
-            return;
+        self.give_mob_effect(effect, ticks, amplifier, false);
+    }
+    /// A mob's effect on the player. Creative and spectator players shrug off
+    /// the damaging effects here, but the nautilus's ambient Breath is plain
+    /// `addEffect` and lands in every game mode.
+    fn give_mob_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32, ambient: bool) {
+        let immune = self.creative || self.spectator();
+        if let Some(instance) = mob_effect_instance(effect, ticks, amplifier, ambient, immune) {
+            self.potions.effects.add(instance);
         }
-        let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-        self.potions
-            .effects
-            .add(horizon_client::effects::EffectInstance::new(
-                id, ticks, amplifier,
-            ));
     }
     /// `WitherRoseBlock.entityInside` for the player: on a server level that
     /// isn't peaceful, `getBeeInteractionEffect` (Wither, 40 ticks) unless the
@@ -4128,6 +4154,22 @@ impl Game<'_> {
     fn player_hurt_mob(&mut self, p: &Projectile, id: u32) {
         if p.owner == Some(Who::Player) {
             self.last_hurt_by_player.insert(id, self.lan_acting);
+        }
+    }
+    /// `LivingEntity.hurtServer` for a snowball, egg or pearl (`kind`) that hurt the mob `id`,
+    /// 0 damage included: the hit is its owner's, and a player's fires PLAYER_HURT_ENTITY.
+    fn thrown_hurt_mob(&mut self, p: &Projectile, id: u32, kind: &str, amount: f32) {
+        self.player_hurt_mob(p, id);
+        if p.owner == Some(Who::Player)
+            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+        {
+            let victim = self.mob_entity(m);
+            let direct = horizon_client::advancements::EntityView {
+                kind: kind.into(),
+                position: [p.position.x, p.position.y, p.position.z],
+                ..Default::default()
+            };
+            self.player_hit(&victim, "minecraft:thrown", Some(direct), amount);
         }
     }
     /// `projectile_hit` for a projectile the guest `conn` shot, run as them;
@@ -4851,7 +4893,9 @@ impl Game<'_> {
                     } else {
                         0.0
                     };
-                    m.damage_projectile(amount, source, aim, [p.velocity.x, p.velocity.z]);
+                    if m.damage_projectile(amount, source, aim, [p.velocity.x, p.velocity.z]) {
+                        self.thrown_hurt_mob(p, id, "minecraft:snowball", amount);
+                    }
                 } else if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
@@ -4910,7 +4954,9 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
+                    if m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]) {
+                        self.thrown_hurt_mob(p, id, "minecraft:egg", 0.0);
+                    }
                 } else if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
@@ -4942,7 +4988,9 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
+                    if m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]) {
+                        self.thrown_hurt_mob(p, id, "minecraft:ender_pearl", 0.0);
+                    }
                 } else if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
@@ -4995,6 +5043,8 @@ impl Game<'_> {
                         let from = pl.position;
                         self.spawn_mob("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
+                    // ServerPlayer.teleport: removeVehicle before the placement.
+                    self.stop_riding();
                     if let Some(pl) = self.player.as_mut() {
                         pl.position = to;
                         pl.velocity = Vec3::ZERO;
@@ -5108,7 +5158,10 @@ impl Game<'_> {
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
-                let result = self.explode(atp, *power as f32);
+                // LargeFireball.onHit: both fire and MOB block destruction
+                // follow mob_griefing; other mob explosions keep their default.
+                let fire = self.ui.rules.bool("mob_griefing");
+                let result = self.explode_mob(atp, *power as f32, fire);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
                 self.combat.explosion_in_water = false;
@@ -5413,6 +5466,11 @@ impl Game<'_> {
             self.audio
                 .play(sound, Some(self.mobs[index].center()), 1.0, 1.0);
             self.trigger_item("minecraft:filled_bucket", &filled);
+            // PlayerInteractTrigger: the water bucket as it was, and the mob picked up.
+            if let Some(stack) = &held {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             let species = bucket.trim_end_matches("_bucket").to_owned();
             let id = self.mobs[index].id as i32;
             // Leashable.dropLeash, then discard.
@@ -5498,6 +5556,12 @@ impl Game<'_> {
         if self.interact_shear_mob(index, &item) {
             self.swing_arm();
             return Ok(true);
+        }
+        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+            if sheared {
+                self.swing_arm();
+            }
+            return Ok(sheared);
         }
         // AbstractHorse.mobInteract: feed, equip or ride.
         if self.interact_mount(index, &item) {
@@ -7370,6 +7434,7 @@ pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
     use horizon_client::mobs::DamageKind as K;
     match kind {
+        K::Named(named) => named.name,
         K::PlayerAttack => "minecraft:player_attack",
         K::MaceSmash => "minecraft:mace_smash",
         K::Spear => "minecraft:spear",
@@ -7549,9 +7614,28 @@ fn knock_back(
     );
 }
 
+/// The instance a mob effect gives the player; `None` for a creative or
+/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
+fn mob_effect_instance(
+    effect: &'static str,
+    ticks: i32,
+    amplifier: i32,
+    ambient: bool,
+    immune: bool,
+) -> Option<horizon_client::effects::EffectInstance> {
+    if immune && !ambient {
+        return None;
+    }
+    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
+    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
+    instance.ambient = ambient;
+    Some(instance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::perspective::CameraType;
+    use super::mob_effect_instance;
     use super::thrown_item_axes;
     use super::thrown_item_quad;
     use super::{ProjectileKind, is_item_billboard};
@@ -7562,6 +7646,30 @@ mod tests {
             corners.iter().copied().reduce(glam::Vec3::min).unwrap(),
             corners.iter().copied().reduce(glam::Vec3::max).unwrap(),
         )
+    }
+
+    #[test]
+    fn nautilus_breath_lands_in_creative_as_ambient() {
+        // AbstractNautilus.applyEffects: MobEffectInstance(BREATH_OF_THE_NAUTILUS,
+        // 60, 0, ambient true, visible true, showIcon true), no game-mode gate.
+        let e = mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, true)
+            .expect("applies to a creative player");
+        assert_eq!(
+            (e.id, e.duration, e.amplifier),
+            ("breath_of_the_nautilus", 60, 0)
+        );
+        assert!(e.ambient && e.visible);
+        // Survival gets the same ambient instance.
+        let e =
+            mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, false).unwrap();
+        assert!(e.ambient);
+    }
+
+    #[test]
+    fn other_mob_effects_stay_blocked_in_creative() {
+        assert!(mob_effect_instance("minecraft:poison", 140, 0, false, true).is_none());
+        let e = mob_effect_instance("minecraft:poison", 140, 0, false, false).unwrap();
+        assert!(!e.ambient);
     }
 
     #[test]
@@ -7699,6 +7807,24 @@ mod breeding_tests {
 mod damage_type_tests {
     use super::*;
 
+    #[test]
+    fn named_damage_keeps_its_registry_id_with_or_without_an_attacker() {
+        let named = horizon_client::mobs::NamedDamage::new(
+            "example:fan_fire",
+            horizon_client::mobs::NamedDamage::IS_FIRE,
+        );
+        for attacker in [None, Some(Who::Mob(7)), Some(Who::Player)] {
+            assert_eq!(
+                source_damage_type(Damage {
+                    kind: DamageKind::Named(named),
+                    attacker,
+                    from: None,
+                }),
+                "example:fan_fire"
+            );
+        }
+    }
+
     /// `DamageSources.explosion`: a blast with a causing entity is
     /// `player_explosion` whoever caused it, so an exploding creeper's too.
     #[test]
@@ -7754,7 +7880,11 @@ mod pearl_tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = horizon_client::collisions::load(&root, registry).unwrap();
+        let collision =
+            std::sync::Arc::new(horizon_client::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)
+                .unwrap();
         let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
         // A pool of still water one block deep at y = 4, from x = 20 on (clear of the
         // scene's pyramid): its
@@ -7774,6 +7904,7 @@ mod pearl_tests {
             fluid_tables: &motion.fluids,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
             controlling_player_movement: None,

@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "add_server_reload_listeners",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_add_server_reload_listeners",
+      "neoforge": "AddServerReloadListenersEvent",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "listeners"
+      }
+    },
+    {
+      "name": "server_reload_listener_apply",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_reload_listener_apply",
+      "neoforge": "SimpleJsonResourceReloadListener.apply",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a mod's own data folders, read on each data load of a server (`native_add_server_reload_listeners`,\n`native_server_reload_listener_apply`; `native_reload_listeners.rs`).",
+  "doc_summary": "a mod's own data folders (`AddServerReloadListenersEvent`). `native_add_server_reload_listeners` lists a mod's listeners: `NativeReloadListener::json(id, folder)`, the `.json` files of `data/<namespace>/<folder>/` in every namespace, as vanilla's `SimpleJsonResourceReloadListener` reads its folder. On every data load of a server (a world opening, `/reload`), before `native_server_data_loaded`, `native_server_reload_listener_apply` hands over each listener's files: `<namespace>:<path>` (without `.json`) and the parsed JSON, sorted by id, from the resource root (vanilla's and content mods' data) and the world's enabled data packs, the top pack's file for each id. A file that isn't JSON is logged and left out; a folder that leaves `data/<namespace>/` is skipped. Every mod hears every listener, so check `listener.id`. Bundles need \"hooks\": @API:server_reload_listeners@."
+}

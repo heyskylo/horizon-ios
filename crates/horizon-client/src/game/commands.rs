@@ -1700,6 +1700,10 @@ impl Game<'_> {
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
         }
+        // Entity.teleportPassengers: the riders go with their vehicle at once.
+        if let (Some(from), Some(to)) = (from, self.target_position(t)) {
+            self.teleport_passengers(t, from, to);
+        }
         if self.options.dedicated.is_some()
             && let (Some(entity), Some(from), Some(to)) =
                 (self.network_entity_id(t), from, self.target_position(t))
@@ -1914,6 +1918,40 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
+    /// `ServerClockManager.getInstance`: commands address clock-keyed state.
+    /// Keep the existing Overworld clock tied to the world's canonical day time.
+    fn command_clock_time(&self, clock: &str) -> i64 {
+        if clock == "minecraft:overworld" {
+            self.world.day_time
+        } else {
+            self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
+        }
+    }
+    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+        if clock == "minecraft:overworld" {
+            self.world.day_time = total;
+        } else {
+            self.ui
+                .command_clocks
+                .entry(clock.to_owned())
+                .or_default()
+                .0 = total;
+        }
+    }
+    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+        if clock == "minecraft:overworld" {
+            &mut self.ui.clock
+        } else {
+            &mut self
+                .ui
+                .command_clocks
+                .entry(clock.to_owned())
+                .or_default()
+                .1
+        }
+    }
+    /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
+    /// separate; built-in timelines and markers belong only to Overworld.
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
         if id == "time.query.gametime" {
             let t = self.world.game_time;
@@ -1923,21 +1961,15 @@ impl Game<'_> {
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
         let clock = match ctx.get("clock") {
             Some(Arg::Resource(c)) => c.clone(),
-            _ => {
-                if self.dim == Dim::Nether {
-                    return Err(err(
-                        "commands.time.no_default_clock",
-                        &[&"minecraft:the_nether"],
-                    ));
+            _ => match self.dim {
+                Dim::Overworld => "minecraft:overworld".to_owned(),
+                Dim::End => "minecraft:the_end".to_owned(),
+                Dim::Nether => {
+                    return Err(err("commands.time.no_default_clock", &[&self.dim.id()]));
                 }
-                "minecraft:overworld".to_owned()
-            }
+            },
         };
-        if clock != "minecraft:overworld" {
-            // Only the overworld clock runs in Horizon (no End yet).
-            return Err(err("commands.time.no_default_clock", &[&clock]));
-        }
-        let total = self.world.day_time;
+        let total = self.command_clock_time(&clock);
         match id {
             "time.set" => {
                 let t = i64::from(Self::int(ctx, "time").unwrap_or(0));
@@ -1947,8 +1979,8 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = t;
-                    self.ui.clock.partial = 0.0;
+                    self.set_command_clock_time(&clock, t);
+                    self.command_clock_state(&clock).partial = 0.0;
                 }
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
@@ -1957,7 +1989,10 @@ impl Game<'_> {
                 let Some(Arg::Resource(marker)) = ctx.get("timemarker").cloned() else {
                     return Ok(0);
                 };
-                let Some(m) = self.ui.markers.get(&marker).copied() else {
+                let Some(m) = (clock == "minecraft:overworld")
+                    .then(|| self.ui.markers.get(&marker).copied())
+                    .flatten()
+                else {
                     return Err(err(
                         "commands.time.no_time_marker_found",
                         &[&marker, &clock],
@@ -1973,14 +2008,14 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, target, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = target;
-                    self.ui.clock.partial = 0.0;
+                    self.set_command_clock_time(&clock, target);
+                    self.command_clock_state(&clock).partial = 0.0;
                 }
                 self.feedback(Text::tr(
                     "commands.time.set.time_marker",
                     &[&clock, &marker],
                 ));
-                Ok((self.world.day_time % i64::from(i32::MAX)) as i32)
+                Ok((self.command_clock_time(&clock) % i64::from(i32::MAX)) as i32)
             }
             "time.add" => {
                 let t = i64::from(Self::int(ctx, "time").unwrap_or(0));
@@ -1988,15 +2023,15 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, target, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = target;
+                    self.set_command_clock_time(&clock, target);
                 }
-                let now = self.world.day_time;
+                let now = self.command_clock_time(&clock);
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &now]));
                 Ok((now % i64::from(i32::MAX)) as i32)
             }
             "time.pause" | "time.resume" => {
                 let pause = id == "time.pause";
-                if self.ui.clock.paused == pause {
+                if self.command_clock_state(&clock).paused == pause {
                     return Err(err(
                         if pause {
                             "commands.time.pause.already_paused"
@@ -2006,7 +2041,7 @@ impl Game<'_> {
                         &[&clock],
                     ));
                 }
-                self.ui.clock.paused = pause;
+                self.command_clock_state(&clock).paused = pause;
                 self.feedback(Text::tr(
                     if pause {
                         "commands.time.pause"
@@ -2022,13 +2057,13 @@ impl Game<'_> {
                     Some(Arg::Float(r)) => *r,
                     _ => 1.0,
                 };
-                if self.ui.clock.rate == rate {
+                if self.command_clock_state(&clock).rate == rate {
                     return Err(err(
                         "commands.time.rate.already_same",
                         &[&clock, &java_float(f64::from(rate))],
                     ));
                 }
-                self.ui.clock.rate = rate;
+                self.command_clock_state(&clock).rate = rate;
                 self.feedback(Text::tr(
                     "commands.time.rate",
                     &[&clock, &java_float(f64::from(rate))],
@@ -2043,10 +2078,13 @@ impl Game<'_> {
                 let Some(Arg::Resource(timeline)) = ctx.get("timeline").cloned() else {
                     return Ok(0);
                 };
-                let Some(period) = self.ui.timelines.get(&timeline).copied() else {
+                let Some(period) = (clock == "minecraft:overworld")
+                    .then(|| self.ui.timelines.get(&timeline).copied())
+                    .flatten()
+                else {
                     return Err(err(
                         "commands.time.wrong_timeline_for_clock",
-                        &[&clock, &timeline],
+                        &[&timeline, &clock],
                     ));
                 };
                 if id == "time.query.timeline" {
@@ -2578,6 +2616,12 @@ impl Game<'_> {
     /// from the argument's tag; true when its saved data changed.
     pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
         use horizon_world::nbt::Tag;
+        if self.pot_data(pos).is_some() {
+            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+                return false;
+            };
+            return self.set_pot_data(pos, &tag).unwrap_or(false);
+        }
         let key = (pos[0], pos[1], pos[2]);
         let Some(e) = self.world.block_entities.get(&key) else {
             return false;

@@ -7,9 +7,9 @@
 //!   comparisons and logic read the first component; a value takes its declared type at the
 //!   end (`int` truncates toward zero, `bool` is "not zero"). Unknown names read 0 and are
 //!   reported once.
-//! - OQ-26: `smooth` runs per frame with the frame time; its fade times are seconds (1 by
-//!   default) to cover half of the remaining distance, `fadeIn` while rising, `fadeOut` while
-//!   falling. Each call keeps its own state, so the optional id is not needed. As in Iris
+//! - OQ-26: `smooth` runs per frame with the frame time; its fade times (1 by default) are
+//!   half-lives counted in tenths of a second (`FADE_UNIT`), `fadeIn` while rising, `fadeOut`
+//!   while falling. Each call keeps its own state, so the optional id is not needed. As in Iris
 //!   1.11.7, the first argument is that id when it is written as a number and more follow.
 //! - Unknown names, as in Iris 1.11.7 (#8995): an expression naming something the custom
 //!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
@@ -23,6 +23,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::Properties;
+
+/// The seconds one unit of a `smooth` fade time lasts. Fitted to Iris 1.11.7 with a probe pack of
+/// our own (`smoothprobe`: `smooth(rainStrength, f, f)` for several fades, read across the scene
+/// suite's weather changes): a half-life of a tenth of the fade time's seconds gives every
+/// measured value within 0.016. Horizon's built-in smoothed uniforms use the same 0.1 s unit
+/// (`pack_uniforms.rs` `SECONDS_A_TICK`).
+const FADE_UNIT: f64 = 0.1;
 
 /// A value: up to 16 components (matrices only as names, for `m.column.row`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -505,7 +512,7 @@ impl Custom {
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
                         if fade > 0.0 {
-                            *state = val + (*state - val) * 0.5f64.powf(dt / fade);
+                            *state = val + (*state - val) * 0.5f64.powf(dt / (fade * FADE_UNIT));
                         } else {
                             *state = val;
                         }
@@ -1049,8 +1056,8 @@ mod tests {
     }
 
     #[test]
-    fn smooth_halves_the_distance_per_fade_time() {
-        let mut c = custom("uniform.float.s = smooth(1, target, 2, 0.5)\n");
+    fn smooth_halves_the_distance_per_tenth_of_its_fade_time() {
+        let mut c = custom("uniform.float.s = smooth(1, target, 20, 5)\n");
         let mut target = 0.0;
         let mut run = |t: f64, dt: f64| {
             target = t;
@@ -1059,6 +1066,42 @@ mod tests {
         assert_eq!(run(0.0, 0.0), 0.0);
         assert!((run(1.0, 2.0) - 0.5).abs() < 1e-9, "rising: fadeIn");
         assert!((run(0.0, 0.5) - 0.25).abs() < 1e-9, "falling: fadeOut");
+    }
+
+    /// Iris 1.11.7 with a probe pack of our own, over the scene suite's weather: `weather rain`
+    /// (the rain level climbs 0.01 a tick, vanilla's `ServerLevel.advanceWeatherCycle`) and a
+    /// picture 9.1 s later, then `weather clear` and a picture 9.2 s after that, then one more
+    /// 4.3 s on. Read there: `smooth(rainStrength, 20, 20)` 0.871, 0.118, 0.027;
+    /// `smooth(rainStrength, 2, 10)` 1.0, 0.020, 0.0; `smooth(rainStrength, 5, 5)` 1.0, 0.0, 0.0.
+    #[test]
+    fn smooth_follows_the_rain_as_iris_does() {
+        let mut c = custom(
+            "uniform.float.a = smooth(rainStrength, 20, 20)\n\
+             uniform.float.b = smooth(rainStrength, 2, 10)\n\
+             uniform.float.c = smooth(rainStrength, 5, 5)\n",
+        );
+        let dt = 1.0 / 60.0;
+        let (mut rain, mut read) = (0.0f64, Vec::new());
+        for (seconds, target) in [(9.1, 1.0), (9.2, 0.0), (4.3, 0.0)] {
+            for _ in 0..(seconds / dt) as usize {
+                rain = if target > rain {
+                    (rain + dt / 5.0).min(1.0)
+                } else {
+                    (rain - dt / 5.0).max(0.0)
+                };
+                let r = rain;
+                read = c.eval(dt, &|n: &str| (n == "rainStrength").then(|| Val::scalar(r)));
+            }
+            let got: Vec<f64> = read.iter().map(|v| v.v[0]).collect();
+            let iris = match target {
+                1.0 => [0.871, 1.0, 1.0],
+                _ if seconds > 9.0 => [0.118, 0.020, 0.0],
+                _ => [0.027, 0.0, 0.0],
+            };
+            for (g, i) in got.iter().zip(iris) {
+                assert!((g - i).abs() < 0.03, "{got:?} against Iris's {iris:?}");
+            }
+        }
     }
 
     /// After a restart `smooth` starts from its next value, as on the first frame, instead of

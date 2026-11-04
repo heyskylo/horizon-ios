@@ -2850,12 +2850,7 @@ impl Breath {
     /// `AreaEffectCloud.isWaiting`: before its wait time (20 ticks, 10 for a
     /// lingering potion's).
     pub(super) fn waiting(&self) -> bool {
-        self.age
-            < if self.potion.is_some() {
-                super::potions::LINGERING_WAIT
-            } else {
-                20
-            }
+        self.age < self.potion.as_ref().map_or(20, |p| p.settings.wait_time)
     }
 }
 impl Game<'_> {
@@ -3995,6 +3990,8 @@ impl Game<'_> {
             // from tick 180 to 200; the server removes it.
             d.death_time += 1;
             let (t, p) = (d.death_time, d.position);
+            // `EnderDragon.aiStep` still growls when the phase is not sitting.
+            let sitting = d.phase.sitting();
             if (180..=200).contains(&t) {
                 let r = &mut d.random;
                 let o = [
@@ -4014,6 +4011,40 @@ impl Game<'_> {
                     part.0.y += 0.1;
                 }
             }
+            // `EnderDragon.aiStep` after `tickDeath`: the client growl is
+            // before the `isDeadOrDying` branch, then a dead dragon adds
+            // `ParticleTypes.EXPLOSION` every tick. Both use the risen spot.
+            let mut growl = None;
+            if let Some(d) = self.dragon.as_mut()
+                && !sitting
+            {
+                d.growl -= 1;
+                if d.growl < 0 {
+                    // `this.random`: pitch, then `nextInt(200)`, before the puff.
+                    let pitch = 0.8 + d.random.next_float() * 0.3;
+                    d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
+                    growl = Some(([d.position.x, d.position.y, d.position.z], pitch));
+                }
+            }
+            if let Some((at, pitch)) = growl {
+                self.audio
+                    .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+            }
+            let Some(d) = self.dragon.as_mut() else {
+                return;
+            };
+            let p = d.position;
+            let r = &mut d.random;
+            let o = [
+                f64::from((r.next_float() - 0.5) * 8.0),
+                f64::from((r.next_float() - 0.5) * 4.0),
+                f64::from((r.next_float() - 0.5) * 8.0),
+            ];
+            self.particles.add(
+                &ParticleOptions::simple(ParticleType::Explosion),
+                [p.x + o[0], p.y + 2.0 + o[1], p.z + o[2]],
+                [0.0; 3],
+            );
             return;
         }
         // processFlappingMovement and onFlap: its wing beats, and their sound.
