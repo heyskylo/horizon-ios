@@ -16,10 +16,13 @@ sent the same things over TLS, and every answer is compared exactly:
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
   `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
   `clear`; with no profile service, players named resolve to offline players on both), the live server
-  message, difficulty, default and forced game mode read and changed (including saved properties), autosave
-  read and changed (including its reset after restart), spawn-protection radius read and changed (including
-  invalid input, saved properties and restart), allow-flight read and changed (including invalid input, saved
-  properties and restart), allowlist use and enforcement read and changed
+  message, difficulty, default and forced game mode read and changed (including saved properties), operator
+  permission level read and changed (including saved properties and restart), autosave read and changed
+  (including its reset after restart), spawn-protection radius read and changed (including invalid input,
+  saved properties and restart), allow-flight read and changed (including invalid input, saved properties and
+  restart), hidden online players read and changed (including invalid input, saved properties and restart),
+  status replies read and changed (including invalid input, saved properties and restart), allowlist use and
+  enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -175,6 +178,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":166,"method":"minecraft:serversettings/view_distance"}',
     '{"jsonrpc":"2.0","id":167,"method":"minecraft:serversettings/view_distance/set","params":[8]}',
     '{"jsonrpc":"2.0","id":168,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":220,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":221,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":222,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":223,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[0]}',
+    '{"jsonrpc":"2.0","id":224,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":225,"method":"minecraft:serversettings/operator_user_permission_level/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":226,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":227,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":228,"method":"minecraft:serversettings/operator_user_permission_level"}',
     '{"jsonrpc":"2.0","id":55,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":56,"method":"minecraft:serversettings/force_game_mode/set","params":[true]}',
     '{"jsonrpc":"2.0","id":57,"method":"minecraft:serversettings/force_game_mode"}',
@@ -202,6 +214,24 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":193,"method":"minecraft:serversettings/hide_online_players/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":194,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":195,"method":"minecraft:serversettings/hide_online_players/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":196,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":197,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":198,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":210,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":211,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":212,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":213,"method":"minecraft:serversettings/status_replies/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":214,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":215,"method":"minecraft:serversettings/status_replies/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":216,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":217,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":218,"method":"minecraft:serversettings/status_replies"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -540,9 +570,18 @@ def main():
                 sides[side]['saved_spawn_protection'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('spawn-protection=')), None)
+                sides[side]['saved_operator_user_permission_level'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('op-permission-level=')), None)
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_hide_online_players'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('hide-online-players=')), None)
+                sides[side]['saved_status_replies'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('enable-status=')), None)
                 if side == 'horizon':
                     world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
                     sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
@@ -567,7 +606,13 @@ def main():
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_spawn_protection'] = 'spawn-protection = 8' in (
                         folder / 'server.toml').read_text()
+                    sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
+                        folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_hide_online_players'] = 'hide-online-players = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_status_replies'] = 'enable-status = false' in (
                         folder / 'server.toml').read_text()
             finally:
                 server.stop()
@@ -648,6 +693,24 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_spawn_protection'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":199,"method":"minecraft:serversettings/hide_online_players"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_hide_online_players'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":229,"method":"minecraft:serversettings/operator_user_permission_level"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_operator_user_permission_level'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":219,"method":"minecraft:serversettings/status_replies"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_replies'] = reply
                 finally:
                     ws.sock.close()
             finally:
@@ -749,6 +812,14 @@ def main():
         if vanilla['restarted_spawn_protection'] != horizon['restarted_spawn_protection'] or \
                 vanilla['restarted_spawn_protection'] != {'jsonrpc': '2.0', 'id': 159, 'result': 8}:
             failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Horizon {horizon['restarted_spawn_protection']!r}")
+        if vanilla['saved_operator_user_permission_level'] != horizon['saved_operator_user_permission_level'] or \
+                vanilla['saved_operator_user_permission_level'] != '2':
+            failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Horizon {horizon['saved_operator_user_permission_level']!r}")
+        if not horizon['saved_config_operator_user_permission_level']:
+            failures.append('Horizon did not save operator permission level in server.toml')
+        if vanilla['restarted_operator_user_permission_level'] != horizon['restarted_operator_user_permission_level'] or \
+                vanilla['restarted_operator_user_permission_level'] != {'jsonrpc': '2.0', 'id': 229, 'result': 2}:
+            failures.append(f"restarted operator permission level: vanilla {vanilla['restarted_operator_user_permission_level']!r}, Horizon {horizon['restarted_operator_user_permission_level']!r}")
         if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
             failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
         if not horizon['saved_config_allow_flight']:
@@ -756,6 +827,21 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
+                vanilla['saved_hide_online_players'] != 'true':
+            failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")
+        if not horizon['saved_config_hide_online_players']:
+            failures.append('Horizon did not save hide-online-players in server.toml')
+        if vanilla['restarted_hide_online_players'] != horizon['restarted_hide_online_players'] or \
+                vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 199, 'result': True}:
+            failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Horizon {horizon['restarted_hide_online_players']!r}")
+        if vanilla['saved_status_replies'] != horizon['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
+            failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Horizon {horizon['saved_status_replies']!r}")
+        if not horizon['saved_config_status_replies']:
+            failures.append('Horizon did not save status replies in server.toml')
+        if vanilla['restarted_status_replies'] != horizon['restarted_status_replies'] or \
+                vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 219, 'result': False}:
+            failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Horizon {horizon['restarted_status_replies']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))

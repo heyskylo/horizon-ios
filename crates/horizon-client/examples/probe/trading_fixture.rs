@@ -387,6 +387,8 @@ pub fn main() -> horizon_client::Result<()> {
                     names: &names,
                     trade: Some(&env_trade),
                     maps: None,
+                    limited_crafting: false,
+                    known_recipes: None,
                 };
                 trade(&mut out, name, &kv, &mut world, &env, origin)?;
             }
