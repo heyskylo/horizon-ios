@@ -35,6 +35,17 @@ pub enum Dropped {
     Pack(packs::Kind),
     /// A data pack: it goes into a world.
     DataPack,
+    /// A game build: a `horizon-client` program, or a release archive or an
+    /// Actions artifact around one. `build_import` installs it as its own
+    /// version beside the releases, so a build can be played without waiting
+    /// for a Nightly.
+    Build,
+}
+
+/// Whether `file` holds a game build (`build_import::holds_game`). Asked only
+/// where the cheap checks have not matched: it reads the whole program.
+fn is_build(file: &Path) -> bool {
+    crate::build_import::holds_game(file)
 }
 
 fn open(file: &Path) -> Result<zip::ZipArchive<fs::File>, String> {
@@ -68,6 +79,11 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
         .map(|e| e.to_string_lossy().to_ascii_lowercase());
     match ext.as_deref() {
         Some("hshader") => return Ok(Dropped::Pack(packs::Kind::Shader)),
+        // A game build: the program itself, or a release archive around it.
+        // Taken on the extension alone, unread, so that `build_import` is the
+        // one to say why a file with this name is not a game -- a better answer
+        // than this function's "nothing in it that Horizon reads".
+        Some("exe" | "gz" | "tgz") => return Ok(Dropped::Build),
         Some("mrpack") => {
             let index = read_index(&mut open(file)?)?;
             let loaders = index["dependencies"]
@@ -79,10 +95,12 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
             });
         }
         Some("zip") => {}
+        // A build for Linux or macOS is named `horizon-client` with no
+        // extension, so a file nothing else claims is read before giving up.
+        _ if is_build(file) => return Ok(Dropped::Build),
         _ => {
-            return Err(format!(
-                "{name} can't be imported: drop a .mrpack, a .zip or a .hshader."
-            ))
+            let kinds = "a .mrpack, a .zip, a .hshader or a Horizon game build";
+            return Err(format!("{name} can't be imported: drop {kinds}."));
         }
     }
     let zip = open(file)?;
@@ -110,8 +128,13 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
     {
         return Ok(Dropped::Instance);
     }
+    // An Actions artifact is a zip holding the release archive: the last thing
+    // a zip can be, once nothing a pack or an instance holds has matched.
+    if is_build(file) {
+        return Ok(Dropped::Build);
+    }
     Err(format!(
-        "{name} is neither a pack nor a shared instance: nothing in it that Horizon reads."
+        "{name} is neither a pack, a shared instance nor a game build: nothing in it that Horizon reads."
     ))
 }
 
