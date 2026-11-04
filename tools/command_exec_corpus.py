@@ -2377,6 +2377,42 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def recipe_special_arguments():
+    """Recipe commands reject specials before book mutation; displays still count (#8883)."""
+    objective = 'recipe_result'
+    ops = setup(f'/scoreboard objectives add {objective} dummy', '/recipe take @s *')
+    ops.append(cmd('/execute if entity @s[type=player]', expect_result=1))
+
+    def recipe(verb, recipe_id, expected):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run recipe {verb} @s {recipe_id}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=expected),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(expected > 0))]
+
+    for recipe_id, displays in [('minecraft:crafting_table', 1),
+                                ('minecraft:leather_helmet_dyed', 1),
+                                ('minecraft:tipped_arrow', 1), ('minecraft:map_cloning', 8)]:
+        for verb, expected in [('give', displays), ('give', 0), ('take', displays), ('take', 0)]:
+            ops += recipe(verb, recipe_id, expected)
+    special = ['black_banner_duplicate', 'book_cloning', 'decorated_pot',
+               'firework_rocket', 'repair_item', 'shield_decoration']
+    invalid = special + ['h206_no_such_recipe', 'lingering_potion_awkward_blaze_powder']
+    for recipe_id in invalid:
+        for verb in ('give', 'take'):
+            ops += recipe(verb, 'minecraft:' + recipe_id, 0)
+    ops += recipe('give', '*', 1746)
+    ops += recipe('give', '*', 0)
+    # Explicit argument rejection is independent of whether the book is empty or full.
+    for recipe_id in invalid:
+        for verb in ('give', 'take'):
+            ops += recipe(verb, 'minecraft:' + recipe_id, 0)
+    ops += recipe('take', '*', 1746)
+    ops += recipe('take', '*', 0)
+    return ops + setup(f'/scoreboard objectives remove {objective}')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2431,6 +2467,7 @@ def groups():
         ('item NBT count bounds', item_nbt_count_bounds()),
 
         ('world', world_misc()),
+        ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
         ('ticking and random', ticking()),
