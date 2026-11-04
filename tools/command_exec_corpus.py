@@ -2436,6 +2436,212 @@ def mob_effect_update_result():
     for name in ('long', 'short', 'new'):
         ops += fields(f'@e[tag=effect_mix_{name},limit=1]')
     return ops + setup(f'/kill {group}', f'/scoreboard objectives remove {objective}')
+def axolotl_integer_memory_ttl():
+    """Loaded integer-memory TTL survives NoAI; behavior writes reset it (#8852)."""
+    keys = ('play_dead_ticks', 'temptation_cooldown_ticks')
+    ops = setup('/fill 0 217 0 15 217 15 stone', '/fill 0 218 0 15 225 15 water')
+
+    def summon(tag, key, value, ttl, no_ai, x=8.5, z=12.5):
+        lifetime = '' if ttl is None else f',ttl:{ttl}'
+        return setup(f'/summon axolotl {x} 220 {z} '
+                     f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,PersistenceRequired:1b,'
+                     f'Brain:{{memories:{{"minecraft:{key}":{{value:{value}{lifetime}}}}}}}}}')
+
+    def observe(tag, key, value, ttl):
+        target = f'@e[tag={tag},limit=1]'
+        path = f'Brain.memories."minecraft:{key}"'
+        if value is None:
+            memory = f'/execute unless data entity {target} {path}'
+        else:
+            # Typed predicates check the serialized tags without depending on SNBT styling.
+            entry = '{value:' + str(value)
+            if ttl is not None:
+                entry += ',ttl:' + str(ttl) + 'L'
+            entry += '}'
+            nbt = '{Brain:{memories:{"minecraft:' + key + '":' + entry + '}}}'
+            memory = f'/execute if entity @e[tag={tag},limit=1,nbt={nbt}]'
+            if ttl is None:
+                memory += f' unless data entity {target} {path}.ttl'
+        return [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},limit=1,nbt={{NoAI:1b}}]'),
+                cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ '
+                    'if block ~ ~ ~ minecraft:water', expect_result=1),
+                cmd(memory, expect_result=1)]
+
+    codecs = [(v, None, 7, None) for v in ('7', '7L', '7b', '7s', '7.5f', '7.5d')]
+    codecs += [('"invalid"', '5L', None, None)]
+    codecs += [('7', ttl, 7, 5) for ttl in ('5L', '5', '5b', '5s', '5.5d')]
+    codecs += [('7', '"invalid"', 7, None), ('7', '0L', 7, 0), ('7', '-1L', 7, -1)]
+    for key in keys:
+        for case, (value, ttl, expected_value, expected_ttl) in enumerate(codecs):
+            tag = f'axmem_codec_{key}_{case}'
+            ops += summon(tag, key, value, ttl, 1)
+            ops += observe(tag, key, expected_value, expected_ttl)
+            ops += setup(f'/kill @e[tag={tag}]')
+    # Clear dead numeric-control subjects before the shared tank's six actual ticks.
+    ops.append({'op': 'tick', 'n': 25})
+    cases = []
+    for no_ai in (0, 1):
+        for key in keys:
+            for name, ttl in [('absent', None), ('zero', '0L'), ('one', '1L'),
+                              ('five', '5L'), ('negative', '-1L'), ('max', '9223372036854775807L')]:
+                tag = f'axmem_{no_ai}_{key}_{name}'
+                i = len(cases)
+                ops += summon(tag, key, '100', ttl, no_ai, 2.5 + (i % 6) * 2, 2.5 + (i // 6) * 2)
+                cases.append((tag, key, no_ai, name))
+    elapsed = 0
+    for tick in (0, 1, 3, 6):
+        if tick != elapsed:
+            ops.append({'op': 'tick', 'n': tick - elapsed})
+        elapsed = tick
+        for tag, key, no_ai, name in cases:
+            value = None if not no_ai and tick > 0 and name in ('zero', 'negative') else (
+                100 if no_ai else 100 - tick)
+            ttl = {'zero': 0, 'one': 1, 'five': 5, 'negative': -1}.get(name)
+            if not no_ai and tick > 0:
+                ttl = None  # The behavior's ordinary setMemory resets expiry.
+            ops += observe(tag, key, value, ttl)
+    return ops + setup('/kill @e[type=axolotl]', '/fill 0 218 0 15 225 15 air')
+def parrot_saved_age():
+    """Parrot saved Age is absent even when supplied; pigs retain modeled Age (#8842)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('absent', '{' + flags + '}'),
+             ('zero', '{' + flags + ',Age:0}'),
+             ('negative', '{' + flags + ',Age:-100}'),
+             ('positive', '{' + flags + ',Age:100}')]
+    for species in ('parrot', 'pig'):
+        for mode, nbt in modes:
+            tag = f'saved_age_{species}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup(f'/tag @e[type={species}] add h198_seen',
+                         f'/kill @e[type={species}]',
+                         f'/summon {species} 4.5 220 4.5 {nbt}'.rstrip(),
+                         f'/tag @e[type={species},tag=!h198_seen,limit=1] add {tag}',
+                         f'/tag {target} add h198_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd(f'/data get entity {target} Age')]
+            ops += setup(f'/kill {target}')
+    return ops
+def animal_noai_love():
+    """Animal.aiStep love clocks run with NoAI; parrot Age inputs are ignored (#8825)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    cases = [('adult', 0, 40), ('negative_age', -100, 40),
+             ('positive_age', 100, 40), ('zero', 0, 0), ('negative', 0, -2)]
+    for species in ('pig', 'parrot'):
+        for no_ai in (0, 1):
+            for name, age, love in cases:
+                tag = f'love_{species}_{no_ai}_{name}'
+                target = f'@e[tag={tag},limit=1]'
+                variant = ',Variant:3' if species == 'parrot' else ''
+                ops += setup(f'/summon {species} 4.5 220 4.5 '
+                             f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,'
+                             f'PersistenceRequired:1b,Age:{age},InLove:{love}{variant}}}')
+                elapsed = 0
+                for tick in (0, 1, 3):
+                    if tick != elapsed:
+                        ops.append({'op': 'tick', 'n': tick - elapsed})
+                    elapsed = tick
+                    ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                    # Raw parrot Age omission is a separate save-field discrepancy.
+                    fields = ('Age', 'InLove') if species == 'pig' else ('InLove',)
+                    for field in fields:
+                        ops.append(cmd(f'/data get entity {target} {field}'))
+                    if species == 'parrot':
+                        ops.append(cmd(f'/data get entity {target} Variant'))
+                ops += setup(f'/kill {target}')
+    for name, variant in [('absent', ''), ('high', ',Variant:9'), ('negative', ',Variant:-2')]:
+        tag = f'love_parrot_variant_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon parrot 4.5 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b{variant}}}')
+        for tick in (0, 1):
+            if tick:
+                ops.append({'op': 'tick', 'n': 1})
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/data get entity {target} Variant')]
+        ops += setup(f'/kill {target}')
+    return ops
+def turtle_summon_home():
+    """Turtle load defaults precede summon placement; plain summons finalize (#8804)."""
+    ops = setup('/forceload add -32 -32 31 31',
+                '/fill 9 199 9 11 199 11 stone',
+                '/fill -12 200 -14 -9 200 -11 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('empty', '{}'), ('controlled', '{' + flags + '}'),
+             ('home', '{' + flags + ',home_pos:[I;4,5,6]}'),
+             ('invalid', '{' + flags + ',home_pos:[I;4,5]}'),
+             ('pos', '{' + flags + ',Pos:[-20.5d,210d,-20.5d]}')]
+    for site, pos in [('positive', '10.5 200 10.5'), ('negative', '-10.25 201 -12.75')]:
+        for mode, nbt in modes:
+            tag = f'turtle_home_{site}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/kill @e[type=turtle]',
+                         f'/summon turtle {pos} {nbt}'.rstrip(),
+                         f'/tag @e[type=turtle,tag=!h187_seen,limit=1] add {tag}',
+                         f'/tag {target} add h187_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                if tick and mode in ('plain', 'empty'):
+                    # Check a finite position without pinning motion.
+                    ops.append(cmd(f'/execute as {target} at @s if entity @s[distance=..0.0001]',
+                                   expect_result=1))
+                else:
+                    ops.append(cmd(f'/data get entity {target} Pos'))
+                ops.append(cmd(f'/data get entity {target} home_pos'))
+                ops.append(cmd(f'/data get entity {target} has_egg'))
+            if mode == 'controlled':
+                ops += [cmd(f'/data remove entity {target} home_pos'),
+                        cmd(f'/data get entity {target} home_pos'),
+                        cmd(f'/data get entity {target} Pos')]
+    return ops + setup('/kill @e[type=turtle]')
+def command_minecart_loaded_success():
+    """Loaded nonempty commands trigger the synced-data count reset (#8772)."""
+    ops = setup('/fill 9 219 9 11 219 11 stone')
+    for name, command in [('absent', ''), ('empty', ',Command:""'),
+                          ('nonempty', ',Command:"say hi"')]:
+        for count in (2, -3, 0):
+            tag = f'cart_load_{name}_{str(count).replace("-", "n")}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/summon command_block_minecart 10.5 220 10.5 '
+                         f'{{Tags:["{tag}"],NoGravity:1b,TrackOutput:0b,'
+                         f'SuccessCount:{count}{command}}}')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('Command', 'SuccessCount', 'TrackOutput', 'UpdateLastExecution'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+            ops += setup(f'/kill {target}')
+    return ops
+def ravager_noai_counters():
+    ops = setup('/difficulty normal', '/gamerule spawn_mobs false',
+                '/gamerule mob_griefing false', '/forceload add 0 0 31 31',
+                '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 206 15 air')
+    case = 0
+    for no_ai in (0, 1):
+        for attack, stun, roar in ((20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)):
+            case += 1
+            tag = f'h179_{case}'
+            target = f'@e[type=minecraft:ravager,tag={tag},limit=1]'
+            ops += setup('/summon ravager 10.5 200 10.5 '
+                         f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,Silent:1b,'
+                         f'PersistenceRequired:1b,AttackTick:{attack},StunTick:{stun},RoarTick:{roar}}}')
+            elapsed = 0
+            for tick in (0, 1, 2, 3, 10, 12, 22):
+                if tick > elapsed:
+                    ops.append({'op': 'tick', 'n': tick - elapsed})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('AttackTick', 'StunTick', 'RoarTick'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+                elapsed = tick
+            ops += setup(f'/kill {target}')
+    return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
 
 
 def groups():
@@ -2451,6 +2657,12 @@ def groups():
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
         ('mob effect update result', mob_effect_update_result()),
+        ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
+        ('parrot saved Age', parrot_saved_age()),
+        ('animal NoAI love', animal_noai_love()),
+        ('turtle summon home', turtle_summon_home()),
+        ('command minecart loaded success', command_minecart_loaded_success()),
+        ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),

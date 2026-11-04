@@ -955,6 +955,16 @@ impl Game<'_> {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
         set_key(&mut tag, "id", Tag::String(kind.into()));
+        // Turtle.readAdditionalSaveData chooses its home before SummonCommand's snapTo.
+        // Preserve that load-stage default while the shared loader receives the final Pos.
+        if kind == "minecraft:turtle"
+            && !matches!(tag.get("home_pos"), Some(Tag::IntArray(home)) if home.len() == 3)
+        {
+            let home = entity_nbt::position(&tag).map_or([0; 3], |p| {
+                [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
+            });
+            set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
+        }
         place_summoned(&mut tag, pos);
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
