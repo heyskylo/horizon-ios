@@ -2472,7 +2472,10 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
     .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
-    need_prepared(tag)?;
+    if let Err(e) = need_prepared(tag) {
+        account::discard_unread_sessions();
+        return Err(e);
+    }
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);

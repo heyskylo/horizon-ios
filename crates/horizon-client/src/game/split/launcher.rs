@@ -32,16 +32,18 @@ fn parse(json: &str) -> (Vec<Arc<AuthSession>>, Vec<String>) {
     let mut sessions = Vec::new();
     let mut unavailable = Vec::new();
     for a in list {
+        // Every file listed is read (and so deleted) first, whatever else the entry says:
+        // nothing with a token stays on disk.
+        let session = a
+            .get("file")
+            .and_then(|v| v.as_str())
+            .and_then(|file| AuthSession::load(std::path::Path::new(file)).ok());
         let Some(name) = a.get("name").and_then(|v| v.as_str()) else {
             continue;
         };
         if !horizon_client::split_profiles::valid_name(name) {
             continue;
         }
-        let session = a
-            .get("file")
-            .and_then(|v| v.as_str())
-            .and_then(|file| AuthSession::load(std::path::Path::new(file)).ok());
         match session {
             Some(session)
                 if session.name.eq_ignore_ascii_case(name)
@@ -87,6 +89,38 @@ mod tests {
             !file.exists(),
             "session files are read once even when mismatched"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_listed_session_file_is_consumed() {
+        let dir = std::env::temp_dir().join(format!("hz-split-consumed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str| {
+            let file = dir.join(format!("session-{n}.json"));
+            std::fs::write(&file, r#"{"name":"Bea","uuid":"00000000000000000000000000000002","access_token":"not-a-real-token","user_type":"msa"}"#).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            file
+        };
+        let (bad_name, no_name, good) = (file("a"), file("b"), file("c"));
+        let uuid = "00000000000000000000000000000002";
+        let json = serde_json::json!([
+            {"name": "not a name!", "uuid": uuid, "file": bad_name},
+            {"uuid": uuid, "file": no_name},
+            {"name": "Bea", "uuid": uuid, "file": good},
+        ])
+        .to_string();
+        let (sessions, unavailable) = parse(&json);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!((sessions[0].name.as_str(), sessions[0].uuid), ("Bea", 2));
+        assert!(unavailable.is_empty());
+        for f in [bad_name, no_name, good] {
+            assert!(!f.exists(), "{} left on disk", f.display());
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

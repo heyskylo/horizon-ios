@@ -443,8 +443,18 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     assert_eq!(list[2]["name"], "Dan");
     assert!(list[2]["skipped"].as_str().unwrap().contains("ownership"));
     assert!(!json.contains("access_token") && !json.contains("dan-token"));
-    let file = std::fs::read_to_string(list[0]["file"].as_str().unwrap()).unwrap();
+    let path = PathBuf::from(list[0]["file"].as_str().unwrap());
+    let file = std::fs::read_to_string(&path).unwrap();
     assert!(file.contains("bea-token") && !file.contains("mc-token"));
+    // Only the Minecraft token goes: the refresh token stays in the keychain.
+    assert!(!file.contains("ms-refresh-1"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "only the player reads it");
+        assert_eq!(mode(&dir), 0o700, "nor lists the folder");
+    }
     let _ = std::fs::remove_dir_all(&dir);
     // Alone: nothing.
     let mut alone = signed_in(&store, &secrets("mc-token", true));
@@ -465,6 +475,76 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     )
     .unwrap();
     assert!(splitscreen_on(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn splitscreen_never_hands_over_an_account_sent_back_to_sign_in() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    // A token with hours left, for an account the services sent back to sign-in (a refused
+    // refresh, or a token that now names another profile).
+    let refused = Secrets {
+        sign_in_required: true,
+        ..secrets("other-profile-token", true)
+    };
+    let eve = Account {
+        uuid: "e".into(),
+        name: "Eve".into(),
+        skin: None,
+        cape: None,
+    };
+    accounts.add(&store, eve, &refused).unwrap();
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-refused-{}", std::process::id()));
+    // With time to renew, and out of time: never offered either way.
+    for deadline in [
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+        std::time::Instant::now(),
+    ] {
+        let env = account_sessions_until(
+            &offline(),
+            Some("test-client"),
+            &store,
+            &dir,
+            &mut accounts,
+            deadline,
+        );
+        let list: Vec<Value> = serde_json::from_str(&env[0].1).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "Eve");
+        assert!(list[0].get("file").is_none());
+        assert!(list[0]["skipped"]
+            .as_str()
+            .unwrap()
+            .contains("Sign in again"));
+    }
+    let written = std::fs::read_dir(&dir).map_or(0, |d| d.count());
+    assert_eq!(written, 0, "no session file for it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unread_session_files_go_once_the_game_would_refuse_them() {
+    let dir = std::env::temp_dir().join(format!("hz-session-reap-{}", std::process::id()));
+    let secrets = secrets("not-a-real-token", true);
+    let waiting = write_session_file(&dir, &notch(), &secrets).unwrap();
+    let stale = write_session_file(&dir, &notch(), &secrets).unwrap();
+    let read = write_session_file(&dir, &notch(), &secrets).unwrap();
+    // A game that never started: its file is past the age the game takes.
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(300))
+        .unwrap();
+    // A game that started took its file (and deleted it).
+    std::fs::remove_file(&read).unwrap();
+    let mut unread = vec![waiting.clone(), stale.clone(), read];
+    reap(&mut unread, SESSION_FILE_LIFE);
+    assert!(waiting.exists(), "a game may still take it");
+    assert!(!stale.exists(), "no token left behind");
+    assert_eq!(unread, [waiting.clone()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

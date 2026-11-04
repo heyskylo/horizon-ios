@@ -1868,6 +1868,12 @@ pub fn write_session_file(
     secrets: &Secrets,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // The folder too is this user's only (the files already are).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
     // Leftovers of games that never started (refused by the game after two minutes anyway).
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -1900,6 +1906,72 @@ pub fn write_session_file(
     });
     std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// How long a game takes a session file: it refuses one older than this (the game's
+/// `MAX_SESSION_FILE_AGE`), so the launcher deletes it then if it is still there.
+const SESSION_FILE_LIFE: Duration = Duration::from_secs(120);
+
+/// The session files this launcher wrote for games it starts, until they are gone: a game
+/// deletes each as it reads it; the rest go when the game would refuse them anyway
+/// ([`SESSION_FILE_LIFE`], a game that never started or crashed first) or when the launch failed
+/// ([`discard_unread_sessions`]). Nothing with a token stays on disk.
+static UNREAD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// [`write_session_file`] for a game this launcher is about to start (see [`UNREAD`]).
+fn write_launch_session_file(
+    dir: &Path,
+    account: &Account,
+    secrets: &Secrets,
+) -> Result<PathBuf, String> {
+    let path = write_session_file(dir, account, secrets)?;
+    let Ok(mut unread) = UNREAD.lock() else {
+        return Ok(path);
+    };
+    if unread.is_empty() {
+        // One reaper while files wait; it ends with the list (under its lock, so a file added
+        // as it ends starts the next).
+        let _ = std::thread::Builder::new()
+            .name("Session files".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let Ok(mut unread) = UNREAD.lock() else {
+                    return;
+                };
+                reap(&mut unread, SESSION_FILE_LIFE);
+                if unread.is_empty() {
+                    return;
+                }
+            });
+    }
+    unread.push(path.clone());
+    Ok(path)
+}
+
+/// Deletes the files of `unread` older than `life` (the game would refuse them) and forgets
+/// those gone (read).
+fn reap(unread: &mut Vec<PathBuf>, life: Duration) {
+    unread.retain(|path| {
+        let waiting = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m.elapsed().is_ok_and(|age| age <= life));
+        if !waiting {
+            let _ = std::fs::remove_file(path);
+        }
+        waiting
+    });
+}
+
+/// Deletes the session files written for a launch whose game didn't start, or has ended: any it
+/// didn't read is left over (a game deletes those it reads).
+pub fn discard_unread_sessions() {
+    let files = UNREAD
+        .lock()
+        .map(|mut unread| std::mem::take(&mut *unread))
+        .unwrap_or_default();
+    for path in files {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Called under the account-operation lock, after the final profile is known. Rejected or
@@ -2106,7 +2178,7 @@ fn session_file(game_home: &Path, pass: Launch, env: Vec<(&'static str, String)>
         ..GameSession::default()
     };
     if let Some((account, secrets)) = pass.session {
-        match write_session_file(&game_home.join("sessions"), &account, &secrets) {
+        match write_launch_session_file(&game_home.join("sessions"), &account, &secrets) {
             Ok(file) => out.file = Some(file),
             Err(e) => out.offline = Some(e),
         }
@@ -2188,6 +2260,11 @@ fn account_sessions_until(
     for account in others {
         let skipped =
             |reason: &str| json!({ "name": account.name, "uuid": account.uuid, "skipped": reason });
+        // Under the account lock, as every renewal is: a refresh token Microsoft rotates here is
+        // not lost to another launcher renewing the same account at once. Still busy at the
+        // deadline: no request, the token while it holds.
+        let operation =
+            session::lock_within(store, Some(deadline.saturating_duration_since(Instant::now())));
         let Some(secrets) = secrets_in(store, &account.uuid) else {
             list.push(skipped("Sign in again in the launcher."));
             continue;
@@ -2195,28 +2272,28 @@ fn account_sessions_until(
         let fallback = skipped("Sign in again in the launcher.");
         let before = serde_json::to_string(&secrets).ok();
         let uuid = account.uuid.clone();
-        let known = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
-        let late = Instant::now() >= deadline;
+        // An account the services sent back to sign-in (a refused refresh, a token now for
+        // another profile) is never handed over, whatever its token's time says.
+        let holds = |s: &Secrets, margin: u64| {
+            s.owns && !s.sign_in_required && s.minecraft_expires_at > now() + margin
+        };
+        let known = holds(&secrets, RENEW_BEFORE);
+        let late = operation.is_err() || Instant::now() >= deadline;
         let (account, secrets) = match known {
             true => (Some(account), secrets),
             // Out of time: its token while it holds, else Sign in again.
-            false if late => {
-                let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
-                (fresh.then_some(account), secrets)
-            }
+            false if late => (holds(&secrets, 60).then_some(account), secrets),
             false => match check(ep, client_id, &account, secrets) {
                 Check::Owns(renewed, secrets) => {
                     accounts.update(renewed.clone());
                     (Some(renewed), secrets)
                 }
                 Check::DoesNot(secrets) => (None, secrets),
-                // A token for another profile would sign this one in as someone else.
-                Check::NoAnswer(e, secrets) if e == OTHER_PROFILE => (None, secrets),
                 Check::NoAnswer(e, secrets) => {
                     eprintln!("{}'s session for splitscreen: {e}", account.name);
-                    // Its token may still hold: offered only while it does.
-                    let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
-                    (fresh.then_some(account), secrets)
+                    // Its token may still hold (no network): offered only while it does. A token
+                    // for another profile is marked sign-in required, so it never is.
+                    (holds(&secrets, 60).then_some(account), secrets)
                 }
             },
         };
@@ -2225,13 +2302,14 @@ fn account_sessions_until(
         if let (true, Some(text)) = (after != before, after) {
             let _ = store.set(&uuid, &text);
         }
+        drop(operation);
         let Some(account) = account else {
             list.push(if secrets.owns { fallback } else {
                 json!({ "name": fallback["name"], "uuid": uuid, "skipped": "This account needs Minecraft: Java Edition ownership confirmed in the launcher." })
             });
             continue;
         };
-        match write_session_file(dir, &account, &secrets) {
+        match write_launch_session_file(dir, &account, &secrets) {
             Ok(file) => {
                 list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }))
             }

@@ -78,6 +78,28 @@ fn boxed(start: impl FnOnce() -> Result<Option<Game<'static>>>) -> Result<Box<Ga
     }
 }
 
+/// P1's server lets a splitscreen player in (#6399: everyone who plays elsewhere owns the
+/// game): `account`, its launcher Microsoft session (whether that has expired), else an offline
+/// profile, `unavailable` when that name is a launcher account that couldn't be handed over.
+/// An offline profile joins only a server on this computer or its local network
+/// (`local`, resolved only for it) in offline mode; a Microsoft account any server while its
+/// session holds. The refusal is its translation key.
+fn server_gate(
+    account: Option<bool>,
+    unavailable: bool,
+    local: impl FnOnce() -> bool,
+    online: bool,
+) -> std::result::Result<(), &'static str> {
+    match account {
+        Some(false) => Ok(()),
+        Some(true) => Err("horizon.splitscreen.account_expired"),
+        None if !local() => Err(LOCAL_ONLY),
+        None if !online => Ok(()),
+        None if unavailable => Err("horizon.splitscreen.account_unavailable"),
+        None => Err(ONLINE_ONLY),
+    }
+}
+
 impl Split<'_> {
     /// The first seat free (2 to `MAX_PLAYERS`).
     pub(super) fn free_seat(&self) -> Option<usize> {
@@ -151,31 +173,16 @@ impl Split<'_> {
             .accounts
             .iter()
             .find(|a| a.name.eq_ignore_ascii_case(name));
-        if account.is_none() && !local_server(&address) {
-            return Err(horizon_client::lang::tr(LOCAL_ONLY, &[]));
-        }
-        if !self.host.online_server() && account.is_none() {
-            return Ok(());
-        }
-        // An online-mode server: only a Microsoft account whose sign-in still holds (the
-        // launcher renews it, and hands the game a session at start).
-        match account {
-            None if launcher::unavailable()
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(name)) =>
-            {
-                Err(horizon_client::lang::tr(
-                    "horizon.splitscreen.account_unavailable",
-                    &[&name],
-                ))
-            }
-            None => Err(horizon_client::lang::tr(ONLINE_ONLY, &[])),
-            Some(a) if a.expired() => Err(horizon_client::lang::tr(
-                "horizon.splitscreen.account_expired",
-                &[&name],
-            )),
-            Some(_) => Ok(()),
-        }
+        let unavailable = launcher::unavailable()
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(name));
+        server_gate(
+            account.map(|a| a.expired()),
+            unavailable,
+            || local_server(&address),
+            self.host.online_server(),
+        )
+        .map_err(|key| horizon_client::lang::tr(key, &[&name]))
     }
 
     /// A server's resource packs: the others answer as P1 did (asked once, by P1). A player
@@ -556,7 +563,7 @@ fn folder_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_name, local_server};
+    use super::{folder_name, local_server, server_gate, LOCAL_ONLY, ONLINE_ONLY};
 
     #[test]
     fn a_profile_name_never_leaves_the_profiles_folder() {
@@ -591,5 +598,37 @@ mod tests {
         ] {
             assert!(!local_server(elsewhere), "{elsewhere} is not local");
         }
+    }
+
+    #[test]
+    fn only_a_microsoft_session_lifts_the_local_server_rule() {
+        const EXPIRED: &str = "horizon.splitscreen.account_expired";
+        const UNAVAILABLE: &str = "horizon.splitscreen.account_unavailable";
+        // (account: None offline, Some(expired)), unavailable, local, online => the answer.
+        let cases: [(Option<bool>, bool, bool, bool, Result<(), &str>); 11] = [
+            // An offline profile: home-network offline-mode servers only.
+            (None, false, true, false, Ok(())),
+            (None, false, false, false, Err(LOCAL_ONLY)),
+            (None, false, false, true, Err(LOCAL_ONLY)),
+            (None, false, true, true, Err(ONLINE_ONLY)),
+            // A launcher account that couldn't be handed over plays as an offline profile.
+            (None, true, false, false, Err(LOCAL_ONLY)),
+            (None, true, true, true, Err(UNAVAILABLE)),
+            (None, true, true, false, Ok(())),
+            // Its own Microsoft session: any server, while it holds.
+            (Some(false), false, false, false, Ok(())),
+            (Some(false), false, false, true, Ok(())),
+            (Some(true), false, false, true, Err(EXPIRED)),
+            (Some(true), false, true, false, Err(EXPIRED)),
+        ];
+        for (account, unavailable, local, online, want) in cases {
+            assert_eq!(
+                server_gate(account, unavailable, || local, online),
+                want,
+                "{account:?} unavailable={unavailable} local={local} online={online}"
+            );
+        }
+        // A Microsoft session never needs the address resolved.
+        assert_eq!(server_gate(Some(false), false, || unreachable!(), true), Ok(()));
     }
 }
