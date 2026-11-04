@@ -34,10 +34,11 @@ pub(super) fn key(
     let mut hash = Sha256::new();
     for part in [
         // Bump when launcher generation or validation changes the snapshot's contents.
-        "trait-injection-v2",
+        "trait-injection-v3",
         revision,
         mixins,
-        profile.name(),
+        // The Cargo profile: `Performance` and `Dev` stage the same source.
+        profile.cargo().0,
         FEATURES,
         super::rust_toolchain::VERSION,
     ] {

@@ -15,8 +15,8 @@ use horizon_client::{
         properties::{GAME_MODES, ServerProperties, SystemEntropy},
         user_cache::UserCache,
         user_lists::{
-            BanEntry, BanList, IpBanList, NameAndId, OpEntry, OpList, WhiteEntry, WhiteList,
-            format_date,
+            BanEntry, BanList, Change, IpBanList, NameAndId, OpEntry, OpList, WhiteEntry,
+            WhiteList, format_date,
         },
     },
     text::Text,
@@ -408,8 +408,22 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
     Ok(true)
 }
 
+/// The event a change of a list is (`operators_added`, `bans_removed`...), and the entry it is about.
+fn listed<E>(list: &str, change: Change<E>) -> (String, E) {
+    match change {
+        Change::Added(e) => (format!("{list}_added"), e),
+        Change::Removed(e) => (format!("{list}_removed"), e),
+    }
+}
+
+/// What a ban says besides who it is for: the reason and the source, and when it ends (milliseconds, or none).
+fn ban_fields<T>(ban: &BanEntry<T>) -> serde_json::Value {
+    serde_json::json!({ "reason": ban.reason, "source": ban.source, "expires": ban.expires })
+}
+
 /// The operator, whitelist and ban lists (DedicatedPlayerList), shared with
-/// the connection threads that check logins.
+/// the connection threads that check logins, and the server's own switches
+/// that an operator's command changes.
 pub(super) struct Lists {
     pub ops: OpList,
     pub white: WhiteList,
@@ -419,6 +433,45 @@ pub(super) struct Lists {
     pub enforce_whitelist: bool,
     /// `op-permission-level`: what `/op` grants (operatorUserPermissions).
     pub op_level: i32,
+    /// `MinecraftServer.playerIdleTimeout`: the minutes of idleness after
+    /// which a player is kicked, `player-idle-timeout` at the start and
+    /// `/setidletimeout` after it.
+    pub player_idle_timeout: i32,
+    /// `/stop` (MinecraftServer.halt): the server loop ends after this tick.
+    pub stop: bool,
+    /// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
+    pub autosave: bool,
+    /// UUID prefixes (lower case, with dashes) that pass the whitelist: `whitelist-bypass.txt`.
+    pub whitelist_bypass: Vec<String>,
+}
+
+/// The lines of `whitelist-bypass.txt`: one UUID prefix each, e.g. `00000000-0000-0000-0009-` for Floodgate's
+/// Bedrock players. `#` starts a comment. A prefix has to be a dashed UUID start of at least 8 characters, so
+/// a typo can't open the whitelist to everybody.
+fn parse_whitelist_bypass(text: &str) -> std::result::Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() < 8
+            || line.len() > 36
+            || !line.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        {
+            return Err(format!(
+                "whitelist-bypass.txt line {}: {line:?} is not a UUID prefix",
+                n + 1
+            ));
+        }
+        out.push(line);
+    }
+    Ok(out)
 }
 impl Lists {
     fn load() -> Self {
@@ -430,7 +483,51 @@ impl Lists {
             use_whitelist: false,
             enforce_whitelist: false,
             op_level: 4,
+            player_idle_timeout: 0,
+            stop: false,
+            autosave: true,
+            whitelist_bypass: Vec::new(),
         };
+        // Horizon only: players from a proxy's Bedrock bridge (Floodgate) are never on whitelist.json.
+        if let Ok(text) = std::fs::read_to_string("whitelist-bypass.txt") {
+            match parse_whitelist_bypass(&text) {
+                Ok(prefixes) => {
+                    log(
+                        "INFO",
+                        &format!(
+                            "whitelist-bypass.txt: {} UUID prefix(es) skip the whitelist",
+                            prefixes.len()
+                        ),
+                    );
+                    l.whitelist_bypass = prefixes;
+                }
+                Err(e) => log("ERROR", &format!("{e}; the file is ignored")),
+            }
+        }
+        // Each list tells the event stream what changes in it, as vanilla's tell their `NotificationService`.
+        l.ops.watch(|change| {
+            let (kind, e) = listed("operators", change);
+            events::record(
+                &kind,
+                &e.user.name,
+                e.user.id,
+                serde_json::json!({ "level": e.level, "bypassesPlayerLimit": e.bypasses_player_limit }),
+            );
+        });
+        l.white.watch(|change| {
+            let (kind, e) = listed("allowlist", change);
+            events::record(&kind, &e.user.name, e.user.id, serde_json::json!({}));
+        });
+        l.bans.watch(|change| {
+            let (kind, e) = listed("bans", change);
+            events::record(&kind, &e.user.name, e.user.id, ban_fields(&e));
+        });
+        l.ip_bans.watch(|change| {
+            let (kind, e) = listed("ip_bans", change);
+            let mut fields = ban_fields(&e);
+            fields["ip"] = e.user.clone().into();
+            events::record_server(&kind, fields);
+        });
         // DedicatedPlayerList's constructor order and its LOGGER.warn lines.
         let warn = |what: &str, r: std::result::Result<(), String>| {
             if let Err(e) = r {
@@ -452,27 +549,23 @@ impl Lists {
     }
     /// PlayerList.isWhiteListed.
     fn whitelisted(&self, user: &NameAndId) -> bool {
-        !self.use_whitelist || self.ops.contains(user) || self.white.contains(user)
+        !self.use_whitelist
+            || self.ops.contains(user)
+            || self.white.contains(user)
+            || self.bypasses_whitelist(user.id)
+    }
+    fn bypasses_whitelist(&self, id: u128) -> bool {
+        let id = horizon_protocol::crypto::uuid_string(id);
+        self.whitelist_bypass
+            .iter()
+            .any(|p| id.starts_with(p.as_str()))
     }
     /// PlayerList.canPlayerLogin before the player count.
     fn can_login(&mut self, address: std::net::SocketAddr, user: &NameAndId) -> Option<Tag> {
         if self.bans.contains(user)
             && let Some(ban) = self.bans.get(user).cloned()
         {
-            let mut reason = translatable_tag(
-                "multiplayer.disconnect.banned.reason",
-                vec![ban_reason(&ban.reason)],
-            );
-            if let Some(expires) = ban.expires {
-                append(
-                    &mut reason,
-                    translatable_tag(
-                        "multiplayer.disconnect.banned.expiration",
-                        vec![Tag::String(JavaString::from(ban_date(expires).as_str()))],
-                    ),
-                );
-            }
-            return Some(reason);
+            return Some(ban_message(&ban));
         }
         if !self.whitelisted(user) {
             return Some(translatable("multiplayer.disconnect.not_whitelisted", &[]));
@@ -589,6 +682,24 @@ fn ban_date(millis: i64) -> String {
     let s = format_date(millis);
     format!("{} at {} UTC", &s[..10], &s[11..19])
 }
+/// What a banned player is told: `multiplayer.disconnect.banned.reason` and, for a ban that ends,
+/// `multiplayer.disconnect.banned.expiration` (PlayerList.canPlayerLogin).
+pub(super) fn ban_message(ban: &BanEntry<NameAndId>) -> Tag {
+    let mut reason = translatable_tag(
+        "multiplayer.disconnect.banned.reason",
+        vec![ban_reason(&ban.reason)],
+    );
+    if let Some(expires) = ban.expires {
+        append(
+            &mut reason,
+            translatable_tag(
+                "multiplayer.disconnect.banned.expiration",
+                vec![Tag::String(JavaString::from(ban_date(expires).as_str()))],
+            ),
+        );
+    }
+    reason
+}
 /// BanListEntry.getReasonMessage.
 fn ban_reason(reason: &Option<String>) -> Tag {
     match reason {
@@ -618,9 +729,9 @@ fn append(to: &mut Tag, sibling: Tag) {
 struct ServerState {
     lists: Arc<Mutex<Lists>>,
     console: mpsc::Receiver<String>,
-    stop: bool,
-    autosave: bool,
     empty_ticks: i32,
+    /// The mutable `DedicatedServer.pauseWhenEmptySeconds` setting.
+    pause_when_empty_seconds: i32,
     /// When the last passes of the loop ended, for the tick rate horizon-server shows.
     ticks: std::collections::VecDeque<Instant>,
     paused: bool,
@@ -637,6 +748,56 @@ struct ServerState {
     max_players: usize,
     /// The mutable `gamemode` server property (`DedicatedServer.gameMode`).
     game_mode: i32,
+    /// The mutable `force-gamemode` server property (`DedicatedServer.forceGameMode`).
+    force_game_mode: bool,
+}
+
+/// `SaveAllCommand.saveAll`'s reply to its source: `commands.save.success` when
+/// the save went through, `commands.save.failed` (the `ERROR_FAILED` it throws)
+/// when it did not.
+fn save_all_reply(saved: bool) -> Text {
+    Text::translate(
+        if saved {
+            "commands.save.success"
+        } else {
+            "commands.save.failed"
+        },
+        &[],
+    )
+}
+
+/// `BanIpCommands.banIp`'s `commands.banip.info`: the count of affected players and
+/// `EntitySelector.joinNames` of them (a gray ", " between names). None when no one is affected,
+/// as vanilla sends no line then.
+fn ban_ip_info(names: &[&str]) -> Option<Text> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(Text::translate(
+        "commands.banip.info",
+        &[
+            Text::literal(names.len().to_string()),
+            horizon_client::scoreboard_cmd::format_list(
+                names
+                    .iter()
+                    .map(|n| Text::literal((*n).to_owned()))
+                    .collect(),
+            ),
+        ],
+    ))
+}
+
+/// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
+fn auto_save(state: &ServerState) -> bool {
+    state.lists.lock().unwrap().autosave
+}
+
+/// `MinecraftServer.setAutoSave`: enable or disable periodic saves and report whether it changed.
+pub(super) fn set_auto_save(lists: &Mutex<Lists>, enabled: bool) -> bool {
+    let mut l = lists.lock().unwrap();
+    let changed = l.autosave != enabled;
+    l.autosave = enabled;
+    changed
 }
 
 /// The dedicated-only commands' replies vanilla sends with `broadcast`
@@ -788,10 +949,13 @@ impl Game<'_> {
         lists.use_whitelist = props.white_list;
         lists.enforce_whitelist = props.enforce_whitelist;
         lists.op_level = props.op_permission_level;
+        lists.player_idle_timeout = props.player_idle_timeout;
         let lists = Arc::new(Mutex::new(lists));
         self.server_lists = Some(lists.clone());
         log("INFO", &format!("Preparing level \"{level_name}\""));
         let folder = world_dir.to_string_lossy().into_owned();
+        // The mods' common and server configs, read before the server starts.
+        self.native_configs_server_start(&world_dir, true);
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(true);
         self.native_lifecycle_open_started();
@@ -839,6 +1003,9 @@ impl Game<'_> {
         self.settle_spawn()?;
         let gate_lists = lists.clone();
         let gate: LoginGate = Arc::new(move |address, uuid, name| {
+            // `ServerActivityMonitor.reportLoginActivity`: a login attempt, however it ends. The management
+            // protocol's `server/activity` notification is rate limited from these.
+            events::record_server("login_activity", serde_json::json!({}));
             let user = NameAndId {
                 id: uuid,
                 name: name.to_owned(),
@@ -931,7 +1098,6 @@ impl Game<'_> {
             levels: self.level_shapes,
             seed: self.level.seed,
             max_players: props.max_players.max(0) as usize,
-            dedicated: true,
             integrated: false,
         };
         let settings = LanSettings {
@@ -942,7 +1108,7 @@ impl Game<'_> {
         if let Some(sync) = sync {
             sync.adopt(&self.pack_files());
         }
-        if let Err(e) = self.lan_host(settings, net, config, None) {
+        if let Err(e) = self.lan_host(settings, net, config) {
             log("WARN", "**** FAILED TO BIND TO PORT!");
             log("WARN", &format!("The exception was: {e}"));
             log("WARN", "Perhaps a server is already running on that port?");
@@ -996,15 +1162,15 @@ impl Game<'_> {
         let mut state = ServerState {
             lists,
             console,
-            stop: false,
-            autosave: true,
             empty_ticks: 0,
+            pause_when_empty_seconds: props.pause_when_empty_seconds,
             ticks: Default::default(),
             paused: false,
             broadcast_console: props.broadcast_console_to_ops,
             broadcast_rcon: props.broadcast_rcon_to_ops,
             op_level: props.op_permission_level,
             game_mode: props.game_mode,
+            force_game_mode: props.force_game_mode,
             report: None,
             view: (
                 props.view_distance.clamp(2, 32) as u32,
@@ -1012,8 +1178,6 @@ impl Game<'_> {
             ),
             max_players: props.max_players.max(0) as usize,
         };
-        let pause_after = props.pause_when_empty_seconds * 20;
-        let idle_timeout = props.player_idle_timeout;
         let mut next = Instant::now();
         // The panic that ended the tick loop, when one did.
         let mut crashed: Option<String> = None;
@@ -1021,7 +1185,7 @@ impl Game<'_> {
         let watchdog = Watchdog::start(props.max_tick_time);
         let mut braked = Instant::now();
         let mut overload_warned: Option<Instant> = None;
-        while !state.stop {
+        while !state.lists.lock().unwrap().stop {
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
@@ -1039,6 +1203,9 @@ impl Game<'_> {
                 break;
             }
             let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
+            // Vanilla reads pauseWhenEmptySeconds on every tick, so management changes take effect
+            // without restarting the server.
+            let pause_after = state.pause_when_empty_seconds.wrapping_mul(20);
             if pause_after > 0 {
                 // A `/pregen` task keeps the server busy as a player would:
                 // paused, nothing would post-process its chunks.
@@ -1055,14 +1222,18 @@ impl Game<'_> {
                     "INFO",
                     &format!(
                         "Server empty for {} seconds, pausing",
-                        props.pause_when_empty_seconds
+                        state.pause_when_empty_seconds
                     ),
                 );
                 self.save_game()?;
             }
-            if !paused && !state.autosave {
-                // `save-off`: the periodic save inside the tick is skipped.
-                self.ticks = self.ticks.max(1);
+            if !paused && !auto_save(&state) {
+                // `MinecraftServer.autoSave` keeps its schedule while every level's
+                // `noSave` flag is set, but writes nothing. The tick below counts down
+                // once, so reset one tick early when this save would have been due.
+                if self.ticks_until_autosave <= 1 {
+                    self.ticks_until_autosave = self.next_autosave_interval() + 1;
+                }
             }
             // MinecraftServer.tickServer: while paused only the connections run.
             // `MinecraftServer.runServer` catches what the tick throws, writes the crash
@@ -1095,6 +1266,9 @@ impl Game<'_> {
             {
                 host.hub.send_low_disk_space_warning();
             }
+            // `PlayerList.tick` reads `MinecraftServer.playerIdleTimeout`
+            // every tick, so `/setidletimeout` changes it while the server runs.
+            let idle_timeout = state.lists.lock().unwrap().player_idle_timeout;
             if idle_timeout > 0 {
                 self.kick_idle(idle_timeout);
             }
@@ -1333,7 +1507,7 @@ impl Game<'_> {
         match command {
             "stop" => {
                 self.console_reply(Text::translate("commands.stop.stopping", &[]));
-                state.stop = true;
+                state.lists.lock().unwrap().stop = true;
             }
             // Horizon's own, on the console only: a performance report (report.rs).
             "horizon-report" => {
@@ -1364,25 +1538,27 @@ impl Game<'_> {
             }
             "save-all" => {
                 self.console_reply(Text::translate("commands.save.saving", &[]));
-                match self.save_game() {
-                    Ok(()) => self.console_reply(Text::translate("commands.save.success", &[])),
-                    Err(e) => log("ERROR", &format!("{e}")),
+                let saved = self.save_game();
+                if let Err(e) = &saved {
+                    // The reason the save did not go through is Horizon's own
+                    // detail, so it stays in the log; the source hears what
+                    // SaveAllCommand tells it (ERROR_FAILED).
+                    log("ERROR", &format!("{e}"));
                 }
+                self.console_reply(save_all_reply(saved.is_ok()));
             }
             "save-off" => {
-                if state.autosave {
-                    state.autosave = false;
+                if set_auto_save(&state.lists, false) {
                     self.console_reply(Text::translate("commands.save.disabled", &[]));
                 } else {
                     self.console_reply(Text::translate("commands.save.alreadyOff", &[]));
                 }
             }
             "save-on" => {
-                if state.autosave {
-                    self.console_reply(Text::translate("commands.save.alreadyOn", &[]));
-                } else {
-                    state.autosave = true;
+                if set_auto_save(&state.lists, true) {
                     self.console_reply(Text::translate("commands.save.enabled", &[]));
+                } else {
+                    self.console_reply(Text::translate("commands.save.alreadyOn", &[]));
                 }
             }
             "list" => {
@@ -1457,13 +1633,28 @@ impl Game<'_> {
             }
             "whitelist" => self.console_whitelist(state, &rest),
             // The chat filter's (game/chat_filter.rs), on servers that filter.
-            "unmute"
-                if rest.len() == 1 && self.lan.as_ref().is_some_and(|h| h.hub.chat_filter_on()) =>
+            command
+                if super::chat_filter::MUTE_COMMANDS.contains(&command)
+                    && self.lan.as_ref().is_some_and(|h| h.hub.chat_filter_on()) =>
             {
                 if let Some(mut host) = self.lan.take() {
-                    let reply = self.unmute(&mut host, rest[0], "Server");
+                    let words: Vec<&str> = [command].into_iter().chain(rest).collect();
+                    let replies = self.mute_command(&mut host, &words, "Server");
                     self.lan = Some(host);
-                    self.console_reply(lit(&reply));
+                    for reply in replies {
+                        self.console_reply(reply.text());
+                    }
+                }
+            }
+            // Horizon's temporary ban (game/tempban.rs), as an operator's `/tempban`.
+            command if super::tempban::TEMPBAN_COMMANDS.contains(&command) => {
+                if let Some(mut host) = self.lan.take() {
+                    let words: Vec<&str> = [command].into_iter().chain(rest).collect();
+                    let replies = self.tempban_command(&mut host, &words, "Server");
+                    self.lan = Some(host);
+                    for reply in replies {
+                        self.console_reply(reply.text());
+                    }
                 }
             }
             "ban" if !rest.is_empty() => {
@@ -1536,7 +1727,7 @@ impl Game<'_> {
                         ),
                     ],
                 ));
-                let banned: Vec<u128> = self
+                let banned: Vec<(u128, String)> = self
                     .lan
                     .as_ref()
                     .map(|h| {
@@ -1544,17 +1735,15 @@ impl Game<'_> {
                             .guests
                             .iter()
                             .filter(|g| g.address.ip().to_string() == ip)
-                            .map(|g| g.uuid)
+                            .map(|g| (g.uuid, g.name.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
-                if !banned.is_empty() {
-                    self.console_reply(Text::translate(
-                        "commands.banip.info",
-                        &[lit(&banned.len().to_string()), lit("")],
-                    ));
+                let names: Vec<&str> = banned.iter().map(|(_, n)| n.as_str()).collect();
+                if let Some(info) = ban_ip_info(&names) {
+                    self.console_reply(info);
                 }
-                for uuid in banned {
+                for (uuid, _) in banned {
                     self.kick_uuid(uuid, translatable("multiplayer.disconnect.ip_banned", &[]));
                 }
             }
@@ -1676,6 +1865,14 @@ impl Game<'_> {
                 for text in self.chat_capture.take().unwrap_or_default() {
                     self.console_reply(text);
                 }
+                // ServerPlayer.onEffectAdded and onEffectUpdated send an effect
+                // the command gave as it was given: vanilla's console runs after
+                // the players' tick (`DedicatedServer.tickConnection`), so the
+                // next tick is the first to count it down. A player's own
+                // commands sync theirs the same way (`run_guest_command`).
+                if let Some(h) = self.lan.as_mut() {
+                    h.hub.sync_all_effects();
+                }
             }
         }
     }
@@ -1685,7 +1882,7 @@ impl Game<'_> {
         match rest {
             ["on"] | ["off"] => {
                 let on = rest[0] == "on";
-                let mut l = state.lists.lock().unwrap();
+                let l = state.lists.lock().unwrap();
                 let turned_on = on && !l.use_whitelist;
                 let key = match (on, l.use_whitelist) {
                     (true, true) => "commands.whitelist.alreadyOn",
@@ -1693,9 +1890,8 @@ impl Game<'_> {
                     (false, false) => "commands.whitelist.alreadyOff",
                     (false, true) => "commands.whitelist.disabled",
                 };
-                l.use_whitelist = on;
                 drop(l);
-                self.store_property("white-list", on.to_string());
+                self.set_using_whitelist(&state.lists, on);
                 self.console_reply(Text::translate(key, &[]));
                 if turned_on {
                     let lists = state.lists.clone();
@@ -1763,8 +1959,46 @@ impl Game<'_> {
     /// `DedicatedServer.setUsingWhitelist`: the flag, and `white-list` in
     /// server.properties.
     pub(super) fn set_using_whitelist(&mut self, lists: &Arc<Mutex<Lists>>, on: bool) {
-        lists.lock().unwrap().use_whitelist = on;
+        let changed = {
+            let mut lists = lists.lock().unwrap();
+            let changed = lists.use_whitelist != on;
+            lists.use_whitelist = on;
+            changed
+        };
         self.store_property("white-list", on.to_string());
+        if changed {
+            self.native_whitelist_state_update(on);
+        }
+    }
+
+    /// `DedicatedServer.setPlayerIdleTimeout`: update the live idle sweep and persist its minutes.
+    pub(super) fn set_player_idle_timeout(&mut self, lists: &Arc<Mutex<Lists>>, minutes: i32) {
+        lists.lock().unwrap().player_idle_timeout = minutes;
+        self.store_property("player-idle-timeout", minutes.to_string());
+    }
+
+    /// `DedicatedServer.setMaxPlayers`: the live login limit, and `max-players` in
+    /// server.properties.
+    fn set_max_players(&mut self, state: &mut ServerState, max_players: usize) {
+        state.max_players = max_players;
+        if let Some(lan) = &self.lan {
+            lan.hub.lan.shared.set_max_players(max_players);
+        }
+        self.store_property("max-players", max_players.to_string());
+    }
+
+    /// `DedicatedServer.setEnforceWhitelist`: the flag, and `enforce-whitelist` in
+    /// server.properties.
+    pub(super) fn set_enforce_whitelist(&mut self, lists: &Arc<Mutex<Lists>>, on: bool) {
+        lists.lock().unwrap().enforce_whitelist = on;
+        self.store_property("enforce-whitelist", on.to_string());
+    }
+
+    /// `DedicatedServer.setPauseWhenEmptySeconds`: the live pause timer, and
+    /// `pause-when-empty-seconds` in server.properties.
+    fn set_pause_when_empty_seconds(&mut self, state: &mut ServerState, seconds: i32) {
+        state.pause_when_empty_seconds = seconds;
+        self.store_property("pause-when-empty-seconds", seconds.to_string());
     }
 
     /// DedicatedServerSettings.update: change one key and store the file.
@@ -1940,6 +2174,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(true);
+        self.native_configs_server_stop();
         log("INFO", "Stopping server");
         self.native_players_leaving();
         log("INFO", "Saving players");
@@ -2006,13 +2241,68 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_log, log, log_from, overload_warning, panic_message};
+    use super::{
+        capture_log, log, log_from, overload_warning, panic_message, parse_whitelist_bypass,
+    };
     use std::{
         fs,
         io::{self, BufRead, BufReader, Read, Write},
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is
+    /// absent when no one is affected.
+    #[test]
+    fn ban_ip_info_names_the_affected_players() {
+        let args = |t: &super::Text| {
+            let c = t.component();
+            c["with"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(super::ban_ip_info(&[]).is_none());
+        let one = super::ban_ip_info(&["Alex"]).unwrap();
+        assert_eq!(one.translation_key(), Some("commands.banip.info"));
+        let a = args(&one);
+        assert!(a[0].contains('1') && a[1].contains("Alex"), "{a:?}");
+        let two = super::ban_ip_info(&["Alex", "Steve"]).unwrap();
+        let a = args(&two);
+        assert!(a[0].contains('2'), "{a:?}");
+        assert!(
+            a[1].contains("Alex") && a[1].contains(", ") && a[1].contains("Steve"),
+            "{a:?}"
+        );
+    }
+
+    #[test]
+    fn whitelist_bypass_file_takes_uuid_prefixes_and_refuses_junk() {
+        let ok =
+            parse_whitelist_bypass("# Bedrock\n00000000-0000-0000-0009-  # floodgate\n\n").unwrap();
+        assert_eq!(ok, vec!["00000000-0000-0000-0009-".to_owned()]);
+        assert!(
+            parse_whitelist_bypass("0-").is_err(),
+            "a short prefix would match nearly everyone"
+        );
+        assert!(parse_whitelist_bypass("not-a-uuid-at-all").is_err());
+    }
+
+    /// `SaveAllCommand.saveAll`: a save that throws is the `ERROR_FAILED` the
+    /// source is told about, not a log line the caller never sees.
+    #[test]
+    fn a_failed_save_tells_the_source_that_it_failed() {
+        assert_eq!(
+            super::save_all_reply(true).translation_key(),
+            Some("commands.save.success")
+        );
+        assert_eq!(
+            super::save_all_reply(false).translation_key(),
+            Some("commands.save.failed")
+        );
+    }
 
     /// Vanilla's words, with how far behind the server is in milliseconds and in whole ticks.
     #[test]
@@ -2131,5 +2421,88 @@ mod tests {
             assert_log_lines(&fs::read_to_string(home.join("logs/latest.log")).unwrap());
             fs::remove_dir_all(home).unwrap();
         }
+    }
+
+    /// A temporary ban (`/tempban`, the chat filter's) keeps the player out and says when it ends;
+    /// once it has ended, or after `/pardon`, they come in.
+    #[test]
+    fn a_temporarily_banned_player_is_refused_with_the_end_until_it_has_passed() {
+        use super::{BanEntry, BanList, Lists, NameAndId};
+        use horizon_chat_filter::now_millis;
+        let dir = std::env::temp_dir().join(format!("horizon-can-login-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut lists = Lists {
+            ops: super::OpList::new(dir.join("ops.json")),
+            white: super::WhiteList::new(dir.join("whitelist.json")),
+            bans: BanList::new(dir.join("banned-players.json")),
+            ip_bans: super::IpBanList::new(dir.join("banned-ips.json")),
+            use_whitelist: false,
+            enforce_whitelist: false,
+            op_level: 4,
+            player_idle_timeout: 0,
+            stop: false,
+            autosave: true,
+            whitelist_bypass: Vec::new(),
+        };
+        // Every translation key and string in a message, in the order they come.
+        fn words(tag: &super::Tag, out: &mut Vec<String>) {
+            match tag {
+                super::Tag::String(s) => out.push(s.to_string_lossy()),
+                super::Tag::List(items) => items.iter().for_each(|t| words(t, out)),
+                super::Tag::Compound(_) => {
+                    for key in ["translate", "with", "extra"] {
+                        if let Some(t) = tag.get(key) {
+                            words(t, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let message = |tag: Option<super::Tag>| {
+            let mut out = Vec::new();
+            words(&tag.expect("a refusal"), &mut out);
+            out.join(" | ")
+        };
+        let address: std::net::SocketAddr = "127.0.0.1:25565".parse().unwrap();
+        let user = |id: u128, name: &str| NameAndId {
+            id,
+            name: name.into(),
+        };
+        let ban = |user: &NameAndId, expires: Option<i64>| {
+            BanEntry::new(
+                user.clone(),
+                Some("Op".into()),
+                expires,
+                Some("griefing".into()),
+            )
+        };
+        let (steve, alex, dee) = (user(1, "Steve"), user(2, "Alex"), user(3, "Dee"));
+        // Free until banned.
+        assert!(lists.can_login(address, &steve).is_none());
+        // A ban for an hour: refused, with the reason and when it ends.
+        lists.bans.add(ban(&steve, Some(now_millis() + 3_600_000)));
+        let refused = message(lists.can_login(address, &steve));
+        assert!(
+            refused.contains("multiplayer.disconnect.banned.reason"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("multiplayer.disconnect.banned.expiration"),
+            "{refused}"
+        );
+        assert!(refused.contains("griefing"), "{refused}");
+        // A permanent ban is refused with no end.
+        lists.bans.add(ban(&alex, None));
+        let refused = message(lists.can_login(address, &alex));
+        assert!(!refused.contains("expiration"), "{refused}");
+        // A ban that has ended lets the player in, and the list drops it.
+        lists.bans.add(ban(&dee, Some(now_millis() - 1_000)));
+        assert!(lists.can_login(address, &dee).is_none());
+        assert!(!lists.bans.contains(&dee));
+        // `/pardon` lifts the hour's ban.
+        assert!(lists.bans.remove(&steve));
+        assert!(lists.can_login(address, &steve).is_none());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

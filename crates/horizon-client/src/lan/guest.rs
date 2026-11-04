@@ -9,8 +9,12 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::{
+    attachment_sync,
     item::Stack,
-    packets::{configuration::ClientInformation, play},
+    packets::{
+        configuration::{ClientInformation, CustomPayload},
+        play,
+    },
 };
 use std::{
     collections::VecDeque,
@@ -172,6 +176,12 @@ pub struct Guest {
     pub above_ground_vehicle_ticks: i32,
     pub vehicle_gravity: f64,
     pub vehicle_rests: bool,
+    /// `Entity.verticalCollisionBelow` of the player's own body: its last
+    /// accepted move came down onto something.
+    pub rests_on_ground: bool,
+    /// `ServerGamePacketListenerImpl.lastSupportedBlocksSend`: the connection
+    /// tick the blocks under the player were last force-sent.
+    pub support_blocks_sent: u64,
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
@@ -184,6 +194,9 @@ pub struct Guest {
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
+    /// The players a native mod hid from it (`Hub::hidden`) that its player
+    /// list no longer has.
+    pub tab_hidden: crate::fast_hash::FxHashSet<u128>,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
     /// Since it joined or respawned, the client hasn't said it loaded the level
@@ -197,6 +210,8 @@ pub struct Guest {
     // Chunks.
     pub center: Option<(i32, i32)>,
     pub sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
+    /// Sent as far-ring columns and needing a near snapshot on promotion.
+    pub far_sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
     pub chunk_queue: Vec<(i32, i32)>,
     /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
     pub far_queue: Vec<(i32, i32)>,
@@ -270,9 +285,13 @@ pub struct Guest {
     /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
     /// defaults until either changes.
     pub sent_air: (i32, f32),
+    pub sent_frozen: i32,
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
+    /// player's client was last sent about itself.
+    pub sent_shoulders: [Option<i32>; 2],
     /// Where the player last died (Player.lastDeathLocation), sent with the respawn.
     pub last_death: Option<(String, [i32; 3])>,
     /// The last action sequence to acknowledge at the next tick (-1: none).
@@ -321,6 +340,9 @@ pub struct Guest {
     pub post_effects_dirty: bool,
     /// `ServerPlayer.recipeBook`.
     pub recipe_book: crate::recipe_book::Settings,
+    /// `PlayerAdvancements.lastSelectedTab`: the advancement tab the player
+    /// last opened, as its id, when the server kept it (a root with a display).
+    pub selected_tab: Option<String>,
     /// `PlayerAdvancements`: the criteria obtained, whether they came from
     /// the player's file, the advancements the client was last told it may
     /// see (empty before the first packet), and those whose progress
@@ -399,16 +421,20 @@ impl Guest {
             above_ground_vehicle_ticks: 0,
             vehicle_gravity: 0.0,
             vehicle_rests: false,
+            rests_on_ground: false,
+            support_blocks_sent: 0,
             position_this_tick: false,
             anticheat: Default::default(),
             replay: None,
             changes: Default::default(),
             moved: false,
+            tab_hidden: Default::default(),
             loaded: false,
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
             sent_chunks: Default::default(),
+            far_sent_chunks: Default::default(),
             chunk_queue: Vec::new(),
             far_queue: Vec::new(),
             unacknowledged: 0,
@@ -445,7 +471,9 @@ impl Guest {
             sent_health: None,
             sent_xp: None,
             sent_air: (300, 0.0),
+            sent_frozen: 0,
             sent_shared: 0,
+            sent_shoulders: [None; 2],
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
             sent_selected: 0,
@@ -471,6 +499,7 @@ impl Guest {
             post_effects: Vec::new(),
             post_effects_dirty: true,
             recipe_book: Default::default(),
+            selected_tab: None,
             advancements: Default::default(),
             advancements_loaded: false,
             advancements_visible: Vec::new(),
@@ -492,6 +521,25 @@ impl Guest {
             self.note_change(packet);
         }
         self.sender.send(packet.encode());
+    }
+    /// Whether the guest is placed and on a Horizon client (the only one that
+    /// reads synced attachments).
+    pub fn reads_attachment_sync(&self) -> bool {
+        self.placed && self.brand == "horizon"
+    }
+    /// A holder's synced attachments, if the guest reads them; a message too big
+    /// for one payload is not sent.
+    pub fn send_attachment_sync(&self, message: &attachment_sync::Message) {
+        if !self.reads_attachment_sync() {
+            return;
+        }
+        match attachment_sync::encode(message) {
+            Ok(data) => self.send(&play::Clientbound::CustomPayload(CustomPayload {
+                channel: attachment_sync::CHANNEL.into(),
+                data,
+            })),
+            Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
+        }
     }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
@@ -769,6 +817,29 @@ fn dye_id(name: &str) -> Option<i32> {
         .map(|i| i as i32)
 }
 
+/// `SignText.STREAM_CODEC` of a saved `SignText.CODEC` value: the four
+/// messages, the four filtered ones when it has them, the dye's id (black when
+/// absent) and the glow.
+fn sign_text_bytes(text: &horizon_world::nbt::Tag) -> Option<Vec<u8>> {
+    use horizon_world::nbt::Tag;
+    let lines = |key: &str| match text.get(key) {
+        Some(Tag::List(lines)) if lines.len() == 4 => Some(lines),
+        _ => None,
+    };
+    let mut w = horizon_protocol::buf::Writer::new();
+    lines("messages")?.iter().for_each(|line| w.nbt(line));
+    let filtered = lines("filtered_messages");
+    w.bool(filtered.is_some());
+    filtered.into_iter().flatten().for_each(|line| w.nbt(line));
+    let color = match text.get("color") {
+        Some(Tag::String(color)) => color.to_string_lossy(),
+        _ => "black".into(),
+    };
+    w.varint(dye_id(&color)?);
+    w.bool(matches!(text.get("has_glowing_text"), Some(Tag::Byte(b)) if *b != 0));
+    Some(w.data)
+}
+
 /// The off hand slot is conventionally 40 in saves and 45 in the menu.
 /// `synced_id` names an entry of a synced registry (enchantments, trim
 /// materials and patterns) by its id on this connection.
@@ -902,6 +973,24 @@ fn network_stack(
                 horizon_protocol::item::component::PAINTING_VARIANT,
                 horizon_protocol::item::Component::PaintingVariant(id),
             ));
+        }
+        // `sign_text_front` and `sign_text_back`: a copied sign's text, which the
+        // client's own placement puts on the sign it predicts (#8102).
+        for (name, kind) in [
+            (
+                "minecraft:sign_text_front",
+                horizon_protocol::item::component::SIGN_TEXT_FRONT,
+            ),
+            (
+                "minecraft:sign_text_back",
+                horizon_protocol::item::component::SIGN_TEXT_BACK,
+            ),
+        ] {
+            if let Some(bytes) = d.other(name).and_then(sign_text_bytes) {
+                stack
+                    .added
+                    .push((kind, horizon_protocol::item::Component::Raw(bytes)));
+            }
         }
         // A shield's `base_color`.
         if let Some(id) = d.base_color.as_deref().and_then(dye_id) {
@@ -1098,13 +1187,55 @@ fn network_stack(
     }
     // Lore lines as loaded or as a server mod wrote them (a list of text
     // components), so a server menu's items can say more than their name.
-    if let Some(horizon_world::nbt::Tag::List(lines)) =
-        s.data().and_then(|d| d.other("minecraft:lore"))
+    if let Some(lore_tag) = s.data().and_then(|d| d.other("minecraft:lore")) {
+        let lines = match lore_tag {
+            horizon_world::nbt::Tag::List(lines) => Some(lines.clone()),
+            // A string is one literal line, as ComponentSerialization decodes a string tag.
+            horizon_world::nbt::Tag::Compound(_) | horizon_world::nbt::Tag::String(_) => {
+                Some(vec![lore_tag.clone()])
+            }
+            _ => None,
+        };
+        if let Some(lines) = lines {
+            stack.added.push((
+                horizon_protocol::item::component::LORE,
+                horizon_protocol::item::Component::Lore(lines),
+            ));
+        }
+    }
+    if s.data()
+        .is_some_and(|d| d.other("!minecraft:lore").is_some())
     {
-        stack.added.push((
-            horizon_protocol::item::component::LORE,
-            horizon_protocol::item::Component::Lore(lines.clone()),
-        ));
+        stack.removed.push(horizon_protocol::item::component::LORE);
+    }
+    // The stack's custom rarity ("common", "uncommon", "rare", "epic" or 0..=3).
+    if let Some(r) = s.data().and_then(|d| d.other("minecraft:rarity")) {
+        let index = match r {
+            horizon_world::nbt::Tag::String(s) => match &*s.to_string_lossy() {
+                "common" => Some(0),
+                "uncommon" => Some(1),
+                "rare" => Some(2),
+                "epic" => Some(3),
+                _ => None,
+            },
+            horizon_world::nbt::Tag::Byte(b) if (0..=3).contains(b) => Some(*b as i32),
+            horizon_world::nbt::Tag::Short(s) if (0..=3).contains(s) => Some(*s as i32),
+            horizon_world::nbt::Tag::Int(i) if (0..=3).contains(i) => Some(*i),
+            _ => None,
+        };
+        if let Some(index) = index {
+            stack.added.push((
+                horizon_protocol::item::component::RARITY,
+                horizon_protocol::item::Component::Int(index),
+            ));
+        }
+    }
+    if s.data()
+        .is_some_and(|d| d.other("!minecraft:rarity").is_some())
+    {
+        stack
+            .removed
+            .push(horizon_protocol::item::component::RARITY);
     }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
@@ -1230,6 +1361,24 @@ mod tests {
         assert_eq!(
             received.component(component::LORE),
             Some(&Component::Lore(lines))
+        );
+    }
+
+    #[test]
+    fn rarity_reaches_the_client() {
+        let mut item = ItemStack::new("minecraft:stick", 1);
+        item.data_mut()
+            .set_other("minecraft:rarity", Some(Tag::String("epic".into())));
+        let sent = stack_to_network(|_| 7, |_, _| None, &Some(item));
+        let mut writer = Writer::new();
+        horizon_protocol::item::Slot::write(&sent, &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let received = horizon_protocol::item::Slot::read(&mut reader)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received.component(component::RARITY),
+            Some(&Component::Int(3))
         );
     }
 

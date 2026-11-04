@@ -212,20 +212,35 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 Exit::Restart => "the game was restarted before it was up".into(),
             };
             roll_back(&shared, dir, &config, &w, &reason);
-            if matches!(exit, Exit::Stopped)
-                && shared.state.lock().unwrap().phase == Phase::Stopping
-            {
+            if matches!(exit, Exit::Stopped) && shared.shutdown.load(Ordering::SeqCst) {
                 return Ok(());
             }
             continue;
         }
         let status = match exit {
-            Exit::Stopped => return Ok(()),
+            Exit::Stopped => {
+                if shared.shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                shared.set_phase(Phase::Stopped);
+                if wait_stopped(&shared, &console) {
+                    continue;
+                }
+                return Ok(());
+            }
             Exit::NotUp => continue,
             Exit::Restart => {
                 let restore = shared.restore.lock().unwrap().take();
-                if let Some(name) = restore {
-                    match backup::restore(dir, &config, &name) {
+                if let Some((name, dimension)) = restore {
+                    let done = match &dimension {
+                        Some(d) => backup::restore_dimension(dir, &config, &name, d),
+                        None => backup::restore(dir, &config, &name),
+                    };
+                    let name = match &dimension {
+                        Some(d) => format!("{name} ({d})"),
+                        None => name,
+                    };
+                    match done {
                         Ok(Some(old)) => note(
                             &shared,
                             "INFO",
@@ -498,7 +513,11 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                         };
                         if up {
                             shared.emit("phase", serde_json::json!({ "phase": "running" }));
+                            crate::management::started(&shared);
                         }
+                    } else if line.contains("/INFO]: Stopping server") {
+                        // The game's own `stop` (a command in the game, not the supervisor's).
+                        crate::management::stopping(&shared);
                     }
                 }
                 shared.log_line(line);
@@ -645,9 +664,16 @@ fn supervise(
         }
         while let Ok(line) = console.try_recv() {
             let command = line.trim().trim_start_matches('/');
+            // `stop` on the supervisor's own stdin (`run` in a terminal, a hosting panel's console) ends the
+            // supervisor too, as before: such hosts wait for the process to exit. A `stop` that reaches the game
+            // another way (in game, RCON, `horizon-server cmd`) leaves the supervisor and its API up.
+            if command == "stop" {
+                shared.shutdown.store(true, Ordering::SeqCst);
+            }
             if command == "stop" && stopping.is_none() {
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
             }
             if let Some(input) = stdin.as_mut()
                 && writeln!(input, "{line}")
@@ -658,13 +684,18 @@ fn supervise(
             }
         }
         let requests = signals::requests();
-        let asked = requests > handled || shared.stop.swap(false, Ordering::SeqCst);
+        let signal = requests > handled;
+        let asked = signal || shared.stop.swap(false, Ordering::SeqCst);
         handled = requests;
+        if signal {
+            shared.shutdown.store(true, Ordering::SeqCst);
+        }
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {
             restart = true;
             note(shared, "INFO", "Restarting the server");
             stopping = Some(Instant::now());
             shared.set_phase(Phase::Restarting);
+            crate::management::stopping(shared);
             send_stop(&mut stdin);
         }
         if asked {
@@ -673,6 +704,7 @@ fn supervise(
                 note(shared, "INFO", "Stopping the server");
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
                 send_stop(&mut stdin);
             } else {
                 note(shared, "WARN", "Stopping the game at once, without saving");
@@ -702,6 +734,35 @@ fn supervise(
                 return Exit::Stopped;
             }
         }
+    }
+}
+
+/// Keeps the supervisor and its API alive after the game stops, until a start/restart or shutdown arrives.
+/// The supervisor's stdin still answers: `stop` ends it, `start` starts the game again.
+fn wait_stopped(shared: &Arc<Shared>, console: &mpsc::Receiver<String>) -> bool {
+    loop {
+        while let Ok(line) = console.try_recv() {
+            match line.trim().trim_start_matches('/') {
+                "stop" => shared.shutdown.store(true, Ordering::SeqCst),
+                "start" => shared.restart.store(true, Ordering::SeqCst),
+                _ => note(
+                    shared,
+                    "INFO",
+                    "The game is stopped: type `start` to start it, `stop` to end the server",
+                ),
+            }
+        }
+        if shared.shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        if signals::requests() > 0 {
+            shared.shutdown.store(true, Ordering::SeqCst);
+            return false;
+        }
+        if shared.restart.swap(false, Ordering::SeqCst) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 

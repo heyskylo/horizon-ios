@@ -267,6 +267,11 @@ impl MobWorld<'_> {
         if self.daylight { 0 } else { 11 }
     }
     pub fn target_info(&self, who: Who) -> Option<TargetInfo> {
+        if let Some((id, target)) = self.dragon
+            && who == Who::Mob(id)
+        {
+            return Some(target);
+        }
         match who {
             Who::Player => self.player.as_ref().map(|p| TargetInfo {
                 position: p.position,
@@ -460,8 +465,10 @@ pub(crate) fn with_resource_test_world(
         collision: &collision,
         data: &data,
         player: None,
+        controlling_player_movement: None,
         nearest_player: None,
         others,
+        dragon: None,
         leash_boats: &[],
         others_grid: None,
         others_index: None,
@@ -486,6 +493,7 @@ pub(crate) fn with_resource_test_world(
         items: Some(&items),
         lid_openers: &lid_openers,
         mod_effects: None,
+        border: None,
     };
     f(&w, &types);
     true
@@ -526,6 +534,7 @@ pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
         sleeping: false,
         sleep_timer: 0,
         passenger: false,
+        riding_vehicle: None,
         vehicle: None,
     }
 }

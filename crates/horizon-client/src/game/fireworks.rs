@@ -29,6 +29,8 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
     /// a client.
     pub id: u32,
@@ -62,6 +64,7 @@ impl Rocket {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let (_, explosions) = fireworks_of(&item);
         Self {
+            join: Default::default(),
             id,
             position,
             previous: position,
@@ -111,6 +114,7 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
+            join: Default::default(),
             id: 0,
             position: r.position,
             previous: r.position,
@@ -224,10 +228,11 @@ impl Game<'_> {
         let lifetime = 10 * (1 + i32::from(flight))
             + r.next_int_bound(6).unwrap_or(0)
             + r.next_int_bound(7).unwrap_or(0);
-        // An id from the entity counter at once, so a command can name it.
-        self.next_entity += 1;
+        // Entity.<init>: the id comes from the one counter at construction.
+        let id = self.take_entity_id();
         Rocket {
-            id: self.next_entity,
+            join: Default::default(),
+            id,
             position: at,
             previous: at,
             velocity,
@@ -245,7 +250,9 @@ impl Game<'_> {
     }
     /// `FireworkRocketItem.useOn`: launch from the clicked point.
     pub(super) fn launch_firework(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
-        if &*stack.item != "minecraft:firework_rocket" {
+        if &*stack.item != "minecraft:firework_rocket"
+            || use_on_passes(self.player.as_ref().is_some_and(|p| p.fall_flying))
+        {
             return false;
         }
         let at = Vec3::new(
@@ -345,6 +352,9 @@ impl Game<'_> {
             self.consume_held();
         }
         self.swing_arm();
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_elytra_boost(player, &name);
+        }
         true
     }
     pub(super) fn tick_rockets(&mut self) {
@@ -399,6 +409,13 @@ impl Game<'_> {
                 };
                 r.free_flight(&mut scene);
             }
+            self.entity_powder_snow_particles(
+                r.previous,
+                r.position,
+                r.bounds(),
+                r.velocity,
+                false,
+            );
             // hitTargetOrDeflectSelf on an entity: a breeze turns it back
             // (ProjectileDeflection.REVERSE), anything else sets it off.
             // onHitBlock: only a rocket with explosions (hasExplosion) goes
@@ -517,8 +534,14 @@ impl Game<'_> {
         let v = [r.velocity.x, r.velocity.y, r.velocity.z];
         self.particles
             .fireworks(at, v, r.explosions.clone(), camera);
+        self.native_firework_explode(r.id, at, r.explosions.len());
     }
     fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
+        let _attacker = self.knockback_scope(if attacker == Some(Who::Player) {
+            self.player.as_ref().map_or(0, |p| p.entity_id)
+        } else {
+            0
+        });
         for &(id, amount) in hits {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                 let hurt = m.damage(amount, Damage::fireworks(attacker, at));
@@ -586,6 +609,7 @@ impl Game<'_> {
         let block = (super::creatures::ProjWorld {
             w: &w,
             targets: Vec::new(),
+            border: Some(self.border.bounds()),
         })
         .clip(from, to);
         if let Some((at, ..)) = block {
@@ -712,3 +736,19 @@ impl Game<'_> {
         }
     }
 }
+
+/// `FireworkRocketItem.useOn` returns PASS while the player is fall flying,
+/// leaving the boost to `use` (a guest's UseItemOn must not launch a rocket).
+fn use_on_passes(fall_flying: bool) -> bool {
+    fall_flying
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn use_on_passes_only_while_gliding() {
+        assert!(super::use_on_passes(true));
+        assert!(!super::use_on_passes(false));
+    }
+}
+horizon_client::impl_joined!(Rocket);

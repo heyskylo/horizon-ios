@@ -202,8 +202,10 @@ mod tests {
             collision: &collision,
             data: &data,
             player: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
+            dragon: None,
             leash_boats: &[],
             others_grid: None,
             others_index: None,
@@ -228,6 +230,7 @@ mod tests {
             items: Some(&items),
             lid_openers: &lid_openers,
             mod_effects: None,
+            border: None,
         };
         for no_ai in [false, true] {
             let kind = std::sync::Arc::new(types.types["minecraft:zombie_villager"].clone());

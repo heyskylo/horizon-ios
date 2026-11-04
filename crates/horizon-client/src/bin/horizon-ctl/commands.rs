@@ -61,6 +61,122 @@ impl Group {
     }
 }
 
+/// One field of a command's JSON reply. `ty` is a JSON type (`string`, `integer`, `number`,
+/// `boolean`, `array`, `object`); `a|null` marks a field that is `null` when it does not apply.
+#[derive(Clone, Copy)]
+pub struct Field {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub help: &'static str,
+}
+
+const fn f(name: &'static str, ty: &'static str, help: &'static str) -> Field {
+    Field { name, ty, help }
+}
+
+/// `hello`: always these three fields.
+const HELLO_REPLY: &[Field] = &[
+    f(
+        "protocol",
+        "string",
+        "the control protocol, MAJOR.MINOR.PATCH (docs/api/stability.md)",
+    ),
+    f(
+        "release",
+        "string",
+        "the game's version (MCP serverInfo carries the same string)",
+    ),
+    f(
+        "features",
+        "array",
+        "the command groups the game answers, each a string",
+    ),
+];
+
+/// `status`: the top-level fields the reply always carries. It holds more (sounds,
+/// projectiles, maps and the like), so a reader must ignore the keys it does not know.
+const STATUS_REPLY: &[Field] = &[
+    f(
+        "screen",
+        "string",
+        "the open screen (playing, inventory, paused...)",
+    ),
+    f(
+        "debug",
+        "object",
+        "the F3 overlay flags: overlay, hitboxes, chunk_borders, pause_menu, advanced_tooltips, pause_on_lost_focus, clipboard",
+    ),
+    f("dimension", "string", "the dimension the player is in"),
+    f("creative", "boolean", "creative mode"),
+    f(
+        "player",
+        "object|null",
+        "position, velocity (blocks), on_ground, health, max_health, food; null without a player",
+    ),
+    f("yaw", "number", "view yaw, degrees"),
+    f("pitch", "number", "view pitch, degrees"),
+    f(
+        "target",
+        "object|null",
+        "the block under the crosshair as pos and block; null when none",
+    ),
+    f("selected", "integer", "the selected hotbar slot, 1 to 9"),
+    f(
+        "held",
+        "object|null",
+        "the held stack as item and count; null when empty",
+    ),
+    f(
+        "offhand",
+        "object|null",
+        "the offhand stack as item, count and damage; null when empty",
+    ),
+    f(
+        "keys",
+        "array",
+        "the keys the game holds down, each a string",
+    ),
+    f("fps", "number", "frames per second"),
+    f("frames", "integer", "frames drawn so far"),
+    f("ticks", "integer", "game ticks so far"),
+    f("day_time", "integer", "the world's time of day, ticks"),
+    f("uptime_seconds", "number", "seconds since the game started"),
+    f("render_distance", "integer", "chunks"),
+    f("chunks", "integer", "chunks loaded"),
+    f("mobs", "integer", "mobs this side knows"),
+    f("block_entities", "integer", "block entities loaded"),
+    f(
+        "pending_chunks",
+        "integer",
+        "chunks still being generated, meshed, uploaded or received",
+    ),
+    f(
+        "streaming",
+        "object",
+        "chunk streaming stages and their counts",
+    ),
+    f(
+        "lod",
+        "object",
+        "far terrain: distances, tiles, quads and sampling progress",
+    ),
+    f(
+        "renderer",
+        "object|null",
+        "GPU, driver, backend, size, draw counts and GPU memory; null without a renderer",
+    ),
+    f(
+        "display",
+        "object|null",
+        "the monitor: width, height, scale, refresh_hz; null without a window",
+    ),
+    f(
+        "server",
+        "object|null",
+        "the connected server's address, name and state; null when not connected",
+    ),
+];
+
 pub struct Cmd {
     pub name: &'static str,
     /// What the game receives instead of `name` (aliases such as look-at-block).
@@ -75,6 +191,8 @@ pub struct Cmd {
     pub mcp: bool,
     /// Runs in horizon-ctl itself, not in the game.
     pub local: bool,
+    /// The reply's fields; empty until the command's reply is described (`REPLY_GROUP`).
+    pub reply: &'static [Field],
 }
 
 const fn p(name: &'static str, ty: Ty, help: &'static str) -> Param {
@@ -167,6 +285,12 @@ pub const DESTRUCTIVE: &[&str] = &["world-delete", "fill", "setblock"];
 pub const OPEN_WORLD: &[&str] = &["connect", "lan", "friends", "chat", "command"];
 
 macro_rules! cmd {
+    ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr, reply: $reply:expr) => {
+        Cmd {
+            reply: $reply,
+            ..cmd!($name, $group, $usage, $summary, $details, [$($ex),*], $params, mcp: $mcp, local: $local)
+        }
+    };
     ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr $(, wire: $wire:expr)?) => {
         Cmd {
             name: $name,
@@ -179,6 +303,7 @@ macro_rules! cmd {
             params: $params,
             mcp: $mcp,
             local: $local,
+            reply: &[],
         }
     };
     (@wire) => { None };
@@ -204,6 +329,9 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("events", Observe, "events [--since SEQ]", "what happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds",
         "Every event has seq and tick; pass the reply's last as --since next time. The game keeps the newest 256.",
         ["horizon-ctl events", "horizon-ctl events --since 42"], &[flag("since", Ty::Int, "only events after this seq")], mcp: true, local: false),
+    cmd!("input-log", Observe, "input-log [--since SEQ] [--limit N] [--origin user|agent|game]", "recent input and who caused it: a person, an agent or the game",
+        "Every event has seq, tick and origin. `user` is the window's own keyboard, mouse or pad; `agent` is the control socket (this tool); `game` is input the game made up. A `user-input` event in `events` means a person stepped in while an agent was driving. The game keeps the newest 512.",
+        ["horizon-ctl input-log", "horizon-ctl input-log --origin user --limit 20", "horizon-ctl input-log --since 120"], &[flag("since", Ty::Int, "only events after this seq"), flag("limit", Ty::Int, "newest N events"), flag("origin", Ty::Enum(&["user", "agent", "game"]), "user, agent or game")], mcp: true, local: false),
     cmd!("wait-ready", Session, "wait-ready [SECONDS]", "wait until the player has spawned and no chunks are pending",
         "Polls status every 250 ms; replies with the status, or an error after SECONDS (default 120).",
         ["horizon-ctl wait-ready 300"], &[opt("seconds", Ty::Num, "how long to wait (default 120)")], mcp: true, local: true),
@@ -213,10 +341,12 @@ pub const COMMANDS: &[Cmd] = &[
         &[flag("lines", Ty::Int, "how many lines of latest.log (default 100)"), flag("crash", Ty::Bool, "the newest crash report instead")],
         mcp: true, local: true),
     cmd!("status", Session, "status", "game, renderer and streaming state (the scripting socket's original summary)",
-        "Also what F3 shows: the overlay flags, the renderer, chunk streaming and memory.", ["horizon-ctl status"], &[], mcp: true, local: false),
+        "Also what F3 shows: the overlay flags, the renderer, chunk streaming and memory.", ["horizon-ctl status"], &[], mcp: true, local: false, reply: STATUS_REPLY),
     cmd!("hello", Session, "hello", "the control protocol's version, the game's release and the command groups it serves",
         "Replies protocol (MAJOR.MINOR.PATCH of the control protocol, docs/api/stability.md), release (the game's version, the string MCP serverInfo carries too) and features (the command groups the game answers, so a script can test for one before calling it).",
-        ["horizon-ctl hello"], &[], mcp: true, local: false),
+        ["horizon-ctl hello"], &[], mcp: true, local: false, reply: HELLO_REPLY),
+    cmd!("memory", Session, "memory", "what holds the game's memory: resident set, allocator, client and server columns by part, renderer, GPU memory by resource",
+        "Columns count blocks, biomes, light, heightmaps and records, each shared section once; server_columns are the single-player server thread's own levels. GPU memory by label needs Vulkan or DirectX 12. What the census doesn't reach is the resident set less its parts. A build with the alloc-census feature adds heap_by_tag_mb: the live heap by startup step, timed span, chunk job and thread.", ["horizon-ctl memory"], &[], mcp: true, local: false),
     cmd!("worlds", Session, "worlds", "the saved worlds, newest first: folder, name, mode, last played, version",
         "folder is what open, world-rename, world-backup and world-delete take.", ["horizon-ctl worlds"], &[], mcp: true, local: false),
     cmd!("world-rename", Session, "world-rename FOLDER NAME", "rename a world, as Edit World does (its folder stays)",
@@ -449,9 +579,29 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("bench", Scripting, "bench SECONDS", "reset frame stats, wait, reply with the summary", "", ["horizon-ctl bench 10"], &[p("seconds", Ty::Num, "how long to measure")], mcp: true, local: false),
     cmd!("stats", Scripting, "stats [reset] [raw]", "frame-time summary since the last reset", "", ["horizon-ctl stats"], &[opt("reset", Ty::Bool, "start counting again"), opt("raw", Ty::Bool, "every frame time too (frame_ms, cpu_ms, gpu_ms)")], mcp: true, local: false),
     cmd!("gpu-passes", Scripting, "gpu-passes [on|off]", "time Horizon's own render passes on the GPU, shown in F3 and in stats and bench", "", ["horizon-ctl gpu-passes on"], &[opt("mode", Ty::Enum(&["on", "off"]), "on or off; without it, only reports")], mcp: false, local: false),
+    cmd!("render-capture", Scripting, "render-capture on|off|DIR", "keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example",
+        "on meshes every section and far tile again so the copies are complete (HORIZON_RENDER_CAPTURE=1 keeps them from the start). DIR gets the camera, frame inputs, settings and every resident near section and far tile mesh; entities, particles, weather, the hand and the HUD are left out. See docs/graphics.md.",
+        ["horizon-ctl render-capture on", "horizon-ctl render-capture /tmp/scene"], &[], mcp: false, local: false),
     cmd!("fly", Scripting, "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]", "fly the camera along a line, then reply with the frame summary",
         "The reply's tick_ms and tick_ms_max are the world's smoothed tick time over the flight (the server thread's when single player runs on one). With raw, the reply also lists every frame time in milliseconds (frame_ms).",
         ["horizon-ctl fly 0 100 0 500 100 0 20"], &[], mcp: false, local: false),
+    // Repro recordings
+    cmd!("record-start", Scripting, "record-start [NAME] [--no-world]", "record input, state and the world for a bug repro",
+        "Writes recordings/<stamp>-NAME/: inputs.jsonl (who caused each input: user, agent or game), state.jsonl (the player and world every second), events.jsonl and, in single player, a copy of the world. The recording starts from a fresh save. Replies once the world copy is done.",
+        ["horizon-ctl record-start repro-bug", "horizon-ctl record-start --no-world"], &[opt("name", Ty::Str, "folder name after the timestamp (default session)"), flag("no-world", Ty::Bool, "do not copy the world (a server session)")], mcp: true, local: false),
+    cmd!("record-stop", Scripting, "record-stop [--export]", "stop the recording (and write the repro zip)",
+        "Without --export only the recording folder is closed; repro-export zips it later. With --export the reply carries the zip path.",
+        ["horizon-ctl record-stop", "horizon-ctl record-stop --export"], &[flag("export", Ty::Bool, "write the repro bundle too")], mcp: true, local: false),
+    cmd!("record-status", Scripting, "record-status", "the running recording and replay, if any", "",
+        ["horizon-ctl record-status"], &[], mcp: true, local: false),
+    cmd!("record-list", Scripting, "record-list", "the recordings and repro bundles on disk", "", ["horizon-ctl record-list"], &[], mcp: true, local: false),
+    cmd!("record-replay", Scripting, "record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]", "replay a recording, best effort",
+        "Loads the recording's world copy into saves/, opens it and feeds the recorded input back at its ticks. Only input and movement commands replay (never world, network or account ones). --in-place feeds the input into the world already open (a server recording needs it); --keep-world leaves the copied world behind when it ends. --stop ends a running replay. Same build and machine only; state.jsonl is the oracle, not a promise.",
+        ["horizon-ctl record-replay repro-bug", "horizon-ctl record-replay repro-bug --stop", "horizon-ctl record-replay server-fight --in-place"],
+        &[opt("name", Ty::Str, "recording from record-list"), flag("stop", Ty::Bool, "stop the running replay"), flag("in-place", Ty::Bool, "feed the open world instead of opening the copy"), flag("keep-world", Ty::Bool, "leave the copied world in saves/"), flag("timeout", Ty::Int, "give up after this many seconds (default 300)")], mcp: true, local: false),
+    cmd!("repro-export", Scripting, "repro-export [NAME] [PATH] [--no-world]", "zip a recording with the logs, crash report and status",
+        "Writes repro/<stamp>-NAME.zip: the recording, logs/latest.log, the newest crash report, a status.json and a README. The player attaches it to the bug report; nothing is uploaded. Stops a running recording first.",
+        ["horizon-ctl repro-export", "horizon-ctl repro-export repro-bug out.zip"], &[opt("name", Ty::Str, "recording from record-list (default the newest)"), opt("path", Ty::Str, "where to write the zip"), flag("no-world", Ty::Bool, "leave the world out")], mcp: true, local: false),
 ];
 
 pub fn find(name: &str) -> Option<&'static Cmd> {
@@ -462,7 +612,7 @@ pub fn find(name: &str) -> Option<&'static Cmd> {
 pub fn overview() -> String {
     let mut out = String::from(
         "horizon-ctl: play and script a running Horizon from the command line.\n\n\
-         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--pretty] COMMAND [ARGS...]\n\
+         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--api LINE] [--pretty] COMMAND [ARGS...]\n\
          \x20      horizon-ctl COMMAND --help      (or: horizon-ctl help COMMAND)\n",
     );
     for group in Group::ALL {
@@ -474,7 +624,8 @@ pub fn overview() -> String {
     out.push_str(
         "\nEvery reply is one JSON line. Errors are {\"error\": \"...\"}; the exit status is 0 on\n\
          success, 1 when the game replied with an error, 2 for a usage error, 3 when the\n\
-         game cannot be reached or started and 4 while No AI is on (the launcher's settings).\n\
+         game cannot be reached or started, 4 while No AI is on (the launcher's settings) and 5 when\n\
+         --api LINE (such as --api 0.1) names a protocol line the game's hello does not report.\n\
          Actions (goto, break, place...) block until done.\n\
          horizon-ctl help --game lists the running game's own commands, test hooks included.\n\
          The socket is $HORIZON_CONTROL, else $XDG_RUNTIME_DIR/horizon-control.sock (on Windows\n\
@@ -508,6 +659,34 @@ pub fn detail(c: &Cmd) -> String {
         }
     }
     out
+}
+
+/// The commands whose replies are described so far, one group at a time: the test
+/// requires each to name its fields.
+#[cfg(test)]
+pub const REPLY_GROUP: &[&str] = &["hello", "status"];
+
+/// The JSON schema of a command's reply, or none while its reply is undescribed.
+pub fn reply_schema(c: &Cmd) -> Option<Value> {
+    if c.reply.is_empty() {
+        return None;
+    }
+    let mut props = Map::new();
+    let mut required = Vec::new();
+    for fld in c.reply {
+        let types: Vec<&str> = fld.ty.split('|').collect();
+        let ty = if types.len() == 1 {
+            json!(types[0])
+        } else {
+            json!(types)
+        };
+        props.insert(
+            fld.name.to_owned(),
+            json!({ "type": ty, "description": fld.help }),
+        );
+        required.push(fld.name);
+    }
+    Some(json!({ "type": "object", "properties": props, "required": required }))
 }
 
 /// The generated reference, docs/horizon-ctl-commands.md (`horizon-ctl help --markdown`).
@@ -571,6 +750,26 @@ pub fn markdown() -> String {
                 } else {
                     args.join("<br>")
                 }
+            ));
+        }
+    }
+    out.push_str(
+        "\n## Replies\n\nThe reply fields of the commands described so far (more follow, a group at a \
+         time). Each reply is one JSON object; a type ending in `null` may be `null` when the field \
+         does not apply. A reader ignores keys it does not know: replies may gain fields within a \
+         protocol line. The MCP tool list declares the same fields as `outputSchema`.\n",
+    );
+    for c in COMMANDS.iter().filter(|c| !c.reply.is_empty()) {
+        out.push_str(&format!(
+            "\n### `{}`\n\n| Field | Type | Meaning |\n| --- | --- | --- |\n",
+            c.name
+        ));
+        for fld in c.reply {
+            out.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                fld.name,
+                fld.ty.replace('|', ", "),
+                cell(fld.help)
             ));
         }
     }
@@ -813,6 +1012,52 @@ mod tests {
         assert_eq!(s["required"], json!(["x", "y", "z"]));
         assert_eq!(s["properties"]["timeout"]["type"], "number");
         assert_eq!(tool_name(find("look-at-entity").unwrap()), "look_at_entity");
+    }
+
+    #[test]
+    fn every_command_in_the_reply_group_names_its_reply_fields() {
+        for name in REPLY_GROUP {
+            let c = find(name).unwrap_or_else(|| panic!("{name} is not a command"));
+            assert!(!c.reply.is_empty(), "{name} names no reply fields");
+            let mut seen = std::collections::HashSet::new();
+            for fld in c.reply {
+                assert!(seen.insert(fld.name), "{name}: {} twice", fld.name);
+                assert!(!fld.help.is_empty(), "{name}.{} has no meaning", fld.name);
+                for t in fld.ty.split('|') {
+                    assert!(
+                        [
+                            "string", "integer", "number", "boolean", "array", "object", "null"
+                        ]
+                        .contains(&t),
+                        "{name}.{}: unknown type {t}",
+                        fld.name
+                    );
+                }
+            }
+            assert_eq!(
+                reply_schema(c).unwrap()["required"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                c.reply.len()
+            );
+        }
+        // Nothing outside the group claims a reply the group list does not cover.
+        for c in COMMANDS.iter().filter(|c| !c.reply.is_empty()) {
+            assert!(
+                REPLY_GROUP.contains(&c.name),
+                "{} has fields but is not in REPLY_GROUP",
+                c.name
+            );
+        }
+        assert_eq!(
+            reply_schema(find("hello").unwrap()).unwrap()["properties"]["features"]["type"],
+            "array"
+        );
+        assert_eq!(
+            reply_schema(find("status").unwrap()).unwrap()["properties"]["player"]["type"],
+            json!(["object", "null"])
+        );
     }
 
     #[test]

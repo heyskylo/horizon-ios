@@ -63,6 +63,7 @@ class WorldInputCaptureTests(unittest.TestCase):
 use std::cell::Cell;
 #[derive(Clone, Copy, PartialEq)]
 enum Screen { Playing, Paused, Inventory, Chat }
+#[derive(Clone, Copy)]
 enum CursorGrabMode { Locked, Confined, None }
 mod winit {
     pub mod dpi {
@@ -108,19 +109,19 @@ struct ServerPacks { prompt: Option<()> }
 struct Game {
     focused: bool, agent_pointer: bool, window: Option<Window>, mouse: Mouse,
     keyboard_mouse: bool, split_window: bool, view_at: [u32; 2],
-    captured: bool, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
+    captured: bool, capture_mode: Option<CursorGrabMode>, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
     remote: Option<Remote>,
     mining: bool, lan_acting: Option<u32>, renderer: Option<Renderer>, cursor: (f32, f32),
-    server_packs: ServerPacks, options: Options,
+    server_packs: ServerPacks, command_prompt: Option<()>, options: Options,
 }
 impl Default for Game {
     fn default() -> Self {
         Self { focused: true, agent_pointer: false, window: Some(Window::default()),
             keyboard_mouse: true, split_window: false, view_at: [0, 0],
-            mouse: Mouse::default(), captured: false, regrab_on_refocus: false, title: None,
+            mouse: Mouse::default(), captured: false, capture_mode: None, regrab_on_refocus: false, title: None,
             screen: Screen::Playing, remote: None, mining: false, lan_acting: None,
             renderer: None, cursor: (0.0, 0.0), server_packs: ServerPacks::default(),
-            options: Options::default() }
+            command_prompt: None, options: Options::default() }
     }
 }
 HELPER
@@ -139,6 +140,16 @@ fn main() {
         game.capture(true);
         assert!(!game.captured);
         game.server_packs.prompt = None;
+        game.capture(true);
+        assert!(game.captured);
+    }
+    // So does a clicked command's confirmation.
+    {
+        let mut game = Game::default();
+        game.command_prompt = Some(());
+        game.capture(true);
+        assert!(!game.captured);
+        game.command_prompt = None;
         game.capture(true);
         assert!(game.captured);
     }
@@ -306,9 +317,9 @@ fn main() {
     // Grabbing and releasing put the pointer at the window's centre
     // (MouseHandler.grabMouse / releaseMouse), in the surface's pixels when it
     // has one; releasing an already released pointer leaves it where it is.
-    // Windows also warps before the Locked grab, which clips the pointer
-    // where it is (#6076).
-    let grab_warps = if cfg!(windows) { 2 } else { 1 };
+    // A grab warps once on every system: Windows before the Locked grab, which
+    // clips the pointer where it is (#6076).
+    let grab_warps = 1;
     game.renderer = Some(Renderer { config: Config { width: 1000, height: 600 } });
     game.capture(true);
     assert!(game.captured);
@@ -358,11 +369,17 @@ struct DeviceId;
 enum DeviceEvent { MouseMotion { delta: (f64, f64) }, Other }
 #[derive(PartialEq)] enum Screen { Playing, Paused }
 struct Options { offscreen: bool }
+mod input_trace {
+    pub enum InputOrigin { User }
+    pub enum TraceKind { Motion { x: f64, y: f64 } }
+}
 struct Game {
     pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool, split_window: bool,
     options: Options, screen: Screen, mouse: MouseLook, last_input: Instant,
 }
 impl Game {
+    // The input trace records the motion; it does not change the turn.
+    fn note_input(&mut self, _: input_trace::InputOrigin, _: input_trace::TraceKind) {}
 METHOD
 }
 fn main() {

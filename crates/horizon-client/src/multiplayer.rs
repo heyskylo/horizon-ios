@@ -138,6 +138,24 @@ pub enum Outcome {
     Back,
     Connect { address: String, lan: bool },
 }
+
+impl Screen {
+    /// The id native mods see for this screen (`NativeScreenView.id`, the
+    /// screen hooks): one per variant, a hook's contract, so it stays the
+    /// same from release to release. A new variant must add one.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::List { .. } => "multiplayer",
+            Self::Edit { index: None, .. } => "add_server",
+            Self::Edit { index: Some(_), .. } => "edit_server",
+            Self::Direct { .. } => "direct_connect",
+            Self::ConfirmDelete { .. } => "server_delete",
+            Self::Friend { .. } => "friends_join",
+            Self::Disconnected { .. } => "disconnected",
+        }
+    }
+}
+
 /// A button: x, y, width, label, enabled, id.
 pub type ButtonSpec = (f32, f32, f32, String, bool, u8);
 
@@ -240,7 +258,15 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                             }
                         }
                         // OnlineServerEntry: SUCCESSFUL only for this game's protocol.
-                        if protocol == i64::from(horizon_protocol::PROTOCOL_VERSION) {
+                        let joinable = protocol == i64::from(horizon_protocol::PROTOCOL_VERSION)
+                            || (crate::net::older_servers_enabled()
+                                && i32::try_from(protocol)
+                                    .ok()
+                                    .and_then(
+                                        horizon_protocol::adapter::ServerVersion::from_protocol,
+                                    )
+                                    .is_some());
+                        if joinable {
                             Ping::Ok {
                                 motd,
                                 players,
@@ -961,6 +987,7 @@ impl Screen {
         caret: &mut crate::ui::Caret,
         focused_at: Instant,
         cursor: (f32, f32),
+        hide_address: bool,
     ) {
         let (w, h) = (batch.width, batch.height);
         let max = self.max_length();
@@ -1218,7 +1245,17 @@ impl Screen {
                             let header = crate::lang::get_or("lanServer.title", "LAN World");
                             batch.text(atlas, &header, cx + 35.0, cy + 1.0, u32::MAX, false);
                             batch.text(atlas, &game.motd, cx + 35.0, cy + 12.0, gray, false);
-                            batch.text(atlas, &game.address, cx + 35.0, cy + 23.0, gray, false);
+                            // NetworkServerEntry.extractContent: `hideServerAddress`
+                            // draws HIDDEN_ADDRESS_TEXT in the address's place.
+                            let hidden;
+                            let address = if hide_address {
+                                hidden =
+                                    crate::lang::get_or("selectServer.hiddenAddress", "(Hidden)");
+                                &hidden
+                            } else {
+                                &game.address
+                            };
+                            batch.text(atlas, address, cx + 35.0, cy + 23.0, gray, false);
                         }
                     }
                 }
@@ -1375,7 +1412,9 @@ impl Screen {
         }
     }
     /// `DirectJoinServerScreen.keyPressed`: Enter joins the typed address
-    /// while the Join Server button is active.
+    /// while the Join Server button is active. On the server list it is
+    /// `ServerSelectionList.OnlineServerEntry.keyPressed`: Enter joins the
+    /// selected server or LAN game, as a click on it does.
     pub fn confirm(&self) -> Outcome {
         match self {
             Self::Direct { address } if servers::parse_address(address).is_some() => {
@@ -1384,6 +1423,15 @@ impl Screen {
                     lan: false,
                 }
             }
+            Self::List {
+                servers,
+                selected,
+                lan,
+                ..
+            } => match selected.and_then(|i| entry_address(servers, lan, i)) {
+                Some((address, lan)) => Outcome::Connect { address, lan },
+                None => Outcome::None,
+            },
             _ => Outcome::None,
         }
     }
@@ -2358,6 +2406,41 @@ mod tests {
         screen.arrow(true, true, size, &saves);
         assert_eq!(state(&screen).1, Some(0));
         assert_eq!(state(&screen).0[0], "c");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enter_joins_the_selected_server() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-enter-{}", std::process::id()));
+        let saves = dir.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        let file = servers_file(&saves);
+        let list = vec![
+            ServerEntry::new("a", "127.0.0.1:2"),
+            ServerEntry::new("b", "127.0.0.1:3"),
+        ];
+        servers::save(&file, &list).unwrap();
+        let mut screen = Screen::list(&saves);
+        // Nothing selected: Enter joins nothing.
+        assert!(matches!(screen.confirm(), Outcome::None));
+        let size = (427.0, 240.0);
+        assert!(screen.arrow(false, false, size, &saves));
+        match screen.confirm() {
+            Outcome::Connect { address, lan } => {
+                assert_eq!(address, "127.0.0.1:2");
+                assert!(!lan);
+            }
+            _ => panic!("Enter did not join the selected server"),
+        }
+        // Down picks the next server, and Enter joins that one.
+        assert!(screen.arrow(false, false, size, &saves));
+        match screen.confirm() {
+            Outcome::Connect { address, lan } => {
+                assert_eq!(address, "127.0.0.1:3");
+                assert!(!lan);
+            }
+            _ => panic!("Enter did not join the second server"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

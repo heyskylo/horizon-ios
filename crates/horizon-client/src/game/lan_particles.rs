@@ -4,9 +4,13 @@
 use super::{Game, lan::LanHost};
 use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 use horizon_protocol::{
-    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData, PositionSource},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -18,10 +22,20 @@ pub(super) struct QueuedParticle {
     pub state: Option<BlockStateId>,
     pub at: [f64; 3],
     pub spread: [f64; 3],
-    pub speed: f64,
+    /// Per-axis maximum speed used by the packet's ALTERNATIVE randomization.
+    pub speed: [f64; 3],
     pub count: i32,
     /// The packet's `RandomizationType` (0 DEFAULT, 1 ALTERNATIVE).
     pub randomization: i32,
+}
+
+/// `PowderSnowBlock.entityInside`'s server roll. The branch and both float
+/// draws follow Java's `getKnownMovement`/`randomBetween` order.
+pub(super) fn powder_snow_velocity(
+    known: Vec3,
+    random: &mut impl RandomSource,
+) -> Option<[f64; 3]> {
+    horizon_client::powder_snow::particle_velocity(known, random)
 }
 
 fn send_native_nearby(
@@ -154,6 +168,44 @@ pub(super) fn send_snowflake_particle(
     }
 }
 
+/// `ServerLevel.sendParticles`: sends a `ClientboundLevelParticlesPacket` to each player within 32 blocks.
+pub(super) fn send_hub_level_particles(
+    hub: &Hub,
+    options: &ParticleOptions,
+    at: [f64; 3],
+    spread: [f64; 3],
+    speed: f64,
+    count: u32,
+    state: Option<BlockStateId>,
+) {
+    let Some(particle) = Game::hub_particle(hub, options, state) else {
+        return;
+    };
+    let horizon_only = mod_particle_only_for_horizon(&particle);
+    let packet = C::LevelParticles(play::LevelParticles {
+        particle,
+        override_limiter: false,
+        always_show: false,
+        pos: at,
+        dist: spread.map(|d| d as f32),
+        max_speed: [speed as f32; 3],
+        count: count as i32,
+        randomization: 0,
+    });
+    for g in hub.guests.iter().filter(|g| hub.here(g)) {
+        if horizon_only && g.brand != "horizon" {
+            continue;
+        }
+        // ServerLevel compares the player's block centre, strictly within 32.
+        let distance: f64 = (0..3)
+            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
+            .sum();
+        if distance < 32.0 * 32.0 {
+            g.send(&packet);
+        }
+    }
+}
+
 impl Game<'_> {
     /// `SonicBoom.tick` uses `ServerLevel.sendParticles` for each ray point.
     /// Keep the local event's rendering; connected players receive one at rest.
@@ -184,9 +236,11 @@ impl Game<'_> {
 
     /// `ServerLevel.sendParticles` of a mob's particles: a packet to each
     /// player within 32 blocks. The window draws its own copy. `state` is the
-    /// block of a block particle.
+    /// block of a block particle. `host` is the hub of a guest's turn, which
+    /// is out of `self.lan` meanwhile.
     pub(super) fn lan_level_particles(
         &self,
+        host: Option<&LanHost>,
         options: &ParticleOptions,
         at: [f64; 3],
         spread: [f64; 3],
@@ -194,33 +248,10 @@ impl Game<'_> {
         count: u32,
         state: Option<BlockStateId>,
     ) {
-        let (Some(host), Some(particle)) = (&self.lan, self.network_particle(options, state))
-        else {
+        let Some(hub) = host.or(self.lan.as_ref()).map(|h| &h.hub) else {
             return;
         };
-        let horizon_only = mod_particle_only_for_horizon(&particle);
-        let packet = C::LevelParticles(play::LevelParticles {
-            particle,
-            override_limiter: false,
-            always_show: false,
-            pos: at,
-            dist: spread.map(|d| d as f32),
-            max_speed: [speed as f32; 3],
-            count: count as i32,
-            randomization: 0,
-        });
-        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
-            if horizon_only && g.brand != "horizon" {
-                continue;
-            }
-            // ServerLevel compares the player's block centre, strictly within 32.
-            let distance: f64 = (0..3)
-                .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
-                .sum();
-            if distance < 32.0 * 32.0 {
-                g.send(&packet);
-            }
-        }
+        send_hub_level_particles(hub, options, at, spread, speed, count, state);
     }
 
     /// `LivingEntity.checkFallDamage`'s `ServerLevel.sendParticles` of the
@@ -281,6 +312,62 @@ impl Game<'_> {
                 g.send(&packet);
             }
         }
+    }
+
+    /// Shared block callback for any entity family that applies block effects.
+    pub(super) fn entity_powder_snow_particles(
+        &mut self,
+        previous: Vec3,
+        position: Vec3,
+        bounds: Aabb,
+        known_movement: Vec3,
+        living: bool,
+    ) {
+        // `particle_velocity` refuses no horizontal movement before any draw,
+        // so a resting entity skips the sweep (most items, orbs and carts).
+        if self.remote.is_some() || (known_movement.x == 0.0 && known_movement.z == 0.0) {
+            return;
+        }
+        let snow = horizon_client::powder_snow::contacts(previous, position, bounds, living, |p| {
+            &*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name == "minecraft:powder_snow"
+        });
+        for block in snow {
+            self.powder_snow_particle(block, position, known_movement);
+        }
+    }
+
+    /// `PowderSnowBlock.entityInside` for an entity with known movement.
+    pub(super) fn powder_snow_particle(
+        &mut self,
+        block: BlockPos,
+        position: Vec3,
+        known_movement: Vec3,
+    ) {
+        if self.remote.is_some() {
+            return;
+        }
+        let Some(velocity) = powder_snow_velocity(known_movement, &mut self.world.random) else {
+            return;
+        };
+        self.snowflake_particle([position.x, f64::from(block.y + 1), position.z], velocity);
+    }
+
+    /// Locally draw the level's own particle, then send it to LAN players.
+    pub(super) fn snowflake_particle(&mut self, at: [f64; 3], velocity: [f64; 3]) {
+        let options = ParticleOptions::simple(ParticleType::Snowflake);
+        if self.options.execution_role.is_client() {
+            self.particles.add(&options, at, velocity);
+        }
+        self.lan_send_particles(QueuedParticle {
+            dimension: self.dim.id(),
+            options,
+            state: None,
+            at,
+            spread: [0.0; 3],
+            speed: velocity,
+            count: 1,
+            randomization: 1,
+        });
     }
 
     /// `ParticleTypes.STREAM_CODEC`'s value for `options`: the type's
@@ -397,8 +484,38 @@ impl Game<'_> {
             Some(ParticleData::Trail(target, color, duration)) => {
                 ParticleOptions::trail(*target, *color as u32 & 0xFF_FFFF, *duration)
             }
+            Some(ParticleData::Vibration { source, ticks }) => {
+                ParticleOptions::vibration(self.vibration_destination(source)?, *ticks)
+            }
             Some(_) => return None,
         })
+    }
+
+    /// `PositionSource.getPosition`: a block's centre, or an entity's feet
+    /// raised by the option's offset. An entity this client does not have is
+    /// no destination at all: vanilla makes the particle and removes it on its
+    /// first tick, so nothing of it is ever drawn.
+    fn vibration_destination(&self, source: &PositionSource) -> Option<[f64; 3]> {
+        match source {
+            PositionSource::Block([x, y, z]) => Some([
+                f64::from(*x) + 0.5,
+                f64::from(*y) + 0.5,
+                f64::from(*z) + 0.5,
+            ]),
+            PositionSource::Entity { id, y_offset } => {
+                let id = u32::try_from(*id).ok()?;
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+                    .map(|m| {
+                        [
+                            m.position.x,
+                            m.position.y + f64::from(*y_offset),
+                            m.position.z,
+                        ]
+                    })
+            }
+        }
     }
 
     /// `ClientPacketListener.handleParticleEvent`: no count is one particle
@@ -448,13 +565,8 @@ impl Game<'_> {
         }
         // A wind charge's burst throws none.
         if !p.block_particles.is_empty() {
-            let (world, facts) = (&self.world, self.res.facts());
-            self.particles.explosion_blocks(
-                p.center,
-                p.radius,
-                p.block_count.max(0) as usize,
-                &|b| facts.is_air(world.block(b[0], b[1], b[2])),
-            );
+            self.particles
+                .track_explosion(p.center, p.radius, p.block_count.max(0) as usize);
         }
         // Entity.pushFromExplosion.
         if let (Some(push), Some(player)) = (p.knockback, self.player.as_mut()) {
@@ -503,7 +615,7 @@ impl Game<'_> {
             always_show: false,
             pos: at,
             dist: spread.map(|d| d as f32),
-            max_speed: [speed as f32; 3],
+            max_speed: speed.map(|v| v as f32),
             count,
             randomization,
         })
@@ -571,7 +683,7 @@ impl Game<'_> {
             state: None,
             at,
             spread: [1.0; 3],
-            speed: 0.0,
+            speed: [0.0; 3],
             count: 8,
             randomization: 1,
         });
@@ -727,8 +839,17 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::spread;
+    use super::*;
+    use horizon_client::lan::{
+        Joined, Lan, NetConfig, Out, PlayerSender,
+        chunks::ChunkEncoder,
+        data,
+        guest::Guest,
+        hub::{Hub, HubConfig},
+    };
+    use horizon_client::particles::{ParticleOptions, ParticleType};
     use horizon_core::random::LegacyRandom;
+    use horizon_protocol::packets::play;
 
     /// The Nether's evaporation smoke (ALTERNATIVE, dist 1, speed 0) lands
     /// inside the block from its corner and stands still; DEFAULT spreads
@@ -749,5 +870,145 @@ mod tests {
             below |= at.iter().any(|&c| c < 0.0);
         }
         assert!(below, "DEFAULT is a Gaussian around the position");
+    }
+
+    /// `PowderSnowBlock.entityInside`: vertical-only movement skips the roll;
+    /// horizontal movement uses nextBoolean, then X and Z floats in order.
+    #[test]
+    fn powder_snow_snowflakes_use_the_vanilla_movement_gate_and_random_order() {
+        let mut stationary = LegacyRandom::new(1);
+        let mut untouched = LegacyRandom::new(1);
+        assert_eq!(
+            powder_snow_velocity(Vec3::new(0.0, 1.0, 0.0), &mut stationary),
+            None
+        );
+        assert_eq!(stationary.next_int(), untouched.next_int());
+
+        let seed = (0..1000)
+            .find(|seed| {
+                let mut random = LegacyRandom::new(*seed);
+                random.next_boolean()
+            })
+            .unwrap();
+        let mut vanilla = LegacyRandom::new(seed);
+        assert!(vanilla.next_boolean());
+        let x = (vanilla.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+        let z = (vanilla.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+        let expected = [f64::from(x), f64::from(0.05_f32), f64::from(z)];
+        let mut random = LegacyRandom::new(seed);
+        assert_eq!(
+            powder_snow_velocity(Vec3::new(-0.2, 0.0, 0.0), &mut random),
+            Some(expected)
+        );
+    }
+
+    /// `ShulkerBullet.hurtServer`: fifteen crit particles (spread 0.2, speed 0.0)
+    /// are sent to tracking players within 32 blocks.
+    #[test]
+    fn hitting_shulker_bullet_sends_15_crit_particles_to_players() {
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "ShulkerBulletTest".into(), 2)
+        };
+        let mut sync = data::SyncData::empty();
+        sync.builtin.registries.insert(
+            "minecraft:particle_type".to_string(),
+            horizon_protocol::registry::Ids::from_names(vec!["minecraft:crit".to_string()]),
+        );
+        let sync = std::sync::Arc::new(sync);
+        let lan = Lan::start_with(sync.clone(), config).unwrap();
+        let encoder = ChunkEncoder::new(
+            [] as [(std::sync::Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let hub_config = HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 20,
+            integrated: false,
+            levels: Default::default(),
+        };
+        let mut hub = Hub::new(lan, sync, encoder, hub_config);
+
+        let (tx_near, rx_near) = std::sync::mpsc::channel();
+        let mut near = Guest::new(
+            Joined {
+                conn: 1,
+                uuid: 1,
+                name: "NearPlayer".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                brand: "vanilla".into(),
+                sender: PlayerSender::new(tx_near, std::sync::Arc::default()),
+                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+            },
+            1,
+            [5.0, 64.0, 5.0],
+            8,
+        );
+        near.placed = true;
+        near.dimension = "minecraft:overworld".into();
+        hub.guests.push(near);
+
+        let (tx_far, rx_far) = std::sync::mpsc::channel();
+        let mut far = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 2,
+                name: "FarPlayer".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                brand: "vanilla".into(),
+                sender: PlayerSender::new(tx_far, std::sync::Arc::default()),
+                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:25566".parse().unwrap(),
+            },
+            2,
+            [100.0, 64.0, 100.0],
+            8,
+        );
+        far.placed = true;
+        far.dimension = "minecraft:overworld".into();
+        hub.guests.push(far);
+
+        let at = [0.0, 64.0, 0.0];
+        let options = ParticleOptions::simple(ParticleType::from_name("crit").unwrap());
+        send_hub_level_particles(&hub, &options, at, [0.2, 0.2, 0.2], 0.0, 15, None);
+
+        assert!(
+            rx_far.try_recv().is_err(),
+            "far guest should not receive particles"
+        );
+
+        let out = rx_near
+            .try_recv()
+            .expect("near guest should receive LevelParticles packet");
+        let body = match out {
+            Out::Packet(body) => body,
+            _ => panic!("expected Out::Packet"),
+        };
+        let mut r = horizon_protocol::buf::Reader::new(&body);
+        let id = r.varint().unwrap();
+        let packet = play::Clientbound::decode(id, r.rest()).unwrap();
+        match packet {
+            play::Clientbound::LevelParticles(p) => {
+                assert_eq!(p.count, 15);
+                assert_eq!(p.dist, [0.2, 0.2, 0.2]);
+                assert_eq!(p.max_speed, [0.0; 3]);
+                assert_eq!(p.pos, at);
+                assert_eq!(p.particle.id, 0);
+            }
+            other => panic!("expected LevelParticles packet, got {other:?}"),
+        }
     }
 }

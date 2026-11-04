@@ -836,6 +836,19 @@ pub fn smithing_template_lines(
     ]
 }
 
+/// `DiscFragmentItem.appendHoverText`: the gray "Music Disc - 5" line; none for
+/// other items.
+pub fn disc_fragment_line(
+    stack: &ItemStack,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if &*stack.item != "minecraft:disc_fragment_5" {
+        return None;
+    }
+    let key = "item.minecraft.disc_fragment_5.desc";
+    Some(translate(key).unwrap_or_else(|| key.to_owned()))
+}
+
 /// The lines of `stack` below its name that its components give, in
 /// `ItemStack.addDetailsToTooltip` order.
 pub fn detail_lines(
@@ -851,6 +864,7 @@ pub fn detail_lines(
             .into_iter()
             .map(|l| l.0),
     );
+    lines.extend(disc_fragment_line(stack, translate));
     let display = TooltipDisplay::for_stack(stack);
     lines.extend(bees_line(stack, &display, translate));
     lines.extend(honey_line(stack, &display, translate));
@@ -1053,7 +1067,7 @@ pub fn lines(
 /// `ItemLore.addToTooltip`: each lore component under dark purple italic, with
 /// the component's own styles (including explicit `false`) winning on children.
 pub fn lore_texts(stack: &ItemStack) -> Vec<crate::text::Text> {
-    let Some(Tag::List(entries)) = stack.data().and_then(|d| d.other("minecraft:lore")) else {
+    let Some(raw) = stack.data().and_then(|d| d.other("minecraft:lore")) else {
         return Vec::new();
     };
     let base = crate::text::Style {
@@ -1061,10 +1075,19 @@ pub fn lore_texts(stack: &ItemStack) -> Vec<crate::text::Text> {
         italic: Some(true),
         ..Default::default()
     };
-    entries
-        .iter()
-        .map(|entry| {
-            let mut text = crate::entity_nbt::name_text(entry).resolve_legacy();
+    let lines: Vec<crate::text::Text> = match raw {
+        Tag::List(entries) => entries
+            .iter()
+            .map(|entry| crate::entity_nbt::name_text(entry).resolve_legacy())
+            .collect(),
+        Tag::Compound(_) | Tag::String(_) => {
+            vec![crate::entity_nbt::name_text(raw).resolve_legacy()]
+        }
+        _ => Vec::new(),
+    };
+    lines
+        .into_iter()
+        .map(|mut text| {
             for span in &mut text.spans {
                 span.style.inherit(&base);
             }
@@ -1093,6 +1116,27 @@ mod tests {
     use super::*;
     use horizon_world::loot::PackOverlay;
     use std::sync::Arc;
+
+    #[test]
+    fn disc_fragment_shows_music_disc_line_first() {
+        let translate = |k: &str| {
+            (k == "item.minecraft.disc_fragment_5.desc").then(|| "Music Disc - 5".to_owned())
+        };
+        let stack = ItemStack::new("minecraft:disc_fragment_5", 1);
+        assert_eq!(
+            disc_fragment_line(&stack, &translate).as_deref(),
+            Some("Music Disc - 5")
+        );
+        let lines = detail_lines(&stack, None, &translate);
+        assert_eq!(lines.first().map(String::as_str), Some("Music Disc - 5"));
+        let other = ItemStack::new("minecraft:stick", 1);
+        assert_eq!(disc_fragment_line(&other, &translate), None);
+        assert!(
+            !detail_lines(&other, None, &translate)
+                .iter()
+                .any(|l| l == "Music Disc - 5")
+        );
+    }
 
     #[test]
     fn styled_name_keeps_gradient_spans_and_explicit_italic() {
@@ -1358,6 +1402,31 @@ mod tests {
             .push(("minecraft:rarity".into(), Tag::String("uncommon".into())));
         sword.enchant("minecraft:sharpness", 1);
         assert_eq!(rarity(&sword, "common"), "rare");
+    }
+
+    #[test]
+    fn lore_texts_handles_compound_lists() {
+        // Direct command components from issue #6405
+        let cmd = r#"[custom_name=[{"text":"Simple Custom Name","italic":false}],lore=[[{"text":"Simple Custom Lore","italic":false}]],rarity=epic,enchantments={aqua_affinity:1},unbreakable={}]"#;
+        let comp = horizon_items::item_data::command_components(cmd).unwrap();
+        let (damage, extra) = horizon_items::item_data::decode_components(Some(&comp));
+        let stack = ItemStack {
+            item: "minecraft:stick".into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        assert_eq!(rarity(&stack, "common"), "epic");
+        let name = styled_name(&stack, || "fallback".into());
+        assert_eq!(name.plain(), "Simple Custom Name");
+        assert_eq!(name.spans[0].style.italic, Some(false));
+
+        let lore = lore_texts(&stack);
+        assert_eq!(lore.len(), 1);
+        assert_eq!(lore[0].plain(), "Simple Custom Lore");
+        assert_eq!(lore[0].spans[0].style.italic, Some(false));
+        assert_eq!(lore[0].spans[0].style.color, Some(crate::text::DARK_PURPLE));
+        assert!(TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
     }
 
     #[test]

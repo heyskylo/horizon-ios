@@ -7,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 use wgpu::util::DeviceExt;
 
@@ -58,7 +59,18 @@ impl TextureFlags {
     }
 }
 pub struct HudAtlas {
+    /// Identity of this packed atlas, used to invalidate cached model UV data
+    /// even when a resource reload places sprites at the same coordinates.
+    pub revision: u64,
+    /// RGBA8, `width` by `height`, as built: empty once `pack_pixels` has
+    /// compressed them (read them through `pixels()`).
     pub pixels: Vec<u8>,
+    /// `pixels` compressed (lz4) on a thread of its own once the renderer
+    /// has uploaded them: only rebuilding a renderer reads them again.
+    packed: Option<Arc<OnceLock<Vec<u8>>>>,
+    /// The width each Standard Galactic letter uses in `font/ascii_sga`'s
+    /// cell, by ASCII code (the enchanting table's text), read when built.
+    pub galactic_widths: [u16; 128],
     pub width: u32,
     pub height: u32,
     pub sprites: HashMap<String, Rect>,
@@ -84,6 +96,9 @@ pub struct HudAtlas {
     /// A resource pack's own `core/text` shader for the GUI's text, translated;
     /// none draws the text natively.
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
+    /// none draws the outline natively.
+    pub lines_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
@@ -101,8 +116,19 @@ pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
 pub const MAP_SLOTS: usize = 256;
+/// The atlas sprite of map slot `slot` (`horizon/map{slot}`), named once:
+/// every map shown asks for its slot's each frame.
+pub fn map_slot_sprite(slot: usize) -> Option<&'static str> {
+    static NAMES: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| (0..MAP_SLOTS).map(|i| format!("horizon/map{i}")).collect());
+    NAMES.get(slot).map(String::as_str)
+}
 /// The atlas slot the minimap extra draws into.
 pub const MINIMAP_SPRITE: &str = "horizon/minimap";
+/// A mod's own image (`native_mod_image`), drawn with `native_sprite`; big
+/// enough for a world map's 1024 blocks at a block a pixel.
+pub const MOD_IMAGE_SPRITE: &str = "horizon/modimage";
+pub const MOD_IMAGE_SIZE: u32 = 1024;
 /// Atlas slots for downloaded player skins (`skins/<sha1>`), 64x64 each.
 /// Vanilla registers a texture per skin. Here the slots are shared
 /// (`skins::SkinSlots`): skins drawn in the last frame keep theirs, and a
@@ -120,8 +146,120 @@ pub const PACK_ICON_SIZE: u32 = 128;
 /// size of the largest trim texture.
 pub const TRIM_SLOTS: usize = 32;
 pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
-    decode_bytes(&fs::read(path)?)
+    decode_bytes(&horizon_core::prepared_files::read(path)?)
 }
+/// The image formats [`decode_image_bytes`] reads, told apart by their own
+/// leading bytes rather than by a file name: what a server sends has no name,
+/// and a name would not be trustworthy anyway.
+///
+/// The game's own resources are PNG throughout, and so are a resource pack's
+/// (vanilla's `NativeImage.read` takes PNG only), so [`decode_bytes`] stays
+/// PNG-only. WebP and JPEG are for images fetched from the network (Modrinth
+/// project icons in the resource pack browser), which are commonly either.
+enum ImageFormat {
+    Png,
+    /// `RIFF....WEBP`.
+    WebP,
+    /// Starts with the SOI marker `FF D8`.
+    Jpeg,
+}
+
+impl ImageFormat {
+    /// The format `data` begins with, or `None` for anything else.
+    fn sniff(data: &[u8]) -> Option<Self> {
+        const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if data.starts_with(&PNG_MAGIC) {
+            return Some(Self::Png);
+        }
+        if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+            return Some(Self::WebP);
+        }
+        if data.starts_with(&[0xFF, 0xD8]) {
+            return Some(Self::Jpeg);
+        }
+        None
+    }
+}
+
+/// The most pixels a fetched image may claim: its header alone sizes the
+/// buffer, and a hostile one could ask for gigabytes. 4096 x 4096 RGBA is 64 MiB.
+const MAX_FETCHED_PIXELS: u64 = 4096 * 4096;
+
+fn check_fetched_size(width: u64, height: u64) -> Result<()> {
+    if width * height > MAX_FETCHED_PIXELS {
+        return Err(format!("a {width}x{height} image is too large to decode").into());
+    }
+    Ok(())
+}
+
+/// A WebP image as RGBA8. Still frames and animations both decode; an
+/// animation gives its first frame, as an animated PNG would.
+fn decode_webp(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let mut decoder =
+        image_webp::WebPDecoder::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    check_fetched_size(u64::from(width), u64::from(height))?;
+    // Four bytes a pixel whether or not the image carries alpha: the caller
+    // always wants RGBA.
+    let mut rgba = vec![0u8; (width as usize) * (height as usize) * 4];
+    if decoder.has_alpha() {
+        decoder.read_image(&mut rgba).map_err(|e| e.to_string())?;
+    } else {
+        let mut rgb = vec![0u8; (width as usize) * (height as usize) * 3];
+        decoder.read_image(&mut rgb).map_err(|e| e.to_string())?;
+        for (out, pixel) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(rgb.as_chunks::<3>().0)
+        {
+            out.copy_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+        }
+    }
+    Ok((width, height, rgba))
+}
+
+/// A JPEG image as RGBA8. JPEG has no alpha, so every pixel is opaque.
+fn decode_jpeg(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(data);
+    // The size comes from the headers, before any pixel buffer is made.
+    decoder.decode_headers().map_err(|e| e.to_string())?;
+    let info = decoder.info().ok_or("the JPEG states no size")?;
+    let (width, height) = (u32::from(info.width), u32::from(info.height));
+    check_fetched_size(u64::from(width), u64::from(height))?;
+    let pixels = decoder.decode().map_err(|e| e.to_string())?;
+    let count = (width as usize) * (height as usize);
+    // The decoder gives RGB for a colour image and one byte a pixel for a
+    // greyscale one; both become RGBA here.
+    let channels = pixels.len().checked_div(count).unwrap_or(0);
+    let mut rgba = Vec::with_capacity(count * 4);
+    match channels {
+        3 => {
+            for p in pixels.as_chunks::<3>().0 {
+                rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
+            }
+        }
+        1 => {
+            for p in &pixels {
+                rgba.extend_from_slice(&[*p, *p, *p, 255]);
+            }
+        }
+        _ => return Err("the JPEG decoded to an unexpected channel count".into()),
+    }
+    Ok((width, height, rgba))
+}
+
+/// An image fetched from the network (PNG, WebP or JPEG) as RGBA pixels. WebP
+/// and JPEG go to their own decoders; anything else goes to the PNG reader, so
+/// its error is the one reported.
+pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    match ImageFormat::sniff(data) {
+        Some(ImageFormat::WebP) => decode_webp(data),
+        Some(ImageFormat::Jpeg) => decode_jpeg(data),
+        Some(ImageFormat::Png) | None => decode_bytes(data),
+    }
+}
+
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
@@ -172,14 +310,25 @@ fn within_budget(files: &[&PathBuf], budget: u64) -> HashSet<PathBuf> {
 }
 /// A PNG's width and height, from its header alone.
 fn png_size(path: &Path) -> Option<(u32, u32)> {
-    use std::io::Read;
-    let mut header = [0u8; 24];
-    fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+    let header: [u8; 24] = horizon_core::prepared_files::read_head(path, 24)
+        .ok()?
+        .try_into()
+        .ok()?;
     let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
     (header[..8] == *b"\x89PNG\r\n\x1a\n" && header[12..16] == *b"IHDR")
         .then(|| (field(16), field(20)))
 }
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    // A prepared root's folder: from its data file, without listing the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(dir) {
+        out.extend(
+            files
+                .iter()
+                .filter(|file| file.ends_with(".png"))
+                .map(|file| dir.join(file)),
+        );
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -353,7 +502,8 @@ fn cit_sprite(root: &Path, id: &str) -> Option<(PackedImage, Option<TextureFlags
             return None;
         }
     };
-    let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
+    let mcmeta =
+        horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta")).ok();
     let animation = animation_of(mcmeta.as_deref());
     // Only an animation is cut to its first frame: a still CIT texture is drawn whole, and
     // armour layers are twice as wide as they are tall.
@@ -451,7 +601,10 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
                         // Animated strips keep their first frame and animate,
                         // like the packed files.
                         if path.starts_with("block/") || path.starts_with("item/") {
-                            let mcmeta = fs::read_to_string(file.with_extension("png.mcmeta")).ok();
+                            let mcmeta = horizon_core::prepared_files::read_to_string(
+                                &file.with_extension("png.mcmeta"),
+                            )
+                            .ok();
                             let animation = animation_of(mcmeta.as_deref());
                             animated = animation.is_some();
                             first_frame(image, animation.as_ref())
@@ -483,7 +636,135 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
 /// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
 pub const MISSING_SPRITE: &str = "horizon/missing";
 
+/// The used width of each Standard Galactic letter (A-Z, a-z) in the
+/// `font/ascii_sga` sheet: one past its last column with a texel that isn't
+/// transparent.
+fn galactic_widths(
+    sprites: &HashMap<String, Rect>,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> [u16; 128] {
+    let mut widths = [0u16; 128];
+    let Some(sheet) = sprites.get("font/ascii_sga") else {
+        return widths;
+    };
+    let cell = sheet.w / 16;
+    let (px, py) = (
+        (sheet.u0 * width as f32) as u32,
+        (sheet.v0 * height as f32) as u32,
+    );
+    for code in (0x41..=0x5Au32).chain(0x61..=0x7A) {
+        let (cx, cy) = (px + code % 16 * cell, py + code / 16 * cell);
+        let alpha = |x: u32, y: u32| {
+            pixels
+                .get(((y * width + x) * 4 + 3) as usize)
+                .copied()
+                .unwrap_or(0)
+        };
+        widths[code as usize] = (0..cell)
+            .rev()
+            .find(|&dx| (0..cell).any(|dy| alpha(cx + dx, cy + dy) != 0))
+            .map_or(0, |dx| (dx + 1).min(u32::from(u16::MAX)) as u16);
+    }
+    widths
+}
+/// `TextureAtlas.dumpContents` (`F3 + S`, vanilla's "dynamic textures"): the atlas
+/// written as `name.png` beside `name.txt`, every sprite in name order with its
+/// rect in texels (`dumpSpriteNames`). Vanilla names each file after its atlas
+/// with `/` and `:` as `_` (`Identifier.toDebugFileName`); Horizon packs the GUI,
+/// font, particle, map and skin sprites into one atlas, so one file stands in for
+/// the atlases vanilla dumps apart.
+pub fn dump_atlas(
+    dir: &Path,
+    name: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    sprites: &HashMap<String, Rect>,
+) -> std::io::Result<PathBuf> {
+    // A build whose pixels were freed (`fonts`) has the size and no texels:
+    // write nothing rather than a file every reader would reject.
+    if pixels.len() != (width as usize) * (height as usize) * 4 {
+        return Err(std::io::Error::other(format!(
+            "wrong data size, expected {} got {}",
+            (width as usize) * (height as usize) * 4,
+            pixels.len()
+        )));
+    }
+    fs::create_dir_all(dir)?;
+    let png_path = dir.join(format!("{name}.png"));
+    let mut encoder = png::Encoder::new(fs::File::create(&png_path)?, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
+    writer
+        .write_image_data(pixels)
+        .map_err(std::io::Error::other)?;
+    drop(writer);
+    let mut names = sprites.iter().collect::<Vec<_>>();
+    names.sort_by(|a, b| a.0.cmp(b.0));
+    let mut list = String::new();
+    for (sprite, rect) in names {
+        let (w, h) = rect.texels((width, height));
+        let x = (rect.u0 * width as f32).round() as u32;
+        let y = (rect.v0 * height as f32).round() as u32;
+        list.push_str(&format!("{sprite}\tx={x}\ty={y}\tw={w}\th={h}\n"));
+    }
+    fs::write(dir.join(format!("{name}.txt")), list)?;
+    Ok(png_path)
+}
+
 impl HudAtlas {
+    /// `TextureAtlas.dumpContents` for this atlas: `dir` is `screenshots/debug`,
+    /// the folder `TextureUtil.getDebugTexturePath` names.
+    pub fn dump_contents(&self, dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+        // `pixels()`: the copy `pack_pixels` compressed once the GPU had the
+        // atlas, decompressed; vanilla reads the texture back from the GPU.
+        let pixels = self.pixels();
+        dump_atlas(dir, name, self.width, self.height, &pixels, &self.sprites)
+    }
+
+    fn next_revision() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    /// The atlas's pixels: as built, or uncompressed again after
+    /// `pack_pixels` (a renderer being rebuilt).
+    pub fn pixels(&self) -> std::borrow::Cow<'_, [u8]> {
+        let Some(packed) = self.packed.as_ref().filter(|_| self.pixels.is_empty()) else {
+            return std::borrow::Cow::Borrowed(&self.pixels);
+        };
+        let size = (self.width * self.height * 4) as usize;
+        std::borrow::Cow::Owned(
+            lz4_flex::decompress_size_prepended(packed.wait())
+                .ok()
+                .filter(|p| p.len() == size)
+                .unwrap_or_else(|| vec![0; size]),
+        )
+    }
+    /// Keep the pixels compressed from now on, once a renderer has them: the
+    /// window's GPU holds the atlas, and a copy as built only serves a
+    /// renderer made again (another window, a lost device, another graphics
+    /// API). They are compressed on a thread of their own; `pixels()` waits
+    /// for it.
+    pub fn pack_pixels(&mut self) {
+        if self.pixels.is_empty() || self.packed.is_some() {
+            return;
+        }
+        let raw = Arc::new(std::mem::take(&mut self.pixels));
+        let slot = Arc::new(OnceLock::new());
+        let (job_raw, job_slot) = (raw.clone(), slot.clone());
+        let spawned = std::thread::Builder::new()
+            .name("Atlas packing".into())
+            .spawn(move || {
+                let _ = job_slot.set(lz4_flex::compress_prepend_size(&job_raw));
+            });
+        if spawned.is_err() {
+            let _ = slot.set(lz4_flex::compress_prepend_size(&raw));
+        }
+        self.packed = Some(slot);
+    }
     /// A sprite, or the missing one when the atlas has no such sprite (an
     /// effect without its icon), as a stitched atlas answers.
     pub fn sprite_or_missing(&self, name: &str) -> Option<Rect> {
@@ -526,15 +807,31 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true)?;
+        Self::build_over_with_image(root, defaults, false)
+    }
+    /// The atlas above, with a slot for a native mod's own image
+    /// (`horizon/modimage`) only when `mod_image` says a mod is loaded that
+    /// draws one: the slot costs 4 MiB of pixels, so a game without native
+    /// mods holds none of them.
+    pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
         atlas.text_shader = pack_text::load(root, defaults);
+        atlas.lines_shader = pack_text::load_core(
+            root,
+            defaults,
+            "rendertype_lines",
+            &[],
+            &crate::gfx::core_lines::GLUE,
+        );
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
-    /// minimap, downloaded skins, world and pack icons and the on-screen keyboard's text.
-    fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32)) {
+    /// minimap, a native mod's own image, downloaded skins, world and pack
+    /// icons and the on-screen keyboard's text.
+    fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32), mod_image: bool) {
         for i in 0..MAP_SLOTS {
-            images.push((format!("horizon/map{i}"), 128, 128, vec![0; 128 * 128 * 4]));
+            let name = map_slot_sprite(i).unwrap_or_default();
+            images.push((name.into(), 128, 128, vec![0; 128 * 128 * 4]));
         }
         // The minimap extra's image (game/extras.rs).
         images.push((
@@ -543,6 +840,15 @@ impl HudAtlas {
             crate::minimap::SIZE as u32,
             vec![0; crate::minimap::SIZE * crate::minimap::SIZE * 4],
         ));
+        // A mod's own image (native `mod_image`), only when a mod is loaded.
+        if mod_image {
+            images.push((
+                MOD_IMAGE_SPRITE.into(),
+                MOD_IMAGE_SIZE,
+                MOD_IMAGE_SIZE,
+                vec![0; (MOD_IMAGE_SIZE * MOD_IMAGE_SIZE * 4) as usize],
+            ));
+        }
         // Downloaded skins (game/scoreboard.rs).
         for i in 0..SKIN_SLOTS {
             images.push((format!("horizon/skin{i}"), 64, 64, vec![0; 64 * 64 * 4]));
@@ -585,7 +891,7 @@ impl HudAtlas {
     /// holding its textures. The pixels are dropped once the glyph widths are
     /// read, since nothing uploads them.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false)?;
+        let mut atlas = Self::pack(root, root, &["font"], false, false)?;
         atlas.pixels = Vec::new();
         Ok(atlas)
     }
@@ -622,6 +928,7 @@ impl HudAtlas {
         );
         let white = sprites["horizon/white"];
         Self {
+            revision: Self::next_revision(),
             font: crate::font::Font::load(
                 Path::new("horizon-boot"),
                 &sprites,
@@ -630,7 +937,9 @@ impl HudAtlas {
                 (glyph_top, height - glyph_top),
                 white,
             ),
+            galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
+            packed: None,
             width,
             height,
             sprites,
@@ -642,6 +951,7 @@ impl HudAtlas {
             glint_armor: (vec![0; 4], 1, 1),
             white,
             text_shader: None,
+            lines_shader: None,
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -728,7 +1038,13 @@ impl HudAtlas {
     }
     /// Pack the textures under these folders of `textures/`, and for the
     /// `full` atlas the generated sprites and the run-time slots too.
-    fn pack(root: &Path, defaults: &Path, folders: &[&str], full: bool) -> Result<Self> {
+    fn pack(
+        root: &Path,
+        defaults: &Path,
+        folders: &[&str],
+        full: bool,
+        mod_image: bool,
+    ) -> Result<Self> {
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
@@ -872,7 +1188,9 @@ impl HudAtlas {
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
-            let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
+            let mcmeta =
+                horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
+                    .ok();
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
             let frames = name.starts_with("block/") || name.starts_with("item/");
@@ -957,7 +1275,7 @@ impl HudAtlas {
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
         if full {
-            Self::slots(&mut images, crate::trims::slot_size(root));
+            Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.
             let missing = (0..256)
@@ -1063,7 +1381,10 @@ impl HudAtlas {
             white,
         );
         Ok(Self {
+            revision: Self::next_revision(),
+            galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
+            packed: None,
             width,
             height,
             sprites,
@@ -1074,6 +1395,7 @@ impl HudAtlas {
             glint,
             glint_armor,
             text_shader: None,
+            lines_shader: None,
             random_textures,
             emissive,
             blinks,
@@ -1956,6 +2278,12 @@ impl HudRenderer {
             label: Some("HUD"),
             ..Default::default()
         });
+        let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("HUD linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("HUD size"),
             contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default())),
@@ -2006,6 +2334,12 @@ impl HudRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2031,6 +2365,10 @@ impl HudRenderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(glint_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&linear_sampler),
                 },
             ],
         });
@@ -2134,7 +2472,7 @@ impl HudRenderer {
                     operation: wgpu::BlendOperation::Add,
                 },
             },
-            "fs_main",
+            "fs_vignette",
             false,
         );
         // RenderPipelines.END_PORTAL: opaque.
@@ -2453,6 +2791,98 @@ impl HudRenderer {
 mod tests {
     use super::*;
 
+    /// The mod image slot is paid only by a game with a native mod loaded.
+    #[test]
+    fn the_mod_image_slot_exists_only_when_a_mod_is_loaded() {
+        let root = Path::new("/nonexistent/horizon-test-assets");
+        let plain = HudAtlas::build(root).unwrap();
+        assert!(!plain.sprites.contains_key(MOD_IMAGE_SPRITE));
+        let with_mod = HudAtlas::build_over_with_image(root, root, true).unwrap();
+        assert!(with_mod.sprites.contains_key(MOD_IMAGE_SPRITE));
+    }
+
+    #[test]
+    fn dumping_the_atlas_writes_its_pixels_and_sprite_rects() {
+        let root = std::env::temp_dir().join("horizon-atlas-dump-test");
+        let _ = fs::remove_dir_all(&root);
+        let pixels: Vec<u8> = (0..4u8).flat_map(|i| [i, 0, 0, 255]).collect();
+        let rect = |u0: f32, v0: f32| Rect {
+            u0,
+            v0,
+            u1: u0 + 0.5,
+            v1: v0 + 0.5,
+            w: 8,
+            h: 8,
+        };
+        let sprites = HashMap::from([
+            ("particle/smoke".to_string(), rect(0.5, 0.0)),
+            ("gui/sprites/bars/experience".to_string(), rect(0.0, 0.5)),
+        ]);
+        let path = dump_atlas(
+            &root,
+            "minecraft_textures_atlas_gui",
+            2,
+            2,
+            &pixels,
+            &sprites,
+        )
+        .expect("the dump writes");
+        assert_eq!(path, root.join("minecraft_textures_atlas_gui.png"));
+        let written = fs::read(&path).expect("the PNG is there");
+        let (width, height, rgba) = decode_bytes(&written).expect("the PNG decodes");
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(rgba, pixels);
+        // Sorted by sprite name, rects in texels, as `dumpSpriteNames` writes them.
+        let mut expected = String::from("gui/sprites/bars/experience\tx=0\ty=1\tw=1\th=1\n");
+        expected.push_str("particle/smoke\tx=1\ty=0\tw=1\th=1\n");
+        assert_eq!(
+            fs::read_to_string(root.join("minecraft_textures_atlas_gui.txt")).unwrap(),
+            expected
+        );
+        // A build with no texels in hand writes no file at all.
+        let empty = dump_atlas(&root, "empty", 2, 2, &[], &sprites);
+        assert!(empty.is_err());
+        assert!(!root.join("empty.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn image_formats_are_told_apart_by_their_leading_bytes() {
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+        assert!(matches!(ImageFormat::sniff(&png), Some(ImageFormat::Png)));
+        // RIFF with a WEBP tag at byte 8; RIFF alone is not enough (WAV is
+        // RIFF too).
+        let mut webp = b"RIFF    WEBPVP8 ".to_vec();
+        assert!(matches!(ImageFormat::sniff(&webp), Some(ImageFormat::WebP)));
+        webp[8..12].copy_from_slice(b"WAVE");
+        assert!(ImageFormat::sniff(&webp).is_none());
+        assert!(matches!(
+            ImageFormat::sniff(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some(ImageFormat::Jpeg)
+        ));
+        // Too short to be any of them, and plainly something else.
+        assert!(ImageFormat::sniff(b"RIFF").is_none());
+        assert!(ImageFormat::sniff(b"").is_none());
+        assert!(ImageFormat::sniff(b"<html>").is_none());
+    }
+
+    #[test]
+    fn a_fetched_image_may_not_claim_more_than_4096_squared() {
+        assert!(check_fetched_size(4096, 4096).is_ok());
+        assert!(check_fetched_size(4097, 4096).is_err());
+        assert!(check_fetched_size(16_383, 16_383).is_err());
+    }
+
+    /// Only the network path reads WebP and JPEG: a resource pack's texture
+    /// stays PNG-only, as vanilla's `NativeImage.read` is.
+    #[test]
+    fn decode_bytes_stays_png_only() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10];
+        assert!(decode_bytes(&jpeg).is_err());
+        let webp = b"RIFF\x00\x00\x00\x00WEBPVP8 ";
+        assert!(decode_bytes(webp).is_err());
+    }
+
     #[test]
     fn decode_bytes_ignores_crc_checksum_error() {
         let mut encoded = Vec::new();
@@ -2485,6 +2915,24 @@ mod tests {
         assert_eq!(w, 2);
         assert_eq!(h, 2);
         assert_eq!(rgba.len(), 16);
+    }
+
+    #[test]
+    fn decode_bytes_ignores_a_bad_ihdr_checksum() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[7; 16]).unwrap();
+            writer.finish().unwrap();
+        }
+        // The IHDR chunk's CRC is the 4 bytes after its 13 data bytes.
+        let ihdr = encoded.windows(4).position(|w| w == b"IHDR").unwrap();
+        encoded[ihdr + 4 + 13] ^= 0xFF;
+        let (w, h, rgba) = decode_bytes(&encoded).expect("a bad IHDR CRC decodes, as stb_image's");
+        assert_eq!((w, h, rgba.len()), (2, 2, 16));
     }
 
     #[test]
@@ -2560,8 +3008,14 @@ mod tests {
     }
     /// A resource root holding one animated block texture: a strip of two
     /// 16x16 frames, red then blue, whose mcmeta starts on the blue one.
+    /// Each call gets its own folder: tests run side by side, and one adds
+    /// a strip of its own that another would otherwise find.
     fn animated_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("horizon-atlas-anim-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-anim-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
         let block = root.join("assets/minecraft/textures/block");
         fs::create_dir_all(&block).unwrap();
         write_strip(
@@ -2779,6 +3233,18 @@ mod tests {
         assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
         assert_eq!(texel_at(&atlas, *rect, 0, 0), [0, 0, 255, 255]);
         assert_eq!(texel_at(&atlas, *rect, 15, 15), [0, 0, 255, 255]);
+    }
+    #[test]
+    fn packed_pixels_come_back_the_same() {
+        let root = animated_root();
+        let mut atlas = HudAtlas::build(&root).unwrap();
+        let built = atlas.pixels.clone();
+        atlas.pack_pixels();
+        assert!(atlas.pixels.is_empty());
+        assert!(atlas.pixels() == built.as_slice());
+        // Packing again keeps the same image.
+        atlas.pack_pixels();
+        assert!(atlas.pixels() == built.as_slice());
     }
     #[test]
     fn a_strip_frames_size_comes_from_its_mcmeta() {

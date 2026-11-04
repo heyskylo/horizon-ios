@@ -5,8 +5,7 @@
 //! A server (the dedicated server and single player's server thread) keeps
 //! the other dimensions' levels here and ticks each one with players or forced
 //! chunks by swapping it into place (`enter_level`), the way `as_guest` swaps a player
-//! in, so the tick code runs unchanged, one level at a time. The in-frame
-//! game holds one level, which follows its player (`enter_dimension`).
+//! in, so the tick code runs unchanged, one level at a time.
 //!
 //! Shared by every level, as vanilla's derived levels share the
 //! Overworld's level data: the game time, the day time and the weather, the
@@ -48,31 +47,32 @@ pub(super) struct Parked {
     level_events: Vec<LevelEvent>,
     /// Entity portal processes and cooldowns belong to this level's entities.
     portal_states: HashMap<u32, horizon_client::nether_portal::PortalState>,
-    falling: Vec<FallingBlock>,
+    falling: horizon_client::join_seq::JoinList<FallingBlock>,
     paintings: Vec<horizon_client::entities::Painting>,
     item_frames: Vec<horizon_client::entities::ItemFrame>,
-    armor_stands: Vec<horizon_client::entities::ArmorStand>,
+    armor_stands: horizon_client::join_seq::JoinList<horizon_client::entities::ArmorStand>,
     cushions: Vec<horizon_client::entities::Cushion>,
     others: Vec<commands::OtherEntity>,
-    pub(super) boats: Vec<boats::Boat>,
-    pub(super) carts: Vec<minecarts::Minecart>,
+    fangs: super::fangs::FangState,
+    pub(super) boats: horizon_client::join_seq::JoinList<boats::Boat>,
+    pub(super) carts: horizon_client::join_seq::JoinList<minecarts::Minecart>,
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
     bolts: Vec<lightning::Bolt>,
     crystals: Vec<dragon::Crystal>,
     dragon: Option<dragon::Dragon>,
     dragon_fireballs: Vec<dragon::DragonFireball>,
     breath_clouds: Vec<dragon::Breath>,
-    tridents: Vec<trident::ThrownTrident>,
-    rockets: Vec<fireworks::Rocket>,
+    tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
+    rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
     ominous_spawners: Vec<ominous_item_spawner::OminousItemSpawner>,
-    tnts: Vec<tnt::PrimedTnt>,
+    tnts: horizon_client::join_seq::JoinList<tnt::PrimedTnt>,
     hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
-    pub(super) mobs: Vec<Mob>,
+    pub(super) mobs: horizon_client::join_seq::JoinList<Mob>,
     /// The entity ids of the level's fence knots (`knot_ids`).
     knot_ids: HashMap<[i32; 3], u32>,
-    projectiles: Vec<horizon_client::projectiles::Projectile>,
-    dropped: Vec<ItemEntity>,
-    orbs: Vec<ExperienceOrb>,
+    projectiles: horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile>,
+    dropped: horizon_client::join_seq::JoinList<ItemEntity>,
+    orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
     persist: persist::EntityMemory,
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     lid_openers: HashMap<(i32, i32, i32), i32>,
@@ -88,6 +88,8 @@ pub(super) struct Parked {
     raiding: Raiding,
     sculk: SculkState,
     creaking: CreakingState,
+    /// Natural spawning's candidate cache: each level keeps its own players' squares.
+    spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
 }
@@ -130,6 +132,11 @@ impl Levels {
     /// A parked level, without opening or loading it.
     pub(super) fn parked_world(&self, dim: Dim) -> Option<&World> {
         self.parked.get(&dim).map(|level| &level.world)
+    }
+
+    /// The worlds of the levels not in place.
+    pub(super) fn parked_worlds(&self) -> impl Iterator<Item = &World> {
+        self.parked.values().map(|level| &level.world)
     }
 
     /// The world of the level not in place, in `dim`, to change.
@@ -189,30 +196,31 @@ impl Game<'_> {
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
             portal_states: HashMap::new(),
-            falling: Vec::new(),
+            falling: Default::default(),
             paintings: Vec::new(),
             item_frames: Vec::new(),
-            armor_stands: Vec::new(),
+            armor_stands: Default::default(),
             cushions: Vec::new(),
             others: Vec::new(),
-            boats: Vec::new(),
-            carts: Vec::new(),
+            fangs: Default::default(),
+            boats: Default::default(),
+            carts: Default::default(),
             jukebox_sounds: HashMap::new(),
             bolts: Vec::new(),
             crystals: Vec::new(),
             dragon: None,
             dragon_fireballs: Vec::new(),
             breath_clouds: Vec::new(),
-            tridents: Vec::new(),
-            rockets: Vec::new(),
+            tridents: Default::default(),
+            rockets: Default::default(),
             ominous_spawners: Vec::new(),
-            tnts: Vec::new(),
+            tnts: Default::default(),
             hoppers: HashMap::new(),
-            mobs: Vec::new(),
+            mobs: Default::default(),
             knot_ids: HashMap::new(),
-            projectiles: Vec::new(),
-            dropped: Vec::new(),
-            orbs: Vec::new(),
+            projectiles: Default::default(),
+            dropped: Default::default(),
+            orbs: Default::default(),
             persist: Default::default(),
             lectern_pulses: Vec::new(),
             lid_openers: HashMap::new(),
@@ -225,6 +233,7 @@ impl Game<'_> {
             raiding: Default::default(),
             sculk: Default::default(),
             creaking: Default::default(),
+            spawn_scratch: Default::default(),
             idle: 0,
         })
     }
@@ -251,6 +260,7 @@ impl Game<'_> {
         swap(&mut self.armor_stands, &mut p.armor_stands);
         swap(&mut self.cushions, &mut p.cushions);
         swap(&mut self.others, &mut p.others);
+        swap(&mut self.fangs, &mut p.fangs);
         swap(&mut self.boats, &mut p.boats);
         swap(&mut self.carts, &mut p.carts);
         swap(&mut self.jukebox_sounds, &mut p.jukebox_sounds);
@@ -290,6 +300,7 @@ impl Game<'_> {
         self.raiding.swap_level(&mut p.raiding);
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
+        swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
         // What only the client draws starts over.
         self.particles.clear();
         self.pickups.clear();
@@ -304,7 +315,7 @@ impl Game<'_> {
         mut host: Option<&mut LanHost>,
         target: Dim,
     ) -> Result<()> {
-        // The in-frame game keeps its one level (`enter_dimension`).
+        // A client holds no levels.
         if self.options.execution_role.is_client() {
             return Ok(());
         }
@@ -412,14 +423,20 @@ impl Game<'_> {
         // `ServerTickStart` before that level work, where NeoForge fires
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
+        let server = self.serving.is_some() || self.options.dedicated.is_some();
+        // A config edited while the server is paused (empty) still reloads.
+        if server {
+            self.native_configs_poll();
+        }
         if let Some(running) = running
-            && (self.serving.is_some() || self.options.dedicated.is_some())
+            && server
         {
             self.native_lifecycle_server_tick_start(running);
         }
         let observe_level =
             running.is_some() && (self.serving.is_some() || self.options.dedicated.is_some());
         let dims = self.levels_to_tick();
+        let order = dims.clone();
         let n = dims.len();
         let mut result = Ok(());
         for (k, dim) in dims.into_iter().enumerate() {
@@ -462,6 +479,22 @@ impl Game<'_> {
                 self.native_level_tick_post(dim.id());
             }
             self.publish_server_debug(dim);
+            // An entity that crossed into a level that already ticked this
+            // server tick is in it when the tick ends (`addDuringTeleport`).
+            if running == Some(true) {
+                let mut moved = false;
+                for &earlier in &order[..k] {
+                    if !self.arrival_chunks(earlier).is_empty()
+                        && self.enter_level(None, earlier).is_ok()
+                    {
+                        self.land_portal_arrivals();
+                        moved = true;
+                    }
+                }
+                if moved {
+                    self.enter_level(None, dim)?;
+                }
+            }
         }
         self.level_pass = Pass::default();
         if result.is_err() {
@@ -503,14 +536,16 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let spans = horizon_client::spans::take();
+        let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
             && wall > threshold
         {
             let cpu = cpu.map_or_else(String::new, |c| format!(", cpu {c:.1} ms"));
             log::info!(
-                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}",
+                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}{}",
                 self.mobs.len(),
-                horizon_client::spans::describe(&spans)
+                horizon_client::spans::describe(&spans),
+                slowest_steps(&notes)
             );
         }
         record(wall, cpu, spans);
@@ -703,4 +738,17 @@ impl Game<'_> {
         }
         self.enter_level(None, back)
     }
+}
+
+/// A slow tick's line's end: the steps it noted as its slowest (`spans::note`), whose packets
+/// or which player's event, or nothing.
+fn slowest_steps(notes: &[(f32, String)]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = notes
+        .iter()
+        .map(|(ms, what)| format!("{what} {ms:.1}"))
+        .collect();
+    format!("; slowest: {}", list.join(", "))
 }

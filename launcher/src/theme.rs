@@ -39,6 +39,8 @@ pub const STAGGER: Duration = tokens::STAGGER;
 
 #[derive(Clone, Copy)]
 pub struct Theme {
+    /// The glass look's colours for the accent (the dark appearance draws it).
+    pub look: tokens::glass::Glass,
     /// The page behind everything the sky doesn't cover.
     pub page: Hsla,
     /// Hover plates, fields and the console: the raised panel colour.
@@ -73,6 +75,16 @@ pub struct Theme {
     /// The night look's own tokens (the sky, plates with their opacity), for rebuilt screens.
     pub night: Night,
     pub dark: bool,
+    /// Whether the pages draw the redesign's glass look: both appearances do (light with ink
+    /// for white and light plates, `glass_ui::light`).
+    pub glass: bool,
+}
+
+/// The light appearance's look: the soft accent (links, ticks, the sliders) is the accent
+/// itself, which reads on white where the dark look's half-white mix would not.
+fn light_look(mut look: tokens::glass::Glass) -> tokens::glass::Glass {
+    look.accent_soft = look.accent;
+    look
 }
 
 fn c(hex: u32) -> Hsla {
@@ -97,6 +109,22 @@ pub fn pinned_dark(choice: Appearance) -> Option<bool> {
 impl Theme {
     /// The pinned look (`pinned_dark`: dark unless the player picked another), the system's when
     /// they asked to follow it, in the player's accent.
+    /// This look under another sky (a launcher theme from the Wardrobe), top to bottom.
+    pub fn with_sky(mut self, sky: [u32; 6]) -> Self {
+        self.night.sky = sky;
+        self
+    }
+
+    /// The glass look with the player's Glass (how much white the plates take, 0 to 1) and Blur
+    /// (px).
+    pub fn with_glass(mut self, tint: f32, blur: f32) -> Self {
+        self.look = tokens::glass::Glass::new(self.look.accent, tint, blur);
+        if !self.dark {
+            self.look = light_look(self.look);
+        }
+        self
+    }
+
     pub fn for_appearance(choice: Appearance, accent: Accent, system: WindowAppearance) -> Self {
         let system_dark = !matches!(
             system,
@@ -104,11 +132,60 @@ impl Theme {
         );
         let dark = pinned_dark(choice).unwrap_or(system_dark);
         let night = if dark { night::NIGHT } else { night::DAWN };
-        Self::from(accent.apply(night.blocks()), night)
+        Self::from(accent.apply(night.blocks()), night).glass(accent)
+    }
+
+    /// The dark appearance draws the glass look ("Glass" in `docs/design-system.md`): what the
+    /// pages not rebuilt for it yet draw with these tokens comes out as the mockup's parts do,
+    /// white text and fills at a few opacities, no borders, no bevels.
+    fn glass(self, accent: Accent) -> Self {
+        use horizon_theme::glass::{fill, ink, Glass, BLUR, DANGER, LIVE, TINT, WARN};
+        let dark = self.dark;
+        // Light: the ink where dark has white, as `glass_ui::white` does.
+        let white = |a: f32| {
+            if dark {
+                gpui::white().opacity(a)
+            } else {
+                c(horizon_theme::glass::ON_LIGHT).opacity(a)
+            }
+        };
+        let none = gpui::transparent_black();
+        let look = Glass::new(accent.rgb(), TINT, BLUR);
+        let look = if dark { look } else { light_look(look) };
+        Self {
+            plate_soft: white(fill::ROW_HOVER),
+            plate: white(fill::BUTTON),
+            rule: white(fill::BUTTON),
+            ink: white(ink::FULL),
+            ink_soft: white(ink::SOFT),
+            muted: white(ink::QUIET),
+            accent: c(look.accent_soft),
+            on_accent: c(look.on_accent),
+            // Light: `glass_ui::danger`, `live` and `warn`'s darker shades.
+            danger: c(if dark { DANGER } else { 0xdc2626 }),
+            success: c(if dark { LIVE } else { 0x15803d }),
+            warn: c(if dark { WARN } else { 0xb45309 }),
+            panel: white(0.04),
+            raised: white(fill::ROW_HOVER),
+            button: white(fill::BUTTON),
+            button_bevel: none,
+            well: white(fill::FIELD),
+            bevel: none,
+            lip: none,
+            outline: none,
+            face: c(look.accent),
+            face_bevel: none,
+            face_lip: none,
+            on_face: c(look.on_accent),
+            look,
+            glass: true,
+            ..self
+        }
     }
 
     fn from(p: tokens::Blocks, night: Night) -> Self {
         Self {
+            look: tokens::glass::Glass::default_look(),
             page: c(p.page),
             plate_soft: c(p.raised),
             plate: c(p.button),
@@ -137,6 +214,7 @@ impl Theme {
             on_face: c(p.on_face),
             night,
             dark: p.dark,
+            glass: false,
         }
     }
 }

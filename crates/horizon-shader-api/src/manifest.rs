@@ -9,7 +9,7 @@ pub const SCHEMA: u32 = 1;
 /// the inputs a pack's WGSL may read.
 pub const API: &str = "0.1";
 /// Full-screen passes a pack may chain.
-pub const MAX_POST_PASSES: usize = 8;
+pub const MAX_POST_PASSES: usize = 12;
 /// Options a pack may declare.
 pub const MAX_OPTIONS: usize = 64;
 /// Settings pages a pack may declare, and the items one page may hold.
@@ -72,7 +72,35 @@ pub struct Manifest {
     pub reflection: Option<Reflection>,
     /// The shadow map the material and post stages read, if the pack asks for one.
     pub shadow: Option<Shadow>,
+    /// Relief as geometry near the camera, if the pack asks for it; needs `[material]`.
+    pub displacement: Option<Displacement>,
 }
+
+/// `[displacement]`: within `distance` of the camera, the faces of solid terrain whose
+/// resource pack textures have LabPBR heights are drawn as a grid of `cells` by `cells`, each
+/// corner moved along the face's normal by the material stage's
+/// `fn displacement(input: DisplacementInput) -> f32`: relief that is geometry, which
+/// occludes itself, writes its depth and is lit at its true place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Displacement {
+    /// How far from the camera faces are displaced, in blocks; the relief eases out over the
+    /// last quarter.
+    pub distance: f32,
+    /// The grid's cells along a face's side (fewer where the textures have fewer texels).
+    pub cells: u32,
+    /// The `bool` option that turns it on, if any (else it is always on).
+    pub option: Option<String>,
+    /// A `choice` option whose values are cell counts, if any: the player's value replaces
+    /// `cells`.
+    pub cells_option: Option<String>,
+    /// A `bool` option, if any: while it is on each cell is a flat step with walls, the
+    /// height map's texels standing out sharply, rather than a smooth surface through them.
+    pub steps_option: Option<String>,
+}
+
+/// How far from the camera `[displacement]` reaches, in blocks, and its grid's cells a side.
+pub const DISPLACEMENT_DISTANCES: std::ops::RangeInclusive<f32> = 4.0..=32.0;
+pub const DISPLACEMENT_CELLS: std::ops::RangeInclusive<u32> = 4..=64;
 
 /// `[shadow]`: the renderer draws the solid terrain and entities as the sun (the moon by night)
 /// sees them into a square depth map each frame, which the material and post stages read.
@@ -95,6 +123,26 @@ pub struct Shadow {
 pub const SHADOW_RESOLUTIONS: std::ops::RangeInclusive<u32> = 256..=8192;
 /// Half the side of the square the shadow map covers, in blocks.
 pub const SHADOW_DISTANCES: std::ops::RangeInclusive<f32> = 32.0..=512.0;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDisplacement {
+    #[serde(default = "default_displacement_distance")]
+    distance: f32,
+    #[serde(default = "default_displacement_cells")]
+    cells: u32,
+    option: Option<String>,
+    cells_option: Option<String>,
+    steps_option: Option<String>,
+}
+
+fn default_displacement_distance() -> f32 {
+    12.0
+}
+
+fn default_displacement_cells() -> u32 {
+    16
+}
 
 fn default_shadow_resolution() -> u32 {
     2048
@@ -199,6 +247,15 @@ impl Material {
 
 /// Whether the sprite or block `name` (`namespace:path`) fits `pattern`: the namespace
 /// defaults to `minecraft`, and each `*` matches any run of characters.
+/// The colour of the first of `lights` whose patterns match the block `name`
+/// (`Manifest::light_of`, for a copy of the entries).
+pub fn light_color(lights: &[LightColor], name: &str) -> Option<[f32; 3]> {
+    lights
+        .iter()
+        .find(|l| l.blocks.iter().any(|pattern| sprite_matches(pattern, name)))
+        .map(|l| l.color)
+}
+
 fn sprite_matches(pattern: &str, name: &str) -> bool {
     let pattern = match pattern.contains(':') {
         true => std::borrow::Cow::Borrowed(pattern),
@@ -364,6 +421,7 @@ struct Raw {
     budget: RawBudget,
     reflection: Option<Reflection>,
     shadow: Option<Shadow>,
+    displacement: Option<RawDisplacement>,
 }
 
 #[derive(Deserialize)]
@@ -753,6 +811,64 @@ impl Manifest {
                 )));
             }
         }
+        let displacement = match raw.displacement {
+            Some(_) if raw.material.is_none() => {
+                return Err(err("[displacement] needs [material]".into()));
+            }
+            Some(d) if !DISPLACEMENT_DISTANCES.contains(&d.distance) => {
+                return Err(err(format!(
+                    "displacement.distance {} is not in {DISPLACEMENT_DISTANCES:?}",
+                    d.distance
+                )));
+            }
+            Some(d) if !DISPLACEMENT_CELLS.contains(&d.cells) => {
+                return Err(err(format!(
+                    "displacement.cells {} is not in {DISPLACEMENT_CELLS:?}",
+                    d.cells
+                )));
+            }
+            Some(d) => {
+                if let Some(id) = &d.option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.steps_option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.steps_option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.cells_option
+                    && !options.iter().any(|o| {
+                        o.id == *id
+                            && matches!(&o.kind, OptionKind::Choice { values, .. } if values
+                                .iter()
+                                .all(|v| v.parse().is_ok_and(|c| DISPLACEMENT_CELLS.contains(&c))))
+                    })
+                {
+                    return Err(err(format!(
+                        "displacement.cells_option: `{id}` is no choice of cell counts in \
+                         {DISPLACEMENT_CELLS:?}"
+                    )));
+                }
+                Some(Displacement {
+                    distance: d.distance,
+                    cells: d.cells,
+                    option: d.option,
+                    cells_option: d.cells_option,
+                    steps_option: d.steps_option,
+                })
+            }
+            None => None,
+        };
         Ok(Manifest {
             id: raw.id,
             name: raw.name,
@@ -777,6 +893,7 @@ impl Manifest {
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
+            displacement,
         })
     }
 
@@ -851,10 +968,7 @@ impl Manifest {
     /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
     /// matching pattern.
     pub fn light_of(&self, name: &str) -> Option<[f32; 3]> {
-        self.lights
-            .iter()
-            .find(|l| l.blocks.iter().any(|pattern| sprite_matches(pattern, name)))
-            .map(|l| l.color)
+        light_color(&self.lights, name)
     }
 
     /// The pack targets its post passes write (`[[post]] output`), in the order first

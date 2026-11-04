@@ -219,6 +219,7 @@ impl Game<'_> {
                 health: g.health,
                 yaw: g.yaw,
                 pitch: g.pitch,
+                entity_id: g.entity_id,
             })
             .collect()
     }
@@ -343,6 +344,26 @@ impl Game<'_> {
         }
         true
     }
+    /// Hides that player (a vanish) from the players below permission
+    /// `level`, or shows them again (None): from the next tick those players
+    /// lose them from the Tab list and the world (their client stops
+    /// tracking the player, as it does a spectator), and don't read their
+    /// joining or leaving; players of `level` or more still see them, and
+    /// a player made an operator meanwhile sees them again. By UUID: kept
+    /// for a player who is off (who joins hidden), until a mod sets it again
+    /// or the server stops. Works anywhere on a server, inside a player's
+    /// hook too; false on a client and in a world nobody else can join.
+    /// API 314.
+    pub(super) fn native_hide_player(&mut self, uuid: u128, level: Option<u8>) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        match level {
+            Some(level) => host.hub.hidden.insert(uuid, level),
+            None => host.hub.hidden.remove(&uuid),
+        };
+        true
+    }
     /// Shows `nickname` in place of that player's name in chat (their
     /// messages, `/me`, `/msg`) and in the Tab list; None shows their name
     /// again. Hovering the shown name gives the real one, which stays in the
@@ -375,7 +396,12 @@ impl Game<'_> {
         )
     }
     /// A system line in every player's chat and the server's log.
-    pub(super) fn native_broadcast(&self, line: Text) {
+    pub(super) fn native_broadcast(&self, mut line: Text) {
+        let mut cancel = false;
+        self.native_broadcast_message(&mut line, &mut cancel);
+        if cancel {
+            return;
+        }
         let plain = line.plain();
         if self.options.dedicated.is_some() {
             super::dedicated::log("INFO", &plain);
@@ -395,6 +421,7 @@ impl Game<'_> {
     /// `[discord] events` lists `announce`: `name` and `uuid` say who it is
     /// about (empty and 0 for no one), `message` is the line (`§` codes colour it).
     /// Only on a dedicated server; false elsewhere and for an empty message.
+    /// API 163.
     pub(super) fn native_server_event(&self, name: &str, uuid: u128, message: &str) -> bool {
         if self.options.dedicated.is_none() || message.trim().is_empty() {
             return false;
@@ -427,6 +454,7 @@ impl Game<'_> {
             health: p.health.health(),
             yaw: p.yaw,
             pitch: p.pitch,
+            entity_id: self.native_acting_entity() as i32,
         })
     }
     /// Runs `line` (no slash) as the server's console does: permission
@@ -964,6 +992,7 @@ impl Game<'_> {
             health: g.health,
             yaw: g.yaw,
             pitch: g.pitch,
+            entity_id: g.entity_id,
         };
         let mut ran = false;
         self.native_perform_command(&player, line, &mut ran);

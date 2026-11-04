@@ -1,7 +1,7 @@
 # Native hook points, modelled on NeoForge 26.3 (proposal)
 
 Status: proposal, for the authors of hook PRs to comment on. Nothing here is built yet. Checked against `native-hooks.json` on main
-(41 hooks, `NATIVE_HOOKS_API` 24) on 31 October 2026.
+(386 hooks, `NATIVE_HOOKS_API` 359) on 3 November 2026.
 
 Native mods hook empty functions in `crates/horizon-client/src/game/native_hooks.rs`, listed by name in
 `native-hooks.json` ([native-mods.md](native-mods.md)). So far each hook was designed on its own, and open PRs
@@ -17,7 +17,7 @@ Why NeoForge:
   automatically.
 
 What we take is event names and their documented contracts, from NeoForge's public user documentation
-(<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code) allows. Nobody
+(<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code-or-code-whose-license-allows-it) allows. Nobody
 reads, copies, translates or paraphrases NeoForge's source, its patches included: where a hook fires is decided
 from vanilla 26.3's own methods, and the hooks stay Horizon's own Rust.
 
@@ -34,7 +34,7 @@ from vanilla 26.3's own methods, and the hooks stay Horizon's own Rust.
    ([Events](https://docs.neoforged.net/docs/concepts/events/), "Sided Events"); the rest fire on whichever
    side runs the method. Horizon has one binary with several
    `Game`s (the window, the server thread, a dedicated server), so each hook says its side:
-   - `server`: the server's `Game` (single player's server thread, LAN host, dedicated) and the in-frame path.
+   - `server`: the server's `Game` (single player's server thread, LAN host, dedicated).
    - `client`: the window's `Game`.
    - `both`: both, with the `Game`'s role available (`native_window`). Interactions are `both`: the client
      predicts, the server acts, and a mod that claims a use on one side only gets the two out of step.

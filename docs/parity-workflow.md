@@ -32,7 +32,7 @@ The probes of `horizon-world` and of `horizon-client` are one binary per crate, 
 
 Passes are shared between worktrees. A harness's key depends only on the content of its dependencies, not on where they are, so every pass is also written to `parity-shared/` beside the shared vanilla data (`PARITY_SHARED` overrides it). A worktree whose files match those a harness passed with, in any worktree, counts that pass without running the harness: after merging the integration branch, an agent's gate only runs the harnesses its own changes affect.
 
-Every runner on the machine shares `PARITY_MACHINE_JOBS` slots (default: half the CPU threads), so several agents' runs together can't overload it. Parallel harnesses are also admitted by memory: each harness's recorded peak is reserved, within three quarters of the memory available at the start, and a harness starts only if the memory free at that moment still leaves 2 GB. `-j` caps the count here (default: `PARITY_LOCAL_JOBS`, else 3 while other machines help or a third of the CPU threads alone, within `$FLEET_LOAD_JOBS`).
+All runners on a machine share `PARITY_MACHINE_JOBS` slots (default: half the CPU threads), so several agents' runs together can't overload it. Parallel harnesses are also admitted by memory: each harness's recorded peak is reserved, within three quarters of the memory available at the start, and a harness starts only if the memory free at that moment still leaves 2 GB. `-j` caps the count here (default: `PARITY_LOCAL_JOBS`, else 3 while other machines help or a third of the CPU threads alone, within `$FLEET_LOAD_JOBS`).
 
 ### Harnesses that start the game
 
@@ -40,7 +40,7 @@ The game logs into `HORIZON_HOME` and falls back to the player's own game folder
 
 ### Other machines
 
-Harnesses can also run on the Mac mini, the desktop and playhorizon (`tools/parity_hosts.json` describes them; `desktop` and `playhorizon` use their CI runner's environment and vanilla data, and the desktop refuses work, or stops it, while someone uses it: docs/release-flow.md, "The desktop's runner"; its `default` list is empty, so pass `--hosts macmini,playhorizon` or set `PARITY_HOSTS`, after copying `shared-local/` to `~/code/horizon-parity/shared-local` on each host). The runner mirrors the worktree there with rsync (not `.git`, `.local`, `target` or ignored files) into `~/code/horizon-parity/remote/<host><path>`, whose `.local` links to the vanilla data in `~/code/horizon-parity/shared-local`, and starts `tools/parity.py --worker` over ssh. The worker builds the probes (about 80 s the first time) and runs what it is sent under the same tracer, admitting harnesses against its own free memory. One queue, longest first, feeds every machine, remote ones first: the Mac takes up to 14 harnesses, the desktop 8, playhorizon 3 (on CPUs 0-3: its CI runner has 4-7). Each pass comes back with the content hash of every file it depended on, so it is keyed on exactly what ran, and logs come back to `.local/parity-runner/logs/`; state, sharing and `gate.py` work as before. If a host can't be reached, or drops out, its harnesses run here.
+Harnesses can also run on the Mac mini, the desktop and playhorizon (`tools/parity_hosts.json` describes them; `desktop` and `playhorizon` use their CI runner's environment and vanilla data, the desktop's entry describes its 10-26 setup, retired, and refuses work: docs/release-flow.md, "The desktop's runner"; its `default` list is empty, so pass `--hosts macmini,playhorizon` or set `PARITY_HOSTS`, after copying `shared-local/` to `~/code/horizon-parity/shared-local` on each host). The runner mirrors the worktree there with rsync (not `.git`, `.local`, `target` or ignored files) into `~/code/horizon-parity/remote/<host><path>`, whose `.local` links to the vanilla data in `~/code/horizon-parity/shared-local`, and starts `tools/parity.py --worker` over ssh. The worker builds the probes (about 80 s the first time) and runs what it is sent under the same tracer, admitting harnesses against its own free memory. One queue, longest first, feeds every machine, remote ones first: the Mac takes up to 14 harnesses, the desktop 8, playhorizon 3 (on CPUs 0-3: its CI runner has 4-7). Each pass comes back with the content hash of every file it depended on, so it is keyed on exactly what ran, and logs come back to `.local/parity-runner/logs/`; state, sharing and `gate.py` work as before. If a host can't be reached, or drops out, its harnesses run here.
 
 Harnesses a host can't run are listed in the file: `local_only` (`save_roundtrip` runs the game on a virtual screen) and each host's `exclude`. A host's `exclude` also holds when `parity.py` runs on that host itself, as its CI runner does: the harness is skipped there with its reason (playhorizon skips `remote_fireball` and `remote_fireworks`, which its CPU-starved CI slice fails even on bare main), unless named on the command line. The Mac mini's runner and the nightly audit still run them. The Mac excludes nothing: vanilla's `Math.sin`, `pow`, `log` and the like don't round the same on an Apple silicon Mac as on Linux (HotSpot uses fdlibm there, Intel's stubs on x86-64), and Rust's float functions round like neither (they call the platform libm), so code that mirrors a vanilla `Math` call uses `horizon_core::jmath`, which computes what HotSpot computes on the host architecture. The ThinkPad no longer runs harnesses (2026-10-26): playhorizon is the Linux host that is always on.
 
@@ -101,7 +101,7 @@ owner's body and dimension. The script owns the clock: each `tick` calls `tick_s
 while login and portal arrival pump connection-only passes. The client acknowledges
 terrain and teleports without predicting movement, matching the command oracle's stationary
 player. Script and save errors return through server shutdown; output keeps the existing
-styled messages and `CommandResultCallback` schema. `--in-frame` is not needed.
+styled messages and `CommandResultCallback` schema.
 
 `HORIZON_DISPENSE_FIXTURE` and `HORIZON_SCULK_FIXTURE` are component probes. They construct
 a server `Game` on a server thread and retain the oracles' synthetic levels, seeded random
@@ -114,7 +114,7 @@ coverage alongside the components:
 python3 tools/test_command_exec_parity.py
 python3 tools/test_dispenser_parity.py
 python3 tools/test_sculk_parity.py
-python3 tools/lan_e2e.py --server-thread --check machines --check fireball --check sculk_container
+python3 tools/lan_e2e.py --check machines --check fireball --check sculk_container
 ```
 
 The LAN checks open and fill machines through the guest's inventory packets, observe a
@@ -131,8 +131,7 @@ Besides the Vineflower sources in `.local/minecraft/<version>/sources/`, `tools/
 the same path as normal single player. `python3 tools/test_friends.py --client
 target/fast/horizon-client --relay target/fast/horizon-relay --baseline` covers
 plain LAN, direct invitations, a local relay and ended invitations in that mode.
-`lan_e2e.py` still accepts `--in-frame`, which is deprecated (never use it, it will be removed
-soon), and `--server-thread` for existing callers. Run Linux games under `xvfb-run -a` when no display is available. Each
+Run Linux games under `xvfb-run -a` when no display is available. Each
 process gets scratch game, launcher, XDG data and config homes; telemetry, audio
 and launcher self-update are disabled.
 

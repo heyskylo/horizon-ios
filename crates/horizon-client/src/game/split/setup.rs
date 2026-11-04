@@ -39,11 +39,12 @@ impl<'a> Split<'a> {
                 }
             })
             .collect();
+        let e = &self.host.settings.extras;
         layout::Draft {
             windows,
             players: (0..self.players()).map(|i| self.window_number(i)).collect(),
-            two: 0,
-            three: 0,
+            two: e.splitscreen_two,
+            three: e.splitscreen_three,
             order: self.player_order(),
         }
     }
@@ -108,6 +109,14 @@ impl<'a> Split<'a> {
             .into_iter()
             .map(|i| self.seat_of(i))
             .collect();
+        // How 2 and 3 share a window: P1's settings, saved in its options file (its turn).
+        self.turn(0);
+        let e = &mut self.host.settings.extras;
+        if (e.splitscreen_two, e.splitscreen_three) != (draft.two, draft.three) {
+            e.splitscreen_two = draft.two;
+            e.splitscreen_three = draft.three;
+            self.host.settings.save(&Game::options_path());
+        }
     }
 
     /// P1's Setup screen: the arrangement now, the monitors and the players' names; Apply
@@ -121,7 +130,16 @@ impl<'a> Split<'a> {
         self.refresh_monitors();
         let live = self.draft();
         let (monitors, main) = self.setup_monitors();
-        let names = (0..self.players()).map(|i| self.name(i)).collect();
+        // A player whose controller disconnected says so on its tile.
+        let names = (0..self.players())
+            .map(|i| {
+                let name = self.name(i);
+                match self.lost.iter().any(|l| l.seat == self.seat_of(i)) {
+                    true => format!("{name} (no controller)"),
+                    false => name,
+                }
+            })
+            .collect();
         let seats: Vec<usize> = (0..self.players()).map(|i| self.seat_of(i)).collect();
         let moved = std::mem::replace(&mut self.setup_seats, seats) != self.setup_seats;
         let setup = &mut self.host.ui.options.split_setup;
@@ -130,7 +148,22 @@ impl<'a> Split<'a> {
             setup.reset();
         }
         let applied = setup.apply.take();
+        let identify = std::mem::take(&mut setup.identify);
+        let give_up = std::mem::take(&mut setup.give_up_pad);
+        if std::mem::take(&mut setup.toggle_names) {
+            let e = &mut self.host.settings.extras;
+            e.splitscreen_names = !e.splitscreen_names;
+            self.host.settings.save(&Game::options_path());
+        }
+        let names_shown = self.host.settings.extras.splitscreen_names;
+        if give_up {
+            self.give_up_pad();
+        }
+        // Give Up Pad shows while P1 has a controller in a world others can join.
+        let p1_pad = self.p1_pad.owner.is_some() && self.in_world();
         let setup = &mut self.host.ui.options.split_setup;
+        setup.names_shown = names_shown;
+        setup.p1_pad = p1_pad;
         setup.idle = self.surfaces.is_empty();
         setup.live = Some(live);
         setup.monitors = monitors;
@@ -140,8 +173,8 @@ impl<'a> Split<'a> {
         if let Some(draft) = applied {
             self.apply(draft);
         }
-        // Every view says where it is: after a change, or asked.
-        if changed {
+        // Every view says where it is: after a change, or asked (Identify).
+        if changed || identify {
             for i in 0..self.players() {
                 let label = horizon_client::lang::tr(
                     "horizon.splitscreen.setup.window",

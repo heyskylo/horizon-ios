@@ -13,6 +13,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `logs [--lines N] [--crash]` | `logs` | The end of the game's log, or its newest crash report | `--lines` (integer): how many lines of latest.log (default 100)<br>`--crash` (boolean): the newest crash report instead |
 | `status` | `status` | Game, renderer and streaming state (the scripting socket's original summary) | none |
 | `hello` | `hello` | The control protocol's version, the game's release and the command groups it serves | none |
+| `memory` | `memory` | What holds the game's memory: resident set, allocator, client and server columns by part, renderer, GPU memory by resource | none |
 | `worlds` | `worlds` | The saved worlds, newest first: folder, name, mode, last played, version | none |
 | `world-rename FOLDER NAME` | `world_rename` | Rename a world, as Edit World does (its folder stays) | `folder` (string, required): world folder from worlds<br>`name` (text, required): the new name |
 | `world-backup FOLDER` | `world_backup` | Zip a world into backups/, as Edit World's Make Backup does | `folder` (string, required): world folder from worlds |
@@ -27,6 +28,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
 | `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
+| `input-log [--since SEQ] [--limit N] [--origin user\|agent\|game]` | `input_log` | Recent input and who caused it: a person, an agent or the game | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events<br>`--origin` (user, agent, game): user, agent or game |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
 | `entities [RADIUS] [TYPE]` | `entities` | Mobs, dropped items and experience orbs near the player, nearest first | `radius` (number): search radius in blocks (default 32)<br>`type` (string): entity type filter |
@@ -140,4 +142,55 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
+| `render-capture on\|off\|DIR` | CLI only | Keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example | none |
 | `fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]` | CLI only | Fly the camera along a line, then reply with the frame summary | none |
+| `record-start [NAME] [--no-world]` | `record_start` | Record input, state and the world for a bug repro | `name` (string): folder name after the timestamp (default session)<br>`--no-world` (boolean): do not copy the world (a server session) |
+| `record-stop [--export]` | `record_stop` | Stop the recording (and write the repro zip) | `--export` (boolean): write the repro bundle too |
+| `record-status` | `record_status` | The running recording and replay, if any | none |
+| `record-list` | `record_list` | The recordings and repro bundles on disk | none |
+| `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` | `record_replay` | Replay a recording, best effort | `name` (string): recording from record-list<br>`--stop` (boolean): stop the running replay<br>`--in-place` (boolean): feed the open world instead of opening the copy<br>`--keep-world` (boolean): leave the copied world in saves/<br>`--timeout` (integer): give up after this many seconds (default 300) |
+| `repro-export [NAME] [PATH] [--no-world]` | `repro_export` | Zip a recording with the logs, crash report and status | `name` (string): recording from record-list (default the newest)<br>`path` (string): where to write the zip<br>`--no-world` (boolean): leave the world out |
+
+## Replies
+
+The reply fields of the commands described so far (more follow, a group at a time). Each reply is one JSON object; a type ending in `null` may be `null` when the field does not apply. A reader ignores keys it does not know: replies may gain fields within a protocol line. The MCP tool list declares the same fields as `outputSchema`.
+
+### `status`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `screen` | string | the open screen (playing, inventory, paused...) |
+| `debug` | object | the F3 overlay flags: overlay, hitboxes, chunk_borders, pause_menu, advanced_tooltips, pause_on_lost_focus, clipboard |
+| `dimension` | string | the dimension the player is in |
+| `creative` | boolean | creative mode |
+| `player` | object, null | position, velocity (blocks), on_ground, health, max_health, food; null without a player |
+| `yaw` | number | view yaw, degrees |
+| `pitch` | number | view pitch, degrees |
+| `target` | object, null | the block under the crosshair as pos and block; null when none |
+| `selected` | integer | the selected hotbar slot, 1 to 9 |
+| `held` | object, null | the held stack as item and count; null when empty |
+| `offhand` | object, null | the offhand stack as item, count and damage; null when empty |
+| `keys` | array | the keys the game holds down, each a string |
+| `fps` | number | frames per second |
+| `frames` | integer | frames drawn so far |
+| `ticks` | integer | game ticks so far |
+| `day_time` | integer | the world's time of day, ticks |
+| `uptime_seconds` | number | seconds since the game started |
+| `render_distance` | integer | chunks |
+| `chunks` | integer | chunks loaded |
+| `mobs` | integer | mobs this side knows |
+| `block_entities` | integer | block entities loaded |
+| `pending_chunks` | integer | chunks still being generated, meshed, uploaded or received |
+| `streaming` | object | chunk streaming stages and their counts |
+| `lod` | object | far terrain: distances, tiles, quads and sampling progress |
+| `renderer` | object, null | GPU, driver, backend, size, draw counts and GPU memory; null without a renderer |
+| `display` | object, null | the monitor: width, height, scale, refresh_hz; null without a window |
+| `server` | object, null | the connected server's address, name and state; null when not connected |
+
+### `hello`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `protocol` | string | the control protocol, MAJOR.MINOR.PATCH (docs/api/stability.md) |
+| `release` | string | the game's version (MCP serverInfo carries the same string) |
+| `features` | array | the command groups the game answers, each a string |
