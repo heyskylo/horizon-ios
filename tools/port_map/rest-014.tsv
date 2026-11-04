@@ -141,7 +141,7 @@ net/minecraft/server/commands/ExecuteCommand#isChunkLoaded	port	crates/horizon-c
 net/minecraft/server/commands/ExecuteCommand#countItems	port	crates/horizon-client/src/game/commands/items.rs::Game::condition_items	item count predicate
 net/minecraft/server/commands/ExecuteCommand#checkScore	port	crates/horizon-client/src/game/commands/execute.rs::Game::condition_score	score comparison, both score holders
 net/minecraft/server/commands/ExecuteCommand#checkStopwatch	port	crates/horizon-client/src/game/commands/execute.rs::Game::condition_stopwatch	stopwatch range check
-net/minecraft/server/commands/ExecuteCommand#checkCustomPredicate	port	crates/horizon-client/src/game/functions.rs::Game::check_predicate	predicate check
+net/minecraft/server/commands/ExecuteCommand#checkCustomPredicate	port	crates/horizon-client/src/game/functions.rs::Game::check_predicate	Inline SNBT or named predicate through the existing source-context evaluator; gap: partial predicate-family codecs/evaluation and nested holder references remain unverified.
 net/minecraft/server/commands/ExecuteCommand#addConditional	port	crates/horizon-client/src/game/commands/execute.rs::Game::run_conditional_terminal	pass and fail messages, count
 net/minecraft/server/commands/ExecuteCommand#addIfBlocksConditional	port	crates/horizon-client/src/game/commands/execute.rs::Game::run_conditional_terminal	if and unless blocks through the shared terminal
 net/minecraft/server/commands/ExecuteCommand#checkIfRegions	inline	crates/horizon-client/src/game/commands/execute.rs::Game::run_conditional_terminal	pass_count message folded into the terminal
