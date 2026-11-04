@@ -61,6 +61,9 @@ pub struct Tree {
     /// those naming none in `recipes_any`.
     by_recipe: HashMap<String, Vec<(usize, usize)>>,
     recipes_any: Vec<(usize, usize)>,
+    /// The triggers with a criterion that may test what the player looks at
+    /// (`index_looking_at`).
+    looking_at_triggers: BTreeSet<String>,
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -141,6 +144,7 @@ impl Tree {
             }
         }
         tree.index_recipes();
+        tree.index_looking_at();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -165,6 +169,23 @@ impl Tree {
                 None => self.recipes_any.push((ai, ci)),
             }
         }
+    }
+    /// Index the triggers whose criteria name `looking_at`, or a
+    /// `minecraft:reference` to a predicate file that might: the text is
+    /// searched, nothing is read.
+    pub fn index_looking_at(&mut self) {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        self.looking_at_triggers = (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                json.contains("\"looking_at\"") || reference.iter().any(|r| json.contains(r))
+            })
+            .map(|c| c.trigger.clone())
+            .collect();
+    }
+    /// Whether a criterion of `trigger` may test what the player looks at.
+    pub fn may_look(&self, trigger: &str) -> bool {
+        self.looking_at_triggers.contains(trigger)
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
