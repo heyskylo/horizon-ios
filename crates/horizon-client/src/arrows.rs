@@ -170,6 +170,8 @@ pub struct ArrowState {
     /// The block it stuck in (`lastState`).
     pub last_state: Option<BlockStateId>,
     pub pickup: Pickup,
+    /// Its entity type is `SpectralArrow` (the type is its own, not the pickup item's).
+    pub spectral: bool,
     /// `pickupItemStack`: what picking the arrow up gives.
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
@@ -199,6 +201,12 @@ pub struct ArrowState {
     pub events: Vec<ArrowEvent>,
     /// The speed (`deltaMovement.length()`) it hit a block at, before it stuck.
     pub hit_speed: f64,
+    /// Spawn position when this fresh arrow joined the level before its first tick.
+    pub spawn_pos: Option<Vec3>,
+    /// Spawn velocity when this fresh arrow joined the level before its first tick.
+    pub spawn_velocity: Option<Vec3>,
+    /// Spawn rotation (pitch, yaw) when this fresh arrow joined the level before its first tick.
+    pub spawn_rot: Option<(f32, f32)>,
 }
 impl fmt::Debug for ArrowState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -227,6 +235,7 @@ impl ArrowState {
             shake: 0,
             last_state: None,
             pickup: Pickup::Disallowed,
+            spectral: false,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
             no_physics: false,
@@ -245,6 +254,9 @@ impl ArrowState {
             random,
             events: Vec::new(),
             hit_speed: 0.0,
+            spawn_pos: None,
+            spawn_velocity: None,
+            spawn_rot: None,
         }
     }
     /// `Arrow.getColor` of the server's own arrow: the colour of the potion on
@@ -300,15 +312,6 @@ impl ArrowState {
     /// `Entity.igniteForSeconds`: Flame's `projectile_spawned` ignite.
     pub fn ignite_for_seconds(&mut self, seconds: f32) {
         self.ignite_for_ticks((seconds * 20.0).floor() as i32);
-    }
-    /// `BaseFireBlock.fireIgnite` for an entity that is not a player.
-    fn fire_ignite(&mut self) {
-        if self.fire_ticks < 0 {
-            self.fire_ticks += 1;
-        }
-        if self.fire_ticks >= 0 {
-            self.ignite_for_ticks(160);
-        }
     }
 }
 /// The blocks, fluids and weather an arrow flies through.
@@ -630,13 +633,7 @@ impl Ticker<'_, '_, '_, '_> {
     }
     /// `Entity.isInRain`: at the block position or the top of the box.
     fn in_rain(&self) -> bool {
-        let p = self.block_position();
-        (self.scene.raining)(p)
-            || (self.scene.raining)(BlockPos::new(
-                p.x,
-                bounds(self.p.position).max_position().y.floor() as i32,
-                p.z,
-            ))
+        self.scene.in_rain(self.p.position)
     }
     /// Whether this is a `ThrownTrident` (`AbstractArrow` with its own water
     /// inertia, sounds and hit).
@@ -1058,39 +1055,32 @@ impl Ticker<'_, '_, '_, '_> {
             _ => None,
         }
     }
-    /// `Entity.applyEffectsFromBlocks(from, to)` for an arrow: the blocks and
-    /// fluids its box passes through (bubble columns push, water puts the fire
-    /// out), then rain.
+    /// `Entity.applyEffectsFromBlocks`: the shared sweep keeps the arrow's
+    /// contact hooks and bubble-column pushes before applying the fire effects.
     fn apply_effects_from_blocks(&mut self, from: Vec3, to: Vec3) {
-        // Entity.isAffectedByBlocks.
         if self.st.removed || self.st.no_physics {
             return;
         }
-        let was_on_fire = self.st.on_fire();
-        let previous_fire = self.st.fire_ticks;
-        let mut visited = HashSet::new();
-        let mut effects = Collector::default();
-        let used = self.check_inside_blocks(from, to, &mut visited, &mut effects, 16);
-        if 16 - used <= 0 {
-            self.check_inside_blocks(to, to, &mut visited, &mut effects, 1);
-        }
-        // StepBasedCollector.applyAndClear.
-        for effect in effects.finish() {
-            if self.st.removed {
-                break;
-            }
-            match effect {
-                Effect::ClearFreeze => {}
-                Effect::FireIgnite => self.st.fire_ignite(),
-                Effect::LavaIgnite => self.st.ignite_for_ticks(300),
-                Effect::Extinguish => self.st.clear_fire(),
-            }
-        }
-        if self.in_rain() {
-            self.st.clear_fire();
-        }
-        if was_on_fire && !self.st.on_fire() {
-            // Entity.playEntityOnFireExtinguishedSound.
+        let scene = self.scene;
+        let (fire_ticks, extinguished) =
+            scene.apply_block_effects(from, to, self.st.fire_ticks, |state, p, precise| {
+                let name = &*scene.facts.get(state).name;
+                crate::block_contact::emit(crate::block_contact::Event::Inside(
+                    crate::block_contact::Contact {
+                        entity: self.p.id as i32,
+                        kind: self.p.kind.id(),
+                        block: name,
+                        state,
+                        position: p,
+                    },
+                ));
+                if name == "minecraft:bubble_column" && precise {
+                    self.bubble_column(state, p);
+                }
+            });
+        self.st.fire_ticks = fire_ticks;
+        if extinguished {
+            // Entity.playEntityOnFireExtinguishedSound: keep the entity RNG order.
             let pitch = 1.6 + (self.st.random.next_float() - self.st.random.next_float()) * 0.4;
             self.st.events.push(ArrowEvent::Sound {
                 sound: ArrowSound::Extinguish,
@@ -1098,115 +1088,6 @@ impl Ticker<'_, '_, '_, '_> {
                 pitch,
             });
         }
-        let ignited = self.st.fire_ticks > previous_fire;
-        if !self.st.on_fire() && !ignited {
-            // -getFireImmuneTicks(): 0 for arrows.
-            self.st.fire_ticks = 0;
-        }
-    }
-    /// `Entity.checkInsideBlocks(from, to, ...)`: returns the iterations used.
-    fn check_inside_blocks(
-        &mut self,
-        from: Vec3,
-        to: Vec3,
-        visited: &mut HashSet<BlockPos>,
-        effects: &mut Collector,
-        max_iterations: i32,
-    ) -> i32 {
-        let deflated = bounds(to).deflate(Vec3::new(
-            f64::from(1.0e-5f32),
-            f64::from(1.0e-5f32),
-            f64::from(1.0e-5f32),
-        ));
-        let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
-        let mut hits = Vec::new();
-        let mut iterations = 0;
-        let alive = !self.st.removed;
-        let _ = sweep_intersected_blocks(from, to, deflated, 1_000_000, |p, iteration| {
-            if !alive || iteration >= max_iterations {
-                return false;
-            }
-            iterations = iteration;
-            hits.push((p, iteration));
-            true
-        });
-        for (p, step) in hits {
-            let state = self.scene.block(p);
-            if self.scene.is_air(state) {
-                continue;
-            }
-            // getEntityInsideCollisionShape: the whole block for these.
-            let inside_block = true;
-            let fluid = self.scene.fluids.fluid(state);
-            let inside_fluid = self.collided_with_fluid(fluid, p, from, to);
-            if !(inside_block || inside_fluid) || !visited.insert(p) {
-                continue;
-            }
-            effects.advance(step);
-            let name = &*self.scene.facts.get(state).name;
-            crate::block_contact::emit(crate::block_contact::Event::Inside(
-                crate::block_contact::Contact {
-                    entity: self.p.id as i32,
-                    kind: self.p.kind.id(),
-                    block: name,
-                    state,
-                    position: p,
-                },
-            ));
-            if matches!(name, "minecraft:fire" | "minecraft:soul_fire") {
-                // BaseFireBlock.entityInside (its inFire hurt does nothing to arrows).
-                effects.apply(Effect::ClearFreeze);
-                effects.apply(Effect::FireIgnite);
-            }
-            if name == "minecraft:bubble_column" {
-                let precise = far
-                    || deflated.intersects(Aabb::new(
-                        Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
-                        Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
-                    ));
-                if precise {
-                    self.bubble_column(state, p);
-                }
-            }
-            if inside_fluid {
-                effects.advance(step);
-                match fluid.kind() {
-                    // WaterFluid.entityInside.
-                    FluidKind::Water | FluidKind::FlowingWater => effects.apply(Effect::Extinguish),
-                    // LavaFluid.entityInside (lavaHurt does nothing to arrows).
-                    FluidKind::Lava | FluidKind::FlowingLava => {
-                        effects.apply(Effect::ClearFreeze);
-                        effects.apply(Effect::LavaIgnite);
-                    }
-                    FluidKind::Empty => {}
-                }
-            }
-        }
-        iterations + 1
-    }
-    /// `Entity.collidedWithFluid`: the fluid's box swept from `from` to `to`.
-    fn collided_with_fluid(
-        &mut self,
-        fluid: FluidState,
-        p: BlockPos,
-        from: Vec3,
-        to: Vec3,
-    ) -> bool {
-        if fluid.kind() == FluidKind::Empty {
-            return false;
-        }
-        let Ok(height) = fluid.height_at(self, [p.x, p.y, p.z]) else {
-            return false;
-        };
-        let b = Aabb::new(
-            Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
-            Vec3::new(
-                f64::from(p.x) + 1.0,
-                f64::from(p.y) + f64::from(height),
-                f64::from(p.z) + 1.0,
-            ),
-        );
-        bounds(from).collided_along_vector(to.subtract(from), &[b])
     }
     /// `BubbleColumnBlock.entityInside` with `Projectile`'s pushes.
     fn bubble_column(&mut self, state: BlockStateId, p: BlockPos) {
@@ -1227,6 +1108,197 @@ impl Ticker<'_, '_, '_, '_> {
             self.add_velocity(if drag { -0.03 } else { 0.06 });
             self.st.fall_distance = 0.0;
         }
+    }
+}
+impl ArrowScene<'_, '_> {
+    /// `Entity.isInRain`: at the feet or the top of the arrow-sized box.
+    pub fn in_rain(&self, at: Vec3) -> bool {
+        let p = BlockPos::containing(at);
+        (self.raining)(p)
+            || (self.raining)(BlockPos::new(
+                p.x,
+                bounds(at).max_position().y.floor() as i32,
+                p.z,
+            ))
+    }
+    /// The water membership used by `AbstractArrow.tick` on the next tick.
+    /// Only query the fluid; callers keep their own movement and splash logic.
+    pub fn in_water(&self, at: Vec3) -> bool {
+        let b = bounds(at).deflate(Vec3::new(0.001, 0.001, 0.001));
+        let lo = b.min_position();
+        let hi = b.max_position();
+        let low = BlockPos::containing(lo);
+        let high = BlockPos::new(
+            hi.x.ceil() as i32 - 1,
+            hi.y.ceil() as i32 - 1,
+            hi.z.ceil() as i32 - 1,
+        );
+        for x in (low.x - 1) >> 4..=(high.x + 1) >> 4 {
+            for z in (low.z - 1) >> 4..=(high.z + 1) >> 4 {
+                if !self.world.chunks.contains_key(&(x, z)) {
+                    return false;
+                }
+            }
+        }
+        for x in low.x..=high.x {
+            for y in low.y..=high.y {
+                for z in low.z..=high.z {
+                    let fluid = self.fluids.fluid(self.block(BlockPos::new(x, y, z)));
+                    let mut scene = self;
+                    if matches!(fluid.kind(), FluidKind::Water | FluidKind::FlowingWater)
+                        && let Ok(height) = fluid.height_at(&mut scene, [x, y, z])
+                        && f64::from(y) + f64::from(height) >= lo.y
+                        && f64::from(y) + f64::from(height) > at.y
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+    /// `Entity.applyEffectsFromBlocks` for arrows and player-thrown tridents.
+    /// The caller handles `isAffectedByBlocks`, initial water/rain clearing and
+    /// `baseTick`. `visit` preserves arrow contact hooks and bubble pushes.
+    /// Returns the fire timer and whether to play the extinguishing sound.
+    pub fn apply_block_effects(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        mut fire_ticks: i32,
+        mut visit: impl FnMut(BlockStateId, BlockPos, bool),
+    ) -> (i32, bool) {
+        let previous_fire = fire_ticks;
+        let mut visited = HashSet::new();
+        let mut effects = Collector::default();
+        let used = self.check_inside_blocks(from, to, &mut visited, &mut effects, 16, &mut visit);
+        if 16 - used <= 0 {
+            self.check_inside_blocks(to, to, &mut visited, &mut effects, 1, &mut visit);
+        }
+        for effect in effects.finish() {
+            match effect {
+                Effect::ClearFreeze => {}
+                Effect::FireIgnite => {
+                    // BaseFireBlock.fireIgnite for a non-player entity.
+                    if fire_ticks < 0 {
+                        fire_ticks += 1;
+                    }
+                    if fire_ticks >= 0 {
+                        fire_ticks = fire_ticks.max(160);
+                    }
+                }
+                Effect::LavaIgnite => fire_ticks = fire_ticks.max(300),
+                Effect::Extinguish => fire_ticks = fire_ticks.min(0),
+            }
+        }
+        if self.in_rain(to) {
+            fire_ticks = fire_ticks.min(0);
+        }
+        let extinguished = previous_fire > 0 && fire_ticks <= 0;
+        let ignited = fire_ticks > previous_fire;
+        if fire_ticks <= 0 && !ignited {
+            // -getFireImmuneTicks(): zero for AbstractArrow.
+            fire_ticks = 0;
+        }
+        (fire_ticks, extinguished)
+    }
+    /// `Entity.checkInsideBlocks(from, to, ...)`: returns the iterations used.
+    fn check_inside_blocks(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        visited: &mut HashSet<BlockPos>,
+        effects: &mut Collector,
+        max_iterations: i32,
+        visit: &mut impl FnMut(BlockStateId, BlockPos, bool),
+    ) -> i32 {
+        let deflated = bounds(to).deflate(Vec3::new(
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+        ));
+        let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
+        let mut hits = Vec::new();
+        let mut iterations = 0;
+        let _ = sweep_intersected_blocks(from, to, deflated, 1_000_000, |p, iteration| {
+            if iteration >= max_iterations {
+                return false;
+            }
+            iterations = iteration;
+            hits.push((p, iteration));
+            true
+        });
+        for (p, step) in hits {
+            let state = self.block(p);
+            if self.is_air(state) {
+                continue;
+            }
+            // getEntityInsideCollisionShape: the whole block for these.
+            let inside_block = true;
+            let fluid = self.fluids.fluid(state);
+            let inside_fluid = self.collided_with_fluid(fluid, p, from, to);
+            if !(inside_block || inside_fluid) || !visited.insert(p) {
+                continue;
+            }
+            effects.advance(step);
+            let name = &*self.facts.get(state).name;
+            let precise = far
+                || deflated.intersects(Aabb::new(
+                    Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+                    Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
+                ));
+            visit(state, p, precise);
+            if matches!(name, "minecraft:fire" | "minecraft:soul_fire") {
+                // BaseFireBlock.entityInside (its inFire hurt does nothing to arrows).
+                effects.apply(Effect::ClearFreeze);
+                effects.apply(Effect::FireIgnite);
+            }
+            if inside_fluid {
+                effects.advance(step);
+                match fluid.kind() {
+                    // WaterFluid.entityInside.
+                    FluidKind::Water | FluidKind::FlowingWater => effects.apply(Effect::Extinguish),
+                    // LavaFluid.entityInside (lavaHurt does nothing to arrows).
+                    FluidKind::Lava | FluidKind::FlowingLava => {
+                        effects.apply(Effect::ClearFreeze);
+                        effects.apply(Effect::LavaIgnite);
+                    }
+                    FluidKind::Empty => {}
+                }
+            }
+        }
+        iterations + 1
+    }
+    /// `Entity.collidedWithFluid`: the fluid's box swept from `from` to `to`.
+    fn collided_with_fluid(&self, fluid: FluidState, p: BlockPos, from: Vec3, to: Vec3) -> bool {
+        if fluid.kind() == FluidKind::Empty {
+            return false;
+        }
+        let mut scene = self;
+        let Ok(height) = fluid.height_at(&mut scene, [p.x, p.y, p.z]) else {
+            return false;
+        };
+        let b = Aabb::new(
+            Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+            Vec3::new(
+                f64::from(p.x) + 1.0,
+                f64::from(p.y) + f64::from(height),
+                f64::from(p.z) + 1.0,
+            ),
+        );
+        bounds(from).collided_along_vector(to.subtract(from), &[b])
+    }
+}
+impl FluidHeightWorld for &ArrowScene<'_, '_> {
+    type Error = Error;
+    fn fluid(&mut self, p: [i32; 3]) -> Result<FluidState, Error> {
+        Ok(self
+            .fluids
+            .fluid(self.block(BlockPos::new(p[0], p[1], p[2]))))
+    }
+    fn sturdy_down(&mut self, p: [i32; 3]) -> Result<bool, Error> {
+        let state = self.block(BlockPos::new(p[0], p[1], p[2]));
+        Ok(self.fluids.sturdy(state, Direction::Down))
     }
 }
 /// `InsideBlockEffectType`s an arrow meets, in their apply order (FREEZE

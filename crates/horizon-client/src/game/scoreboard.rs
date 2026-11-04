@@ -31,6 +31,33 @@ pub(super) struct Recorded {
     xp: Option<i32>,
     level: Option<i32>,
 }
+impl Recorded {
+    /// The food, air, armor, xp and level criteria whose value differs from the last
+    /// recorded one, recorded as they are returned (`ServerPlayer.doTick`).
+    fn changed_scores(
+        &mut self,
+        food: i32,
+        air: i32,
+        armor: i32,
+        xp: i32,
+        level: i32,
+    ) -> Vec<(&'static str, i32)> {
+        let mut out = Vec::new();
+        for (criteria, last, value) in [
+            (sb::CRITERIA_FOOD, &mut self.food, food),
+            (sb::CRITERIA_AIR, &mut self.air, air),
+            (sb::CRITERIA_ARMOR, &mut self.armor, armor),
+            (sb::CRITERIA_XP, &mut self.xp, xp),
+            (sb::CRITERIA_LEVEL, &mut self.level, level),
+        ] {
+            if *last != Some(value) {
+                *last = Some(value);
+                out.push((criteria, value));
+            }
+        }
+        out
+    }
+}
 #[derive(Default)]
 pub(super) struct ScoreState {
     pub board: Scoreboard,
@@ -182,7 +209,10 @@ impl Game<'_> {
             | Target::Tnt(id)
             | Target::Falling(id)
             | Target::Rocket(id)
-            | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
+            | Target::Trident(id)
+            | Target::Other(id)
+            | Target::Fangs(id)
+            | Target::Cloud(id) => Some(uuid_text(self.uuid_for(id))),
             // It keeps its UUID with itself.
             Target::Spawner(id) => self
                 .ominous_spawners
@@ -226,7 +256,10 @@ impl Game<'_> {
             | Target::Crystal(id)
             | Target::Dragon(id)
             | Target::Rocket(id)
-            | Target::Other(id) => self.persist.raw.get(&id),
+            | Target::Trident(id)
+            | Target::Other(id)
+            | Target::Fangs(id)
+            | Target::Cloud(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
             // A server's player: the saved compound the guest's file is written from.
             Target::Guest(conn) => self.command_guest(conn).and_then(|g| g.saved.as_ref()),
@@ -321,12 +354,13 @@ impl Game<'_> {
                 let view = self.entity_view_of(t);
                 let origin = self.target_position(t).unwrap_or_default();
                 for (id, negated) in &s.predicates {
-                    let matches = self
-                        .fns
-                        .store
-                        .predicates
-                        .get(id)
-                        .is_some_and(|json| self.conditions_hold(json, Some(&view), origin));
+                    // EntitySelectorOptions rejects a missing registry entry
+                    // before applying the predicate's negation.
+                    let Some(json) = self.fns.store.predicates.get(id) else {
+                        ok = false;
+                        break;
+                    };
+                    let matches = self.conditions_hold(json, Some(&view), origin);
                     if matches == *negated {
                         ok = false;
                     }
@@ -427,6 +461,7 @@ impl Game<'_> {
         };
         let health_and_absorption = p.health.health() + p.health.absorption();
         let food = p.health.food.food;
+        let air = p.air;
         // getArmorValue: the armor attribute rounded down.
         let armor = p
             .attribute("minecraft:armor")
@@ -439,19 +474,21 @@ impl Game<'_> {
             let value = health_and_absorption.ceil() as i32;
             board.for_all_objectives_with(sb::CRITERIA_HEALTH, &name, Some(&display), |_| value);
         }
-        for (criteria, last, value) in [
-            (sb::CRITERIA_FOOD, &mut rec.food, food),
-            // The air supply is full unless the player is drowning.
-            (sb::CRITERIA_AIR, &mut rec.air, 300),
-            (sb::CRITERIA_ARMOR, &mut rec.armor, armor),
-            (sb::CRITERIA_XP, &mut rec.xp, self.experience.total),
-            (sb::CRITERIA_LEVEL, &mut rec.level, self.experience.level),
-        ] {
-            if *last != Some(value) {
-                *last = Some(value);
-                board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
-            }
+        let (xp, level) = (self.experience.total, self.experience.level);
+        for (criteria, value) in rec.changed_scores(food, air, armor, xp, level) {
+            board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
         }
+    }
+    /// `ServerPlayer.die`: the acting player's `deathCount` objectives go up by one.
+    pub(super) fn score_player_died(&mut self) {
+        let display = self.player_display_comp();
+        let me = self.acting_player_name().to_owned();
+        self.score.board.for_all_objectives_with(
+            sb::CRITERIA_DEATH_COUNT,
+            &me,
+            Some(&display),
+            |v| v.wrapping_add(1),
+        );
     }
     /// `ServerPlayer.awardKillScore`: total kills and the team kill counts.
     pub(super) fn score_player_killed(&mut self, victim: Target) {
@@ -754,6 +791,7 @@ impl Game<'_> {
         for (location, rgba) in ready {
             self.store_skin(location, rgba);
         }
+        self.cosmetics_frame();
     }
     /// `Hud.extractTabList`: the player list while the player-list key is
     /// held. A local world shows it with a joined LAN guest or a `list`
@@ -1052,5 +1090,21 @@ mod team_tests {
         let looped = |uuid: [i32; 4]| Some(if uuid == WOLF { CAT } else { WOLF });
         let root = root_owner(WOLF, looped);
         assert!(root == WOLF || root == CAT);
+    }
+
+    #[test]
+    fn air_score_follows_the_air_supply_and_updates_only_on_change() {
+        let mut rec = Recorded::default();
+        let first = rec.changed_scores(20, 120, 0, 0, 0);
+        assert!(first.contains(&(sb::CRITERIA_AIR, 120)));
+        assert!(rec.changed_scores(20, 120, 0, 0, 0).is_empty());
+        assert_eq!(
+            rec.changed_scores(20, 119, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, 119)]
+        );
+        assert_eq!(
+            rec.changed_scores(20, -5, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, -5)]
+        );
     }
 }

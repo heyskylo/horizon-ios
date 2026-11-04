@@ -147,10 +147,15 @@ pub struct SoundInstance {
     pub ticking: Ticking,
     /// `AbstractTickableSoundInstance.stopped`.
     pub stopped: bool,
-    /// `sound` after `getOrResolve`.
+    /// `sound` after `getOrResolve`, or the sound a caller chose for the
+    /// instance (`chosen`).
     pub sound: Option<Sound>,
     /// `soundEvent != null` after `getOrResolve`, and its subtitle.
     pub event: Option<Option<String>>,
+    /// The caller picked `sound` itself (the Music page leaves its off tracks
+    /// out), so `resolve` keeps it. Every other instance resolves again at each
+    /// play, as vanilla's `getOrResolve` does.
+    pub chosen: bool,
 }
 impl SoundInstance {
     #[allow(clippy::too_many_arguments)]
@@ -182,6 +187,7 @@ impl SoundInstance {
             stopped: false,
             sound: None,
             event: None,
+            chosen: false,
         }
     }
     /// `new SimpleSoundInstance(sound, source, volume, pitch, random, x, y, z)`.
@@ -1067,6 +1073,11 @@ impl SoundEngine {
             instance.event = Some(None);
             return;
         }
+        // A caller that chose the exact sound (the Music page) resolved it
+        // itself, with `sound_except`.
+        if instance.chosen && instance.sound.is_some() {
+            return;
+        }
         match self.registry.get(&instance.identifier) {
             None => {
                 instance.event = None;
@@ -1586,6 +1597,44 @@ mod tests {
         assert_eq!(s.volume, 0.0);
         assert!(!s.stopped);
     }
+    /// `AbstractSoundInstance.getOrResolve` picks the sound again each time an
+    /// instance plays (a replayed instance can land on another variant, with
+    /// its own volume); only a sound the caller chose stays.
+    #[test]
+    fn an_instance_resolves_again_at_each_play_unless_its_sound_was_chosen() {
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "minecraft",
+            br#"{"block.note": {"sounds": ["note/a", {"name": "note/b", "volume": 0.4}]}}"#,
+            &|_, _| true,
+        );
+        let picks = |chosen: bool| {
+            let mut engine = SoundEngine::new(registry.clone());
+            let mut instance =
+                SoundInstance::for_ui("minecraft:block.note", 1.0, 1.0, LegacyRandom::new(3));
+            if chosen {
+                instance.sound = registry.sound("minecraft:block.note", &mut LegacyRandom::new(3));
+                instance.event = Some(None);
+                instance.chosen = true;
+            }
+            let id = engine.add(instance, true);
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..64 {
+                engine.resolve(id);
+                seen.insert(
+                    engine.instances[&id]
+                        .sound
+                        .as_ref()
+                        .unwrap()
+                        .location
+                        .clone(),
+                );
+            }
+            seen.len()
+        };
+        assert_eq!(picks(false), 2, "both variants come up across plays");
+        assert_eq!(picks(true), 1, "the chosen sound is kept");
+    }
     #[test]
     fn world_sounds_leave_channels_for_the_listener_only_with_the_extra() {
         use test_backend::Null;
@@ -1628,5 +1677,90 @@ mod tests {
                 "reserve {reserve}"
             );
         }
+    }
+    #[test]
+    fn minecart_sound_volume_scales_with_speed_and_silences_when_stopped() {
+        let cart = CartSound {
+            id: 42,
+            position: [10.0, 64.0, 5.0],
+            speed: 0.0,
+        };
+        let mut s = SoundInstance::minecart(&cart, SoundEngine::unseeded());
+        assert!(s.can_start_silent);
+        assert_eq!(s.volume, 0.0);
+
+        // Stationary cart has volume 0.
+        let mut ctx = TickContext {
+            carts: vec![cart],
+            ..TickContext::default()
+        };
+        s.tick(&ctx);
+        assert_eq!(s.volume, 0.0);
+        assert!(!s.stopped);
+
+        // Moving cart scales volume with clamp(speed, 0, 0.5) * 0.7.
+        ctx.carts[0].speed = 0.2;
+        s.tick(&ctx);
+        assert!((s.volume - 0.2 * 0.7).abs() < 1e-6, "volume: {}", s.volume);
+
+        ctx.carts[0].speed = 1.0;
+        s.tick(&ctx);
+        assert!((s.volume - 0.5 * 0.7).abs() < 1e-6, "volume: {}", s.volume);
+
+        // Frozen clock silences cart.
+        ctx.frozen = true;
+        s.tick(&ctx);
+        assert_eq!(s.volume, 0.0);
+        ctx.frozen = false;
+
+        // Removing cart stops the instance.
+        ctx.carts.clear();
+        s.tick(&ctx);
+        assert!(s.stopped);
+    }
+    #[test]
+    fn riding_minecart_sound_scales_with_speed_and_switches_underwater() {
+        let cart = CartSound {
+            id: 99,
+            position: [0.0, 60.0, 0.0],
+            speed: 0.4,
+        };
+        let mut surface = SoundInstance::riding_minecart(&cart, false, SoundEngine::unseeded());
+        let mut underwater = SoundInstance::riding_minecart(&cart, true, SoundEngine::unseeded());
+
+        let mut ctx = TickContext {
+            vehicle: Some(99),
+            carts: vec![cart],
+            player_underwater: false,
+            ..TickContext::default()
+        };
+
+        // Surface riding active on surface.
+        surface.tick(&ctx);
+        underwater.tick(&ctx);
+        assert!(
+            (surface.volume - 0.4 * 0.75).abs() < 1e-6,
+            "{}",
+            surface.volume
+        );
+        assert_eq!(underwater.volume, 0.0);
+
+        // Submerged player switches active sound.
+        ctx.player_underwater = true;
+        surface.tick(&ctx);
+        underwater.tick(&ctx);
+        assert_eq!(surface.volume, 0.0);
+        assert!(
+            (underwater.volume - 0.4 * 0.75).abs() < 1e-6,
+            "{}",
+            underwater.volume
+        );
+
+        // Dismounting stops both instances.
+        ctx.vehicle = None;
+        surface.tick(&ctx);
+        underwater.tick(&ctx);
+        assert!(surface.stopped);
+        assert!(underwater.stopped);
     }
 }

@@ -52,6 +52,8 @@ pub fn main() -> horizon_client::Result<()> {
         names: &names,
         trade: None,
         maps: None,
+        limited_crafting: false,
+        known_recipes: None,
     };
     let mut out = String::new();
     for (line, order) in cases.lines().zip(orders.lines()) {

@@ -1,6 +1,6 @@
 //! The launcher's languages: English (the strings in the code), French, Russian, German and
 //! Spanish, the languages Horizon's own game menus have, Simplified Chinese, Ukrainian,
-//! Polish, Brazilian Portuguese, Japanese and Turkish. A table per language (`launcher/lang/<code>.json`) maps each English string to its
+//! Polish, Brazilian Portuguese, Japanese, Turkish, Korean and Croatian. A table per language (`launcher/lang/<code>.json`) maps each English string to its
 //! translation; a string the table lacks shows in English.
 //!
 //! The language follows the system's unless the player picks one in Settings
@@ -35,10 +35,58 @@ pub enum Language {
     Japanese,
     #[serde(rename = "tr")]
     Turkish,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "hr")]
+    Croatian,
+    #[serde(rename = "ar")]
+    Arabic,
+    #[serde(rename = "hi")]
+    Hindi,
+    #[serde(rename = "id")]
+    Indonesian,
+    #[serde(rename = "pt")]
+    Portuguese,
+    #[serde(rename = "he")]
+    Hebrew,
+    #[serde(rename = "hu")]
+    Hungarian,
+    #[serde(rename = "ro")]
+    Romanian,
+    #[serde(rename = "da")]
+    Danish,
+    #[serde(rename = "fi")]
+    Finnish,
+    #[serde(rename = "no")]
+    Norwegian,
+    #[serde(rename = "bg")]
+    Bulgarian,
+    #[serde(rename = "sk")]
+    Slovak,
+    #[serde(rename = "lt")]
+    Lithuanian,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "vi")]
+    Vietnamese,
+    #[serde(rename = "th")]
+    Thai,
+    #[serde(rename = "ur")]
+    Urdu,
+    #[serde(rename = "cs")]
+    Czech,
+    #[serde(rename = "sv")]
+    Swedish,
+    #[serde(rename = "el")]
+    Greek,
+    #[serde(rename = "fa")]
+    Persian,
 }
 
 impl Language {
-    pub const ALL: [Language; 11] = [
+    pub const ALL: [Language; 35] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -50,6 +98,30 @@ impl Language {
         Self::PortugueseBrazil,
         Self::Japanese,
         Self::Turkish,
+        Self::Korean,
+        Self::Croatian,
+        Self::Arabic,
+        Self::Hindi,
+        Self::Indonesian,
+        Self::Portuguese,
+        Self::Hebrew,
+        Self::Hungarian,
+        Self::Romanian,
+        Self::Danish,
+        Self::Finnish,
+        Self::Norwegian,
+        Self::Bulgarian,
+        Self::Slovak,
+        Self::Lithuanian,
+        Self::Italian,
+        Self::Dutch,
+        Self::Vietnamese,
+        Self::Thai,
+        Self::Urdu,
+        Self::Czech,
+        Self::Swedish,
+        Self::Greek,
+        Self::Persian,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -66,6 +138,30 @@ impl Language {
             Self::PortugueseBrazil => "pt-br",
             Self::Japanese => "ja",
             Self::Turkish => "tr",
+            Self::Korean => "ko",
+            Self::Croatian => "hr",
+            Self::Arabic => "ar",
+            Self::Hindi => "hi",
+            Self::Indonesian => "id",
+            Self::Portuguese => "pt",
+            Self::Hebrew => "he",
+            Self::Hungarian => "hu",
+            Self::Romanian => "ro",
+            Self::Danish => "da",
+            Self::Finnish => "fi",
+            Self::Norwegian => "no",
+            Self::Bulgarian => "bg",
+            Self::Slovak => "sk",
+            Self::Lithuanian => "lt",
+            Self::Italian => "it",
+            Self::Dutch => "nl",
+            Self::Vietnamese => "vi",
+            Self::Thai => "th",
+            Self::Urdu => "ur",
+            Self::Czech => "cs",
+            Self::Swedish => "sv",
+            Self::Greek => "el",
+            Self::Persian => "fa",
         }
     }
 
@@ -83,6 +179,30 @@ impl Language {
             Self::PortugueseBrazil => "Português (Brasil)",
             Self::Japanese => "日本語",
             Self::Turkish => "Türkçe",
+            Self::Korean => "한국어",
+            Self::Croatian => "Hrvatski",
+            Self::Arabic => "العربية",
+            Self::Hindi => "हिन्दी",
+            Self::Indonesian => "Bahasa Indonesia",
+            Self::Portuguese => "Português (Portugal)",
+            Self::Hebrew => "עברית",
+            Self::Hungarian => "Magyar",
+            Self::Romanian => "Română",
+            Self::Danish => "Dansk",
+            Self::Finnish => "Suomi",
+            Self::Norwegian => "Norsk",
+            Self::Bulgarian => "Български",
+            Self::Slovak => "Slovenčina",
+            Self::Lithuanian => "Lietuvių",
+            Self::Italian => "Italiano",
+            Self::Dutch => "Nederlands",
+            Self::Vietnamese => "Tiếng Việt",
+            Self::Thai => "ไทย",
+            Self::Urdu => "اردو",
+            Self::Czech => "Čeština",
+            Self::Swedish => "Svenska",
+            Self::Greek => "Ελληνικά",
+            Self::Persian => "فارسی",
         }
     }
 
@@ -102,7 +222,12 @@ impl Language {
             return Some(Self::PortugueseBrazil);
         }
 
-        let base = normalized.split('-').next().unwrap_or("");
+        let base = match normalized.split('-').next().unwrap_or("") {
+            // Systems name Norwegian by its written form: Bokmål (`nb-NO`, what macOS and Windows
+            // report) or Nynorsk (`nn`). The launcher's one table is Bokmål.
+            "nb" | "nn" => "no",
+            base => base,
+        };
 
         Self::ALL
             .into_iter()
@@ -137,6 +262,30 @@ impl Language {
             Self::PortugueseBrazil => include_str!("../lang/pt-br.json"),
             Self::Japanese => include_str!("../lang/ja.json"),
             Self::Turkish => include_str!("../lang/tr.json"),
+            Self::Korean => include_str!("../lang/ko.json"),
+            Self::Croatian => include_str!("../lang/hr.json"),
+            Self::Arabic => include_str!("../lang/ar.json"),
+            Self::Hindi => include_str!("../lang/hi.json"),
+            Self::Indonesian => include_str!("../lang/id.json"),
+            Self::Portuguese => include_str!("../lang/pt.json"),
+            Self::Hebrew => include_str!("../lang/he.json"),
+            Self::Hungarian => include_str!("../lang/hu.json"),
+            Self::Romanian => include_str!("../lang/ro.json"),
+            Self::Danish => include_str!("../lang/da.json"),
+            Self::Finnish => include_str!("../lang/fi.json"),
+            Self::Norwegian => include_str!("../lang/no.json"),
+            Self::Bulgarian => include_str!("../lang/bg.json"),
+            Self::Slovak => include_str!("../lang/sk.json"),
+            Self::Lithuanian => include_str!("../lang/lt.json"),
+            Self::Italian => include_str!("../lang/it.json"),
+            Self::Dutch => include_str!("../lang/nl.json"),
+            Self::Vietnamese => include_str!("../lang/vi.json"),
+            Self::Thai => include_str!("../lang/th.json"),
+            Self::Urdu => include_str!("../lang/ur.json"),
+            Self::Czech => include_str!("../lang/cs.json"),
+            Self::Swedish => include_str!("../lang/sv.json"),
+            Self::Greek => include_str!("../lang/el.json"),
+            Self::Persian => include_str!("../lang/fa.json"),
         }
     }
 }

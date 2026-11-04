@@ -165,9 +165,10 @@ fn the_system_language_is_the_first_one_the_launcher_has() {
     assert_eq!(Language::parse("tr_TR.UTF-8"), Some(Language::Turkish));
     assert_eq!(Language::parse("pl_PL.UTF-8"), Some(Language::Polish));
     assert_eq!(Language::pick(["fr-CH", "en-US"]), Language::French);
-    assert_eq!(Language::pick(["it-IT", "ru_RU.UTF-8"]), Language::Russian);
-    assert_eq!(Language::pick(["it-IT", "zh-Hans-CN"]), Language::Chinese);
-    assert_eq!(Language::pick(["it-IT", "ja"]), Language::Japanese);
+    assert_eq!(Language::pick(["it-IT", "ja"]), Language::Italian);
+    assert_eq!(Language::pick(["eo", "ru_RU.UTF-8"]), Language::Russian);
+    assert_eq!(Language::pick(["eo", "zh-Hans-CN"]), Language::Chinese);
+    assert_eq!(Language::pick(["eo", "ja"]), Language::Japanese);
     assert_eq!(Language::pick(["de-CH", "ru_RU.UTF-8"]), Language::German);
     assert_eq!(Language::pick(["de-DE", "ja"]), Language::German);
     assert_eq!(Language::pick(["de-DE", "zh-Hans-CN"]), Language::German);
@@ -176,7 +177,7 @@ fn the_system_language_is_the_first_one_the_launcher_has() {
         Language::pick(["pt-BR", "en-US"]),
         Language::PortugueseBrazil
     );
-    assert_eq!(Language::pick(["ko", "it-IT"]), Language::English);
+    assert_eq!(Language::pick(["ko", "it-IT"]), Language::Korean);
     assert_eq!(Language::pick(["uk-UA", "ru-RU"]), Language::Ukrainian);
     assert_eq!(Language::parse("uk_UA.UTF-8"), Some(Language::Ukrainian));
     assert_eq!(
@@ -184,7 +185,10 @@ fn the_system_language_is_the_first_one_the_launcher_has() {
         Some(Language::PortugueseBrazil)
     );
     assert_eq!(Language::parse("pt-BR"), Some(Language::PortugueseBrazil));
-    assert_eq!(Language::parse("pt-PT"), None); // Explicit check: pt-PT won't alias pt-BR
+    assert_eq!(Language::parse("pt-PT"), Some(Language::Portuguese)); // European Portuguese now has its own table
+    assert_eq!(Language::parse("it_IT.UTF-8"), Some(Language::Italian));
+    assert_eq!(Language::pick(["nb-NO", "en-US"]), Language::Norwegian);
+    assert_eq!(Language::parse("nn_NO.UTF-8"), Some(Language::Norwegian));
     assert_eq!(Language::pick([]), Language::English);
     assert_eq!(Language::parse("FR"), Some(Language::French));
     assert_eq!(Language::parse("french"), None);

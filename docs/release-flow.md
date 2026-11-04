@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | GitHub `ubuntu-latest`; with `SELF_HOSTED_CI=all`, playhorizon's checks runners for main's pushes and this repository's own pull requests, never a fork's ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job (one runner from the organisation's shared pool per run). Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (playhorizon) | ~8 min |
+| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for the pull requests whose number ends in 0 or 1, forks included; GitHub `ubuntu-latest` for the others and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -85,26 +85,21 @@ release's macOS build back. Each keeps its own checkout, `target/` and Rust inst
 `_work/horizon/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
 time, under a lock) and the parity passes and slots.
 
-**The desktop's runner (retired).** On 2026-10-26 the maintainer asked that CI stop using his desktop: its services are
-stopped and `ludodesktop-horizon` has no label a job asks for (only `self-hosted`, `Linux`, `X64`), so nothing waits for
-it. What follows describes it as it ran. It ran on the maintainer's Linux desktop while nobody used it: its
-screen locked, or untouched for 15 minutes (his rule, 2026-10-26). `tools/ci/linux-runner.sh install`, run there as
-him, registers it and installs two systemd user services: `horizon-runner` (the runner, in
-`~/.actions-runners/horizon`, nice 19, in `horizon-ci.slice` with CPU and I/O weight 20, half the threads (on all of
-them the CPU package reached 92–96 °C) and memory capped at two thirds of the RAM; `CARGO_BUILD_JOBS` and the harness slots at 8, after the machine froze under ~7 cold cargo
-builds on 2026-10-14; its own Rust install; the JDK, sccache and the build libraries from nixpkgs; its own
-`vscreen` so no game it starts reaches his screen) and `horizon-runner-pause` (`tools/ci/runner_pause.py`), the
-only thing that starts the runner. The watcher stops it at once on keyboard, mouse or gamepad input (read from
-`/dev/input`: only whether bytes came, never what), while an unlocked session has had input in the last 15 minutes,
-while the CPU package is at 90 °C or more, while a game runs (Steam, gamescope, Wine, Proton or Minecraft
-processes, fleet-load's own detection, or a process outside the CI slice using the GPU at 50 % or more), or while
-`~/.actions-runners/horizon/pause` exists, and starts it again 5 minutes after the last such sign. A job already
-under way is throttled to 2 threads at the lowest weight and the runner stops after it: freezing the job would make
-GitHub drop it as lost and the harnesses time out. Old pull requests' `runner-env.sh` know only the Mac: the
-runner's `.env` and `.path` give their jobs Python, the JDK and the vanilla data (`HORIZON_SHARED_SOURCE`) all the
-same. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous night,
-so it stays on one platform, and a parity-main job slowed down on the desktop because he came back could time out,
-and its failures bisect and comment on merges.
+**The desktop's runner.** Since 2026-11-03 (the maintainer's decision) `ludodesktop-horizon` takes pull requests'
+parity jobs too, beside the Mac mini and playhorizon: labels `self-hosted`, `X64`, `horizon-game`, `ludodesktop`, and no
+`Linux`, so ci.yml's by-hand `[self-hosted, linux, horizon-game]` jobs stay on playhorizon. It is declared in the
+maintainer's NixOS configuration (`services.github-runners`, his private fleet repo), not installed by
+`tools/ci/linux-runner.sh`. A fork's job reaches it only through `run-parity`, so it runs as a system user, `gha`, with
+no sudo, SSH keys or logins; its service sees no `/home` and no device (no GPU: Vulkan is Mesa's lavapipe, on an Xvfb
+of its own), the system is read-only to it, and it runs in a slice at CPU and I/O weight 20, at most 16 of the 24
+threads, 20 GB of memory, nice 10 (`CARGO_BUILD_JOBS=16`, 8 harness slots). It runs only while the maintainer isn't at
+the machine: a timer stops it within a minute when he is at the screen (an unlocked session) and starts it 2 minutes
+after he leaves. A job it stops fails: rerun it, and it goes to whichever runner is free. Its vanilla data is his own
+copy, kept in the runner's folder; a clean-up before each start keeps its build folders under 40 GB and its 2 newest
+preparations. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous
+night, so it stays on one platform, and a parity-main job stopped because he came back would bisect and comment on
+merges for nothing. The desktop is no parity host for `tools/parity.py --hosts` any more (its `tools/parity_hosts.json`
+entry points at the 10-26 setup, whose pause file stays set, so it refuses work).
 
 **playhorizon's runner.** `playhorizon-horizon` runs on a server a hosting partner lends the project (Ubuntu, 8
 AMD EPYC threads, 30 GB, in Detroit; reachable only through the maintainer's tailnet). Nobody sits at it, so the
@@ -116,8 +111,8 @@ Without Nix, `linux-runner.sh` takes the build libraries, the JDK, sccache, Xvfb
 (lavapipe; there is no GPU) from apt, and Python 3.13 from uv. The partner can reach the machine, so gh is not
 logged in there: the registration token comes from another machine (`RUNNER_TOKEN`), and no job with secrets may
 run there (parity has none). It is also a parity host (`playhorizon` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
-2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there or on the Mac mini, and `full-parity`
-ones only there.
+2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
+`full-parity` ones only there.
 
 ## Merging
 
@@ -169,9 +164,10 @@ fork's pull request: the Team member decides whether to run it, and a skipped ru
 Most pull requests merge on `verify` alone and leave the vanilla harnesses to `.github/workflows/parity-main.yml`,
 which runs them on main a batch of merges at a time, on the Mac mini's runner:
 
-- It starts on every push to main, one run at a time (`concurrency: parity-main`). Merges that land while a run
-  goes on wait in one pending run: GitHub keeps only the newest and cancels the others, so the next run takes them
-  all.
+- It starts on every push to main, one run at a time (`concurrency: parity-main`). A run that started always
+  finishes; merges that land while it goes on wait in one pending run: GitHub keeps only the newest and cancels the
+  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones, plus runs
+  whose bisect outgrew the job's 240 minutes.
 - `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
   merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
   since then can affect, once, with every earlier pass reused.
@@ -180,8 +176,11 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
   run checks from the last green commit again.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
-  `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. `release.yml` also
-  starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
+  `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
+  newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so
+  a broken or flaky harness holds only what landed after the last green run, never the whole Nightly (before
+  2026-11-03, any later failure held every Nightly until a run passed again: 30 h without one). `release.yml`
+  also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
 
 A pull request still runs its own parity job when it changes a harness script, an oracle
 (`mods/horizon/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
@@ -231,8 +230,8 @@ commits) since the commit the published Nightly was built on:
 - One Nightly build at a time: while one runs or waits, the train starts none. At most 12 builds a UTC day (the
   reviewers' `/nightly` builds count): past that the train waits for the next day, except for `release-now` and
   `force=true`.
-- A scheduled run takes main's newest commit where `checks` and `parity-main` passed; after a run of either, the
-  commit it passed on, once both passed there.
+- A scheduled run takes main's newest commit where `checks` and `parity-main` passed (a later failed
+  parity-main batch doesn't change it); after a run of either, the commit it passed on, once both passed there.
 
 ### Nightly only
 

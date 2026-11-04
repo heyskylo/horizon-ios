@@ -144,6 +144,9 @@ pub struct Settings {
     pub discrete_scroll: bool,
     pub toggle_crouch: bool,
     pub toggle_sprint: bool,
+    /// 3D skin layers (`threeDSkinLayers`): each painted texel of a player's
+    /// outer layer drawn as a slab (`crate::...`, Options → Skin).
+    pub three_d_skin_layers: bool,
     pub auto_jump: bool,
     pub language: String,
     pub force_unicode: bool,
@@ -248,6 +251,7 @@ impl Default for Settings {
             allow_cursor_changes: true,
             toggle_crouch: false,
             toggle_sprint: false,
+            three_d_skin_layers: false,
             auto_jump: false,
             language: "en_us".into(),
             force_unicode: false,
@@ -459,6 +463,7 @@ impl Settings {
             allow_cursor_changes: f.bool("allowCursorChanges"),
             toggle_crouch: f.bool("toggleCrouch"),
             toggle_sprint: f.bool("toggleSprint"),
+            three_d_skin_layers: f.bool("threeDSkinLayers"),
             toggle_attack: f.bool("toggleAttack"),
             toggle_use: f.bool("toggleUse"),
             sprint_window: f.int("sprintWindow"),
@@ -570,6 +575,7 @@ impl Settings {
         put_b(&mut f, "allowCursorChanges", self.allow_cursor_changes);
         put_b(&mut f, "toggleCrouch", self.toggle_crouch);
         put_b(&mut f, "toggleSprint", self.toggle_sprint);
+        put_b(&mut f, "threeDSkinLayers", self.three_d_skin_layers);
         put_b(&mut f, "toggleAttack", self.toggle_attack);
         put_b(&mut f, "toggleUse", self.toggle_use);
         put_i(&mut f, "sprintWindow", self.sprint_window);
@@ -808,6 +814,8 @@ pub enum Opt {
     PadKeyboard,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
+    /// 3D skin layers: the player's outer layer as extruded slabs.
+    SkinLayers3d,
     MainHand,
     AllowServerListing,
     RealmsNotifications,

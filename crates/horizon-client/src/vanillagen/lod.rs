@@ -72,9 +72,7 @@ impl Builder {
         // ticks and the frame leave, so more cores can share it: a third of
         // the threads, rounded up (a 4-thread machine's one thread left idle
         // time while the far trees and structures came in).
-        let count = thread::available_parallelism()
-            .map_or(1, |n| n.get().div_ceil(3))
-            .clamp(1, 12);
+        let count = horizon_threads::worker_count().div_ceil(3).clamp(1, 12);
         let threads = (0..count)
             .map(|_| Self::spawn(terrain.clone(), shared.clone(), tx.clone()))
             .collect();
@@ -387,6 +385,42 @@ fn shade_sky(column: &mut Column, states: &GenBlockStates) {
     column.spans = shaded.into();
 }
 
+/// A wide cell's column is one point of the terrain: a cave, an overhang's
+/// lip or the water an aquifer-less sample puts in caves under sea level stood
+/// for the whole cell, a slab hanging over air or a band of water in a cliff
+/// once its neighbours were lower. Under the top solid span the column is
+/// ground: gaps take the span below, buried fluids the ground under them.
+fn fill_under_surface(column: &mut Column, fluid: impl Fn(BlockStateId) -> bool) {
+    let Some(top) = column.spans.iter().rposition(|span| !fluid(span.state)) else {
+        return;
+    };
+    let Some(ground) = column.spans[..=top].iter().find(|span| !fluid(span.state)) else {
+        return;
+    };
+    let mut state = ground.state;
+    let mut filled = Column {
+        surface: column.surface,
+        spans: crate::lod::Spans::with_capacity(column.spans.len()),
+    };
+    for (index, &span) in column.spans.iter().enumerate() {
+        let mut span = span;
+        if index <= top {
+            if fluid(span.state) {
+                span.state = state;
+            } else {
+                state = span.state;
+            }
+            if let Some(below) = filled.spans.last_mut()
+                && below.max < span.min
+            {
+                below.max = span.min;
+            }
+        }
+        filled.push(span);
+    }
+    *column = filled;
+}
+
 /// A whole tile inside visited chunks needs no density work at all. This
 /// used to evaluate the lattice first and throw all of it away in the per-cell
 /// cache check below.
@@ -601,6 +635,10 @@ impl VanillaLodSampler {
         }
         let nether = self.generator.dimension == "minecraft:the_nether";
         let light = if nether { 0 } else { 240 };
+        if width > 1 && self.generator.dimension == "minecraft:overworld" {
+            let states = self.generator.generator.data().block_states();
+            fill_under_surface(&mut column, |state| states.get(state).has_fluid());
+        }
         self.vegetation.apply(&mut column, x, z, width, light);
         self.islands.apply(&mut column, x, z, width, light);
         if !nether {

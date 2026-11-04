@@ -1,0 +1,107 @@
+name: cargo-horizon-mod
+# `cargo binstall --git https://github.com/horizon-rust/horizon cargo-horizon-mod` (#2120): binstall reads
+# [package.metadata.binstall] from crates/cargo-horizon-mod/Cargo.toml and downloads the archive this workflow
+# attaches to the tag `cargo-horizon-mod-v<version>`, whose version must be the manifest's. The targets come from
+# tools/horizon_mod_binstall.py, the same file the manifest's template is checked against, so a platform added there
+# is built here and one nobody publishes is caught before it ships. A pull request builds the archives and publishes
+# nothing.
+on:
+  push:
+    tags: ['cargo-horizon-mod-v*']
+  pull_request:
+    paths:
+      - 'crates/cargo-horizon-mod/**'
+      - 'tools/horizon_mod_binstall.py'
+      - '.github/workflows/cargo-horizon-mod.yml'
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: platforms
+        run: echo "platforms=$(python3 -c 'import json, tools.horizon_mod_binstall as m; print(json.dumps(m.PLATFORMS))')" >> "$GITHUB_OUTPUT"
+  build:
+    needs: plan
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: The aarch64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked -p cargo-horizon-mod --target ${{ matrix.target }}
+      - name: It starts
+        if: matrix.run
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/cargo-horizon-mod"
+          [ -f "$binary.exe" ] && binary="$binary.exe"
+          out=$("$binary" 2>&1 || true)
+          case "$out" in
+            *"usage: cargo horizon-mod"*) ;;
+            *) echo "$out"; echo "::error::$binary does not start"; exit 1 ;;
+          esac
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/cargo-horizon-mod"
+          [ -f "$binary.exe" ] && binary="$binary.exe"
+          mkdir -p dist
+          tar -czf "dist/$(basename "$binary" | sed 's/\.exe$//')-${{ matrix.target }}.tar.gz" -C "$(dirname "$binary")" "$(basename "$binary")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-horizon-mod-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cargo-horizon-mod-*
+          path: dist
+          merge-multiple: true
+      - name: The tag and the manifest name the same release and archives
+        run: python3 tools/horizon_mod_binstall.py dist "$GITHUB_REF_NAME"
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for file in *.tar.gz; do sha256sum "$file" | cut -d' ' -f1 > "$file.sha256"; done
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="\`cargo binstall --git https://github.com/horizon-rust/horizon cargo-horizon-mod\`"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --latest=false --title "cargo-horizon-mod ${GITHUB_REF_NAME#cargo-horizon-mod-v}" --notes "$notes"
+          fi

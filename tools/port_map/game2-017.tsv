@@ -42,6 +42,8 @@ CommandBlockEntity.removeComponentsFromTag	port	crates/horizon-client/src/block_
 ConduitBlockEntity.updateDestroyTarget	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::conduit_attack	kept target while alive and within 8 blocks, else a new one
 ContainerOpenersCounter.decrementOpeners	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::count_opener	decrement side of the counter
 ContainerOpenersCounter.hasContainerOpen	port	crates/horizon-client/src/mobs/transport_items.rs::has_open	golems only; players are counted in lid_openers
+ContainerOpenersCounter.incrementOpeners	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::count_opener	the open or close and the first opener's scheduleRecheck
+ContainerOpenersCounter.recheckOpeners	port	crates/horizon-client/src/game.rs::GameLevel::recheck_container_openers	the level asks, from ChestBlock.tick, EnderChestBlock.tick and BarrelBlock.tick
 CrafterBlockEntity.isSlotDisabled	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	disabled check (disabled[slot]) inside can_place
 CrafterBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	calls Crafter::can_place
 CrafterBlockEntity.smallerStackExist	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	the smaller-stack check later in the slots
@@ -129,8 +131,11 @@ SignBlockEntity.markUpdated	port	crates/horizon-client/src/game/trial_spawner.rs
 SignBlockEntity.setWaxed	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	honeycomb wax
 SignBlockEntity.playerIsTooFarAwayToEdit	port	crates/horizon-client/src/game/sign_edit.rs::Game::lan_sign_update	reach check when a guest writes
 SignBlockEntity.tick	inline	crates/horizon-client/src/game/sign_edit.rs::Game::lan_sign_update	the edit permission is not cleared on a tick: `lan_sign_update` re-checks `playerIsTooFarAwayToEdit` on every write and drops the guest's `sign_editing` when it is out of reach, so a guest that walks away keeps the flag until its next write
+SignBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	sign_text_front, sign_text_back and waxed onto front_text, back_text and is_waxed; a client applies them to the sign it predicts through Game::apply_predicted_item (#8102)
+SignBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	front_text, back_text and is_waxed leave on the item as sign_text_front, sign_text_back and waxed
 SignBlockEntity.removeComponentsFromTag	port	crates/horizon-client/src/block_entity_item.rs::pick	front, back and waxed left out of the item data
 SignText.load	port	crates/horizon-client-render/src/signs.rs::SignData::decode	
+SignText.<clinit>	port	crates/horizon-client/src/item_sync.rs::sign_text_tag	STREAM_CODEC read into the saved CODEC form; lan/guest.rs::sign_text_bytes writes it
 SignText.validateLineCounts	skip:java		codec check of four lines; Horizon fixes the array size
 SignText.withGlowingText	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	glow ink sac
 SignText.withColor	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	dye
