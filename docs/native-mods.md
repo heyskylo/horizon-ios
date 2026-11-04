@@ -2843,7 +2843,9 @@ These are what Create's drill, saw, harvester and deployer need.
   the players within 64 blocks. Pass a negative id of your own, the same each time; any other stage removes the crack.
 - `native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` is NeoForge's `FakePlayer`. It uses `stack` on a
   block (`useItemOn`), in the air (`useItem`) or on an entity (`interactOn`). The fake player is in survival and holds
-  nothing else. It has no connection: nothing it opens stays open, and its stats and advancements count for no one.
+  nothing else. It has no connection, so what it opens closes again before the call returns, through the same paths a
+  player's close takes: a lid opens and shuts, a trader is free for the next player, and the click still counts as used.
+  Its stats and advancements count for no one.
   The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
