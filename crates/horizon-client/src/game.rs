@@ -5774,13 +5774,15 @@ impl Game<'_> {
             // ShulkerBoxBlock.canOpen: the lid has no room; nothing opens.
         } else if let Some(entity) = BlockEntity::for_block(&name) {
             self.world.block_entities.get_or_insert_with(key, || entity);
-            self.unpack_opened_loot(key, &name);
+            horizon_client::spans::time("open_loot", || self.unpack_opened_loot(key, &name));
             let centre = [
                 f64::from(key.0) + 0.5,
                 f64::from(key.1) + 0.5,
                 f64::from(key.2) + 0.5,
             ];
-            self.resolve_container_maps(key, centre);
+            horizon_client::spans::time("open_maps", || {
+                self.resolve_container_maps(key, centre);
+            });
             self.container = Some(key);
             let first = self.container_opener_event(key, true);
             if first {
@@ -6430,9 +6432,13 @@ impl Game<'_> {
         let mut anchor_passed = false;
         // Native mods, where ServerPlayerGameMode.useItemOn starts: a
         // canceled click does nothing (a guest's block is sent back).
+        // A slow tick's line names the phase of a use that took it (#8669): the mods' hook,
+        // the block's own use, then the item's.
         if let Some(hit) = block_hit {
             let mut canceled = false;
-            self.native_right_click_block(hit.pos, hit.face, &mut canceled);
+            horizon_client::spans::time("use_mods", || {
+                self.native_right_click_block(hit.pos, hit.face, &mut canceled);
+            });
             if canceled {
                 // Nothing was used, so nothing consumed the action.
                 self.use_failed = true;
@@ -6440,6 +6446,7 @@ impl Game<'_> {
             }
         }
         // MultiPlayerGameMode.useItemOn: blocks react first.
+        let block_phase = horizon_client::spans::guard("use_block");
         if !(sneaking && hands_full)
             && let Some(hit) = block_hit
         {
@@ -6622,6 +6629,8 @@ impl Game<'_> {
                 }
             }
         }
+        drop(block_phase);
+        let _item_phase = horizon_client::spans::guard("use_item");
         let Some(stack) = self.held().cloned() else {
             return Ok(false);
         };
