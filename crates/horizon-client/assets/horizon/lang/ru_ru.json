@@ -125,6 +125,7 @@
   "Done": "Готово",
   "This feature is not yet available in Horizon.": "Эта функция в Horizon пока недоступна.",
   "Your display or system doesn't offer HDR output.": "Ваш экран или система не поддерживает HDR-вывод.",
+  "Only applies to asynchronous entity culling.": "Применяется только при асинхронном отсечении сущностей.",
   "Turn HDR on to use it.": "Включите HDR, чтобы пользоваться этим.",
   "%s chunks": "%s чанков",
   "%s per frame": "%s за кадр",

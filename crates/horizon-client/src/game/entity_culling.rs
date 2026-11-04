@@ -2,9 +2,10 @@
 use super::{
     Game, Vertex,
     entity::RenderEntityBounds,
-    occlusion_culling::{QuerySource, occluder_ready},
+    occlusion_culling::{QuerySource, SyncOccluder},
 };
 use horizon_client::graphics::EntityCullingMode;
+use horizon_client::mobs::Species;
 use horizon_core::geometry::{Aabb, Vec3};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,16 +38,72 @@ impl Game<'_> {
         };
     }
 
-    pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) {
-        if self.occlusion_hidden(Some(vertices), start, None)
-            && !(self.pack_shadow_casters.0 && self.hide_spans_from(start, vertices.len()))
-        {
+    pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) -> bool {
+        let hidden = self.occlusion_hidden(Some(vertices), start, None);
+        if hidden && !(self.pack_shadow_casters.0 && self.hide_spans_from(start, vertices.len())) {
             if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
                 && let Some(culler) = &self.async_occlusion_culler
             {
                 culler.record_entity_vertices_culled(vertices.len().saturating_sub(start));
             }
             vertices.truncate(start);
+        }
+        hidden
+    }
+
+    pub(super) fn cull_entity_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        if self.occlusion_hidden_camera_bounds(lo, hi) && !self.pack_shadow_casters.0 {
+            if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
+                && let Some(culler) = &self.async_occlusion_culler
+            {
+                culler.record_entity_vertices_culled(2);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn occlusion_hidden_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        match self.settings.horizon.entity_culling {
+            EntityCullingMode::Off => false,
+            EntityCullingMode::Asynchronous => {
+                if let Some(culler) = &self.async_occlusion_culler {
+                    let Some(query) = culler.query_camera_bounds(lo, hi) else {
+                        return false;
+                    };
+                    match culler.query_result(&query, QuerySource::EntityMesh) {
+                        Some((false, _)) => false,
+                        Some((true, Some(proof)))
+                            if culler.proof_is_current(
+                                &self.world,
+                                self.renderer.as_ref(),
+                                &self.streaming,
+                                &self.pending_uploads,
+                                proof,
+                            ) =>
+                        {
+                            true
+                        }
+                        Some(_) | None => {
+                            culler.queue(query);
+                            false
+                        }
+                    }
+                } else {
+                    let corners = [lo, hi].map(|pos| Vertex {
+                        pos: pos.to_array(),
+                        ..bytemuck::Zeroable::zeroed()
+                    });
+                    self.entity_hidden_sync(Some(&corners), 0, None)
+                }
+            }
+            EntityCullingMode::Synchronous => {
+                let corners = [lo, hi].map(|pos| Vertex {
+                    pos: pos.to_array(),
+                    ..bytemuck::Zeroable::zeroed()
+                });
+                self.entity_hidden_sync(Some(&corners), 0, None)
+            }
         }
     }
 
@@ -62,7 +119,10 @@ impl Game<'_> {
         {
             return EntityCullDecision::Bypass;
         }
-        let margin = Vec3::new(0.5, 0.5, 0.5);
+        // `render_bounds` is already the conservative model and animation
+        // envelope. Only cover f32 vertex rounding here; another half-block
+        // would make coarse walls falsely visible and force mesh generation.
+        let margin = Vec3::new(1.0e-4, 1.0e-4, 1.0e-4);
         let bounds = entity.render_bounds(alpha).inflate(margin);
         match self.settings.horizon.entity_culling {
             EntityCullingMode::Off => EntityCullDecision::Bypass,
@@ -171,19 +231,18 @@ impl Game<'_> {
         bounds: Option<Aabb>,
     ) -> bool {
         self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
-            let opaque = |pos| {
-                occluder_ready(
-                    &self.world,
-                    self.res.facts(),
-                    self.renderer.as_ref(),
-                    &self.streaming,
-                    &self.pending_uploads,
-                    pos,
-                )
-            };
+            let mut occluder = SyncOccluder::new(
+                &self.world,
+                self.res.facts(),
+                self.renderer.as_ref(),
+                &self.streaming,
+                &self.pending_uploads,
+            );
             match bounds {
-                Some(bounds) => culler.hidden_bounds(bounds, opaque),
-                None => vertices.is_some_and(|vertices| culler.hidden(vertices, start, opaque)),
+                Some(bounds) => culler.hidden_bounds(bounds, |pos| occluder.ready(pos)),
+                None => vertices.is_some_and(|vertices| {
+                    culler.hidden(vertices, start, |pos| occluder.ready(pos))
+                }),
             }
         })
     }
@@ -218,6 +277,59 @@ pub(super) fn default_range(size: glam::DVec3, view_scale: f64) -> f64 {
     let edge = (size.x + size.y + size.z) / 3.0;
     let edge = if edge.is_nan() { 1.0 } else { edge };
     edge * 64.0 * view_scale
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CullGrow {
+    side: f64,
+    all: f64,
+    down: f64,
+}
+
+impl CullGrow {
+    fn of(species: Species, height: f64, dragon_head: bool) -> Self {
+        let mut grow = Self::default();
+        if dragon_head {
+            grow.all += 0.5;
+        }
+        match species {
+            Species::Illusioner => grow.side += 3.0,
+            Species::Sniffer => grow.all += 0.6,
+            Species::HappyGhast => grow.down += height / 2.0,
+            _ => {}
+        }
+        grow
+    }
+}
+
+fn grown_box(
+    pos: glam::DVec3,
+    width: f64,
+    height: f64,
+    grow: CullGrow,
+) -> (glam::DVec3, glam::DVec3) {
+    let side = width / 2.0 + grow.side + grow.all;
+    (
+        pos - glam::DVec3::new(side, grow.all + grow.down, side),
+        pos + glam::DVec3::new(side, height + grow.all, side),
+    )
+}
+
+/// `LivingEntityRenderer.getBoundingBoxForCulling` for the mob's interpolated
+/// position, including renderer-specific growth for mirrors, riders and heads.
+pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
+    let (width, height, _) = mob.dims();
+    let grow = CullGrow::of(
+        mob.species(),
+        height,
+        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
+    );
+    let pos = glam::DVec3::new(
+        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
+        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
+        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
+    );
+    grown_box(pos, width, height, grow)
 }
 
 impl Game<'_> {
@@ -274,7 +386,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+mod vanilla_entity_tests {
     use super::*;
 
     /// `Entity.setViewScale`: the entity distance option times the render
@@ -372,3 +484,5 @@ mod tests {
         assert_eq!(range, 96.0);
     }
 }
+#[path = "entity_culling_tests.rs"]
+mod tests;

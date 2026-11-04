@@ -130,6 +130,7 @@ fn ray_wall() -> (Arc<OcclusionSnapshot>, Vec<Arc<Chunk>>) {
 #[test]
 fn hidden_cache_entries_require_the_same_camera_and_bounds() {
     let mut culler = AsyncOcclusionCuller::new().unwrap();
+    culler.query_cache_camera_cell = Some([0; 3]);
     let bounds = Aabb::new(Vec3::new(8.0, -1.0, -1.0), Vec3::new(10.0, 1.0, 1.0));
     let original = culler.query_entity_bounds(bounds).unwrap();
     culler.query_results.push(CachedQueryResult {
@@ -139,6 +140,7 @@ fn hidden_cache_entries_require_the_same_camera_and_bounds() {
         proof: Some(OcclusionProof {
             sections: Vec::new(),
             chunks: Vec::new(),
+            validated_epoch: Cell::new(0),
         }),
         last_used_frame: Cell::new(0),
     });
@@ -147,7 +149,7 @@ fn hidden_cache_entries_require_the_same_camera_and_bounds() {
         Some((true, _))
     ));
     let moved = culler
-        .query_entity_bounds(bounds.move_by(Vec3::new(0.01, 0.0, 0.0)))
+        .query_entity_bounds(bounds.move_by(Vec3::new(0.26, 0.0, 0.0)))
         .unwrap();
     assert!(
         culler
@@ -155,12 +157,143 @@ fn hidden_cache_entries_require_the_same_camera_and_bounds() {
             .is_none()
     );
     culler.camera[0] = 0.01;
+    let same_subcell_camera = culler.query_entity_bounds(bounds).unwrap();
+    assert!(matches!(
+        culler.query_result(&same_subcell_camera, QuerySource::EntityAabb),
+        Some((true, _))
+    ));
+    culler.camera[0] = 0.26;
+    culler.query_cache_camera_cell = camera_cell(culler.camera);
     let moved_camera = culler.query_entity_bounds(bounds).unwrap();
     assert!(
         culler
             .query_result(&moved_camera, QuerySource::EntityAabb)
             .is_none()
     );
+}
+
+#[test]
+fn camera_reuse_uses_quarter_block_cells() {
+    assert_eq!(camera_cell([0.249, 0.0, -0.001]), Some([0, 0, -1]));
+    assert_eq!(camera_cell([0.25, 0.0, 0.0]), Some([1, 0, 0]));
+    assert_eq!(camera_cell([-0.25, 0.0, 0.0]), Some([-1, 0, 0]));
+}
+
+#[test]
+fn stale_world_results_cannot_replace_a_current_proof_in_the_same_camera_cell() {
+    let mut culler = AsyncOcclusionCuller::new().unwrap();
+    culler.query_cache_camera_cell = Some([0; 3]);
+    culler.stamp = SnapshotKey {
+        world_revision: 2,
+        chunks_revision: 4,
+        bottom_y: 0,
+    };
+    let bounds = Aabb::new(Vec3::new(8.0, -1.0, -1.0), Vec3::new(10.0, 1.0, 1.0));
+    let current_key = culler.query_entity_bounds(bounds).unwrap();
+    culler.query_results.push(CachedQueryResult {
+        key: current_key,
+        stamp: culler.stamp,
+        camera_cell: Some([0; 3]),
+        proof: Some(OcclusionProof {
+            sections: Vec::new(),
+            chunks: Vec::new(),
+            validated_epoch: Cell::new(0),
+        }),
+        last_used_frame: Cell::new(0),
+    });
+
+    culler.camera[0] = 0.1;
+    let stale_key = culler.query_entity_bounds(bounds).unwrap();
+    let mut stale = CullResults {
+        stamp: SnapshotKey {
+            world_revision: 1,
+            chunks_revision: 4,
+            bottom_y: 0,
+        },
+        camera: stale_key.camera,
+        generation: 0,
+        cancelled: false,
+        hidden: vec![(
+            stale_key,
+            OcclusionProof {
+                sections: Vec::new(),
+                chunks: Vec::new(),
+                validated_epoch: Cell::new(0),
+            },
+        )],
+        visible: Vec::new(),
+        scratch_queries: Vec::new(),
+        worker_ns: 0,
+        hidden_entities: 1,
+        visible_entities: 0,
+        deferred_entities: 0,
+    };
+    culler.cache_query_results(&mut stale);
+
+    let index = culler
+        .query_results
+        .binary_search_by_key(&query_bounds_key(&current_key), |entry| {
+            query_bounds_key(&entry.key)
+        })
+        .unwrap();
+    assert_eq!(
+        culler.query_results[index].stamp.world_revision, 2,
+        "the stale result must not replace the current proof"
+    );
+}
+
+#[test]
+fn stale_visible_results_are_reusable_in_the_current_camera_cell() {
+    let mut culler = AsyncOcclusionCuller::new().unwrap();
+    culler.stamp = SnapshotKey {
+        world_revision: 2,
+        chunks_revision: 4,
+        bottom_y: 0,
+    };
+    culler.camera = [0.1, 0.0, 0.0];
+    let key = culler
+        .query_entity_bounds(Aabb::new(
+            Vec3::new(8.0, -1.0, -1.0),
+            Vec3::new(10.0, 1.0, 1.0),
+        ))
+        .unwrap();
+    culler.camera = [0.3, 0.0, 0.0];
+    culler.query_cache_camera_cell = Some([1, 0, 0]);
+    let mut current_key = key;
+    current_key.camera = culler.camera.map(f64::to_bits);
+    let mut results = CullResults {
+        stamp: culler.stamp,
+        camera: key.camera,
+        generation: 0,
+        cancelled: false,
+        hidden: Vec::new(),
+        visible: vec![key],
+        scratch_queries: Vec::new(),
+        worker_ns: 0,
+        hidden_entities: 0,
+        visible_entities: 1,
+        deferred_entities: 0,
+    };
+    culler.cache_visible_results(&mut results);
+    assert!(matches!(
+        culler.query_result(&current_key, QuerySource::EntityAabb),
+        Some((false, None))
+    ));
+}
+
+#[test]
+fn camera_relative_bounds_are_rebased_before_querying() {
+    let mut culler = AsyncOcclusionCuller::new().unwrap();
+    culler.camera = [10.25, -4.5, 7.75];
+    let key = culler
+        .query_camera_bounds(
+            glam::Vec3::new(2.0, 4.0, -1.0),
+            glam::Vec3::new(-2.0, -1.0, 3.0),
+        )
+        .unwrap();
+    assert_eq!(key.min.map(f64::from_bits), [8.25, -5.5, 6.75]);
+    assert_eq!(key.max.map(f64::from_bits), [12.25, -0.5, 10.75]);
+    assert_eq!(culler.stats_value()["entity_vertices_scanned"], 2);
 }
 
 #[test]
@@ -188,6 +321,7 @@ fn inactive_answers_expire_while_frequently_used_proofs_stay_cached() {
             proof: Some(OcclusionProof {
                 sections: Vec::new(),
                 chunks: Vec::new(),
+                validated_epoch: Cell::new(0),
             }),
             last_used_frame: Cell::new(0),
         });

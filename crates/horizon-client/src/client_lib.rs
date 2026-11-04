@@ -58,7 +58,6 @@ pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
 pub mod entities;
-pub mod entity_culling;
 pub mod entity_nbt;
 pub mod entity_rules;
 pub mod extras_hud;
@@ -136,6 +135,10 @@ pub mod title;
 pub mod toasts;
 pub mod ui_theme;
 pub mod vanillagen;
+pub mod voxel_occlusion;
+// Keep the old path for native callers while giving the implementation a name
+// that does not collide with the gameplay adapter in `game/entity_culling.rs`.
+pub use voxel_occlusion as entity_culling;
 pub mod win_screen;
 pub mod world_spawn;
 pub use horizon_client_core::Result;

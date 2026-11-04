@@ -124,20 +124,33 @@ impl Culler {
         max: [f64; 3],
         mut opaque: impl FnMut([i32; 3]) -> bool,
     ) -> bool {
+        let mut remaining = self.remaining.get();
+        let hidden = Self::occluded_with_budget(self.camera, &mut remaining, min, max, &mut opaque);
+        self.remaining.set(remaining);
+        hidden
+    }
+
+    /// The worker-facing form of [`Self::occluded`]. Keeping the budget in a
+    /// local integer avoids `Cell` loads and stores for every projected plane
+    /// while preserving the same conservative lookup accounting.
+    pub fn occluded_with_budget(
+        camera: [f64; 3],
+        remaining: &mut usize,
+        min: [f64; 3],
+        max: [f64; 3],
+        mut opaque: impl FnMut([i32; 3]) -> bool,
+    ) -> bool {
         if (0..3).any(|a| {
-            !self.camera[a].is_finite()
-                || !min[a].is_finite()
-                || !max[a].is_finite()
-                || min[a] > max[a]
+            !camera[a].is_finite() || !min[a].is_finite() || !max[a].is_finite() || min[a] > max[a]
         }) {
             return false;
         }
         let mut best = (0, 0.0, 0.0);
         for a in 0..3 {
-            let (gap, sign) = if self.camera[a] < min[a] {
-                (min[a] - self.camera[a], 1.0)
+            let (gap, sign) = if camera[a] < min[a] {
+                (min[a] - camera[a], 1.0)
             } else {
-                (self.camera[a] - max[a], -1.0)
+                (camera[a] - max[a], -1.0)
             };
             if gap > best.1 {
                 best = (a, gap, sign);
@@ -148,19 +161,19 @@ impl Culler {
             return false;
         }
         let across = [(axis + 1) % 3, (axis + 2) % 3];
-        let Some(mut cell) = floor_cell(self.camera[axis]) else {
+        let Some(mut cell) = floor_cell(camera[axis]) else {
             return false;
         };
-        let step = sign as i32;
-        if (f64::from(cell) + 0.5 - self.camera[axis]) * sign <= EPSILON {
+        let step = if sign > 0.0 { 1 } else { -1 };
+        if (f64::from(cell) + 0.5 - camera[axis]) * sign <= EPSILON {
             let Some(next) = cell.checked_add(step) else {
                 return false;
             };
             cell = next;
         }
         loop {
-            let depth = (f64::from(cell) + 0.5 - self.camera[axis]) * sign;
-            if depth >= gap - EPSILON || self.remaining.get() == 0 {
+            let depth = (f64::from(cell) + 0.5 - camera[axis]) * sign;
+            if depth >= gap - EPSILON || *remaining == 0 {
                 return false;
             }
             let mut lo = [f64::INFINITY; 2];
@@ -173,9 +186,9 @@ impl Culler {
                         max[a]
                     }
                 });
-                let t = depth / ((point[axis] - self.camera[axis]) * sign);
+                let t = depth / ((point[axis] - camera[axis]) * sign);
                 for (i, &a) in across.iter().enumerate() {
-                    let p = self.camera[a] + t * (point[a] - self.camera[a]);
+                    let p = camera[a] + t * (point[a] - camera[a]);
                     if !p.is_finite() {
                         return false;
                     }
@@ -196,16 +209,16 @@ impl Culler {
             pos[axis] = cell;
             pos[across[0]] = x0 + ((i64::from(x1) - i64::from(x0)) / 2) as i32;
             pos[across[1]] = y0 + ((i64::from(y1) - i64::from(y0)) / 2) as i32;
-            self.remaining.set(self.remaining.get() - 1);
+            *remaining -= 1;
             if opaque(pos) {
                 let area = (i64::from(x1) - i64::from(x0) + 1)
                     .checked_mul(i64::from(y1) - i64::from(y0) + 1)
                     .and_then(|n| usize::try_from(n).ok());
-                let Some(area) = area.filter(|&n| n <= self.remaining.get()) else {
+                let Some(area) = area.filter(|&n| n <= *remaining) else {
                     return false;
                 };
                 // Reserve the worst-case lookups before walking the rectangle.
-                self.remaining.set(self.remaining.get() - area);
+                *remaining -= area;
                 let covered = (x0..=x1).all(|x| {
                     (y0..=y1).all(|y| {
                         pos[across[0]] = x;
@@ -231,5 +244,5 @@ fn floor_cell(value: f64) -> Option<i32> {
 }
 
 #[cfg(test)]
-#[path = "entity_culling_tests.rs"]
+#[path = "voxel_occlusion_tests.rs"]
 mod tests;

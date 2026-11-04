@@ -3,12 +3,12 @@ use super::{Game, Vertex};
 use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
-    entity_culling::Culler as OcclusionCuller,
     gfx::Renderer,
     graphics::EntityCullingMode,
     mesher::SectionMesh,
     spans,
     streaming::Streaming,
+    voxel_occlusion::Culler as OcclusionCuller,
     world::World,
 };
 use horizon_core::geometry::Aabb;
@@ -31,6 +31,8 @@ const RESULT_CACHE_IDLE_FRAMES: u64 = 2;
 const OCCLUSION_LOOKUP_BUDGET: usize = 8_192;
 const OPACITY_GRID_SIZE: usize = 1_024;
 const MAX_OCCLUSION_RAY_STEPS: usize = 512;
+const CAMERA_SUBCELL_SCALE: f64 = 4.0;
+const QUERY_BOUNDS_SCALE: f64 = 4.0;
 pub(super) const ASYNC_MOB_CULLING_ENABLE_MIN: usize = 64;
 pub(super) const ASYNC_MOB_CULLING_DISABLE_BELOW: usize = 48;
 
@@ -152,6 +154,7 @@ struct ProofValidationCounts {
     chunk_cache_hits: u64,
     section_checks: u64,
     section_cache_hits: u64,
+    epoch_hits: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -162,18 +165,112 @@ struct CachedChunkValidation {
 }
 
 /// Proofs for nearby entities commonly name the same few occluding chunks and
-/// sections. Keep their frame-local validity in sorted vectors so each world,
-/// renderer, and streaming lookup is done once per unique key without hashing.
-#[derive(Default)]
+/// sections. Keep their validity in sorted vectors and stamp successful checks
+/// with an epoch so a stable frame can validate the same certificate in O(1).
 struct FrameProofValidationCache {
     chunks: Vec<CachedChunkValidation>,
     sections: Vec<(SectionKey, bool)>,
+    valid_epoch: u64,
+    frame_verified: bool,
+    scene_stamp: Option<SnapshotKey>,
+    streaming_sequence: Option<u64>,
+    renderer_sections: Option<usize>,
+}
+
+impl Default for FrameProofValidationCache {
+    fn default() -> Self {
+        Self {
+            chunks: Vec::new(),
+            sections: Vec::new(),
+            valid_epoch: 1,
+            frame_verified: false,
+            scene_stamp: None,
+            streaming_sequence: None,
+            renderer_sections: None,
+        }
+    }
 }
 
 impl FrameProofValidationCache {
-    fn clear(&mut self) {
+    fn begin_frame(&mut self) {
+        self.frame_verified = false;
+    }
+
+    fn bump_epoch(&mut self) {
         self.chunks.clear();
         self.sections.clear();
+        self.valid_epoch = self.valid_epoch.wrapping_add(1).max(1);
+    }
+
+    fn ensure_frame_verified(
+        &mut self,
+        stamp: SnapshotKey,
+        world: &World,
+        renderer: Option<&Renderer>,
+        streaming: &Streaming,
+        pending_uploads: &[((i32, i32, i32), SectionMesh)],
+        counts: &mut ProofValidationCounts,
+    ) {
+        if self.frame_verified {
+            return;
+        }
+        self.frame_verified = true;
+
+        let streaming_sequence = streaming.sequence();
+        let renderer_sections = renderer.map_or(0, Renderer::section_count);
+        let scene_changed = self.scene_stamp.is_some_and(|previous| {
+            previous != stamp
+                || self.streaming_sequence != Some(streaming_sequence)
+                || self.renderer_sections != Some(renderer_sections)
+        });
+        self.scene_stamp = Some(stamp);
+        self.streaming_sequence = Some(streaming_sequence);
+        self.renderer_sections = Some(renderer_sections);
+        if scene_changed {
+            self.bump_epoch();
+            return;
+        }
+        if self.chunks.is_empty() && self.sections.is_empty() {
+            return;
+        }
+        if self.chunks.len() > 64 || self.sections.len() > 128 {
+            self.bump_epoch();
+            return;
+        }
+
+        let mut invalid = false;
+        for entry in &self.chunks {
+            counts.chunk_checks = counts.chunk_checks.saturating_add(1);
+            if !entry.current
+                || !world
+                    .chunks
+                    .get(&entry.key)
+                    .is_some_and(|chunk| Arc::as_ptr(chunk) as usize == entry.allocation)
+            {
+                invalid = true;
+                break;
+            }
+        }
+        if invalid {
+            self.bump_epoch();
+            return;
+        }
+
+        for &(key, current) in &self.sections {
+            counts.section_checks = counts.section_checks.saturating_add(1);
+            if !current
+                || !renderer.is_some_and(|renderer| renderer.has_section(key))
+                || world.dirty_sections.contains(&key)
+                || streaming.is_meshing(key)
+                || pending_uploads.iter().any(|(pending, _)| *pending == key)
+            {
+                invalid = true;
+                break;
+            }
+        }
+        if invalid {
+            self.bump_epoch();
+        }
     }
 
     fn chunk_is_current(
@@ -324,47 +421,56 @@ impl OcclusionSnapshot {
 
 #[derive(Default)]
 struct LastChunk {
-    key: Option<ChunkKey>,
-    value: Option<Arc<Chunk>>,
+    slots: [(Option<ChunkKey>, Option<Arc<Chunk>>); 4],
 }
 
 impl LastChunk {
     fn clear(&mut self) {
-        self.key = None;
-        self.value = None;
+        self.slots = Default::default();
     }
 
     fn get(&mut self, snapshot: &OcclusionSnapshot, key: ChunkKey) -> Option<&Arc<Chunk>> {
-        if self.key != Some(key) {
-            self.key = Some(key);
-            self.value = snapshot.chunk(key).and_then(Weak::upgrade);
+        // Any 2x2 neighborhood of adjacent chunks has distinct (x & 1, z & 1)
+        // parities. Keep all four around so rays crossing a border do not churn
+        // Weak::upgrade and Arc::drop on every voxel.
+        let slot = &mut self.slots[(((key.0 as usize) & 1) << 1) | ((key.1 as usize) & 1)];
+        if slot.0 != Some(key) {
+            slot.0 = Some(key);
+            slot.1 = snapshot.chunk(key).and_then(Weak::upgrade);
         }
-        self.value.as_ref()
+        slot.1.as_ref()
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct OpacityCell {
     position: [i32; 3],
+    epoch: u16,
     opaque: bool,
 }
 
 /// A direct-mapped voxel cache shared by the rays and box checks in one job.
 struct OpacityGrid {
-    cells: [Option<OpacityCell>; OPACITY_GRID_SIZE],
+    epoch: u16,
+    cells: [OpacityCell; OPACITY_GRID_SIZE],
 }
 
 impl Default for OpacityGrid {
     fn default() -> Self {
         Self {
-            cells: [None; OPACITY_GRID_SIZE],
+            epoch: 1,
+            cells: [OpacityCell::default(); OPACITY_GRID_SIZE],
         }
     }
 }
 
 impl OpacityGrid {
     fn clear(&mut self) {
-        self.cells.fill(None);
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.cells.fill(OpacityCell::default());
+            self.epoch = 1;
+        }
     }
 
     fn opaque(
@@ -376,14 +482,18 @@ impl OpacityGrid {
         let hash = (position[0] as u32).wrapping_mul(73_856_093)
             ^ (position[1] as u32).wrapping_mul(19_349_663)
             ^ (position[2] as u32).wrapping_mul(83_492_791);
-        let slot = hash as usize & (OPACITY_GRID_SIZE - 1);
-        if let Some(cell) = self.cells[slot]
-            && cell.position == position
-        {
+        let mixed = hash ^ (hash >> 10) ^ (hash >> 20);
+        let slot = mixed as usize & (OPACITY_GRID_SIZE - 1);
+        let cell = &mut self.cells[slot];
+        if cell.epoch == self.epoch && cell.position == position {
             return cell.opaque;
         }
         let opaque = snapshot.opaque(position, last_chunk);
-        self.cells[slot] = Some(OpacityCell { position, opaque });
+        *cell = OpacityCell {
+            position,
+            epoch: self.epoch,
+            opaque,
+        };
         opaque
     }
 }
@@ -397,7 +507,7 @@ fn bounds_have_clear_ray(
     opacity_grid: &mut OpacityGrid,
 ) -> bool {
     let center = std::array::from_fn(|axis| min[axis] + (max[axis] - min[axis]) * 0.5);
-    ray_reaches_without_opaque(camera, center, snapshot, last_chunk, opacity_grid)
+    ray_reaches_without_opaque(center, camera, snapshot, last_chunk, opacity_grid)
 }
 
 /// A clear sample only short-circuits culling; blocked samples still need the
@@ -425,6 +535,9 @@ fn ray_reaches_without_opaque(
     }
     if cell == target {
         return true;
+    }
+    if opacity_grid.opaque(snapshot, target, last_chunk) {
+        return false;
     }
 
     let delta: [f64; 3] = std::array::from_fn(|axis| to[axis] - from[axis]);
@@ -458,11 +571,11 @@ fn ray_reaches_without_opaque(
             return true;
         };
         cell[axis] = next;
-        if opacity_grid.opaque(snapshot, cell, last_chunk) {
-            return false;
-        }
         if cell == target {
             return true;
+        }
+        if opacity_grid.opaque(snapshot, cell, last_chunk) {
+            return false;
         }
         t_max[axis] += t_delta[axis];
     }
@@ -474,6 +587,7 @@ fn ray_reaches_without_opaque(
 pub(super) struct OcclusionProof {
     sections: Vec<SectionKey>,
     chunks: Vec<(ChunkKey, Weak<Chunk>)>,
+    validated_epoch: Cell<u64>,
 }
 
 struct CullResults {
@@ -592,12 +706,13 @@ impl RayWorkerScratch {
     }
 }
 
-/// Scratch owned by the plane stage. The covered-cell buffer is the only
-/// temporary collection needed while constructing an occlusion proof and is
-/// reused for every entity and every job.
+/// Scratch owned by the plane stage. The covered-cell and section buffers are
+/// reused for every entity and every job so proof construction only allocates
+/// the exact deduplicated section count.
 #[derive(Default)]
 struct PlaneWorkerScratch {
     covered: Vec<[i32; 3]>,
+    sections: Vec<SectionKey>,
     last_chunk: LastChunk,
     opacity_grid: OpacityGrid,
     snapshot_epoch: Option<u64>,
@@ -611,13 +726,14 @@ impl PlaneWorkerScratch {
         }
         self.last_chunk.clear();
         self.covered.clear();
+        self.sections.clear();
     }
 }
 
 /// Non-blocking world occlusion for entity rendering.
-/// Hidden proofs require byte-identical camera and bounds, and their chunks and
-/// rendered sections are revalidated. Fail-open visible results survive camera
-/// movement within one block because they can only reduce culling.
+/// Hidden proofs require the same quantized camera sub-cell and bounds, and
+/// their chunks and rendered sections are revalidated. Fail-open visible
+/// results survive camera movement because they can only reduce culling.
 pub(super) struct AsyncOcclusionCuller {
     jobs: SyncSender<CullJob>,
     _ray_thread: JoinHandle<()>,
@@ -647,9 +763,12 @@ pub(super) struct AsyncOcclusionCuller {
 
 impl AsyncOcclusionCuller {
     fn timing_start(&self) -> Option<TimingStart> {
-        self.measure_bounds_timing.get().then(|| TimingStart {
-            wall: Instant::now(),
-            thread_cpu: spans::thread_cpu(),
+        self.measure_bounds_timing.get().then(|| {
+            let thread_cpu = spans::thread_cpu();
+            TimingStart {
+                wall: Instant::now(),
+                thread_cpu,
+            }
         })
     }
 
@@ -766,13 +885,13 @@ impl AsyncOcclusionCuller {
 
     fn begin_frame_inner(&mut self, camera: glam::DVec3, world: &World) {
         self.frame = self.frame.saturating_add(1);
-        self.proof_validation_cache.get_mut().clear();
         self.camera = camera.to_array();
         self.stamp = SnapshotKey {
             world_revision: world.revision,
             chunks_revision: world.chunks.membership_revision(),
             bottom_y: world.bottom_y(),
         };
+        self.proof_validation_cache.get_mut().begin_frame();
         {
             let mut stats = self.stats.borrow_mut();
             stats.frames = stats.frames.saturating_add(1);
@@ -793,16 +912,15 @@ impl AsyncOcclusionCuller {
         }
         let camera_key = self.camera.map(f64::to_bits);
         let current_camera_cell = camera_cell(self.camera);
-        let cache_initialized = self.query_cache_stamp.is_some();
         let layout_changed = self
             .query_cache_stamp
             .is_some_and(|stamp| !stamp.same_layout(self.stamp));
-        let camera_cell_changed =
-            cache_initialized && self.query_cache_camera_cell != current_camera_cell;
-        if layout_changed || camera_cell_changed {
-            // Invalidate in-flight work in O(1). Cached entries carry their
-            // own stamp and are rejected lazily by query_result(). Individual
-            // block edits are handled by each hidden proof's chunk references.
+        if layout_changed {
+            // Invalidate in-flight work in O(1). Camera movement is handled by
+            // the sub-cell checks below: a result from the same cell remains
+            // conservative, while a result from another cell is retained only
+            // as fail-open visibility. Cancelling on every cell boundary would
+            // discard the worker's hidden proofs during normal movement.
             self.job_generation.fetch_add(1, Ordering::Relaxed);
         }
         self.query_cache_stamp = Some(self.stamp);
@@ -903,10 +1021,35 @@ impl AsyncOcclusionCuller {
         self.query_bounds(min, max)
     }
 
+    pub(super) fn query_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> Option<CullKey> {
+        let min_rel = lo.min(hi);
+        let max_rel = lo.max(hi);
+        let min = [
+            f64::from(min_rel.x) + self.camera[0],
+            f64::from(min_rel.y) + self.camera[1],
+            f64::from(min_rel.z) + self.camera[2],
+        ];
+        let max = [
+            f64::from(max_rel.x) + self.camera[0],
+            f64::from(max_rel.y) + self.camera[1],
+            f64::from(max_rel.z) + self.camera[2],
+        ];
+        let mut stats = self.stats.borrow_mut();
+        stats.entity_queries = stats.entity_queries.saturating_add(1);
+        stats.entity_vertices_scanned = stats.entity_vertices_scanned.saturating_add(2);
+        drop(stats);
+        self.query_bounds(min, max)
+    }
+
     fn query_bounds(&self, min: [f64; 3], max: [f64; 3]) -> Option<CullKey> {
         if (0..3)
             .any(|axis| !min[axis].is_finite() || !max[axis].is_finite() || min[axis] > max[axis])
         {
+            return None;
+        }
+        let min = min.map(|value| (value * QUERY_BOUNDS_SCALE).floor() / QUERY_BOUNDS_SCALE);
+        let max = max.map(|value| (value * QUERY_BOUNDS_SCALE).ceil() / QUERY_BOUNDS_SCALE);
+        if (0..3).any(|axis| !min[axis].is_finite() || !max[axis].is_finite()) {
             return None;
         }
         Some(CullKey {
@@ -933,10 +1076,11 @@ impl AsyncOcclusionCuller {
             .ok()
             .map(|index| &self.query_results[index]);
         let result = entry.and_then(|entry| {
-            let camera_matches = entry.key.camera == key.camera
-                || (entry.proof.is_some()
-                    && camera_cell(entry.key.camera.map(f64::from_bits))
-                        == self.query_cache_camera_cell);
+            let same_camera_cell = self
+                .query_cache_camera_cell
+                .is_some_and(|cell| entry.camera_cell == Some(cell));
+            let camera_matches =
+                entry.key.camera == key.camera || (entry.proof.is_some() && same_camera_cell);
             let exact = camera_matches
                 && query_bounds_key(&entry.key) == query_bounds_key(key)
                 && entry.stamp.same_layout(self.stamp)
@@ -1045,6 +1189,7 @@ impl AsyncOcclusionCuller {
             None
         };
         let (current, counts) = proof_is_current(
+            self.stamp,
             world,
             renderer,
             streaming,
@@ -1070,6 +1215,10 @@ impl AsyncOcclusionCuller {
                 .proof_validation_counts
                 .section_cache_hits
                 .saturating_add(counts.section_cache_hits);
+            stats.proof_validation_counts.epoch_hits = stats
+                .proof_validation_counts
+                .epoch_hits
+                .saturating_add(counts.epoch_hits);
             if let Some(started) = started {
                 let wall_ns = started.wall.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
                 let thread_cpu_ns =
@@ -1091,16 +1240,23 @@ impl AsyncOcclusionCuller {
     }
 
     fn cache_query_results(&mut self, results: &mut CullResults) {
-        self.cache_results(results, true);
+        let camera_cell = camera_cell(results.camera.map(f64::from_bits));
+        self.cache_results(results, true, camera_cell);
     }
 
     fn cache_visible_results(&mut self, results: &mut CullResults) {
-        self.cache_results(results, false);
+        // Visible results fail open, so they may follow the current camera
+        // sub-cell without ever hiding geometry.
+        self.cache_results(results, false, self.query_cache_camera_cell);
     }
 
-    fn cache_results(&mut self, results: &mut CullResults, cache_hidden: bool) {
+    fn cache_results(
+        &mut self,
+        results: &mut CullResults,
+        cache_hidden: bool,
+        result_camera_cell: Option<[i32; 3]>,
+    ) {
         self.cache_updates.clear();
-        let result_camera_cell = camera_cell(results.camera.map(f64::from_bits));
 
         // Visible results are fail-open but can hide later culling opportunities
         // after a block edit, so retain them only for the world revision tested.
@@ -1129,7 +1285,7 @@ impl AsyncOcclusionCuller {
                         .ok()
                         .is_some_and(|index| {
                             let entry = &self.query_results[index];
-                            entry.key == key
+                            entry.camera_cell == result_camera_cell
                                 && entry.proof.is_some()
                                 && entry.stamp.same_layout(self.stamp)
                                 && entry.stamp.world_revision == self.stamp.world_revision
@@ -1257,14 +1413,14 @@ impl AsyncOcclusionCuller {
         if queries.is_empty() {
             return;
         }
-        // Coalesce duplicates before spending the worker's bounded lookup budget.
-        queries.sort_unstable();
-        queries.dedup();
-        queries.sort_by(|a, b| {
+        // Sort by priority (with full key tie-breaker) in-place and coalesce duplicates
+        // in one pass before spending the worker's bounded lookup budget.
+        queries.sort_unstable_by(|a, b| {
             query_priority(b)
                 .total_cmp(&query_priority(a))
                 .then_with(|| a.cmp(b))
         });
+        queries.dedup();
         let Some(bounds) = snapshot_bounds(self.camera, queries) else {
             queries.clear();
             return;
@@ -1464,6 +1620,7 @@ impl AsyncOcclusionCuller {
             "cached_chunk_checks": stats.proof_validation_counts.chunk_cache_hits,
             "unique_section_checks": stats.proof_validation_counts.section_checks,
             "cached_section_checks": stats.proof_validation_counts.section_cache_hits,
+            "epoch_hits": stats.proof_validation_counts.epoch_hits,
         });
         value["sampled_entity_bounds"] = serde_json::json!(bounds_samples);
         value
@@ -1523,7 +1680,11 @@ fn query_priority(key: &CullKey) -> f64 {
 }
 
 fn camera_cell(camera: [f64; 3]) -> Option<[i32; 3]> {
-    let [Some(x), Some(y), Some(z)] = camera.map(snapshot_cell) else {
+    let [Some(x), Some(y), Some(z)] = camera.map(|value| {
+        let cell = (value * CAMERA_SUBCELL_SCALE).floor();
+        (cell.is_finite() && cell >= f64::from(i32::MIN) && cell <= f64::from(i32::MAX))
+            .then_some(cell as i32)
+    }) else {
         return None;
     };
     Some([x, y, z])
@@ -1577,7 +1738,7 @@ fn cull_job(
         .or_else(|| job.clear_visible.first())
         .map(|key| key.camera.map(f64::from_bits))
         .unwrap_or([0.0; 3]);
-    let culler = OcclusionCuller::new(camera, OCCLUSION_LOOKUP_BUDGET);
+    let mut remaining = OCCLUSION_LOOKUP_BUDGET;
     scratch.prepare(job.snapshot_epoch);
     let mut hidden = job.hidden;
     hidden.clear();
@@ -1609,21 +1770,23 @@ fn cull_job(
             visible.push(key);
             continue;
         }
-        if culler.remaining() == 0 {
+        if remaining == 0 {
             deferred_entities += 1;
             continue;
         }
-        let remaining_before = culler.remaining();
-        let is_hidden = culler.occluded(min, max, |pos| {
-            let opaque = scratch
-                .opacity_grid
-                .opaque(&job.snapshot, pos, &mut scratch.last_chunk);
-            if opaque {
-                scratch.covered.push(pos);
-            }
-            opaque
-        });
-        if !is_hidden && remaining_before != 0 && culler.remaining() == 0 {
+        let remaining_before = remaining;
+        let is_hidden =
+            OcclusionCuller::occluded_with_budget(camera, &mut remaining, min, max, |pos| {
+                let opaque =
+                    scratch
+                        .opacity_grid
+                        .opaque(&job.snapshot, pos, &mut scratch.last_chunk);
+                if opaque {
+                    scratch.covered.push(pos);
+                }
+                opaque
+            });
+        if !is_hidden && remaining_before != 0 && remaining == 0 {
             deferred_entities += 1;
             continue;
         }
@@ -1631,8 +1794,10 @@ fn cull_job(
             visible.push(key);
             continue;
         }
-        let mut sections = Vec::with_capacity(scratch.covered.len());
+        scratch.sections.clear();
         let mut proof_chunks: Vec<(ChunkKey, Weak<Chunk>)> = Vec::new();
+        let mut last_section: Option<SectionKey> = None;
+        let mut last_chunk_key: Option<ChunkKey> = None;
         let mut valid = true;
         for &pos in &scratch.covered {
             let chunk_key = (pos[0] >> 4, pos[2] >> 4);
@@ -1640,7 +1805,16 @@ fn cull_job(
                 valid = false;
                 break;
             };
-            sections.push((chunk_key.0, y.div_euclid(16), chunk_key.1));
+            let section = (chunk_key.0, y >> 4, chunk_key.1);
+            if last_section == Some(section) {
+                continue;
+            }
+            last_section = Some(section);
+            scratch.sections.push(section);
+            if last_chunk_key == Some(chunk_key) {
+                continue;
+            }
+            last_chunk_key = Some(chunk_key);
             if let Err(index) = proof_chunks.binary_search_by_key(&chunk_key, |(key, _)| *key) {
                 let Some(chunk) = job.snapshot.chunk(chunk_key) else {
                     valid = false;
@@ -1654,13 +1828,14 @@ fn cull_job(
             }
         }
         if valid {
-            sections.sort_unstable();
-            sections.dedup();
+            scratch.sections.sort_unstable();
+            scratch.sections.dedup();
             hidden.push((
                 key,
                 OcclusionProof {
-                    sections,
+                    sections: scratch.sections.clone(),
                     chunks: proof_chunks,
+                    validated_epoch: Cell::new(0),
                 },
             ));
         } else {
@@ -1734,6 +1909,7 @@ fn snapshot_cell(value: f64) -> Option<i32> {
 }
 
 fn proof_is_current(
+    stamp: SnapshotKey,
     world: &World,
     renderer: Option<&Renderer>,
     streaming: &Streaming,
@@ -1742,8 +1918,27 @@ fn proof_is_current(
     cache: &mut FrameProofValidationCache,
 ) -> (bool, ProofValidationCounts) {
     let mut counts = ProofValidationCounts::default();
+    cache.ensure_frame_verified(
+        stamp,
+        world,
+        renderer,
+        streaming,
+        pending_uploads,
+        &mut counts,
+    );
+    if proof.validated_epoch.get() == cache.valid_epoch {
+        counts.chunk_cache_hits = counts
+            .chunk_cache_hits
+            .saturating_add(proof.chunks.len() as u64);
+        counts.section_cache_hits = counts
+            .section_cache_hits
+            .saturating_add(proof.sections.len() as u64);
+        counts.epoch_hits = 1;
+        return (true, counts);
+    }
     for (key, expected) in &proof.chunks {
         if !cache.chunk_is_current(world, *key, expected, &mut counts) {
+            proof.validated_epoch.set(0);
             return (false, counts);
         }
     }
@@ -1756,32 +1951,83 @@ fn proof_is_current(
             pending_uploads,
             &mut counts,
         ) {
+            proof.validated_epoch.set(0);
             return (false, counts);
         }
     }
+    proof.validated_epoch.set(cache.valid_epoch);
     (true, counts)
 }
 
-pub(super) fn occluder_ready(
-    world: &World,
-    facts: &BlockFacts,
-    renderer: Option<&Renderer>,
-    streaming: &Streaming,
-    pending_uploads: &[((i32, i32, i32), SectionMesh)],
-    pos: [i32; 3],
-) -> bool {
-    let state = world.block(pos[0], pos[1], pos[2]);
-    if !opaque(facts.get(state)) {
-        return false;
+/// Cached readiness checks for the synchronous culler. Its projected planes
+/// usually walk adjacent voxels in the same chunk and section, so retaining
+/// the last lookup removes repeated map and streaming queries from the hot
+/// loop without changing the fail-open result.
+pub(super) struct SyncOccluder<'a> {
+    world: &'a World,
+    facts: &'a BlockFacts,
+    renderer: Option<&'a Renderer>,
+    streaming: &'a Streaming,
+    pending_uploads: &'a [((i32, i32, i32), SectionMesh)],
+    bottom_y: i32,
+    last_chunk: Option<(ChunkKey, Option<&'a Chunk>)>,
+    last_section: Option<(SectionKey, bool)>,
+}
+
+impl<'a> SyncOccluder<'a> {
+    pub(super) fn new(
+        world: &'a World,
+        facts: &'a BlockFacts,
+        renderer: Option<&'a Renderer>,
+        streaming: &'a Streaming,
+        pending_uploads: &'a [((i32, i32, i32), SectionMesh)],
+    ) -> Self {
+        Self {
+            world,
+            facts,
+            renderer,
+            streaming,
+            pending_uploads,
+            bottom_y: world.bottom_y(),
+            last_chunk: None,
+            last_section: None,
+        }
     }
-    let Some(y) = pos[1].checked_sub(world.bottom_y()) else {
-        return false;
-    };
-    let section = (pos[0] >> 4, y.div_euclid(16), pos[2] >> 4);
-    renderer.is_some_and(|r| r.has_section(section))
-        && !world.dirty_sections.contains(&section)
-        && !streaming.is_meshing(section)
-        && !pending_uploads.iter().any(|(key, _)| *key == section)
+
+    #[inline]
+    pub(super) fn ready(&mut self, pos: [i32; 3]) -> bool {
+        let chunk_key = (pos[0] >> 4, pos[2] >> 4);
+        let chunk = match self.last_chunk {
+            Some((key, cached)) if key == chunk_key => cached,
+            _ => {
+                let found = self.world.chunks.get(&chunk_key).map(Arc::as_ref);
+                self.last_chunk = Some((chunk_key, found));
+                found
+            }
+        };
+        let Some(chunk) = chunk else {
+            return false;
+        };
+        let state = chunk.block(pos[0] & 15, pos[1], pos[2] & 15);
+        if !opaque(self.facts.get(state)) {
+            return false;
+        }
+        let Some(y) = pos[1].checked_sub(self.bottom_y) else {
+            return false;
+        };
+        let section = (chunk_key.0, y >> 4, chunk_key.1);
+        match self.last_section {
+            Some((key, ready)) if key == section => ready,
+            _ => {
+                let ready = self.renderer.is_some_and(|r| r.has_section(section))
+                    && !self.world.dirty_sections.contains(&section)
+                    && !self.streaming.is_meshing(section)
+                    && !self.pending_uploads.iter().any(|(key, _)| *key == section);
+                self.last_section = Some((section, ready));
+                ready
+            }
+        }
+    }
 }
 
 impl Game<'_> {

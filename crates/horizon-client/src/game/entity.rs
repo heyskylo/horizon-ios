@@ -290,13 +290,33 @@ impl RenderEntityBounds for Mob {
     }
 
     fn render_bounds(&self, alpha: f64) -> Aabb {
-        // A loose rotation-independent envelope for vanilla model animations.
-        // Standing dimensions keep sleeping poses from shrinking it; equipment
-        // and custom rendering bypass this pre-check at the call site.
+        // Keep models with large independent appendages on the old envelope:
+        // their tentacles and wings can extend several blocks past the entity
+        // dimensions. Equipment and custom rendering bypass this pre-check at
+        // the call site.
         let (width, height, _) = self.awake_dims();
-        let radius = width.max(height) * 2.5 + 3.0;
         let at = self.previous.lerp(self.position, f64::from(alpha as f32));
-        Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0))
+        if matches!(
+            self.species(),
+            Species::Guardian | Species::ElderGuardian | Species::Phantom
+        ) {
+            let radius = width.max(height) * 2.5 + 3.0;
+            return Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0));
+        }
+
+        // Vanilla's ordinary models can rotate their head, limbs and death
+        // pose beyond the collision box. This envelope covers those poses while
+        // remaining close to the rendered mesh for the common upright mobs.
+        // A few quadruped death and riding poses reach several blocks past
+        // their standing width. Keep a bounded fallback radius for ordinary
+        // models while still shrinking the common pig/zombie envelope below
+        // the old five-block radius.
+        let horizontal = (width * 2.0).max(height * 1.5).max(3.5);
+        let vertical = height * 3.0 + 0.5;
+        Aabb::new(
+            at.subtract(Vec3::new(horizontal, vertical, horizontal)),
+            at.add_vector(Vec3::new(horizontal, vertical, horizontal)),
+        )
     }
 
     fn render_glowing(&self, _game: &Game<'_>) -> bool {

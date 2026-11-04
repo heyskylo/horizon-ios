@@ -135,6 +135,7 @@
   "Done": "Gotowe",
   "This feature is not yet available in Horizon.": "Ta funkcja nie jest jeszcze dostępna w Horizon.",
   "Your display or system doesn't offer HDR output.": "Twój wyświetlacz lub system nie obsługuje wyjścia HDR.",
+  "Only applies to asynchronous entity culling.": "Dotyczy tylko asynchronicznego pomijania bytów.",
   "Turn HDR on to use it.": "Włącz HDR, aby tego użyć.",
   "Your GPU or graphics API doesn't support it.": "Twoje GPU lub API graficzne tego nie obsługuje.",
   "%s chunks": "%s chunków",

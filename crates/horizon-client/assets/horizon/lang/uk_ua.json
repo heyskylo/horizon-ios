@@ -135,6 +135,7 @@
   "Done": "Готово",
   "This feature is not yet available in Horizon.": "Ця функція ще недоступна в Horizon.",
   "Your display or system doesn't offer HDR output.": "Ваш дисплей або система не підтримує вивід HDR.",
+  "Only applies to asynchronous entity culling.": "Застосовується лише для асинхронного відсікання сутностей.",
   "Turn HDR on to use it.": "Увімкніть HDR, щоб користуватися цим.",
   "Your GPU or graphics API doesn't support it.": "Ваш GPU або графічний API цього не підтримує.",
   "%s chunks": "%s чанків",

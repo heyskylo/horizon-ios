@@ -2939,12 +2939,9 @@ struct Game<'a> {
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
-    sync_occlusion_culler: Option<horizon_client::entity_culling::Culler>,
+    sync_occlusion_culler: Option<horizon_client::voxel_occlusion::Culler>,
     async_occlusion_culler: Option<Box<occlusion_culling::AsyncOcclusionCuller>>,
     async_occlusion_culling_failed: bool,
-    entity_culler: Option<horizon_client::entity_culling::Culler>,
-    async_entity_culler: Option<entity_culling::AsyncCuller>,
-    async_entity_culling_failed: bool,
     async_particle_culler: RefCell<particle_culling::ParticleAsyncState>,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
@@ -19098,9 +19095,6 @@ impl<'a> Game<'a> {
             sync_occlusion_culler: None,
             async_occlusion_culler: None,
             async_occlusion_culling_failed: false,
-            entity_culler: None,
-            async_entity_culler: None,
-            async_entity_culling_failed: false,
             async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),

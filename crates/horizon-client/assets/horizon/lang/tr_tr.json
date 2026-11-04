@@ -126,6 +126,7 @@
   "Done": "Tamam",
   "This feature is not yet available in Horizon.": "Bu özellik henüz Horizon'da mevcut değil.",
   "Your display or system doesn't offer HDR output.": "Ekranınız veya sisteminiz HDR çıkışını desteklemiyor.",
+  "Only applies to asynchronous entity culling.": "Yalnızca eşzamansız varlık elemesine uygulanır.",
   "Turn HDR on to use it.": "Bu özelliği kullanmak için HDR'yi etkinleştirin.",
   "%s chunks": "%s parça",
   "%s per frame": "Kare başına %s",

@@ -126,6 +126,7 @@
   "Done": "Hecho",
   "This feature is not yet available in Horizon.": "Esta función aún no está disponible en Horizon.",
   "Your display or system doesn't offer HDR output.": "Tu pantalla o sistema no ofrece salida HDR.",
+  "Only applies to asynchronous entity culling.": "Solo se aplica a la oclusión asíncrona de entidades.",
   "Turn HDR on to use it.": "Activa el HDR para usarlo.",
   "%s chunks": "%s chunks",
   "%s per frame": "%s por fotograma",

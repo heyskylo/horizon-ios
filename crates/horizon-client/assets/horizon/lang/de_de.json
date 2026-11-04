@@ -138,6 +138,7 @@
   "Your display or system doesn't offer HDR output.": "Dein Bildschirm oder System unterstützt keine HDR-Ausgabe.",
   "Turn HDR on to use it.": "Schalte HDR ein, um es zu nutzen.",
   "Your GPU or graphics API doesn't support it.": "Deine GPU oder Grafik-API unterstützt das nicht.",
+  "Only applies to asynchronous entity culling.": "Nur für asynchrones Objekt-Culling.",
   "%s chunks": "%s Chunks",
   "%s per frame": "%s pro Bild",
   "%s MiB/frame": "%s MiB/Bild",

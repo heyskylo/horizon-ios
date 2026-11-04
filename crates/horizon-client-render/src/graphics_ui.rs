@@ -382,12 +382,14 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Hides entities behind opaque blocks.",
                         ),
                         h(
+                            H::ParticleCulling,
+                            Saves,
+                            "Skips particles outside the view, below one pixel or behind terrain.",
+                        ),
+                        h(
                             H::EntityCullingPrecheck,
                             Saves,
-                            "Runs coarse entity culling after this many entities are visible. Zero disables it.",
-                            H::ParticleCulling,
-                            None,
-                            "Skips offscreen, subpixel and terrain-hidden particles.",
+                            "Runs coarse culling after this many visible entities. Zero disables it.",
                         ),
                         h(
                             H::LeafCulling,
@@ -715,7 +717,7 @@ impl H {
     }
     pub fn slider_steps(self) -> Option<u32> {
         match self {
-            H::ChunkUpdates => Some(32),
+            H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
@@ -1016,6 +1018,11 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::EntityCullingPrecheck)
+                if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
+            {
+                Some("Only applies to asynchronous entity culling.")
+            }
             _ => None,
         }
     }
@@ -1076,7 +1083,7 @@ impl Item {
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
-        if !self.available() {
+        if !self.available() || self.blocked(s).is_some() {
             return;
         }
         match self {
@@ -2179,7 +2186,8 @@ impl GraphicsUi {
         content: f32,
     ) {
         self.focus = Some(target);
-        self.can_change_value = matches!(target, Target::Item(i) if i.slider(s).is_some());
+        self.can_change_value =
+            matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
         if let Target::Item(_) = target {
             let [_, y, _, h] = rect;
             if y < cols.top {
@@ -2248,6 +2256,7 @@ impl GraphicsUi {
             && self.can_change_value
             && let Some(Target::Item(item)) = self.focus
             && item.slider(s).is_some()
+            && item.blocked(s).is_none()
         {
             item.step_slider(s, key == K::ArrowRight, cols.track().1 + 8.0);
             self.changed = true;
@@ -3112,6 +3121,82 @@ mod tests {
             [Action::ButtonClick, Action::Changed]
         );
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
+    #[test]
+    fn entity_culling_precheck_slider_is_only_live_for_async() {
+        let item = Item::Horizon(H::EntityCullingPrecheck);
+        let mut s = Settings::default();
+        let initial = s.horizon.entity_culling_precheck;
+
+        for mode in [EntityCullingMode::Off, EntityCullingMode::Synchronous] {
+            s.horizon.entity_culling = mode;
+            assert_eq!(
+                item.blocked(&s),
+                Some("Only applies to asynchronous entity culling.")
+            );
+
+            let mut ui = GraphicsUi::default();
+            let row_rect = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (row_rect[0] + 4.0, row_rect[1] + 4.0)).is_empty());
+            item.set_slider(&mut s, 1.0);
+            assert_eq!(s.horizon.entity_culling_precheck, initial);
+
+            let (cols, lines, content) = ui.layout(&s, SIZE.0, SIZE.1);
+            assert!(
+                !ui.focusables(&s, &cols, &lines, false)
+                    .iter()
+                    .any(|(target, _)| *target == Target::Item(item))
+            );
+            ui.focus_on(&s, Target::Item(item), row_rect, &cols, content);
+            assert!(!ui.can_change_value);
+        }
+
+        for (code, expected) in [
+            ("en_us", "Only applies to asynchronous entity culling."),
+            ("de_de", "Nur für asynchrones Objekt-Culling."),
+            (
+                "es_es",
+                "Solo se aplica a la oclusión asíncrona de entidades.",
+            ),
+            (
+                "fr_fr",
+                "S'applique uniquement à l'occlusion asynchrone des entités.",
+            ),
+            ("pl_pl", "Dotyczy tylko asynchronicznego pomijania bytów."),
+            (
+                "ru_ru",
+                "Применяется только при асинхронном отсечении сущностей.",
+            ),
+            ("tr_tr", "Yalnızca eşzamansız varlık elemesine uygulanır."),
+            (
+                "uk_ua",
+                "Застосовується лише для асинхронного відсікання сутностей.",
+            ),
+            ("zh_cn", "仅适用于异步实体剔除。"),
+        ] {
+            let (shown, missed) = lang::scoped(lang::Language::load(&[], code), || {
+                lang::get(item.blocked(&s).unwrap())
+            });
+            assert_eq!(shown, expected, "{code}");
+            assert!(missed.is_empty(), "{code}: {missed:?}");
+        }
+
+        s.horizon.entity_culling = EntityCullingMode::Asynchronous;
+        assert_eq!(item.blocked(&s), None);
+        let mut ui = GraphicsUi::default();
+        let row_rect = row(&mut ui, &s, item);
+        let (cols, _, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        let (track_x, track_w) = cols.track();
+        assert_eq!(
+            press(
+                &mut ui,
+                &mut s,
+                (track_x + track_w - 4.0, row_rect[1] + 4.0)
+            ),
+            [Action::SliderDrag]
+        );
+        assert_eq!(s.horizon.entity_culling_precheck, 512);
     }
 
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
