@@ -84,6 +84,7 @@ pub mod spawning;
 pub mod spear_use;
 pub mod species;
 pub mod strider;
+pub mod suffocation;
 pub mod sulfur_cube;
 pub mod sync;
 pub mod tame;
@@ -2664,6 +2665,7 @@ pub struct MobWorld<'a> {
     pub fluid_tables: &'a crate::motion::FluidResources,
     pub movement: &'a horizon_world::movement_properties::BoundMovementProperties,
     pub collision: &'a BlockCollisionRegistry<'a>,
+    pub suffocation: &'a horizon_world::suffocation::SuffocationRegistry<'a>,
     pub data: &'a MobData,
     pub player: Option<PlayerView>,
     /// `getKnownMovement` of a mob's controlling player passenger, if any.

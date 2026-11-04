@@ -1910,8 +1910,9 @@ struct WorldCore {
     facts: BlockFacts,
     biomes: Arc<Biomes>,
     environment: Environment,
-    collision: BlockCollisionRegistry<'static>,
+    collision: Arc<BlockCollisionRegistry<'static>>,
     motion: MotionResources,
+    suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
     threads: usize,
 }
 
@@ -1945,6 +1946,7 @@ struct WorldRest {
 /// recipes, loot tables and tags from the world's pack stack, over the
 /// resource root's own. Worlds without packs use `Resources.rest` directly.
 struct WorldTables {
+    suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
     /// The pack files the tables were built from (a native mod's among
     /// them), for the advancement tree reload and the loot data.
     files: Vec<(String, Vec<Vec<u8>>)>,
@@ -2015,6 +2017,9 @@ impl Resources {
     }
     fn collision(&self) -> &BlockCollisionRegistry<'static> {
         &self.core.collision
+    }
+    fn suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
+        &self.core.suffocation
     }
     fn motion(&self) -> &MotionResources {
         &self.core.motion
@@ -19618,6 +19623,11 @@ impl Game<'_> {
             None => self.res.items(),
         }
     }
+    fn mob_suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
+        self.world_tables
+            .as_ref()
+            .map_or_else(|| self.res.suffocation(), |t| &t.suffocation)
+    }
     fn recipes(&self) -> &Recipes {
         match &self.world_tables {
             Some(t) => &t.recipes,
@@ -19698,7 +19708,25 @@ impl Game<'_> {
             &items.item_tags,
             &items.block_tags,
         );
+        let causes_suffocation = items
+            .block_tags
+            .get("minecraft:causes_suffocation")
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        let suffocation = match horizon_client::mobs::suffocation::bind(
+            self.res.core.collision.clone(),
+            &causes_suffocation,
+        ) {
+            Ok(binding) => binding,
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return None;
+            }
+        };
         Some(WorldTables {
+            suffocation,
             files,
             items,
             recipes,
@@ -19895,7 +19923,7 @@ struct CoreTables {
     gameplay: GameplayTables,
     biomes: Arc<Biomes>,
     environment: Environment,
-    collision: BlockCollisionRegistry<'static>,
+    collision: Arc<BlockCollisionRegistry<'static>>,
 }
 /// The block facts and the tables read from them.
 struct GameplayTables {
@@ -20025,7 +20053,7 @@ fn load_core(
         environment: environment?,
         visibility: visibility?,
         item_renderer: item_renderer?,
-        collision: collision?,
+        collision: Arc::new(collision?),
         assets,
         render,
     }))
@@ -20214,6 +20242,8 @@ fn load_resources(
         ));
     }
     progress.set(5);
+    let suffocation =
+        horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)?;
     let resources = Resources {
         core: WorldCore {
             facts,
@@ -20221,6 +20251,7 @@ fn load_resources(
             environment,
             collision,
             motion,
+            suffocation,
             threads,
         },
         rest: std::sync::OnceLock::new(),
