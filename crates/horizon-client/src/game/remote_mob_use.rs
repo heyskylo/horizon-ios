@@ -231,6 +231,7 @@ mod tests {
             step_sound: None,
             food: food.iter().map(|f| (*f).to_string()).collect(),
             tempt: Arc::default(),
+            item_stack_limits: Default::default(),
         });
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }
