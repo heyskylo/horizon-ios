@@ -199,25 +199,7 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
-        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
-        let post = PackPost::new(
-            &self.device,
-            &self.queue,
-            &self.adapter,
-            post,
-            T::Rgba8Unorm,
-            World {
-                atlas: None,
-                lightmap,
-                terrain: None,
-                block_ids: &[],
-                celestial: None,
-                gui_size: [16, 16],
-                clouds: None,
-                weather: false,
-                hand: false,
-            },
-        );
+        let post = self.build_with_terrain(post, None);
         assert!(
             post.notes.iter().all(|n| n.starts_with("shadow map ")),
             "{:?}",
@@ -226,7 +208,40 @@ impl Fixture {
         post
     }
 
+    /// `build`, with the game's terrain geometry handed to the pack.
+    pub(super) fn build_with_terrain(&self, post: Post, terrain: Option<Geometry<'_>>) -> PackPost {
+        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
+        PackPost::new(
+            &self.device,
+            &self.queue,
+            &self.adapter,
+            post,
+            T::Rgba8Unorm,
+            World {
+                atlas: None,
+                lightmap,
+                terrain,
+                block_ids: &[],
+                celestial: None,
+                gui_size: [16, 16],
+                clouds: None,
+                weather: false,
+                hand: false,
+            },
+        )
+    }
+
     pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+        self.render_with_terrain(post, size, &mut |_, _, _, _| {})
+    }
+
+    /// `render`, with `terrain` drawing the game's terrain lists.
+    pub(super) fn render_with_terrain(
+        &self,
+        post: &mut PackPost,
+        size: [u32; 2],
+        terrain: &mut TerrainDraw<'_>,
+    ) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -251,7 +266,7 @@ impl Fixture {
             size,
             size,
             &[],
-            &mut |_, _, _, _| {},
+            terrain,
         );
         encoder.copy_texture_to_buffer(
             screen.texture().as_image_copy(),

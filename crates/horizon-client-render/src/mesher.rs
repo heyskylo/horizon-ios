@@ -27,6 +27,8 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
+#[cfg(test)]
+pub(crate) use sides::sort_tinted;
 pub use sides::{Part, Sides, group_parts};
 use std::sync::Arc;
 
