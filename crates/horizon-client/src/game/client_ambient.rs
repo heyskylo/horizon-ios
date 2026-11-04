@@ -104,46 +104,66 @@ impl Game<'_> {
             }
         }
         for (position, movement, support, width) in runners {
-            // Entity.getOnPosLegacy: getOnPos(0.2).
-            let below = (position.y - f64::from(0.2f32)).floor() as i32;
-            let tall = |game: &Self, s: [i32; 3]| {
-                let name = game.block_name(s);
-                [
-                    "minecraft:fences",
-                    "minecraft:walls",
-                    "minecraft:fence_gates",
-                ]
-                .iter()
-                .any(|tag| game.block_in_tag(tag, &name))
-            };
-            let at = match support {
-                Some(s) if tall(self, s) => s,
-                Some(s) => [s[0], below, s[2]],
-                None => [position.x.floor() as i32, below, position.z.floor() as i32],
-            };
-            let state = self.world.block(at[0], at[1], at[2]);
-            if self.res.facts().get(state).render_shape == RenderShape::Invisible {
-                continue;
-            }
-            let Some((sprite, tint)) = self.particle_sprite(state, at) else {
-                continue;
-            };
-            let r = self.particles.random();
-            let mut x = position.x + (r.next_double() - 0.5) * width;
-            let mut z = position.z + (r.next_double() - 0.5) * width;
-            // Clamped into the block when the feet are in another column.
-            if position.x.floor() as i32 != at[0] {
-                x = x.clamp(f64::from(at[0]), f64::from(at[0]) + 1.0);
-            }
-            if position.z.floor() as i32 != at[2] {
-                z = z.clamp(f64::from(at[2]), f64::from(at[2]) + 1.0);
-            }
-            self.particles.add(
-                &ParticleOptions::block(ParticleType::Block, sprite, tint),
-                [x, position.y + 0.1, z],
-                [movement.x * -4.0, 1.5, movement.z * -4.0],
-            );
+            self.sprint_particle(position, movement, support, width, |game| {
+                let r = game.particles.random();
+                Some((r.next_double(), r.next_double()))
+            });
         }
+    }
+
+    /// `Entity.spawnSprintParticle`: one dust crumb of the block under the
+    /// feet at `position` (`getOnPosLegacy`), thrown back against `movement`,
+    /// unless that block is invisible. `offsets` draws the two random
+    /// `nextDouble`s for x and z (the entity's random in vanilla).
+    pub(super) fn sprint_particle(
+        &mut self,
+        position: Vec3,
+        movement: Vec3,
+        support: Option<[i32; 3]>,
+        width: f64,
+        offsets: impl FnOnce(&mut Self) -> Option<(f64, f64)>,
+    ) {
+        // Entity.getOnPosLegacy: getOnPos(0.2).
+        let below = (position.y - f64::from(0.2f32)).floor() as i32;
+        let tall = |game: &Self, s: [i32; 3]| {
+            let name = game.block_name(s);
+            [
+                "minecraft:fences",
+                "minecraft:walls",
+                "minecraft:fence_gates",
+            ]
+            .iter()
+            .any(|tag| game.block_in_tag(tag, &name))
+        };
+        let at = match support {
+            Some(s) if tall(self, s) => s,
+            Some(s) => [s[0], below, s[2]],
+            None => [position.x.floor() as i32, below, position.z.floor() as i32],
+        };
+        let state = self.world.block(at[0], at[1], at[2]);
+        if self.res.facts().get(state).render_shape == RenderShape::Invisible {
+            return;
+        }
+        let Some((sprite, tint)) = self.particle_sprite(state, at) else {
+            return;
+        };
+        let Some((rx, rz)) = offsets(self) else {
+            return;
+        };
+        let mut x = position.x + (rx - 0.5) * width;
+        let mut z = position.z + (rz - 0.5) * width;
+        // Clamped into the block when the feet are in another column.
+        if position.x.floor() as i32 != at[0] {
+            x = x.clamp(f64::from(at[0]), f64::from(at[0]) + 1.0);
+        }
+        if position.z.floor() as i32 != at[2] {
+            z = z.clamp(f64::from(at[2]), f64::from(at[2]) + 1.0);
+        }
+        self.particles.add(
+            &ParticleOptions::block(ParticleType::Block, sprite, tint),
+            [x, position.y + 0.1, z],
+            [movement.x * -4.0, 1.5, movement.z * -4.0],
+        );
     }
 
     /// `LivingEntity.tickEffects` on a client: the swirls around an entity

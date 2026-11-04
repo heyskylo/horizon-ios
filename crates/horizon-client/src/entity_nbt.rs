@@ -2242,6 +2242,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         ticks: 0,
         needs_sync: false,
         stuck: Vec3::ZERO,
+        was_touching_water: false,
     })
 }
 
@@ -4065,6 +4066,7 @@ mod tests {
             bob_offset: 0.0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -4267,8 +4269,14 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
             } else {
                 0
             };
-            m.extra.variant2 = ((packed >> 16) & 15) as u8;
-            m.extra.variant3 = ((packed >> 24) & 15) as u8;
+            // TropicalFish.getBaseColor/getPatternColor use DyeColor.byId:
+            // read the full byte, then default invalid color ids to white.
+            let color = |shift| match (packed >> shift) & 0xFF {
+                value @ 0..=15 => value as u8,
+                _ => 0,
+            };
+            m.extra.variant2 = color(16);
+            m.extra.variant3 = color(24);
         }
         _ => {}
     }

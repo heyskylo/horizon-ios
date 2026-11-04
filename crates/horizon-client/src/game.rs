@@ -3995,6 +3995,7 @@ impl Game<'_> {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         });
         // ServerLevel.addFreshEntity.
         if self.native_joins_flush(false, self.next_entity) {
@@ -4150,6 +4151,35 @@ impl Game<'_> {
             None => self.level.ensure_player_uuid(),
         }
     }
+    /// `Entity.doWaterSplashEffect` for a dropped item. The client draws the
+    /// bubble and splash particles (`Level.addParticle` is empty on a server).
+    /// The server plays `entity.generic.splash` (`Entity.playSound`); a
+    /// client's `playSeededSound` ignores that call.
+    pub(super) fn apply_item_splash(&mut self, splash: horizon_client::entities::ItemSplash) {
+        use horizon_client::entities::ItemSplash;
+        let client = self.options.execution_role.is_client();
+        match splash {
+            ItemSplash::Sound { at, volume, pitch } if !client => {
+                self.audio
+                    .play("minecraft:entity.generic.splash", Some(at), volume, pitch);
+            }
+            ItemSplash::Particle {
+                bubble,
+                at,
+                velocity,
+            } if client => {
+                use horizon_client::particles::{ParticleOptions, ParticleType};
+                let kind = if bubble {
+                    ParticleType::Bubble
+                } else {
+                    ParticleType::Splash
+                };
+                self.particles
+                    .add(&ParticleOptions::simple(kind), at, velocity);
+            }
+            _ => {}
+        }
+    }
     fn tick_items(&mut self) {
         // EntityTickEvent.Pre for the items about to tick, and the Post after them.
         let mut round = self.native_tick_round();
@@ -4222,6 +4252,7 @@ impl Game<'_> {
                 item.velocity.z.abs() + 1.0,
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
+            let mut entered = Vec::new();
             let alive = entity::tick_item(
                 item,
                 &self.world,
@@ -4232,7 +4263,13 @@ impl Game<'_> {
                 no_physics,
                 &nearby,
                 Some(self.border.geometry()),
+                &mut |splash| entered.push(splash),
             );
+            // Entity.doWaterSplashEffect: the server plays the sound (broadcast
+            // to clients). Its addParticle is empty.
+            for splash in entered {
+                self.apply_item_splash(splash);
+            }
             if merging && !no_physics {
                 self.entity_powder_snow_particles(
                     item.previous,
@@ -13178,10 +13215,13 @@ impl Game<'_> {
             Some(held) => self.wear(&held, amount),
             None => amount,
         };
-        let max = self
-            .held()
-            .and_then(|s| self.items().get(&s.item))
-            .map_or(0, |i| i.max_damage);
+        let max = self.held().map_or(0, |s| {
+            if &*s.item == "minecraft:trident" {
+                self.trident_max_damage(s)
+            } else {
+                self.items().get(&s.item).map_or(0, |i| i.max_damage)
+            }
+        });
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0
@@ -13210,7 +13250,7 @@ impl Game<'_> {
             return;
         };
         let amount = self.wear(&held, amount);
-        let max = self.items().get(&held.item).map_or(0, |i| i.max_damage);
+        let max = self.trident_max_damage(&held);
         if amount == 0 || max == 0 {
             return;
         }

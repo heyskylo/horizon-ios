@@ -86,6 +86,7 @@ mod tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
             no_gravity: false,
             vertical_collision: false,
             horizontal_collision: false,

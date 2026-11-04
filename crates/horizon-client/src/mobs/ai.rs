@@ -662,6 +662,9 @@ pub fn tick(
         if m.species() == Species::Chicken {
             farm::chicken_egg_step(m, events);
         }
+        if m.species() == Species::Allay {
+            super::allay::update_duplication_cooldown(m);
+        }
         if horse {
             super::equine::ai_step(m, w, events);
         }
