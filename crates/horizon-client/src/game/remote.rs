@@ -50,6 +50,7 @@ use horizon_world::{
     stepped_interpolation::{Path, PosRot, Start, SteppedInterpolation},
 };
 use std::{
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
@@ -556,6 +557,77 @@ enum OwnProfile {
     Done(Option<horizon_client::skins::Textures>),
 }
 
+/// The skin future belongs to this mannequin/profile, not the bounded
+/// shared resolver cache (ClientMannequin.skinLookup and then its skin).
+struct MannequinProfile {
+    profile: horizon_protocol::entity_data::Profile,
+    lookup: Option<horizon_client::skins::ProfileLookup>,
+    textures: horizon_client::skins::Textures,
+}
+impl MannequinProfile {
+    fn new(
+        profile: &horizon_protocol::entity_data::Profile,
+        resolver: &mut horizon_client::skins::Resolver,
+    ) -> Self {
+        let property = profile.properties.iter().find(|p| p.name == "textures");
+        let textures = property.map(|property| {
+            let signature = if property.signature.is_some() {
+                horizon_client::skins::Signature::Signed
+            } else {
+                horizon_client::skins::Signature::Unsigned
+            };
+            horizon_client::skins::unpack(
+                &property.value,
+                signature,
+                &horizon_client::skins::TEXTURE_URIS,
+            )
+        });
+        let key = match (&profile.name, profile.uuid) {
+            (Some(name), None) => Some(horizon_client::skins::NameOrId::Name(name.clone())),
+            (None, Some(id)) => Some(horizon_client::skins::NameOrId::Id(id)),
+            _ => None,
+        };
+        let lookup = if textures.is_none() {
+            key.map(|key| resolver.lookup(&key))
+        } else {
+            None
+        };
+        Self {
+            profile: profile.clone(),
+            lookup,
+            textures: textures.unwrap_or_default(),
+        }
+    }
+    fn textures(&mut self) -> horizon_client::skins::Textures {
+        if let Some(lookup) = &self.lookup
+            && let horizon_client::skins::Resolve::Done(profile) = lookup.state()
+        {
+            self.textures = profile
+                .and_then(|profile| profile.textures())
+                .map(|(value, signature)| {
+                    horizon_client::skins::unpack(
+                        &value,
+                        signature,
+                        &horizon_client::skins::TEXTURE_URIS,
+                    )
+                })
+                .unwrap_or_default();
+            self.lookup = None;
+        }
+        self.textures.clone()
+    }
+}
+fn prune_mannequin_profiles(
+    held: &mut HashMap<u32, MannequinProfile>,
+    current: &HashMap<u32, &horizon_protocol::entity_data::Profile>,
+) {
+    held.retain(|id, entry| {
+        current
+            .get(id)
+            .is_some_and(|profile| **profile == entry.profile)
+    });
+}
+
 pub(super) struct Remote {
     pub session: Session,
     pub brand: String,
@@ -725,6 +797,8 @@ pub(super) struct Remote {
     /// (`AbstractClientPlayer.getPlayerInfo` keeps that `PlayerInfo`): its skin
     /// outlives the entry, which NPC plugins remove a moment after spawning.
     level_player_textures: HashMap<i32, horizon_client::skins::Textures>,
+    /// Live mannequin futures/resolved appearances, released with the entity or profile.
+    mannequin_profiles: RefCell<HashMap<u32, MannequinProfile>>,
     /// Entities with shared flag 6 (`Entity.isCurrentlyGlowing` on a client); mobs keep
     /// theirs in `Mob::glowing`.
     glowing: std::collections::HashSet<i32>,
@@ -1198,6 +1272,7 @@ impl Game<'_> {
             level_players: HashMap::new(),
             level_player_names: HashMap::new(),
             level_player_textures: HashMap::new(),
+            mannequin_profiles: RefCell::default(),
             glowing: Default::default(),
             own_invisible: false,
             own_on_fire: false,
@@ -2344,6 +2419,7 @@ impl Game<'_> {
                     .retain(|uuid, _| *uuid == local || tab.contains_key(uuid));
                 r.level_player_names.clear();
                 r.level_player_textures.clear();
+                r.mannequin_profiles.get_mut().clear();
                 // A new ClientLevel: a new chunk storage, centred on 0, 0.
                 r.chunk_center = (0, 0);
             }
@@ -3600,6 +3676,7 @@ impl Game<'_> {
                             );
                         }
                         r.level_player_textures.remove(&id);
+                        r.mannequin_profiles.get_mut().remove(&(id as u32));
                         r.attachments.remove(&Holder::Entity(id as u32));
                     }
                     self.remove_entity(id);
@@ -3768,6 +3845,24 @@ impl Game<'_> {
                     }
                 }
                 self.remote_mob_data(p.id, &p.values);
+                if p.values
+                    .iter()
+                    .any(|(_, _, value)| matches!(value, Value::Profile(_)))
+                    && let Some(remote) = &self.remote
+                {
+                    let profile = self
+                        .mobs
+                        .iter()
+                        .find(|mob| mob.id == p.id as u32)
+                        .and_then(|mob| mob.profile.as_ref());
+                    let mut held = remote.mannequin_profiles.borrow_mut();
+                    if held
+                        .get(&(p.id as u32))
+                        .is_some_and(|old| Some(&old.profile) != profile)
+                    {
+                        held.remove(&(p.id as u32));
+                    }
+                }
                 if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
                     && m.species() == horizon_client::mobs::Species::Creeper
                 {
@@ -5426,41 +5521,36 @@ impl Game<'_> {
 
     fn mannequin_textures(
         &self,
+        entity: u32,
         profile: Option<&horizon_protocol::entity_data::Profile>,
     ) -> horizon_client::skins::Textures {
-        let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
-        if let Some(t) = t {
-            let signature = if t.signature.is_some() {
-                horizon_client::skins::Signature::Signed
-            } else {
-                horizon_client::skins::Signature::Unsigned
-            };
-            horizon_client::skins::unpack(&t.value, signature, &horizon_client::skins::TEXTURE_URIS)
-        } else {
-            // `ResolvableProfile.resolveProfile`: no `textures` and
-            // only a name or an id resolves through the services.
-            let key = profile.and_then(|p| match (&p.name, p.uuid) {
-                (Some(name), None) => Some(horizon_client::skins::NameOrId::Name(name.clone())),
-                (None, Some(id)) => Some(horizon_client::skins::NameOrId::Id(id)),
-                _ => None,
-            });
-            key.and_then(|key| match self.skin_profiles.borrow_mut().state(&key) {
-                horizon_client::skins::Resolve::Done(Some(profile)) => {
-                    profile.textures().map(|(value, signature)| {
-                        horizon_client::skins::unpack(
-                            &value,
-                            signature,
-                            &horizon_client::skins::TEXTURE_URIS,
-                        )
-                    })
-                }
-                _ => None,
-            })
-            .unwrap_or_default()
+        let Some(profile) = profile else {
+            return Default::default();
+        };
+        let Some(remote) = &self.remote else {
+            return MannequinProfile::new(profile, &mut self.skin_profiles.borrow_mut()).textures();
+        };
+        let mut held = remote.mannequin_profiles.borrow_mut();
+        let entry = held.entry(entity).or_insert_with(|| {
+            MannequinProfile::new(profile, &mut self.skin_profiles.borrow_mut())
+        });
+        if entry.profile != *profile {
+            *entry = MannequinProfile::new(profile, &mut self.skin_profiles.borrow_mut());
         }
+        entry.textures()
     }
 
     pub(super) fn update_remote_skins(&mut self) {
+        self.skin_profiles.borrow_mut().poll();
+        if let Some(remote) = &self.remote {
+            let current: HashMap<_, _> = self
+                .mobs
+                .iter()
+                .filter(|mob| &*mob.kind.id == "minecraft:mannequin")
+                .filter_map(|mob| mob.profile.as_ref().map(|profile| (mob.id, profile)))
+                .collect();
+            prune_mannequin_profiles(&mut remote.mannequin_profiles.borrow_mut(), &current);
+        }
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -5628,7 +5718,7 @@ impl Game<'_> {
             .mobs
             .iter()
             .filter(|m| &*m.kind.id == "minecraft:mannequin" && m.profile.is_some())
-            .map(|m| (m.id, self.mannequin_textures(m.profile.as_ref())))
+            .map(|m| (m.id, self.mannequin_textures(m.id, m.profile.as_ref())))
             .collect();
         let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::new();
         for (id, textures) in mannequins {
@@ -5723,7 +5813,7 @@ impl Game<'_> {
             }
         }
         if &*mob.kind.id == "minecraft:mannequin" {
-            let textures = self.mannequin_textures(mob.profile.as_ref());
+            let textures = self.mannequin_textures(mob.id, mob.profile.as_ref());
             let skin = horizon_client::skins::lookup(&textures, false, |kind, url| {
                 self.skin_downloads.borrow_mut().state(kind, url)
             });

@@ -21,7 +21,13 @@ use std::{
 
 /// The portrait launcher and landscape game share a UIWindow. Permit the
 /// launcher's orientation before acknowledging its presentation request.
-fn launcher_visibility(window: Option<&winit::window::Window>, visible: bool) {
+fn launcher_visibility(window: Option<&winit::window::Window>, visible: bool) -> bool {
+    if !visible {
+        if horizon_ios_launcher::cancellation_requested() {
+            return false;
+        }
+        horizon_ios_launcher::commit_start();
+    }
     horizon_ios_launcher::set_covered(visible);
     #[cfg(target_os = "ios")]
     if let Some(window) = window {
@@ -34,12 +40,14 @@ fn launcher_visibility(window: Option<&winit::window::Window>, visible: bool) {
     }
     #[cfg(not(target_os = "ios"))]
     let _ = window;
+    true
 }
 
 /// What came back for a launcher request so far: a control answer, or an import's result.
 enum Waiting {
     Control(Receiver<String>),
     Import(Receiver<std::result::Result<Installed, String>>),
+    CancelStart(String),
 }
 
 thread_local! {
@@ -54,6 +62,7 @@ fn deliver() -> bool {
     let mut still = Vec::new();
     for (waiting, request) in pending {
         match waiting {
+            Waiting::CancelStart(owner) => still.push((Waiting::CancelStart(owner), request)),
             Waiting::Control(answers) => match answers.try_recv() {
                 Ok(answer) => request.answer(&answer),
                 // Dropping the request answers it with an error.
@@ -73,6 +82,75 @@ fn deliver() -> bool {
     }
     PENDING.with_borrow_mut(|pending| pending.extend(still));
     resources
+}
+
+/// Complete cancellation only after the supervisor has dropped the old engine.
+pub(super) fn acknowledge_cancelled_start(owner: &str) {
+    let pending = PENDING.with_borrow_mut(std::mem::take);
+    let mut still = Vec::new();
+    for (waiting, request) in pending {
+        if matches!(&waiting, Waiting::CancelStart(id) if id == owner) {
+            request.answer(r#"{"ok":true,"status":"stopped"}"#);
+        } else {
+            still.push((waiting, request));
+        }
+    }
+    PENDING.with_borrow_mut(|pending| pending.extend(still));
+}
+
+fn start_owner(line: &str) -> Option<&str> {
+    line.split_whitespace().nth(1)
+}
+
+fn allowed_while_stopping(command: &str) -> bool {
+    matches!(
+        command,
+        "launcher-state"
+            | "launcher-visible"
+            | "launcher-cancel-start"
+            | "launcher-session"
+            | "download-state"
+            | "game-files-source"
+            | "options-get"
+            | "worlds"
+            | "servers"
+            | "server-ping"
+            | "import"
+            | "import-game-files"
+    )
+}
+
+fn commit_start(request: horizon_ios_launcher::Request) {
+    let committed =
+        start_owner(&request.line).is_some_and(horizon_ios_launcher::commit_start_owned);
+    request.answer(
+        &json!({ "ok": committed, "status": if committed { "committed" } else { "stale" } })
+            .to_string(),
+    );
+}
+
+fn cancel_start(request: horizon_ios_launcher::Request) {
+    let Some(owner) = start_owner(&request.line).map(str::to_owned) else {
+        request.answer(r#"{"error":"a launch identity is required"}"#);
+        return;
+    };
+    // A visible game has already passed the native presentation commit point.
+    if !horizon_ios_launcher::covered() {
+        horizon_ios_launcher::commit_start();
+    }
+    match horizon_ios_launcher::request_cancel(&owner) {
+        horizon_ios_launcher::CancelDecision::Accepted => {
+            PENDING.with_borrow_mut(|pending| {
+                pending.push((Waiting::CancelStart(owner), request));
+            });
+        }
+        horizon_ios_launcher::CancelDecision::Stale => {
+            request.answer(r#"{"ok":true,"status":"stale"}"#);
+        }
+        horizon_ios_launcher::CancelDecision::Committed => {
+            request.answer(r#"{"ok":true,"status":"committed"}"#);
+        }
+    }
 }
 
 /// A native import owns its destination until its completion is delivered.
@@ -154,10 +232,17 @@ impl Game<'_> {
     pub(super) fn poll_launcher(&mut self, event_loop: &dyn EventLoopCtl) {
         for request in horizon_ios_launcher::take() {
             let command = request.line.split_whitespace().next().unwrap_or_default();
+            if self.quit_to_launcher && !allowed_while_stopping(command) {
+                request.answer(r#"{"error":"The game is stopping. Try again shortly."}"#);
+                continue;
+            }
             match command {
                 "launcher-visible" => {
-                    launcher_visibility(self.window.as_deref(), request.line.ends_with(" true"));
-                    request.answer(r#"{"ok":true}"#);
+                    let accepted = launcher_visibility(
+                        self.window.as_deref(),
+                        request.line.ends_with(" true"),
+                    );
+                    request.answer(&json!({ "ok": accepted }).to_string());
                 }
 
                 "launcher-state" => {
@@ -172,7 +257,29 @@ impl Game<'_> {
                 "import" | "import-game-files" => start_import(request),
                 // The game is up: the download screen has nothing left to show.
                 "download-state" => request.answer(r#"{"phase":"done"}"#),
-                "launcher-start" => request.answer(r#"{"ok":true}"#),
+                "launcher-start" => {
+                    let accepted = !self.quit_to_launcher
+                        && horizon_ios_launcher::start_owned(start_owner(&request.line));
+                    request.answer(
+                        &json!({
+                            "ok": accepted,
+                            "phase": if self.title.is_some() { "title" } else { "world" },
+                        })
+                        .to_string(),
+                    );
+                }
+                "launcher-commit-start" => commit_start(request),
+                "launcher-cancel-start" => {
+                    // World entry is a committed action. A stale native task
+                    // must not tear down an already opened world or server.
+                    if self.title.is_none() {
+                        horizon_ios_launcher::commit_start();
+                    }
+                    cancel_start(request);
+                    if horizon_ios_launcher::cancellation_requested() {
+                        self.quit_to_launcher = true;
+                    }
+                }
                 "launcher-session" => session_request(request),
                 "launcher-world" => self.launcher_world(request),
                 _ => {
@@ -361,10 +468,17 @@ impl Loading {
     pub(super) fn poll_launcher(&mut self) -> Result<()> {
         for request in horizon_ios_launcher::take() {
             let command = request.line.split_whitespace().next().unwrap_or_default();
+            if horizon_ios_launcher::cancellation_requested() && !allowed_while_stopping(command) {
+                request.answer(r#"{"error":"The game is stopping. Try again shortly."}"#);
+                continue;
+            }
             match command {
                 "launcher-visible" => {
-                    launcher_visibility(self.window.as_deref(), request.line.ends_with(" true"));
-                    request.answer(r#"{"ok":true}"#);
+                    let accepted = launcher_visibility(
+                        self.window.as_deref(),
+                        request.line.ends_with(" true"),
+                    );
+                    request.answer(&json!({ "ok": accepted }).to_string());
                 }
 
                 "game-files-source" => request.answer(
@@ -381,10 +495,13 @@ impl Loading {
                         if horizon_ios_launcher::waiting() {
                             self.refresh_import_root(&horizon_client::import::home())?;
                         }
-                        horizon_ios_launcher::start();
-                        request.answer(r#"{"ok":true}"#);
+                        let accepted =
+                            horizon_ios_launcher::start_owned(start_owner(&request.line));
+                        request.answer(&json!({ "ok": accepted, "phase": "loading" }).to_string());
                     }
                 }
+                "launcher-commit-start" => commit_start(request),
+                "launcher-cancel-start" => cancel_start(request),
                 "launcher-state" => {
                     let state = if horizon_ios_launcher::waiting() {
                         json!({ "phase": "waiting" })
@@ -439,7 +556,7 @@ impl Loading {
                 }
             }
         }
-        if deliver() && self.importing() {
+        if deliver() && self.importing() && !horizon_ios_launcher::cancellation_requested() {
             self.files_arrived()?;
         }
         Ok(())

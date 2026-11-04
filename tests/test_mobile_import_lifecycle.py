@@ -18,7 +18,7 @@ def program():
     start = source.index('enum Waiting {')
     end = source.index('fn deliver()', start)
     state = source[start:end]
-    methods = '\n'.join(method(source, name) for name in ('deliver', 'start_import'))
+    methods = '\n'.join(method(source, name) for name in ('deliver', 'start_import', 'start_owner'))
     if 'fn importing_archive(' in source:
         methods += '\n' + method(source, 'importing_archive')
     loading = source[source.index('impl Loading {'):]
@@ -39,7 +39,8 @@ extern crate self as horizon_client;
 #[path="LAUNCHER_PATH"]mod real_launcher;
 mod horizon_ios_launcher{
  pub use crate::real_launcher::Request;
- pub fn start(){crate::STARTS.fetch_add(1,crate::Ordering::SeqCst);}
+ pub fn start(){let _=start_owned(None);}
+ pub fn start_owned(owner:Option<&str>)->bool{if let Some(owner)=owner{assert_eq!(owner,"owned-attempt");}crate::STARTS.fetch_add(1,crate::Ordering::SeqCst);true}
  pub fn waiting()->bool{true}
 }
 mod import{pub fn home()->std::path::PathBuf{"fixture/home".into()}}
@@ -48,7 +49,7 @@ struct Loading;impl Loading{fn refresh_import_root(&mut self,_:&Path)->Result<()
 #[derive(Clone,Copy,PartialEq)]enum Kind{Resources}
 struct Installed{kind:Kind}
 struct Json(String);impl std::fmt::Display for Json{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str(&self.0)}}
-macro_rules! json{({"error": $error:expr})=>{Json(format!("error:{}",$error))};}
+macro_rules! json{({"error": $error:expr})=>{Json(format!("error:{}",$error))};({"ok": $ok:expr, "phase": $phase:expr})=>{Json(format!(r#"{{"ok":{},"phase":"{}"}}"#,$ok,$phase))};}
 fn installed_json(_: &Installed)->Json{Json("ok".into())}
 static STARTS:AtomicUsize=AtomicUsize::new(0);
 static RUNS:AtomicUsize=AtomicUsize::new(0);
@@ -83,11 +84,11 @@ CASES = r'''
  // An unrelated control reply must not block Play after the archive finishes.
  let(control_sender,control_receiver)=mpsc::channel();let(control,control_reply)=request("worlds");
  PENDING.with_borrow_mut(|pending|pending.push((Waiting::Control(control_receiver),control)));
- let(start,reply)=request("launcher-start");launch(start);assert_eq!(reply.recv().unwrap(),r#"{"ok":true}"#);assert_eq!(STARTS.load(Ordering::SeqCst),1);
+ let(start,reply)=request("launcher-start");launch(start);assert_eq!(reply.recv().unwrap(),r#"{"ok":true,"phase":"loading"}"#);assert_eq!(STARTS.load(Ordering::SeqCst),1);
  drop(control_sender);deliver();assert!(control_reply.recv().unwrap().contains("error"));
  let(failed,failed_reply)=request("import failed.zip");start_import(failed);assert!(finish(&failed_reply).contains("fixture decode failure"));
  let(retry,retry_reply)=request("import retry.zip");start_import(retry);assert_eq!(finish(&retry_reply),"ok");
- let(start,reply)=request("launcher-start");launch(start);assert_eq!(reply.recv().unwrap(),r#"{"ok":true}"#);assert_eq!(STARTS.load(Ordering::SeqCst),2);
+ let(start,reply)=request("launcher-start owned-attempt");launch(start);assert_eq!(reply.recv().unwrap(),r#"{"ok":true,"phase":"loading"}"#);assert_eq!(STARTS.load(Ordering::SeqCst),2);
 }
 '''
 

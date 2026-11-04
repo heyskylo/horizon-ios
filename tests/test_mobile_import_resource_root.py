@@ -29,7 +29,7 @@ def program():
         depth += (loading[end] == '{') - (loading[end] == '}')
         end += 1
     launch = loading[opening + 1:end - 1]
-    return STUBS.replace('ROOT_FUNCTION', functions) + '\nimpl Loading {\n' + methods + '\nfn launch(&mut self, request:Request)->Result<()>{' + launch + '\nOk(())}\n}\n' + CASES
+    return STUBS.replace('ROOT_FUNCTION', functions) + '\n' + method(launcher, 'start_owner') + '\nimpl Loading {\n' + methods + '\nfn launch(&mut self, request:Request)->Result<()>{' + launch + '\nOk(())}\n}\n' + CASES
 
 
 STUBS = r'''
@@ -45,9 +45,11 @@ mod import{
  ROOT_FUNCTION
  pub fn home()->PathBuf{PathBuf::from(std::env::var_os("HORIZON_IMPORT_ROOT_FIXTURE").unwrap()).join("home")}
 }
-mod horizon_ios_launcher{pub fn start(){}pub fn waiting()->bool{true}}
+mod horizon_ios_launcher{pub fn start(){}pub fn start_owned(owner:Option<&str>)->bool{assert_eq!(owner,Some("native-fixture"));true}pub fn waiting()->bool{true}}
 fn importing_archive()->bool{false}
-struct Request;impl Request{fn answer(self,_:&str){}}
+struct Request{line:String}impl Request{fn answer(self,_:&str){}}
+struct Json(String);impl std::fmt::Display for Json{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str(&self.0)}}
+macro_rules! json{({"error": $error:expr})=>{Json(format!("error:{}",$error))};({"ok": $ok:expr, "phase": $phase:expr})=>{Json(format!(r#"{{"ok":{},"phase":"{}"}}"#,$ok,$phase))};}
 struct Options{resources:PathBuf}
 struct Progress;impl Progress{fn new()->Self{Self}}
 enum LoaderMsg{Ui(usize,PathBuf),Done(std::result::Result<(),String>)}
@@ -59,12 +61,15 @@ impl Loading{
  fn new(base:PathBuf,selected:PathBuf)->Self{Self{loaded:None,delivered:false,ui_seen:vec![],handle:None,progress:Progress,options:Some(Options{resources:selected}),settings:(),vanilla_root:base,started:Instant::now(),receiver:mpsc::channel().1}}
 }
 static CAPTURE:Mutex<Vec<(PathBuf,PathBuf)>>=Mutex::new(Vec::new());
+static READ_BYTES:Mutex<Vec<Vec<u8>>>=Mutex::new(Vec::new());
+static FAIL_NEXT_SPAWN:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 mod startup_menu{
  use super::*;
  pub fn spawn_loader(options:&Options,_:&(),base:&Path,_:Instant,_:&Progress)->Result<(mpsc::Receiver<LoaderMsg>,JoinHandle<()>)>{
   CAPTURE.lock().unwrap().push((options.resources.clone(),base.to_owned()));
+  if FAIL_NEXT_SPAWN.swap(false,std::sync::atomic::Ordering::SeqCst){return Err("fixture thread spawn failed".into());}
   // Read actual bytes from the exact root the production method hands over.
-  std::fs::read(base.join("fixture-data"))?;
+  READ_BYTES.lock().unwrap().push(std::fs::read(base.join("fixture-data"))?);
   let(tx,rx)=mpsc::channel();let root=base.to_owned();
   let generation=CAPTURE.lock().unwrap().len();
   let worker=std::thread::spawn(move||{tx.send(LoaderMsg::Ui(generation,root)).unwrap();tx.send(LoaderMsg::Done(Ok(()))).unwrap();});
@@ -103,7 +108,7 @@ fn main(){
 
  // Native first-run download completes while waiting in the launcher, with
  // no import-screen object to invoke files_arrived. Play must refresh its base.
- let mut native=Loading::new(missing.clone(),missing.clone());native.launch(Request).unwrap();
+ let mut native=Loading::new(missing.clone(),missing.clone());native.launch(Request{line:"launcher-start native-fixture".into()}).unwrap();
  assert_eq!(native.vanilla_root,arrived,"Native Play retained its initially missing resource base");
  assert_eq!(native.options.as_ref().unwrap().resources,arrived);
 
@@ -118,9 +123,45 @@ fn main(){
  if let Some(handle)=explicit.handle.take(){handle.join().unwrap();}
 
  let mut stale_overlay=Loading::new(missing,overlay);
- stale_overlay.load_the_files_that_arrived(home).unwrap();
+ stale_overlay.load_the_files_that_arrived(home.clone()).unwrap();
  assert_eq!(stale_overlay.vanilla_root,arrived);assert_eq!(stale_overlay.options.as_ref().unwrap().resources,arrived);
  if let Some(handle)=stale_overlay.handle.take(){handle.join().unwrap();}
+
+ // A failed OS thread spawn must retain the selected options for another
+ // retry or for native cancellation to reconstruct the idle launcher.
+ let mut spawn_retry=Loading::new(arrived.clone(),arrived.clone());
+ FAIL_NEXT_SPAWN.store(true,std::sync::atomic::Ordering::SeqCst);
+ assert!(spawn_retry.load_the_files_that_arrived(home.clone()).is_err());
+ assert_eq!(spawn_retry.options.as_ref().expect("spawn failure consumed retry options").resources,arrived);
+ assert!(spawn_retry.handle.is_none());
+ spawn_retry.load_the_files_that_arrived(home).unwrap();
+ if let Some(handle)=spawn_retry.handle.take(){handle.join().unwrap();}
+ spawn_retry.poll_menu_resources().unwrap();
+ assert!(matches!(spawn_retry.loaded,Some(Ok(()))),"retry after a spawn failure did not complete");
+ assert_eq!(READ_BYTES.lock().unwrap().last().unwrap(),b"new resource tree");
+
+ // Select the import base in the actual publication gap: the old valid tree
+ // is already parked, and the new tree has not yet moved into resources/.
+ let gap_home=root.join("publication-gap");let final_root=gap_home.join("resources");
+ files(&gap_home.join("resources.previous"),b"previous generation");
+ let staged=gap_home.join("resources.unpacking");files(&staged,b"published new generation");
+ assert!(!final_root.exists());
+ let explicit_gap_root=root.join("gap-explicit");files(&explicit_gap_root,b"valid explicit");
+ let mut explicit_gap=Loading::new(explicit_gap_root.clone(),root.join("not-a-vanilla-overlay"));
+ explicit_gap.refresh_import_root(&gap_home).unwrap();
+ assert_eq!(explicit_gap.vanilla_root,explicit_gap_root,"publication gap displaced a valid explicit base");
+ let vanished=root.join("missing-before-first-import");
+ let mut gap=Loading::new(vanished.clone(),vanished);
+ gap.refresh_import_root(&gap_home).unwrap();
+ // Publish only after the main-thread selection, before the protected loader
+ // reads its captured inputs. Do not refresh a second time and mask the bug.
+ std::fs::rename(staged,&final_root).unwrap();
+ let options=gap.options.as_ref().unwrap();
+ let(receiver,worker)=startup_menu::spawn_loader(options,&gap.settings,&gap.vanilla_root,gap.started,&gap.progress)
+  .expect("the publication-gap refresh captured its stale missing resource path");
+ worker.join().unwrap();drop(receiver);
+ assert_eq!(CAPTURE.lock().unwrap().last().unwrap(),&(final_root.clone(),final_root));
+ assert_eq!(READ_BYTES.lock().unwrap().last().unwrap(),b"published new generation");
 }
 '''
 

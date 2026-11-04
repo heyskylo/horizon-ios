@@ -11,6 +11,50 @@ struct OrientationFixtureEntry {
 }
 #endif
 
+/// The preview mirrors owned startup decisions rather than letting a generic
+/// success reply conceal a broken launcher-start/commit/cancel command.
+private enum PreviewEngine {
+    static var phase: String?
+    static var owner: String?
+    static var committed = false
+
+    static func reset() { phase = nil; owner = nil; committed = false }
+    static var currentPhase: String {
+        phase ?? (ProcessInfo.processInfo.environment["PREVIEW_MISSING_FILES"] == "1" ? "waiting" : "title")
+    }
+    static func reply(_ line: String) -> [String: Any]? {
+        let words = line.split(separator: " ", maxSplits: 1)
+        guard let command = words.first else { return nil }
+        let id = words.count == 2 ? String(words[1]) : nil
+        switch command {
+        case "launcher-state": return ["phase": currentPhase, "version": "26.3"]
+        case "launcher-start":
+            owner = id
+            committed = committed || currentPhase == "world"
+            if currentPhase == "waiting" { phase = "loading" }
+            return ["ok": true, "phase": currentPhase]
+        case "launcher-commit-start":
+            guard let id, owner == id, currentPhase != "waiting" else {
+                return ["ok": false, "error": "Start no longer active"]
+            }
+            committed = true
+            return ["ok": true, "status": "committed"]
+        case "launcher-cancel-start":
+            guard let id else { return ["ok": false, "error": "Missing start owner"] }
+            guard owner == id else { return ["ok": true, "status": "stale"] }
+            guard !committed else { return ["ok": true, "status": "committed"] }
+            phase = "waiting"
+            owner = nil
+            committed = false
+            return ["ok": true, "status": "stopped"]
+        case "launcher-visible":
+            if id == "false", currentPhase != "waiting" { committed = true }
+            return ["ok": true]
+        default: return nil
+        }
+    }
+}
+
 private var finishPreviewImport: (() -> Void)?
 
 private let previewSubmit: HorizonSubmit = { pointer, context, done in
@@ -27,7 +71,8 @@ private let previewSubmit: HorizonSubmit = { pointer, context, done in
     }
 #endif
     let response: [String: Any]
-    if let options = PreviewOptions.reply(line) { response = options }
+    if let engine = PreviewEngine.reply(line) { response = engine }
+    else if let options = PreviewOptions.reply(line) { response = options }
     else { switch line {
     case "launcher-state": response = ["phase": ProcessInfo.processInfo.environment["PREVIEW_MISSING_FILES"] == "1" ? "waiting" : "title", "version": "26.3"]
     case "game-files-source":
@@ -72,6 +117,7 @@ private let previewSubmit: HorizonSubmit = { pointer, context, done in
 struct LauncherPreview: App {
     @State private var previewNotice = false
     init() {
+        PreviewEngine.reset()
         for key in ["HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
                     "HORIZON_LAUNCHER_TRASH", "HORIZON_LAUNCHER_CLIPBOARD", "HORIZON_LAUNCHER_DESKTOP"] {
             if let value = ProcessInfo.processInfo.environment[key] {

@@ -11,6 +11,12 @@ use horizon_protocol::text::{literal, translatable};
 use horizon_server_files::user_lists::{BanEntry, NameAndId};
 use horizon_world::nbt::Tag;
 
+/// A valid long duration clamps to the largest representable expiry instead
+/// of wrapping into an already expired mute.
+fn mute_expiry(now: i64, time: Option<i64>) -> Option<i64> {
+    time.map(|millis| now.saturating_add(millis))
+}
+
 /// A moderation reply retains its translation component for each client's language.
 #[derive(Debug, PartialEq)]
 pub(super) struct Reply(Text);
@@ -79,6 +85,26 @@ const MUTE_LEVEL: u8 = 3;
 
 /// The commands of `mute_command`.
 pub(super) const MUTE_COMMANDS: [&str; 4] = ["mute", "tempmute", "mutelist", "unmute"];
+
+/// The mute commands as operators' clients get them in the command tree (`command_tree`'s usages).
+pub(super) const MUTE_USAGES: [&str; 4] = [
+    "mute <player:player> [duration_and_reason:text]",
+    "tempmute <player:player> <duration:word> [reason:text]",
+    "mutelist",
+    "unmute <player:player>",
+];
+
+/// `/mute <player> [duration] [reason]` (`words`, the command first): how long, when the word after
+/// the name is a duration (`10m`, `2h`, `1d`; none: until `/unmute`), and the index the reason starts at.
+fn mute_time(words: &[&str]) -> (Option<i64>, usize) {
+    match words
+        .get(2)
+        .and_then(|w| horizon_chat_filter::parse_duration(w))
+    {
+        Some(ms) => (Some(ms), 3),
+        None => (None, 2),
+    }
+}
 
 /// The reason a temporary ban gives at login.
 const BAN_REASON: &str = "Hate speech in chat (Horizon chat filter)";
@@ -295,7 +321,10 @@ impl Game<'_> {
                 lines
             }
             ["unmute", name] => vec![self.unmute(host, name, by)],
-            ["mute", name, ..] => vec![self.mute(host, name, None, reason(2), by)],
+            ["mute", name, ..] => {
+                let (time, from) = mute_time(words);
+                vec![self.mute(host, name, time, reason(from), by)]
+            }
             ["tempmute", name, time, ..] => match horizon_chat_filter::parse_duration(time) {
                 Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
                 None => vec![Reply::translated(
@@ -330,7 +359,7 @@ impl Game<'_> {
         let Some((uuid, name)) = user else {
             return Reply::no_player();
         };
-        let until = time.map(|ms| horizon_chat_filter::now_millis() + ms);
+        let until = mute_expiry(horizon_chat_filter::now_millis(), time);
         let what = time.map_or_else(
             || "until unmuted".into(),
             |ms| format!("for {}", horizon_chat_filter::duration_text(ms)),
@@ -497,5 +526,60 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn a_long_mute_keeps_its_expiry_and_duration_reply_after_reload() {
+        use horizon_chat_filter::{Config, Filter, Guard, parse_duration};
+        let root = std::env::temp_dir().join(format!("horizon-long-mute-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("mutes.json");
+        let _ = std::fs::remove_file(&file);
+        let now = 1_800_000_000_000;
+        let millis = parse_duration("9223372036854775s").unwrap();
+        let until = mute_expiry(now, Some(millis));
+        assert_eq!(until, Some(i64::MAX));
+        let mut guard = Guard::new(
+            Config::default(),
+            Filter::default_list(),
+            Some(file.clone()),
+        );
+        guard.mute(7, "Fay", until, "Operator", Some("reason".into()));
+        assert!(guard.muted(7, i64::MAX / 2).is_some());
+        drop(guard);
+        let restored = Guard::new(Config::default(), Filter::default_list(), Some(file));
+        let mute = restored.muted(7, i64::MAX / 2).unwrap();
+        assert_eq!(mute.until, Some(i64::MAX));
+        assert_eq!(
+            (
+                mute.name.as_str(),
+                mute.by.as_deref(),
+                mute.reason.as_deref()
+            ),
+            ("Fay", Some("Operator"), Some("reason"))
+        );
+        horizon_client::lang::scoped(horizon_client::lang::Language::load(&[], "en_us"), || {
+            let duration = Reply::duration(millis);
+            assert_eq!(
+                duration.translation_key(),
+                Some("horizon.moderation.duration.days")
+            );
+            assert_eq!(duration.plain(), "106751991168 days");
+        });
+        assert_eq!(mute_expiry(now, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mute_takes_a_duration_after_the_name_or_mutes_until_unmuted() {
+        assert_eq!(mute_time(&["mute", "Steve"]), (None, 2));
+        assert_eq!(mute_time(&["mute", "Steve", "spamming", "chat"]), (None, 2));
+        assert_eq!(
+            mute_time(&["mute", "Steve", "1h", "spam"]),
+            (Some(3_600_000), 3)
+        );
+        assert_eq!(mute_time(&["mute", "Steve", "30m"]), (Some(1_800_000), 3));
+        // Not a duration: the word starts the reason.
+        assert_eq!(mute_time(&["mute", "Steve", "0m", "spam"]), (None, 2));
     }
 }

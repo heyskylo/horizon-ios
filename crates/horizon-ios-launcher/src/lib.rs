@@ -84,43 +84,201 @@ pub fn take() -> Vec<Request> {
         .collect()
 }
 
-/// Whether the game may start loading: not until the player starts it from the launcher (Play, a world, a
-/// server), so opening the app costs nothing but the launcher. Open from the first where no launcher is bundled.
-static STARTED: (Mutex<Option<bool>>, std::sync::Condvar) =
-    (Mutex::new(None), std::sync::Condvar::new());
+/// The result of canceling one owned launcher start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelDecision {
+    /// The matching start must finish draining before its cancel is acknowledged.
+    Accepted,
+    /// Another start owns the engine, or this attempt has already been cleared.
+    Stale,
+    /// This start has already uncovered the game and cannot be canceled by an old task.
+    Committed,
+}
 
-/// Wait for the player to start the game from the launcher; at once in a build or bundle without one. The
-/// resource loader's thread waits here, so the window and the launcher come up while nothing loads. True when
-/// it waited, so the options may have changed meanwhile (the launcher's Settings and Packs).
+/// Logical ownership is kept beside the loader's start gate, so a delayed
+/// cancellation cannot reset a newer attempt or let a new attempt bypass drain.
+struct StartState {
+    started: Option<bool>,
+    owner: Option<String>,
+    canceling: Option<String>,
+    committed: bool,
+}
+
+impl StartState {
+    const fn new() -> Self {
+        Self {
+            started: None,
+            owner: None,
+            canceling: None,
+            committed: false,
+        }
+    }
+
+    fn start_owned(&mut self, owner: Option<&str>) -> bool {
+        if self.canceling.is_some() {
+            return false;
+        }
+        if self.started != Some(true) {
+            self.committed = false;
+        }
+        if let Some(owner) = owner {
+            self.owner = Some(owner.to_owned());
+        }
+        // A legacy fallback must not erase an owned start's identity. Likewise,
+        // starting an already visible engine does not make it cancelable again.
+        self.started = Some(true);
+        true
+    }
+
+    fn request_cancel(&mut self, owner: &str) -> CancelDecision {
+        if self.owner.as_deref() != Some(owner) {
+            return CancelDecision::Stale;
+        }
+        if self.committed {
+            return CancelDecision::Committed;
+        }
+        self.canceling = self.owner.clone();
+        // Keep the old loader's gate open until it has actually drained. Closing
+        // it now could leave an awakened worker asleep again during shutdown.
+        CancelDecision::Accepted
+    }
+
+    fn commit_start(&mut self) -> bool {
+        if self.started != Some(true) || self.canceling.is_some() {
+            return false;
+        }
+        self.committed = true;
+        true
+    }
+
+    fn commit_start_owned(&mut self, owner: &str) -> bool {
+        self.owner.as_deref() == Some(owner) && self.commit_start()
+    }
+
+    fn complete_cancel(&mut self, owner: &str, default_open: bool) -> bool {
+        if self.owner.as_deref() != Some(owner) || self.canceling.as_deref() != Some(owner) {
+            return false;
+        }
+        self.reset(default_open);
+        true
+    }
+
+    fn reset(&mut self, default_open: bool) {
+        *self = Self {
+            started: Some(default_open),
+            ..Self::new()
+        };
+    }
+}
+
+/// Whether the game may start loading: not until the player starts it from the launcher.
+static STARTED: (Mutex<StartState>, std::sync::Condvar) =
+    (Mutex::new(StartState::new()), std::sync::Condvar::new());
+
+/// Wait for the player to start the game from the launcher; at once in a build or bundle without one.
+/// True when it waited, so options changed meanwhile must be read again.
 pub fn wait_for_start() -> bool {
     let (started, signal) = &STARTED;
-    let mut started = started.lock().unwrap_or_else(PoisonError::into_inner);
-    let open = *started.get_or_insert_with(|| !bundled());
+    let mut state = started.lock().unwrap_or_else(PoisonError::into_inner);
+    let open = *state.started.get_or_insert_with(|| !bundled());
     if open {
         return false;
     }
-    while *started != Some(true) {
-        started = signal.wait(started).unwrap_or_else(PoisonError::into_inner);
+    while state.started != Some(true) {
+        state = signal.wait(state).unwrap_or_else(PoisonError::into_inner);
     }
     true
 }
 
-/// Let the game start loading (the launcher's `launcher-start`, or a launcher that could not be shown).
+/// Let the game load without an owned launcher attempt (legacy/fallback callers).
 pub fn start() {
-    let (started, signal) = &STARTED;
-    *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(true);
-    signal.notify_all();
+    let _ = start_owned(None);
 }
 
-/// Return to the launcher-only state after the engine has shut down.
+/// Begin or acknowledge an owned attempt. Reject every start while a previous
+/// cancellation is still draining. IDs are opaque strings supplied by the launcher.
+pub fn start_owned(owner: Option<&str>) -> bool {
+    let (started, signal) = &STARTED;
+    let accepted = started
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .start_owned(owner);
+    if accepted {
+        signal.notify_all();
+    }
+    accepted
+}
+
+/// Request cancellation only of the current, still-covered start.
+pub fn request_cancel(owner: &str) -> CancelDecision {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .request_cancel(owner)
+}
+
+pub fn cancellation_requested() -> bool {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .canceling
+        .is_some()
+}
+
+/// The attempt whose physical engine/loader teardown must complete before acknowledgment.
+pub fn cancellation_owner() -> Option<String> {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .canceling
+        .clone()
+}
+
+/// Commit the current start when the launcher actually uncovers the game.
+pub fn commit_start() -> bool {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .commit_start()
+}
+
+/// Commit only the current matching attempt before the launcher uncovers the
+/// game. This is the atomic decision point between canceling and entering play.
+pub fn commit_start_owned(owner: &str) -> bool {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .commit_start_owned(owner)
+}
+
+/// Complete only the matching cancellation, after its workers have drained.
+/// A stale completion cannot reset a newer start.
+pub fn complete_cancel(owner: &str) -> bool {
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .complete_cancel(owner, !bundled())
+}
+
+/// Return to launcher-only state after the engine has shut down normally.
 pub fn reset() {
-    *STARTED.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(!bundled());
+    STARTED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .reset(!bundled());
 }
 
 /// Whether the game is still waiting to be started.
 pub fn waiting() -> bool {
-    let started = STARTED.0.lock().unwrap_or_else(PoisonError::into_inner);
-    started.is_none_or(|open| !open) && bundled()
+    let state = STARTED.0.lock().unwrap_or_else(PoisonError::into_inner);
+    state.started.is_none_or(|open| !open) && bundled()
 }
 
 /// Whether this bundle carries the launcher, which holds the game until it is started.
@@ -249,6 +407,123 @@ mod tests {
     fn a_desktop_never_waits_to_be_started() {
         assert!(!waiting());
         assert!(!wait_for_start());
+    }
+
+    #[test]
+    fn owned_cancel_is_idempotent_and_blocks_new_starts_until_matching_completion() {
+        let mut state = StartState::new();
+        assert!(state.start_owned(Some("attempt A")));
+        assert!(state.start_owned(Some("attempt A")));
+        assert_eq!(state.request_cancel("attempt A"), CancelDecision::Accepted);
+        assert_eq!(state.request_cancel("attempt A"), CancelDecision::Accepted);
+        assert_eq!(state.canceling.as_deref(), Some("attempt A"));
+        // Do not close the old worker's gate while shutdown is still draining.
+        assert_eq!(state.started, Some(true));
+        assert!(!state.start_owned(Some("attempt B")));
+        assert!(!state.start_owned(None));
+        assert!(!state.commit_start());
+        assert!(!state.complete_cancel("attempt B", false));
+        assert_eq!(state.canceling.as_deref(), Some("attempt A"));
+        assert!(state.complete_cancel("attempt A", false));
+        assert_eq!(state.started, Some(false));
+        assert!(state.owner.is_none() && state.canceling.is_none());
+        assert!(!state.complete_cancel("attempt A", false));
+        assert!(state.start_owned(Some("attempt B")));
+        assert_eq!(state.request_cancel("attempt A"), CancelDecision::Stale);
+        assert!(!state.complete_cancel("attempt A", false));
+        assert_eq!(state.owner.as_deref(), Some("attempt B"));
+        assert_eq!(state.started, Some(true));
+    }
+
+    #[test]
+    fn replacing_an_uncommitted_start_does_not_let_its_old_task_cancel_the_new_one() {
+        let mut state = StartState::new();
+        assert!(state.start_owned(Some("old")));
+        assert!(state.start_owned(Some("new")));
+        assert_eq!(state.request_cancel("old"), CancelDecision::Stale);
+        assert!(!state.complete_cancel("old", false));
+        assert!(state.canceling.is_none());
+        assert_eq!(state.request_cancel("new"), CancelDecision::Accepted);
+        assert!(state.complete_cancel("new", false));
+    }
+
+    #[test]
+    fn owned_commit_requires_the_current_attempt_and_loses_to_an_accepted_cancel() {
+        let mut state = StartState::new();
+        assert!(!state.commit_start_owned("A"));
+        assert!(state.start_owned(Some("A")));
+        assert!(!state.commit_start_owned("wrong"));
+        assert!(!state.committed);
+        assert!(state.commit_start_owned("A"));
+        assert!(state.commit_start_owned("A"));
+        assert_eq!(state.request_cancel("A"), CancelDecision::Committed);
+        assert!(state.start_owned(Some("B")));
+        assert!(!state.commit_start_owned("A"));
+        assert!(state.commit_start_owned("B"));
+        assert_eq!(state.request_cancel("A"), CancelDecision::Stale);
+        assert_eq!(state.request_cancel("B"), CancelDecision::Committed);
+
+        state.reset(false);
+        assert!(state.start_owned(Some("A")));
+        assert_eq!(state.request_cancel("A"), CancelDecision::Accepted);
+        assert!(!state.commit_start_owned("A"));
+        assert!(!state.committed);
+        assert_eq!(state.canceling.as_deref(), Some("A"));
+        assert!(state.complete_cancel("A", false));
+        assert!(state.start_owned(Some("B")));
+        assert!(!state.commit_start_owned("A"));
+        assert!(state.commit_start_owned("B"));
+    }
+
+    #[test]
+    fn a_visible_engine_stays_committed_until_normal_reset() {
+        let mut state = StartState::new();
+        assert!(!state.commit_start());
+        assert!(state.start_owned(Some("first")));
+        assert!(state.commit_start());
+        assert!(state.start_owned(Some("first")));
+        assert_eq!(state.request_cancel("first"), CancelDecision::Committed);
+        // A new task asking to use an already visible engine cannot make that
+        // engine cancelable again, nor can the first task stop its replacement.
+        assert!(state.start_owned(Some("second")));
+        assert_eq!(state.request_cancel("first"), CancelDecision::Stale);
+        assert_eq!(state.request_cancel("second"), CancelDecision::Committed);
+        assert!(!state.complete_cancel("second", false));
+        state.reset(false);
+        assert!(state.owner.is_none() && state.canceling.is_none());
+        assert!(!state.committed);
+        assert!(state.start_owned(Some("third")));
+        assert_eq!(state.request_cancel("second"), CancelDecision::Stale);
+        assert_eq!(state.request_cancel("third"), CancelDecision::Accepted);
+    }
+
+    #[test]
+    fn legacy_start_preserves_owned_identity_and_reset_keeps_the_platform_default() {
+        let mut state = StartState::new();
+        assert!(state.start_owned(None));
+        assert_eq!(state.request_cancel("unknown"), CancelDecision::Stale);
+        assert!(state.start_owned(Some("owned")));
+        assert!(state.start_owned(None));
+        assert_eq!(state.owner.as_deref(), Some("owned"));
+        assert_eq!(state.request_cancel("owned"), CancelDecision::Accepted);
+        assert!(state.complete_cancel("owned", true));
+        assert_eq!(state.started, Some(true));
+        assert!(state.owner.is_none() && state.canceling.is_none());
+        assert!(!state.committed);
+    }
+
+    #[test]
+    fn normal_reset_clears_pending_ownership_after_engine_shutdown() {
+        let mut state = StartState::new();
+        assert!(state.start_owned(Some("old")));
+        assert_eq!(state.request_cancel("old"), CancelDecision::Accepted);
+        state.reset(false);
+        assert_eq!(state.started, Some(false));
+        assert_eq!(state.request_cancel("old"), CancelDecision::Stale);
+        assert!(!state.complete_cancel("old", false));
+        assert!(state.start_owned(Some("new")));
+        assert!(state.commit_start());
+        assert_eq!(state.request_cancel("old"), CancelDecision::Stale);
     }
 
     #[test]

@@ -228,6 +228,27 @@ pub enum Resolve {
     Done(Option<ResolvedProfile>),
 }
 
+/// A caller's captured profile future. Its result outlives eviction from the
+/// shared resolver cache, as ClientMannequin.skinLookup does in vanilla.
+#[derive(Clone, Debug, Default)]
+pub struct ProfileLookup(std::sync::Arc<std::sync::OnceLock<Option<ResolvedProfile>>>);
+impl ProfileLookup {
+    pub fn state(&self) -> Resolve {
+        match self.0.get() {
+            Some(resolved) => Resolve::Done(resolved.clone()),
+            None => Resolve::Pending,
+        }
+    }
+    fn complete(&self, resolved: Option<ResolvedProfile>) {
+        let _ = self.0.set(resolved);
+    }
+    fn completed(resolved: Option<ResolvedProfile>) -> Self {
+        let lookup = Self::default();
+        lookup.complete(resolved);
+        lookup
+    }
+}
+
 /// `ProfileResolver.Cached`: resolves a `Dynamic` profile through the
 /// services — `profileCacheByName` asks `profiles`/`getByName` for the id,
 /// `profileCacheById` asks `session`/`getProfileById` for the profile —
@@ -240,13 +261,12 @@ pub struct Resolver {
     last_sweep: std::time::Instant,
     next_request: u64,
 }
-type ProfileCompletion = (NameOrId, u64, Option<ResolvedProfile>);
+type ProfileCompletion = (NameOrId, u64, ProfileLookup);
 struct Entry {
     /// The fetch that owns this entry, even if this key was evicted and requested again.
     request: u64,
     touched: std::time::Instant,
-    /// `None` while the fetch is in flight.
-    resolved: Option<Option<ResolvedProfile>>,
+    lookup: ProfileLookup,
 }
 /// `ProfileResolver.Cached`'s cache bounds.
 const MAX_PROFILES: usize = 256;
@@ -330,9 +350,10 @@ impl Resolver {
             self.entries.remove(&oldest);
         }
     }
-    /// How the resolution of `key` stands, starting it the first time.
-    pub fn state(&mut self, key: &NameOrId) -> Resolve {
-        while let Ok((key, request, resolved)) = self.done.try_recv() {
+    /// Drain completed jobs into matching shared entries. Captured futures
+    /// are settled by their worker even when no cache entry remains.
+    pub fn poll(&mut self) {
+        while let Ok((key, request, lookup)) = self.done.try_recv() {
             // A cache eviction does not stop its worker. Only the fetch that
             // owns the current entry may settle it; an old answer must neither
             // replace a newer profile nor bring an evicted entry back.
@@ -340,28 +361,44 @@ impl Resolver {
                 && entry.request == request
             {
                 entry.touched = std::time::Instant::now();
-                entry.resolved = Some(resolved);
+                entry.lookup = lookup;
             }
         }
         self.sweep();
+    }
+    /// Capture this request for a live caller, independently of the shared
+    /// cache's capacity and expiry. Drop the handle when the caller changes.
+    pub fn lookup(&mut self, key: &NameOrId) -> ProfileLookup {
+        self.state(key);
+        self.entries
+            .get(key)
+            .expect("lookup creates its entry")
+            .lookup
+            .clone()
+    }
+    /// How the shared cache's resolution stands, starting it the first time.
+    pub fn state(&mut self, key: &NameOrId) -> Resolve {
+        self.poll();
         if let Some(entry) = self.entries.get_mut(key) {
             entry.touched = std::time::Instant::now();
-            return match &entry.resolved {
-                Some(resolved) => Resolve::Done(resolved.clone()),
-                None => Resolve::Pending,
-            };
+            return entry.lookup.state();
         }
         // `fetchByName` refuses an invalid name without a fetch; like every
         // other empty answer that is the cached result.
         let resolved = matches!(key, NameOrId::Name(name) if !valid_player_name(name));
         self.next_request = self.next_request.wrapping_add(1);
         let request = self.next_request;
+        let lookup = if resolved {
+            ProfileLookup::completed(None)
+        } else {
+            ProfileLookup::default()
+        };
         self.entries.insert(
             key.clone(),
             Entry {
                 request,
                 touched: std::time::Instant::now(),
-                resolved: resolved.then_some(None),
+                lookup: lookup.clone(),
             },
         );
         if resolved {
@@ -372,7 +409,10 @@ impl Resolver {
             let resolved = crate::auth::discovery()
                 .ok()
                 .and_then(|doc| resolve_profile(&key, &doc));
-            let _ = send.send((key, request, resolved));
+            // This particular caller's future owns its answer. A later
+            // request for the same key has a different handle/generation.
+            lookup.complete(resolved);
+            let _ = send.send((key, request, lookup));
         });
         Resolve::Pending
     }
@@ -1305,8 +1345,63 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_live_profile_future_survives_pressure_and_expiry_without_retries() {
+        use super::{Entry, NameOrId, ProfileLookup, Resolve, ResolvedProfile, Resolver};
+        let mut cache = Resolver::new();
+        let now = std::time::Instant::now();
+        let mut callers = Vec::new();
+        for id in 0..501 {
+            let lookup = ProfileLookup::default();
+            cache.entries.insert(
+                NameOrId::Id(id),
+                Entry {
+                    request: id as u64 + 1,
+                    touched: now - std::time::Duration::from_micros(501 - id as u64),
+                    lookup: lookup.clone(),
+                },
+            );
+            callers.push(lookup);
+        }
+        cache.last_sweep = now - std::time::Duration::from_secs(31);
+        cache.sweep();
+        assert_eq!(cache.entries.len(), super::MAX_PROFILES);
+        assert!(!cache.entries.contains_key(&NameOrId::Id(0)));
+        // A worker settles exactly the future the live entity captured, not
+        // whichever entry now happens to have the same shared-cache key.
+        callers[0].complete(Some(ResolvedProfile {
+            id: 0,
+            name: "VisibleNPC".into(),
+            properties: vec![("textures".into(), "custom-skin".into(), None)],
+        }));
+        cache
+            .send
+            .send((NameOrId::Id(0), 1, callers[0].clone()))
+            .unwrap();
+        cache.poll();
+        assert!(
+            !cache.entries.contains_key(&NameOrId::Id(0)),
+            "no cache resurrection"
+        );
+        callers[0].complete(None); // A future's settled answer cannot roll back.
+        for entry in cache.entries.values_mut() {
+            entry.touched = now - super::PROFILE_TTL;
+        }
+        cache.last_sweep = now - std::time::Duration::from_secs(31);
+        cache.sweep();
+        let Resolve::Done(Some(profile)) = callers[0].state() else {
+            panic!("the caller lost its ready skin");
+        };
+        assert_eq!(profile.properties[0].1, "custom-skin");
+        assert!(cache.entries.is_empty());
+        assert_eq!(
+            cache.next_request, 0,
+            "polling a held future starts no replacement fetch"
+        );
+    }
+
+    #[test]
     fn profile_completions_only_settle_their_current_request() {
-        use super::{Entry, NameOrId, Resolve, ResolvedProfile, Resolver};
+        use super::{Entry, NameOrId, ProfileLookup, Resolve, ResolvedProfile, Resolver};
         let key = NameOrId::Name("NPC".into());
         let profile = |value: &str| ResolvedProfile {
             id: 1,
@@ -1320,7 +1415,7 @@ mod tests {
             Entry {
                 request: 1,
                 touched: now - super::PROFILE_TTL,
-                resolved: None,
+                lookup: ProfileLookup::default(),
             },
         );
         cache.last_sweep = now - std::time::Duration::from_secs(31);
@@ -1335,17 +1430,25 @@ mod tests {
             Entry {
                 request: 2,
                 touched: now,
-                resolved: None,
+                lookup: ProfileLookup::default(),
             },
         );
         cache
             .send
-            .send((key.clone(), 1, Some(profile("old"))))
+            .send((
+                key.clone(),
+                1,
+                ProfileLookup::completed(Some(profile("old"))),
+            ))
             .unwrap();
         assert!(matches!(cache.state(&key), Resolve::Pending));
         cache
             .send
-            .send((key.clone(), 2, Some(profile("new"))))
+            .send((
+                key.clone(),
+                2,
+                ProfileLookup::completed(Some(profile("new"))),
+            ))
             .unwrap();
         let Resolve::Done(Some(current)) = cache.state(&key) else {
             panic!("the current worker must resolve its profile");
@@ -1354,7 +1457,11 @@ mod tests {
         // A late old completion must not roll a ready newer skin back either.
         cache
             .send
-            .send((key.clone(), 1, Some(profile("old"))))
+            .send((
+                key.clone(),
+                1,
+                ProfileLookup::completed(Some(profile("old"))),
+            ))
             .unwrap();
         let Resolve::Done(Some(current)) = cache.state(&key) else {
             panic!("the current resolved profile must stay ready");
@@ -1364,7 +1471,7 @@ mod tests {
 
     #[test]
     fn profile_completions_keep_capacity_evictions_and_current_negative_results() {
-        use super::{Entry, NameOrId, Resolve, Resolver};
+        use super::{Entry, NameOrId, ProfileLookup, Resolve, Resolver};
         let key = NameOrId::Id(7);
         let mut cache = Resolver::new();
         let now = std::time::Instant::now();
@@ -1373,7 +1480,7 @@ mod tests {
             Entry {
                 request: 1,
                 touched: now - std::time::Duration::from_secs(1),
-                resolved: None,
+                lookup: ProfileLookup::default(),
             },
         );
         for id in 100..100 + super::MAX_PROFILES {
@@ -1382,7 +1489,7 @@ mod tests {
                 Entry {
                     request: 1,
                     touched: now,
-                    resolved: Some(None),
+                    lookup: ProfileLookup::completed(None),
                 },
             );
         }
@@ -1395,12 +1502,18 @@ mod tests {
             Entry {
                 request: 2,
                 touched: now,
-                resolved: None,
+                lookup: ProfileLookup::default(),
             },
         );
-        cache.send.send((key.clone(), 1, None)).unwrap();
+        cache
+            .send
+            .send((key.clone(), 1, ProfileLookup::completed(None)))
+            .unwrap();
         assert!(matches!(cache.state(&key), Resolve::Pending));
-        cache.send.send((key.clone(), 2, None)).unwrap();
+        cache
+            .send
+            .send((key.clone(), 2, ProfileLookup::completed(None)))
+            .unwrap();
         assert!(matches!(cache.state(&key), Resolve::Done(None)));
         // A genuine missing-profile answer remains cached, as before; this
         // repair does not introduce a new per-frame network retry policy.
@@ -1409,7 +1522,7 @@ mod tests {
 
     #[test]
     fn profile_completions_do_not_revive_evicted_entries() {
-        use super::{Entry, NameOrId, Resolve, Resolver};
+        use super::{Entry, NameOrId, ProfileLookup, Resolve, Resolver};
         let key = NameOrId::Id(7);
         let mut cache = Resolver::new();
         cache.entries.insert(
@@ -1417,11 +1530,14 @@ mod tests {
             Entry {
                 request: 1,
                 touched: std::time::Instant::now(),
-                resolved: None,
+                lookup: ProfileLookup::default(),
             },
         );
         cache.entries.remove(&key);
-        cache.send.send((key.clone(), 1, None)).unwrap();
+        cache
+            .send
+            .send((key.clone(), 1, ProfileLookup::completed(None)))
+            .unwrap();
         // An unrelated invalid-name lookup drains completions without HTTP.
         assert!(matches!(
             cache.state(&NameOrId::Name("invalid name".into())),

@@ -52,6 +52,15 @@ final class LauncherLayoutTests: XCTestCase {
         XCTAssertFalse(app.alerts["Launcher UI preview"].exists)
     }
 
+    func testPreviewPlayUsesOwnedStartupAndPresentationCommit() {
+        let app = launch(signedIn: false)
+        let play = app.buttons["launcher-play-button"]
+        XCTAssertTrue(play.isEnabled)
+        play.tap()
+        XCTAssertTrue(app.alerts["Launcher UI preview"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts["Something went wrong"].exists)
+    }
+
     func testFirstRunDownloadFailureKeepsRetryAndManualFallbackAvailable() throws {
         guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
             throw XCTSkip("Requires the loopback download fixture")

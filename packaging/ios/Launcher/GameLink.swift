@@ -97,7 +97,18 @@ final class GameLink: ObservableObject {
         throw AccountError("Account setup is not ready. Try Play again.")
     }
     /// What to ask as soon as the title screen can take it: Play tapped while the game was loading.
-    private var launchID = UUID()
+    @MainActor
+    private final class LaunchAttempt {
+        let id = UUID()
+        var submitted = false
+        var accepted = false
+        var cancelled = false
+        var presented = false
+        var failure: String?
+        var cleanup: Task<Void, Never>?
+    }
+    private var currentLaunch: LaunchAttempt?
+    private var phaseEpoch = UUID()
     private var queued: (id: UUID, action: () async -> [String: Any])?
     private let send: (String) async -> [String: Any]
 
@@ -119,7 +130,9 @@ final class GameLink: ObservableObject {
     }
 
     func refresh() async {
+        let epoch = phaseEpoch
         let state = await self.send("launcher-state")
+        guard epoch == phaseEpoch else { return }
         let was = phase
         switch state["phase"] as? String {
         case "waiting":
@@ -168,15 +181,12 @@ final class GameLink: ObservableObject {
     func play(_ world: World? = nil) async {
         Haptics.launch()
         guard let world else {
-            guard launching == nil else { return }
-            let attempt = UUID(); launchID = attempt
-            launching = "Preparing account…"
-            defer { if launchID == attempt { launching = nil } }
-            do { try await start(attempt); uncover() }
-            catch {
-                if launchID == attempt, !(error is CancellationError) {
-                    problem = error.localizedDescription; Haptics.failed()
-                }
+            guard let attempt = beginLaunch("Preparing account…") else { return }
+            await protectingCancellation(of: attempt) {
+                do {
+                    try await self.start(attempt)
+                    try await self.present(attempt)
+                } catch { await self.failed(attempt, error: error) }
             }
             return
         }
@@ -197,60 +207,171 @@ final class GameLink: ObservableObject {
         await go("Joining \(address)") { await self.send("connect \(address)") }
     }
 
-    /// Let the game load, if it is still waiting to be started.
-    private func start(_ attempt: UUID) async throws {
-        try await prepareSession()
-        try Task.checkCancellation()
-        guard launchID == attempt else { throw CancellationError() }
-        if phase == .waiting || phase == .unknown {
-            let answer = await self.send("launcher-start")
-            guard answer["ok"] as? Bool == true, answer.error == nil else {
-                throw AccountError("The game could not start. Try again.")
-            }
-            guard launchID == attempt else { throw CancellationError() }
-            phase = .loading(0)
-        }
-    }
-
-    /// Ask now, or start the game and ask as soon as it reaches its title; uncover the game once it is on its way.
-    private func go(_ label: String, _ action: @escaping () async -> [String: Any]) async {
-        guard launching == nil else { return }
-        let attempt = UUID(); launchID = attempt
+    private func beginLaunch(_ label: String) -> LaunchAttempt? {
+        guard launching == nil else { return nil }
+        let attempt = LaunchAttempt()
+        currentLaunch = attempt
+        phaseEpoch = UUID()
         launching = label
-        do { try await start(attempt) }
-        catch {
-            if launchID == attempt {
-                launching = nil
-                if !(error is CancellationError) { problem = error.localizedDescription; Haptics.failed() }
-            }
-            return
+        return attempt
+    }
+
+    private func check(_ attempt: LaunchAttempt) throws {
+        try Task.checkCancellation()
+        guard currentLaunch === attempt, !attempt.cancelled else { throw CancellationError() }
+    }
+
+    /// Task cancellation can arrive while a bridge continuation is suspended.
+    /// Cleanup is an independent task, not work inherited by the cancelled caller.
+    private func protectingCancellation(of attempt: LaunchAttempt,
+                                        operation: @MainActor () async -> Void) async {
+        await withTaskCancellationHandler(operation: operation, onCancel: { [weak self] in
+            Task { @MainActor in self?.requestCancellation(attempt) }
+        })
+    }
+
+    private func start(_ attempt: LaunchAttempt) async throws {
+        try await prepareSession()
+        try check(attempt)
+        // The cached phase can predate Quit/reset. Ask the backend on every
+        // intent, and assign ownership before it is allowed to start loading.
+        attempt.submitted = true
+        let answer = await self.send("launcher-start \(attempt.id.uuidString)")
+        guard answer["ok"] as? Bool == true, answer.error == nil else {
+            try check(attempt)
+            throw AccountError(answer.error ?? "The game could not start. Try again.")
         }
-        if ready {
-            await run(action, attempt: attempt)
-        } else {
-            queued = (attempt, action)
+        attempt.accepted = true
+        try check(attempt)
+        phaseEpoch = UUID()
+        switch answer["phase"] as? String {
+        case "title": phase = .title
+        case "world": phase = .world
+        case "loading": phase = .loading(0)
+        default:
+            if phase == .waiting || phase == .unknown { phase = .loading(0) }
         }
     }
 
-    private func run(_ action: () async -> [String: Any], attempt: UUID) async {
-        defer { if launchID == attempt { launching = nil } }
-        guard launchID == attempt, !Task.isCancelled else { return }
-        let answer = await action()
-        guard launchID == attempt, !Task.isCancelled else { return }
-        launching = nil
-        if let error = answer.error {
-            problem = error
-            Haptics.failed()
-            return
+    /// Presentation has an explicit backend commit point. Once it commits,
+    /// a late cancellation must show that engine instead of leaving it hidden.
+    private func present(_ attempt: LaunchAttempt) async throws {
+        try check(attempt)
+        let answer = await self.send("launcher-commit-start \(attempt.id.uuidString)")
+        if answer["ok"] as? Bool == true, answer["status"] as? String == "committed" {
+            finishPresentation(attempt)
+        } else {
+            try check(attempt)
+            throw AccountError(answer.error ?? "The game could not be shown. Try again.")
         }
+    }
+
+    private func finishPresentation(_ attempt: LaunchAttempt) {
+        guard currentLaunch === attempt, !attempt.presented else { return }
+        attempt.presented = true
+        if queued?.id == attempt.id { queued = nil }
+        currentLaunch = nil
+        phaseEpoch = UUID()
+        if phase == .waiting || phase == .unknown { phase = .loading(0) }
+        launching = nil
         uncover()
     }
 
-    /// Cancel a launch that is waiting for the game to load.
+    private func failed(_ attempt: LaunchAttempt, error: Error) async {
+        if error is CancellationError || Task.isCancelled || attempt.cancelled {
+            requestCancellation(attempt)
+        } else if currentLaunch === attempt {
+            if attempt.accepted {
+                attempt.failure = error.localizedDescription
+                requestCancellation(attempt)
+            } else {
+                currentLaunch = nil
+                launching = nil
+                problem = error.localizedDescription
+                Haptics.failed()
+            }
+        }
+        if let cleanup = attempt.cleanup { await cleanup.value }
+    }
+
+    private func requestCancellation(_ attempt: LaunchAttempt) {
+        guard currentLaunch === attempt, !attempt.presented else { return }
+        attempt.cancelled = true
+        if queued?.id == attempt.id { queued = nil }
+        guard attempt.submitted else {
+            currentLaunch = nil
+            phaseEpoch = UUID()
+            launching = nil
+            return
+        }
+        launching = "Stopping game…"
+        guard attempt.cleanup == nil else { return }
+        attempt.cleanup = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let answer = await self.send("launcher-cancel-start \(attempt.id.uuidString)")
+            guard self.currentLaunch === attempt else { return }
+            guard answer["ok"] as? Bool == true,
+                  let status = answer["status"] as? String,
+                  ["stopped", "stale", "committed"].contains(status) else {
+                // Do not enable another Play while shutdown is unproven. A
+                // second Cancel retries a failed bridge operation.
+                attempt.cleanup = nil
+                self.problem = answer.error ?? "The game could not stop. Tap Cancel to retry."
+                Haptics.failed()
+                return
+            }
+            if status == "committed" {
+                self.finishPresentation(attempt)
+                return
+            }
+            self.currentLaunch = nil
+            self.phaseEpoch = UUID()
+            self.launching = nil
+            if status == "stopped" {
+                if self.phase != .waiting { GameAudio.stop() }
+                self.phase = .waiting
+            }
+            if let failure = attempt.failure {
+                self.problem = failure
+                Haptics.failed()
+            }
+        }
+    }
+
+    /// Ask now, or start and wait until the title can accept the action.
+    private func go(_ label: String, _ action: @escaping () async -> [String: Any]) async {
+        guard let attempt = beginLaunch(label) else { return }
+        await protectingCancellation(of: attempt) {
+            do {
+                try await self.start(attempt)
+                if self.ready {
+                    await self.run(action, attempt: attempt.id)
+                } else {
+                    try self.check(attempt)
+                    self.queued = (attempt.id, action)
+                }
+            } catch { await self.failed(attempt, error: error) }
+        }
+    }
+
+    private func run(_ action: () async -> [String: Any], attempt id: UUID) async {
+        guard let attempt = currentLaunch, attempt.id == id else { return }
+        await protectingCancellation(of: attempt) {
+            do {
+                try self.check(attempt)
+                let answer = await action()
+                try self.check(attempt)
+                if let error = answer.error { throw AccountError(error) }
+                try await self.present(attempt)
+            } catch { await self.failed(attempt, error: error) }
+        }
+    }
+
+    /// Before start submission this is immediate. Once submitted, Play remains
+    /// disabled until the matching backend cancellation has drained and replied.
     func cancelLaunch() {
-        launchID = UUID()
-        queued = nil
-        launching = nil
+        guard let attempt = currentLaunch else { return }
+        requestCancellation(attempt)
     }
 
     // MARK: - Worlds

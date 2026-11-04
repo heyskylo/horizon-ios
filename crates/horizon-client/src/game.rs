@@ -21626,6 +21626,47 @@ struct Loading {
 /// world renderer anyway (a hidden window may never be asked to redraw).
 const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
+    /// Drain a cancelled generation without uploading its UI or constructing Game.
+    /// Only join workers already known to be finished; UIKit keeps polling meanwhile.
+    fn drain_cancelled_start(&mut self) -> bool {
+        if self
+            .handle
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return false;
+        }
+        if let Some(worker) = self.handle.take()
+            && worker.join().is_err()
+        {
+            log::warn!("Horizon: cancelled resource loader panicked");
+        }
+        for message in self.receiver.try_iter() {
+            if let LoaderMsg::Done(result) = message {
+                self.loaded = Some(result);
+            }
+        }
+        self.delivered = true;
+        if let Some(Ok(loaded)) = &mut self.loaded {
+            if loaded
+                .rest_loader
+                .as_ref()
+                .is_some_and(|tail| !tail.handle.is_finished())
+            {
+                return false;
+            }
+            if let Some(tail) = loaded.rest_loader.take() {
+                let _ = tail.finish();
+            }
+        }
+        if !world_loading::shutdown_preload() || !world_loading::shutdown_prepared_files() {
+            return false;
+        }
+        self.loaded = None;
+        self.gui = None;
+        true
+    }
+
     /// The world renderer is built on the main thread, so building it before
     /// the title is on the screen holds the title back by that build. Wait for
     /// one title frame first, unless a world is waiting to open.
@@ -21827,6 +21868,9 @@ impl Loading {
                 ));
                 return;
             }
+        }
+        if horizon_ios_launcher::cancellation_requested() {
+            return;
         }
         if self.handle.is_none() && self.loaded.is_none() && !self.importing() {
             mark_game_start(&mut self.settings);
@@ -22091,6 +22135,7 @@ impl App {
                 }
                 let game = &mut split.host;
                 if game.quit_to_launcher {
+                    let cancelled_start = horizon_ios_launcher::cancellation_owner();
                     game.audio.stop_all();
                     horizon_client::heartbeat::stop();
                     horizon_client::discord_presence::set(
@@ -22127,7 +22172,11 @@ impl App {
                     options.resources = root.clone();
                     options.world = None;
                     options.server = None;
-                    horizon_ios_launcher::reset();
+                    if let Some(owner) = &cancelled_start {
+                        horizon_ios_launcher::complete_cancel(owner);
+                    } else {
+                        horizon_ios_launcher::reset();
+                    }
                     match launcher_loading(
                         options,
                         game.settings.clone(),
@@ -22140,6 +22189,9 @@ impl App {
                             *self = App::Loading(Box::new(loading));
                             world_loading::release_world_data();
                             horizon_airplay::screen(false, false);
+                            if let Some(owner) = cancelled_start {
+                                launcher::acknowledge_cancelled_start(&owner);
+                            }
                         }
                         Err(error) => {
                             game.error = Some(error);
@@ -22152,7 +22204,52 @@ impl App {
                 return;
             }
             App::Loading(loading) => {
-                loading.about_to_wait(event_loop);
+                if horizon_ios_launcher::cancellation_requested() {
+                    if let Err(error) = loading.poll_launcher() {
+                        loading.error = Some(error);
+                    }
+                } else {
+                    loading.about_to_wait(event_loop);
+                }
+                if let Some(owner) = horizon_ios_launcher::cancellation_owner() {
+                    if !loading.drain_cancelled_start() {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(
+                            Instant::now() + Duration::from_millis(33),
+                        ));
+                        return;
+                    }
+                    let Some(mut options) = loading.options.clone() else {
+                        event_loop.exit();
+                        return;
+                    };
+                    options.world = None;
+                    options.server = None;
+                    options.resources = loading.vanilla_root.clone();
+                    let window = loading.window.clone();
+                    let settings = loading.settings.clone();
+                    let root = loading.vanilla_root.clone();
+                    horizon_client::heartbeat::stop();
+                    horizon_client::discord_presence::set(
+                        horizon_client::discord_presence::Status::Off,
+                    );
+                    horizon_airplay::screen(false, false);
+                    if !horizon_ios_launcher::complete_cancel(&owner) {
+                        return;
+                    }
+                    match launcher_loading(options, settings, root, None, Instant::now()) {
+                        Ok(mut idle) => {
+                            idle.window = window;
+                            *self = App::Loading(Box::new(idle));
+                            world_loading::release_world_data();
+                            launcher::acknowledge_cancelled_start(&owner);
+                        }
+                        Err(error) => {
+                            loading.error = Some(error);
+                            event_loop.exit();
+                        }
+                    }
+                    return;
+                }
                 if loading.error.is_some() {
                     event_loop.exit();
                     return;
