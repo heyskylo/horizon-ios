@@ -1851,8 +1851,8 @@ impl Game<'_> {
     /// `LivingEntity.dropFromGiftLootTable`: the gift table from its random
     /// sequence with the mob as `this` (a chicken's egg depends on its
     /// variant); the loot data of the game's resources decides, and without it
-    /// the items' table engine (no entity) rolls it.
-    fn drop_gift_loot(&mut self, mob: u32, table: &'static str, at: [f64; 3]) {
+    /// the items' table engine (no entity) rolls it. Whether anything dropped.
+    fn drop_gift_loot(&mut self, mob: u32, table: &'static str, at: [f64; 3]) -> bool {
         use horizon_client::mobs::drops;
         use horizon_world::loot::EntityLootParams;
         let loot = horizon_client::structure_blocks::loot_data(
@@ -1888,11 +1888,13 @@ impl Game<'_> {
                 .items()
                 .loot_table(table, false, None, &mut self.world.random),
         };
+        let dropped = !stacks.is_empty();
         for d in stacks {
             // The ItemEntity constructor's motion, from the entity's own
             // random (not the level's).
             self.spawn_item(d, at, dispenser::new_item_motion(), 10);
         }
+        dropped
     }
     /// Adds a projectile, giving it an id from the entity counter
     /// (`Entity.id`, the same counter as the rest) when it has none.
@@ -3054,6 +3056,16 @@ impl Game<'_> {
                     );
                     let ctx = self.who_context(Some(Who::Mob(mob)), None);
                     self.post_game_event("minecraft:entity_place", at, ctx);
+                }
+                MobEvent::LayEgg { mob, at, pitch } => {
+                    // Chicken.aiStep: `dropFromGiftLootTable` says whether
+                    // anything dropped; only then the sound and the game event.
+                    if self.drop_gift_loot(mob, "minecraft:gameplay/chicken_lay", at) {
+                        self.audio
+                            .play("minecraft:entity.chicken.egg", Some(at), 1.0, pitch);
+                        let ctx = self.who_context(Some(Who::Mob(mob)), None);
+                        self.post_game_event("minecraft:entity_place", at, ctx);
+                    }
                 }
                 MobEvent::GiftLoot { mob, table, at } => {
                     // Turtle.ageBoundaryReached and Panda.afterSneeze: only
