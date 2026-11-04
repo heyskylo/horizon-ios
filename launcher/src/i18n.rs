@@ -137,10 +137,28 @@ pub enum Language {
     Somali,
     #[serde(rename = "fy")]
     Frisian,
+    #[serde(rename = "gd")]
+    ScottishGaelic,
+    #[serde(rename = "lb")]
+    Luxembourgish,
+    #[serde(rename = "ky")]
+    Kyrgyz,
+    #[serde(rename = "kn")]
+    Kannada,
+    #[serde(rename = "mt")]
+    Maltese,
+    #[serde(rename = "eo")]
+    Esperanto,
+    #[serde(rename = "haw")]
+    Hawaiian,
+    #[serde(rename = "ig")]
+    Igbo,
+    #[serde(rename = "la")]
+    Latin,
 }
 
 impl Language {
-    pub const ALL: [Language; 62] = [
+    pub const ALL: [Language; 71] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -203,6 +221,15 @@ impl Language {
         Self::Lao,
         Self::Somali,
         Self::Frisian,
+        Self::ScottishGaelic,
+        Self::Luxembourgish,
+        Self::Kyrgyz,
+        Self::Kannada,
+        Self::Maltese,
+        Self::Esperanto,
+        Self::Hawaiian,
+        Self::Igbo,
+        Self::Latin,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -270,6 +297,15 @@ impl Language {
             Self::Lao => "lo",
             Self::Somali => "so",
             Self::Frisian => "fy",
+            Self::ScottishGaelic => "gd",
+            Self::Luxembourgish => "lb",
+            Self::Kyrgyz => "ky",
+            Self::Kannada => "kn",
+            Self::Maltese => "mt",
+            Self::Esperanto => "eo",
+            Self::Hawaiian => "haw",
+            Self::Igbo => "ig",
+            Self::Latin => "la",
         }
     }
 
@@ -338,6 +374,15 @@ impl Language {
             Self::Lao => "ລາວ",
             Self::Somali => "Soomaali",
             Self::Frisian => "Frysk",
+            Self::ScottishGaelic => "Gàidhlig",
+            Self::Luxembourgish => "Lëtzebuergesch",
+            Self::Kyrgyz => "Кыргызча",
+            Self::Kannada => "ಕನ್ನಡ",
+            Self::Maltese => "Malti",
+            Self::Esperanto => "Esperanto",
+            Self::Hawaiian => "ʻŌlelo Hawaiʻi",
+            Self::Igbo => "Igbo",
+            Self::Latin => "Latina",
         }
     }
 
@@ -448,6 +493,15 @@ impl Language {
             Self::Lao => include_str!("../lang/lo.json"),
             Self::Somali => include_str!("../lang/so.json"),
             Self::Frisian => include_str!("../lang/fy.json"),
+            Self::ScottishGaelic => include_str!("../lang/gd.json"),
+            Self::Luxembourgish => include_str!("../lang/lb.json"),
+            Self::Kyrgyz => include_str!("../lang/ky.json"),
+            Self::Kannada => include_str!("../lang/kn.json"),
+            Self::Maltese => include_str!("../lang/mt.json"),
+            Self::Esperanto => include_str!("../lang/eo.json"),
+            Self::Hawaiian => include_str!("../lang/haw.json"),
+            Self::Igbo => include_str!("../lang/ig.json"),
+            Self::Latin => include_str!("../lang/la.json"),
         }
     }
 }
