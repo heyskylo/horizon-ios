@@ -1917,7 +1917,10 @@ mod tests {
     fn a_cloud_still_counts_the_wither_as_a_victim() {
         let tags = std::collections::HashMap::new();
         for effect in ["strength", "instant_health"] {
-            assert!(mob_can_be_affected(&tags, "minecraft:wither", effect), "{effect}");
+            assert!(
+                mob_can_be_affected(&tags, "minecraft:wither", effect),
+                "{effect}"
+            );
         }
         assert!(!mob_can_be_affected(&tags, "minecraft:wither", "wither"));
     }
