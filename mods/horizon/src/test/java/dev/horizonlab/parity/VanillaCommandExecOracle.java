@@ -233,6 +233,29 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "settle" -> settle();
+                    case "crafter_max_map_fixture" -> {
+                        // Independent official saved-map file, copied unchanged to the Game scratch world.
+                        level.setMapData(new net.minecraft.world.level.saveddata.maps.MapId(31),
+                            net.minecraft.world.level.saveddata.maps.MapItemSavedData.createFresh(
+                                0, 0, (byte) 4, true, false, level.dimension()));
+                        level.getServer().getDataStorage().saveAndJoin();
+                    }
+                    case "use_item" -> player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
+                        net.minecraft.world.InteractionHand.MAIN_HAND);
+                    case "map_state" -> {
+                        int id = op.get("id").getAsInt();
+                        var map = net.minecraft.world.item.MapItem.getSavedData(
+                            new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
+                        String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
+                            + ",center=" + map.centerX + "," + map.centerZ;
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#map_state " + id);
+                        JsonArray messages = new JsonArray();
+                        messages.add(spans(Component.literal(value)));
+                        record.add("messages", messages);
+                        record.add("results", new JsonArray());
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());

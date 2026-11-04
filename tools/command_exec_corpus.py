@@ -4476,6 +4476,59 @@ def mining_efficiency_9021():
 
 
 
+def crafter_map_extension():
+    """Actual empty-map use, then scheduled crafter matching and saved-map derivation."""
+    def map_state(id, value):
+        return {'op': 'map_state', 'id': id, 'expect_map': value}
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone',
+                '/tp @s 8.5 200 8.5 0 0', '/gamemode survival', '/clear @s',
+                '/item replace entity @s weapon.mainhand with minecraft:map',
+                '/scoreboard objectives add crafter_map dummy',
+                '/data modify storage h298:identity uuid set from entity @s UUID')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s SelectedItem'),
+            map_state(0, 'missing'), {'op': 'use_item'},
+            cmd('/data get entity @s SelectedItem'),
+            cmd('/execute if items entity @s weapon.mainhand minecraft:filled_map[minecraft:map_id=0]', expect_result=1),
+            map_state(0, 'scale=0,locked=false,center=0,0'),
+            {'op': 'crafter_max_map_fixture'},
+            map_state(31, 'scale=4,locked=false,center=960,960'),
+            map_state(99, 'missing')]
+    ops += setup('/clear @s')
+    for case, map_id in [('extend', 0), ('missing', 99), ('max_scale', 31), ('ordinary', None)]:
+        ops += setup('/setblock 4 200 5 air', '/setblock 4 200 4 air', '/setblock 4 200 3 air',
+                     '/setblock 4 200 3 chest[facing=south]',
+                     '/setblock 4 200 4 crafter[orientation=north_up]')
+        for i in range(9):
+            item = ('minecraft:oak_log' if i == 0 else 'minecraft:air') if map_id is None else (
+                f'minecraft:filled_map[minecraft:map_id={map_id}]' if i == 4 else 'minecraft:paper')
+            ops += setup(f'/item replace block 4 200 4 container.{i} with {item}')
+        ops += [cmd('/execute if block 4 200 4 minecraft:crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if block 4 199 4 minecraft:stone', expect_result=1),
+                cmd('/execute if block 4 200 3 minecraft:chest[facing=south]', expect_result=1),
+                cmd('/data get block 4 200 4 id'), cmd('/data get block 4 200 4 Items'),
+                cmd('/data get block 4 200 4 disabled_slots'), cmd('/data get block 4 200 3 Items')]
+        ops += setup('/execute store result score start crafter_map run time query gametime')
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                cmd('/execute if block 4 200 4 minecraft:crafter[triggered=true]', expect_result=1),
+                {'op': 'tick', 'n': 10},
+                cmd('/data get block 4 200 4 Items'), cmd('/data get block 4 200 3 Items')]
+        if case == 'extend':
+            ops += [cmd('/execute if items block 4 200 3 container.0 minecraft:filled_map[minecraft:map_id=1]', expect_result=1),
+                    cmd('/execute unless data block 4 200 3 Items[0].components."minecraft:map_post_processing"', expect_result=1),
+                    map_state(1, 'scale=1,locked=false,center=64,64')]
+        ops += [map_state(0, 'scale=0,locked=false,center=0,0'),
+                map_state(31, 'scale=4,locked=false,center=960,960')]
+        ops += setup('/execute store result score elapsed crafter_map run time query gametime',
+                     '/scoreboard players operation elapsed crafter_map -= start crafter_map')
+        ops += [cmd('/scoreboard players get elapsed crafter_map', expect_result=10)]
+    ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
+    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map')
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4483,6 +4536,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('crafter map extension', crafter_map_extension()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
