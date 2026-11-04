@@ -105,6 +105,9 @@ impl SamplerKind {
             {
                 Self::Nearest
             }
+            // shadowtex0/1 through a plain sampler: linear, as Iris 1.11.7 reads them, when the
+            // device filters their copies (`ShadowTargets::linear`).
+            Source::ShadowDepth(_, false) if filtering => Self::Linear,
             Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
                 Self::Nearest
             }
@@ -1089,6 +1092,9 @@ struct Resources<'a> {
     released: std::cell::Cell<(&'static str, u16)>,
     /// The formats and dimensions of the images no `image.*` gives, for their stand-ins.
     stand_ins: &'a std::cell::RefCell<Vec<(wgpu::TextureFormat, wgpu::TextureViewDimension)>>,
+    /// Bit n: shadowtex n read through a plain sampler filters linearly (`shadowtexNNearest`
+    /// unset, and the device filters `R32Float`).
+    shadow_linear: u8,
 }
 
 /// A program's bind group layout (its uniform block, samplers and images) and how each sampler
@@ -1213,6 +1219,7 @@ fn bindings(
                     Source::ShadowColor(n) => shadow
                         .and_then(|f| f[n].sample_type(None, Some(features)))
                         .unwrap_or(float),
+                    Source::ShadowDepth(n, false) if pack.shadow_linear & 1 << n != 0 => float,
                     Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(..) => {
                         wgpu::TextureSampleType::Float { filterable: false }
                     }
@@ -1940,6 +1947,13 @@ impl PackPost {
             rgb,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
+                (0..2)
+                    .filter(|&n| !shadow_config.nearest[n])
+                    .fold(0, |m, n| m | 1 << n)
+            } else {
+                0
+            },
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             let in_shadow = p.group.shadow();
@@ -2313,8 +2327,21 @@ impl PackPost {
             let depth1 = every_pass()
                 .flat_map(|p| &p.samplers)
                 .any(|s| matches!(s.source, Source::ShadowDepth(1, _)));
-            let t =
-                super::pack_shadow::ShadowTargets::new(device, &shadow_config, f, colors, depth1);
+            let linear = every_pass()
+                .flat_map(|p| &p.samplers)
+                .filter(|s| s.filtering)
+                .fold(0u8, |m, s| match s.source {
+                    Source::ShadowDepth(n, false) => m | 1 << n,
+                    _ => m,
+                });
+            let t = super::pack_shadow::ShadowTargets::new(
+                device,
+                &shadow_config,
+                f,
+                colors,
+                depth1,
+                linear,
+            );
             notes.push(format!(
                 "shadow map {0}x{0} over {2} blocks, sunPathRotation {3}, shadowcolor buffers {colors:#b}{1}",
                 t.size,
@@ -2723,6 +2750,12 @@ impl PackPost {
                     Source::ShadowColor(i) => {
                         shadow_color(i, usize::from(key & 1 << (32 + i) != 0))
                             .unwrap_or(&self.dummy)
+                    }
+                    Source::ShadowDepth(i, false) if s.filtering => {
+                        match shadow.and_then(|t| t.linear[i].as_ref()) {
+                            Some(v) => v,
+                            None => &self.dummy,
+                        }
                     }
                     Source::ShadowDepth(i, _) => match shadow {
                         Some(t) => match (i, &t.depth1) {
@@ -3907,6 +3940,9 @@ impl PackPost {
             TerrainList::ShadowTranslucent,
             terrain,
         );
+        if let Some(t) = &self.shadow_targets {
+            t.copy_linear(encoder);
+        }
         let mut comp = std::mem::take(&mut self.shadow_comp);
         for pass in &mut comp {
             let mut compute = std::mem::take(&mut pass.compute);
@@ -4616,6 +4652,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let reads = |group: Group| {
             let (_, samplers, ..) = bindings(
@@ -4694,6 +4731,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let mut notes = Vec::new();
         let (.., images) = bindings(
@@ -4834,6 +4872,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let draws = DrawUniforms::new(&device);
         let mut notes = Vec::new();
