@@ -6279,6 +6279,193 @@ mod tests {
         assert_eq!(item.count, 7);
     }
 
+    #[test]
+    fn a_barrel_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:barrel",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut barrel) = decode_block_entity(&saved).expect("barrel");
+        assert_eq!(barrel.slots().len(), 27);
+        assert!(
+            barrel.slots().iter().all(Option::is_none),
+            "BarrelBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        let rolled = crate::structure_blocks::roll_container(
+            barrel.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &barrel, "minecraft:barrel", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, barrel) = decode_block_entity(&saved).expect("barrel without table");
+        let item = barrel.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
+    #[test]
+    fn a_shulker_box_loot_table_takes_precedence_over_saved_items() {
+        for id in ["minecraft:shulker_box", "minecraft:white_shulker_box"] {
+            let mut saved = horizon_world::nbt::parse_snbt(&format!(
+                r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:3b,id:"minecraft:diamond",count:7}}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}}"#
+            ))
+            .unwrap()
+            .0;
+            let (_, mut shulker) = decode_block_entity(&saved).expect("shulker");
+            assert_eq!(shulker.slots().len(), 27);
+            assert!(
+                shulker.slots().iter().all(Option::is_none),
+                "ShulkerBoxBlockEntity.loadAdditional ignores Items when a loot table loads"
+            );
+            let rolled = crate::structure_blocks::roll_container(
+                shulker.slots_mut(),
+                None,
+                "minecraft:chests/simple_dungeon".into(),
+                Some(42),
+                (1, 2, 3),
+                "minecraft:plains",
+            );
+            let mut stored = block_entity_data((1, 2, 3), &shulker, id, None);
+            let Tag::Compound(fields) = &mut stored else {
+                panic!("compound");
+            };
+            assert!(rolled.restore(fields));
+            assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+            assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+            assert!(stored.get("Items").is_none());
+            let Tag::Compound(fields) = &mut saved else {
+                panic!("compound");
+            };
+            fields.remove(&"LootTable".into());
+            let (_, shulker) = decode_block_entity(&saved).expect("shulker without table");
+            let item = shulker.slots()[3].as_ref().expect("saved item");
+            assert_eq!(item.item.as_ref(), "minecraft:diamond");
+            assert_eq!(item.count, 7);
+        }
+    }
+
+    #[test]
+    fn a_hopper_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:hopper",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut hopper) = decode_block_entity(&saved).expect("hopper");
+        assert_eq!(hopper.slots().len(), crate::containers::HOPPER_SLOTS);
+        assert!(
+            hopper.slots().iter().all(Option::is_none),
+            "HopperBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        let rolled = crate::structure_blocks::roll_container(
+            hopper.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &hopper, "minecraft:hopper", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, hopper) = decode_block_entity(&saved).expect("hopper without table");
+        let item = hopper.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
+    #[test]
+    fn a_dispenser_and_dropper_loot_table_takes_precedence_over_saved_items() {
+        for id in ["minecraft:dispenser", "minecraft:dropper"] {
+            let mut saved = horizon_world::nbt::parse_snbt(&format!(
+                r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:3b,id:"minecraft:diamond",count:7}}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}}"#
+            ))
+            .unwrap()
+            .0;
+            let (_, mut entity) = decode_block_entity(&saved).expect("dispenser/dropper");
+            assert_eq!(entity.slots().len(), 9);
+            assert!(
+                entity.slots().iter().all(Option::is_none),
+                "DispenserBlockEntity.loadAdditional ignores Items when a loot table loads"
+            );
+            let rolled = crate::structure_blocks::roll_container(
+                entity.slots_mut(),
+                None,
+                "minecraft:chests/simple_dungeon".into(),
+                Some(42),
+                (1, 2, 3),
+                "minecraft:plains",
+            );
+            let mut stored = block_entity_data((1, 2, 3), &entity, id, None);
+            let Tag::Compound(fields) = &mut stored else {
+                panic!("compound");
+            };
+            assert!(rolled.restore(fields));
+            assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+            assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+            assert!(stored.get("Items").is_none());
+            let Tag::Compound(fields) = &mut saved else {
+                panic!("compound");
+            };
+            fields.remove(&"LootTable".into());
+            let (_, entity) = decode_block_entity(&saved).expect("without table");
+            let item = entity.slots()[3].as_ref().expect("saved item");
+            assert_eq!(item.item.as_ref(), "minecraft:diamond");
+            assert_eq!(item.count, 7);
+        }
+    }
+
+    #[test]
+    fn invalid_container_loot_tables_leave_saved_items_intact() {
+        for id in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:barrel",
+            "minecraft:shulker_box",
+            "minecraft:hopper",
+            "minecraft:dispenser",
+            "minecraft:dropper",
+        ] {
+            for invalid in ["INVALID TABLE", "bad:table/with spaces", "bad@id"] {
+                let saved = horizon_world::nbt::parse_snbt(&format!(
+                    r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:0b,id:"minecraft:diamond",count:3}}],LootTable:"{invalid}"}}"#
+                ))
+                .unwrap()
+                .0;
+                let (_, container) = decode_block_entity(&saved).expect(id);
+                let item = container.slots()[0]
+                    .as_ref()
+                    .expect("saved item with invalid table");
+                assert_eq!(item.item.as_ref(), "minecraft:diamond");
+                assert_eq!(item.count, 3);
+            }
+        }
+    }
+
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`
     /// takes it from the tag the block entity was loaded (or set) with.
     #[test]
