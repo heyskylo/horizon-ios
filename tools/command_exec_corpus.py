@@ -2402,6 +2402,82 @@ def ravager_noai_counters():
     return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
 
 
+def zombie_nautilus_ignored_age():
+    """Ignored zombie-nautilus age keys must not survive raw NBT (#9082).
+
+    Zombie probes are zero-tick saved-data checks. A normal nautilus is an
+    independent positive age-codec control, with one observed tick only.
+    """
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    def subject(uid, kind, tag):
+        check(f'/execute as {uid} if entity @s[type=minecraft:{kind},tag={tag}]')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        check(f'/data get entity {uid} Health', 15)
+        check(f'/execute as {uid} if entity @s[nbt={{NoAI:1b,NoGravity:1b,'
+              'Silent:1b,PersistenceRequired:1b,Health:15f}]')
+
+    def ignored(uid, tag):
+        subject(uid, 'zombie_nautilus', tag)
+        for field in ('Age', 'ForcedAge', 'AgeLocked'):
+            out.append(cmd(f'/data get entity {uid} {field}'))
+            check(f'/execute unless data entity {uid} {field}')
+
+    check('/tick freeze')
+    check('/gamerule spawn_mobs', 0)
+    check('/time set midnight', 18000)
+    check('/scoreboard objectives add ignored_age dummy')
+    out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 0 200 0')
+    check('/fill 0 199 0 15 199 15 stone', 256)
+    out += setup('/execute store result score #before ignored_age run time query gametime')
+    for serial, age in enumerate((None, -24000, 0, 37), 1):
+        uid = f'000000fe-0000-0000-0000-{serial:012x}'
+        tag = f'ignored_age_{serial}'
+        saved = (f'{{UUID:[I;254,0,0,{serial}],Tags:["ignored_age","{tag}"],'
+                 'NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:15f')
+        if age is not None:
+            saved += f',Age:{age},ForcedAge:12,AgeLocked:1b'
+        check(f'/summon minecraft:zombie_nautilus 10.5 200 10.5 {saved}}}')
+        ignored(uid, tag)
+        for merged in (0, -24000, 37):
+            check(f'/data merge entity {uid} {{Age:{merged},ForcedAge:12,AgeLocked:1b}}')
+            ignored(uid, tag)
+        out += setup(f'/kill {uid}')
+    out += setup('/execute store result score #after ignored_age run time query gametime')
+    check('/scoreboard players operation #after ignored_age -= #before ignored_age', 0)
+    check('/execute if score #after ignored_age matches 0')
+
+    uid = '000000fe-0000-0000-0000-000000000005'
+    check('/summon minecraft:nautilus 10.5 200 10.5 '
+          '{UUID:[I;254,0,0,5],Tags:["ignored_age","normal_age"],NoAI:1b,NoGravity:1b,'
+          'Silent:1b,PersistenceRequired:1b,Health:15f,Age:-24000,ForcedAge:12,AgeLocked:0b}')
+    for expected in (-24000, -23999):
+        if expected == -23999:
+            out += setup('/execute store result score #before ignored_age run time query gametime',
+                         '/tick step 1')
+            out.append({'op': 'tick', 'n': 1})
+            out += setup('/execute store result score #after ignored_age run time query gametime')
+            check('/scoreboard players operation #after ignored_age -= #before ignored_age', 1)
+            check('/execute if score #after ignored_age matches 1')
+        subject(uid, 'nautilus', 'normal_age')
+        check(f'/data get entity {uid} Age', expected)
+        check(f'/data get entity {uid} ForcedAge', 12)
+        check(f'/data get entity {uid} AgeLocked', 0)
+        check(f'/execute as {uid} if entity @s[nbt={{Age:{expected},ForcedAge:12,AgeLocked:0b}}]')
+    out += setup('/kill @e[tag=ignored_age]', '/tick unfreeze')
+    out.append({'op': 'tick', 'n': 25})
+    out += setup('/kill @e[type=item]', '/fill 0 199 0 15 199 15 air',
+                 '/time set 1000', '/scoreboard objectives remove ignored_age',
+                 '/forceload remove 0 0 15 15')
+    return out
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2414,6 +2490,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('zombie nautilus ignored age', zombie_nautilus_ignored_age()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),

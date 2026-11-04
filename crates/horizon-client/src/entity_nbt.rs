@@ -534,6 +534,12 @@ pub fn mob_to_nbt(
         if species != crate::mobs::Species::Tadpole {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
+    } else if species == crate::mobs::Species::ZombieNautilus {
+        // AgeableMob.addAdditionalSaveData skips these when canBeABaby is
+        // false, including ignored values retained in the original NBT.
+        for key in ["Age", "ForcedAge", "AgeLocked"] {
+            map.remove(&key.into());
+        }
     }
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
@@ -3535,6 +3541,47 @@ mod tnt_power_tests {
 mod tests {
     use super::*;
     use crate::items::ItemStack;
+
+    #[test]
+    fn zombie_nautilus_save_omits_ignored_age_fields() {
+        use crate::mobs::Species;
+        for (id, species) in [
+            ("minecraft:zombie_nautilus", Species::ZombieNautilus),
+            ("minecraft:nautilus", Species::Nautilus),
+        ] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let def = Arc::make_mut(&mut kind);
+            def.id = id.into();
+            def.species = species;
+            let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            mob.extra.age = -123;
+            mob.extra.forced_age = 19;
+            mob.extra.age_locked = true;
+            let raw = Tag::compound([
+                ("Age", Tag::Int(37)),
+                ("ForcedAge", Tag::Int(99)),
+                ("AgeLocked", Tag::Byte(0)),
+                ("audit:unrelated", Tag::Int(7)),
+            ]);
+            for base in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [0; 4], base, None);
+                for (key, expected) in [
+                    ("Age", Tag::Int(-123)),
+                    ("ForcedAge", Tag::Int(19)),
+                    ("AgeLocked", Tag::Byte(1)),
+                ] {
+                    if species == Species::ZombieNautilus {
+                        assert!(saved.get(key).is_none(), "{id}: {key}");
+                    } else {
+                        assert_eq!(saved.get(key), Some(&expected), "{id}: {key}");
+                    }
+                }
+                if base.is_some() {
+                    assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));
+                }
+            }
+        }
+    }
 
     /// A mount keeps its body armour and a helmet (say
     /// `/item replace entity <horse> armor.head with minecraft:iron_helmet`)
