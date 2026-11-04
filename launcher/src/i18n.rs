@@ -155,10 +155,26 @@ pub enum Language {
     Igbo,
     #[serde(rename = "la")]
     Latin,
+    #[serde(rename = "tt")]
+    Tatar,
+    #[serde(rename = "yi")]
+    Yiddish,
+    #[serde(rename = "yo")]
+    Yoruba,
+    #[serde(rename = "zu")]
+    Zulu,
+    #[serde(rename = "ba")]
+    Bashkir,
+    #[serde(rename = "br")]
+    Breton,
+    #[serde(rename = "cv")]
+    Chuvash,
+    #[serde(rename = "fo")]
+    Faroese,
 }
 
 impl Language {
-    pub const ALL: [Language; 71] = [
+    pub const ALL: [Language; 79] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -230,6 +246,14 @@ impl Language {
         Self::Hawaiian,
         Self::Igbo,
         Self::Latin,
+        Self::Tatar,
+        Self::Yiddish,
+        Self::Yoruba,
+        Self::Zulu,
+        Self::Bashkir,
+        Self::Breton,
+        Self::Chuvash,
+        Self::Faroese,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -306,6 +330,14 @@ impl Language {
             Self::Hawaiian => "haw",
             Self::Igbo => "ig",
             Self::Latin => "la",
+            Self::Tatar => "tt",
+            Self::Yiddish => "yi",
+            Self::Yoruba => "yo",
+            Self::Zulu => "zu",
+            Self::Bashkir => "ba",
+            Self::Breton => "br",
+            Self::Chuvash => "cv",
+            Self::Faroese => "fo",
         }
     }
 
@@ -383,6 +415,14 @@ impl Language {
             Self::Hawaiian => "ʻŌlelo Hawaiʻi",
             Self::Igbo => "Igbo",
             Self::Latin => "Latina",
+            Self::Tatar => "Татарча",
+            Self::Yiddish => "ייִדיש",
+            Self::Yoruba => "Yorùbá",
+            Self::Zulu => "isiZulu",
+            Self::Bashkir => "Башҡортса",
+            Self::Breton => "Brezhoneg",
+            Self::Chuvash => "Чӑвашла",
+            Self::Faroese => "Føroyskt",
         }
     }
 
@@ -502,6 +542,14 @@ impl Language {
             Self::Hawaiian => include_str!("../lang/haw.json"),
             Self::Igbo => include_str!("../lang/ig.json"),
             Self::Latin => include_str!("../lang/la.json"),
+            Self::Tatar => include_str!("../lang/tt.json"),
+            Self::Yiddish => include_str!("../lang/yi.json"),
+            Self::Yoruba => include_str!("../lang/yo.json"),
+            Self::Zulu => include_str!("../lang/zu.json"),
+            Self::Bashkir => include_str!("../lang/ba.json"),
+            Self::Breton => include_str!("../lang/br.json"),
+            Self::Chuvash => include_str!("../lang/cv.json"),
+            Self::Faroese => include_str!("../lang/fo.json"),
         }
     }
 }
