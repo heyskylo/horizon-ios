@@ -685,13 +685,22 @@ impl Game<'_> {
                     .collect(),
                 _ => Vec::new(),
             },
-            // Leashable.getLeashHolder: a fence knot is not an entity here.
-            Some("leasher") => match entity {
-                Target::Mob(id) => self
-                    .mobs
-                    .iter()
-                    .find(|m| m.id == id)
-                    .and_then(|m| m.extra.leash.map(|holder| (holder, m.extra.leash_player)))
+            // Leashable.getLeashHolder: the server's resolved holder, not a
+            // saved UUID that is still waiting for tickLeash to restore it.
+            Some("leasher") => {
+                let leash =
+                    match entity {
+                        Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).and_then(|m| {
+                            m.extra.leash.map(|holder| (holder, m.extra.leash_player))
+                        }),
+                        Target::Boat(id) => self
+                            .boats
+                            .iter()
+                            .find(|b| b.id == id)
+                            .and_then(|b| b.leash.map(|holder| (holder, b.leash_player))),
+                        _ => None,
+                    };
+                leash
                     .and_then(|(holder, player)| match holder {
                         // The player who tied it (the host's when unrecorded).
                         horizon_client::mobs::leash::Holder::Player => {
@@ -703,9 +712,8 @@ impl Game<'_> {
                         | horizon_client::mobs::leash::Holder::Knot(_) => None,
                     })
                     .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            },
+                    .collect()
+            }
             // TraceableEntity.getOwner: who shot a projectile, who threw an
             // item, who summoned a vex.
             Some("origin") => match entity {

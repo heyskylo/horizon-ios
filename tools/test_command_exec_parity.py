@@ -83,8 +83,9 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
