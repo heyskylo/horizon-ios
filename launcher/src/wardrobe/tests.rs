@@ -20,8 +20,6 @@ struct Mock {
     down: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
-    /// The `Date` header of its answers.
-    date: Option<&'static str>,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -57,7 +55,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 json!({"session": "svc-session", "uuid": UUID, "name": v["name"], "expires_in": m.expires_in}),
             )
         }
-        (_, "/v1/me" | "/v1/claim" | "/v1/equipped" | "/v1/visible") if !signed_in => {
+        (_, "/v1/me" | "/v1/equipped" | "/v1/visible") if !signed_in => {
             (401, json!({"error": "no_session"}))
         }
         ("PUT", "/v1/equipped" | "/v1/visible") if m.down => (503, json!({"error": "down"})),
@@ -69,8 +67,6 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             (200, me)
         }
         ("GET", "/v1/me") => (200, me(m.claim, json!([]), json!({}))),
-        ("POST", "/v1/claim") if m.claim != "open" => (403, json!({"error": "claim_closed"})),
-        ("POST", "/v1/claim") => (200, me("open", json!(["hat", "owl"]), json!({}))),
         ("PUT", "/v1/equipped") => {
             let v: Value = serde_json::from_str(body).unwrap();
             match v["item"].as_str() {
@@ -133,18 +129,16 @@ fn serve(f: impl FnOnce(&mut Mock)) -> (Arc<Mutex<Mock>>, Service) {
             if (method.as_str(), path.as_str()) == ("GET", "/") {
                 continue;
             }
-            let (status, reply, date) = {
+            let (status, reply) = {
                 let mut m = shared.lock().unwrap();
                 m.log
                     .push((method.clone(), path.clone(), auth.clone(), body.clone()));
-                let (status, reply) = route(&mut m, &method, &path, &auth, &body);
-                let date = m.date.map_or(String::new(), |d| format!("Date: {d}\r\n"));
-                (status, reply, date)
+                route(&mut m, &method, &path, &auth, &body)
             };
             let text = reply.to_string();
             let _ = write!(
                 stream,
-                "HTTP/1.1 {status} X\r\n{date}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
                 text.len()
             );
         }
@@ -202,18 +196,13 @@ fn signing_in_goes_through_mojang_and_sends_the_service_no_token() {
 }
 
 #[test]
-fn claiming_and_equipping_follow_the_window_and_ownership() {
+fn equipping_follows_ownership() {
     let (m, service) = serve(|m| m.claim = "not_yet");
     let catalogue = service.catalogue().unwrap();
     assert_eq!(catalogue.claim.state, ClaimState::NotYet);
     assert_eq!(catalogue.items[0].name("fr_fr"), "Chapeau");
     assert_eq!(catalogue.items[0].name("ja_jp"), "Hat");
     let session = sign_in(&m, &service);
-    assert_eq!(service.claim(&session).unwrap_err(), Error::ClaimClosed);
-    m.lock().unwrap().claim = "open";
-    let me = service.claim(&session).unwrap();
-    assert_eq!(me.owned, ["hat", "owl"]);
-    assert_eq!(me.claim.claimed, Some(true));
     let me = service.equip(&session, "head", Some("hat")).unwrap();
     assert_eq!(me.equipped.get("head").map(String::as_str), Some("hat"));
     assert_eq!(
@@ -303,7 +292,6 @@ fn an_item_file_is_kept_by_its_hash() {
         slot: "head".into(),
         names: BTreeMap::new(),
         theme: None,
-        lines: BTreeMap::new(),
     };
     let file = format!(
         r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
@@ -359,84 +347,36 @@ fn the_shop_status_is_asked_without_a_session() {
     );
 }
 
-// The only test whose mock sends a `Date`, so the only one that moves `CLOCK_AHEAD`.
 #[test]
-fn a_fast_clock_keeps_an_open_window_until_the_services_time_ends_it() {
-    use crate::shop::{window, Window};
-    // The service's time is 150 and the window ends at 200; this computer's clock is decades on.
-    let (_, service) = serve(|m| m.date = Some("Thu, 01 Jan 1970 00:02:30 GMT"));
-    let status = service.shop().unwrap();
-    assert!(status.open);
-    let at = service_now();
-    assert_eq!(window(&status, at), Window::Open { ends_at: Some(200) });
-    // A minute after the answer, by the same offset: the window has really ended.
-    assert_eq!(
-        window(&status, at + 60),
-        Window::Closed {
-            ended_at: Some(200)
-        }
-    );
-}
-
-#[test]
-fn only_a_clock_ahead_of_the_services_date_is_corrected() {
-    // 150 by this `Date`.
-    let date = "Thu, 01 Jan 1970 00:02:30 GMT";
-    assert_eq!(clock_ahead(date, 5_000), Some(4_850));
-    // Behind: read as before, by the computer's own clock.
-    assert_eq!(clock_ahead(date, 100), Some(0));
-    assert_eq!(clock_ahead("not a date", 5_000), None);
-}
-
-#[test]
-fn a_state_this_launcher_does_not_know_offers_no_claim_and_no_end() {
-    use crate::shop::{window, Window};
+fn a_state_this_launcher_does_not_know_still_reads() {
     let (m, service) = serve(|m| m.claim = "paused");
+    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
     assert_eq!(
         service.catalogue().unwrap().claim.state,
         ClaimState::Unknown
     );
-    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
     let me = service.me(&sign_in(&m, &service)).unwrap();
     assert_eq!(me.claim.state, ClaimState::Unknown);
-    // Before, inside and past the dates (100 to 200): never open, never over.
-    for now in [50, 150, 250] {
-        assert_eq!(
-            window(&me.claim, now),
-            Window::NotYet { starts_at: None },
-            "at {now}"
-        );
-    }
-    // Not even with `open`: no Claim on a state it can't read.
-    let mut open = me.claim.clone();
-    open.open = true;
-    assert_eq!(window(&open, 150), Window::NotYet { starts_at: None });
     // Kept on disk, it reads back the same.
     let kept = serde_json::to_vec(&me).unwrap();
     assert_eq!(serde_json::from_slice::<Me>(&kept).unwrap(), me);
 }
 
 #[test]
-fn a_claim_through_paddle_brings_a_checkout_and_the_history_its_orders() {
+fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
     let answer = json!({
         "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,
         "claim": {"state": "open", "items": ["hat"], "starts_at": 1, "ends_at": 2, "claimed": false, "open": true},
         "purchases": [
             {"transaction_id": "txn_b", "item": "top_hat", "amount": 330, "currency": "EUR", "status": "refunded", "at": 9},
             {"transaction_id": "txn_a", "item": "founder_set", "amount": 0, "currency": "CHF", "status": "paid", "at": 5}
-        ],
-        "checkout": {"transaction_id": "txn_c", "checkout_url": "https://playhorizon.dev/shop/pay?_ptxn=txn_c"}
+        ]
     });
     let me: Me = serde_json::from_value(answer).unwrap();
-    assert_eq!(
-        me.checkout.as_ref().and_then(|c| c.url()),
-        Some("https://playhorizon.dev/shop/pay?_ptxn=txn_c")
-    );
     assert_eq!(me.purchases[0].price().as_deref(), Some("3.30 EUR"));
     assert_eq!(me.purchases[1].price(), None);
-    // The checkout is never kept on disk; the history is.
+    // What is kept on disk reads back the same.
     let kept: Me = serde_json::from_str(&serde_json::to_string(&me).unwrap()).unwrap();
-    assert!(kept.checkout.is_none());
     assert_eq!(kept.purchases, me.purchases);
     // An answer from before sales still reads.
     let old: Me = serde_json::from_value(json!({
@@ -444,25 +384,5 @@ fn a_claim_through_paddle_brings_a_checkout_and_the_history_its_orders() {
         "claim": {"state": "not_yet", "items": [], "starts_at": null, "ends_at": null}
     }))
     .unwrap();
-    assert!(old.purchases.is_empty() && old.checkout.is_none());
-}
-
-#[test]
-fn only_horizons_checkout_page_is_opened() {
-    let at = |u: &str| Checkout {
-        transaction_id: "txn".into(),
-        checkout_url: u.into(),
-    };
-    assert!(at("https://www.playhorizon.dev/shop/pay?_ptxn=txn_1")
-        .url()
-        .is_some());
-    for bad in [
-        "https://evil.example/shop/pay?_ptxn=txn_1",
-        "https://playhorizon.dev.evil.example/shop/pay?_ptxn=1",
-        "http://playhorizon.dev/shop/pay?_ptxn=txn_1",
-        "https://playhorizon.dev/shop/pay?_ptxn=a b",
-        "file:///etc/passwd",
-    ] {
-        assert!(at(bad).url().is_none(), "{bad}");
-    }
+    assert!(old.purchases.is_empty());
 }

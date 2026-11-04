@@ -84,6 +84,7 @@ pub mod spawning;
 pub mod spear_use;
 pub mod species;
 pub mod strider;
+pub mod suffocation;
 pub mod sulfur_cube;
 pub mod sync;
 pub mod tame;
@@ -378,6 +379,8 @@ pub struct MobType {
     pub jump_strength: f64,
     /// Every default attribute value of the type (`entity-types.json`).
     pub attributes: Arc<HashMap<String, f64>>,
+    /// Item defaults used when loading inventory-bearing mobs before a Game exists.
+    pub item_stack_limits: Arc<HashMap<String, u32>>,
     pub gravity: f64,
     pub safe_fall_distance: f64,
     pub fall_damage_multiplier: f64,
@@ -407,6 +410,22 @@ pub struct MobType {
     pub tempt: Arc<[String]>,
 }
 impl MobType {
+    pub fn inventory_stack_limit(&self, stack: &crate::items::ItemStack) -> u32 {
+        stack
+            .data()
+            .and_then(|d| d.other("minecraft:max_stack_size"))
+            .and_then(|t| match t {
+                horizon_world::nbt::Tag::Int(n) => u32::try_from(*n).ok(),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                self.item_stack_limits
+                    .get(stack.item.as_ref())
+                    .copied()
+                    .unwrap_or(64)
+            })
+    }
+
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
         self.layers.get(key)
     }
@@ -479,6 +498,26 @@ impl MobTypes {
             v.sort();
             v.into()
         };
+        // The Allay's InventoryCarrier loading needs item limits before a
+        // Game exists. Other mob-only resource sets need no item data.
+        let items: HashMap<String, Value> = if types.get("minecraft:allay").is_some() {
+            serde_json::from_slice(&fs::read(root.join("items.json"))?)?
+        } else {
+            HashMap::new()
+        };
+        let item_stack_limits: Arc<HashMap<String, u32>> = Arc::new(
+            items
+                .into_iter()
+                .map(|(id, components)| {
+                    (
+                        id,
+                        components["minecraft:max_stack_size"]
+                            .as_u64()
+                            .unwrap_or(64) as u32,
+                    )
+                })
+                .collect(),
+        );
         let mut out = HashMap::new();
         for def in species::ALL {
             let id = format!("minecraft:{}", def.name);
@@ -516,6 +555,7 @@ impl MobTypes {
                 id.clone(),
                 MobType {
                     species: def.species,
+                    item_stack_limits: item_stack_limits.clone(),
                     width: t["width"].as_f64().unwrap_or(0.6),
                     height: t["height"].as_f64().unwrap_or(1.8),
                     eye_height: t["eye_height"].as_f64().unwrap_or(1.6),
@@ -1597,9 +1637,11 @@ pub enum MobEvent {
         from: [f64; 3],
         kind: &'static str,
     },
-    /// `ElderGuardian`'s curse on players within 50 blocks.
+    /// `ElderGuardian`'s curse on players within 50 blocks; a silent elder's
+    /// shows the apparition without the curse sound.
     ElderCurse {
         at: [f64; 3],
+        silent: bool,
     },
     /// `Entity.setDeltaMovement`: replace a target's velocity.
     SetVelocity {
@@ -2680,6 +2722,7 @@ pub struct MobWorld<'a> {
     pub fluid_tables: &'a crate::motion::FluidResources,
     pub movement: &'a horizon_world::movement_properties::BoundMovementProperties,
     pub collision: &'a BlockCollisionRegistry<'a>,
+    pub suffocation: &'a horizon_world::suffocation::SuffocationRegistry<'a>,
     pub data: &'a MobData,
     pub player: Option<PlayerView>,
     /// `getKnownMovement` of a mob's controlling player passenger, if any.
@@ -3006,6 +3049,7 @@ impl Mob {
             || self.removed
             || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
     }
+    /// `LivingEntity.hurtServer`'s partial mob adapter, with health reductions inline.
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
     /// weapon's armor-effectiveness enchantments (breach) over the armor fraction.
     pub fn damage_with(
@@ -3120,9 +3164,7 @@ impl Mob {
         {
             let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
             amount = (amount * remainder as f32 / 25.0).max(0.0);
-            if amount <= 0.0 {
-                return false;
-            }
+            // actuallyHurt is void: zero health damage still lets hurtServer set hurt state.
         }
         // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
         // 85% less from `#witch_resistant_to`.
@@ -3480,7 +3522,8 @@ impl Mob {
     /// `LivingEntity.addEffect` of a `MobEffectInstance` with its flags: the effect as
     /// `add_effect` has it, and `MobEffectInstance.update`'s rules for the flags of one already
     /// there: it takes the new ambient flag when the new one is not ambient or the effect
-    /// changed, and always the new visibility.
+    /// changed, and always the new visibility. Returns whether the active instance or its
+    /// flags changed (`MobEffectInstance.update` does not count a hidden-chain-only update).
     pub fn add_effect_with(
         &mut self,
         effect: &'static str,
@@ -3488,8 +3531,9 @@ impl Mob {
         amplifier: i32,
         ambient: bool,
         visible: bool,
-    ) {
+    ) -> bool {
         let effect = horizon_client_core::potions::namespaced(effect);
+        let was_visible = !self.extra.hidden_effects.contains(&effect);
         let before = self
             .extra
             .effects
@@ -3519,6 +3563,10 @@ impl Mob {
         if !visible {
             self.extra.hidden_effects.push(effect);
         }
+        after.is_some()
+            && (before != after
+                || present_ambient != self.extra.ambient_effects.contains(&effect)
+                || was_visible != visible)
     }
     /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
     /// what is left reaches the health.
@@ -4218,6 +4266,7 @@ pub(crate) mod sensor_scan_tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -4712,24 +4761,24 @@ mod magic_absorb_tests {
         let mut m = witch();
         let speed = "minecraft:speed";
         // A new effect takes its flags as they are.
-        m.add_effect_with("speed", 600, 0, true, false);
+        assert!(m.add_effect_with("speed", 600, 0, true, false));
         assert!(
             m.extra.ambient_effects.contains(&speed) && m.extra.hidden_effects.contains(&speed)
         );
         // The same effect, no stronger and no longer, ambient again and visible: ambient stays
         // (nothing changed), the visibility follows.
-        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(m.add_effect_with("speed", 100, 0, true, true));
         assert_eq!(m.extra.effects, vec![(speed, 600, 0)]);
         assert!(
             m.extra.ambient_effects.contains(&speed) && !m.extra.hidden_effects.contains(&speed)
         );
         // Not ambient: it takes the flag off, though nothing else changed.
-        m.add_effect_with("speed", 100, 0, false, true);
+        assert!(m.add_effect_with("speed", 100, 0, false, true));
         assert!(!m.extra.ambient_effects.contains(&speed));
         // Ambient over a not ambient one that does not change: not taken; one that changes: taken.
-        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(!m.add_effect_with("speed", 100, 0, true, true));
         assert!(!m.extra.ambient_effects.contains(&speed));
-        m.add_effect_with("speed", 900, 0, true, true);
+        assert!(m.add_effect_with("speed", 900, 0, true, true));
         assert!(m.extra.ambient_effects.contains(&speed));
         assert_eq!(m.extra.effects, vec![(speed, 900, 0)]);
     }

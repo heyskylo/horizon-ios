@@ -974,8 +974,8 @@ use horizon_client::mod_api::{
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, Suggestion};
 pub(crate) use horizon_client::mod_api::{
-    NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap, NativeMod,
-    NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
+    ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
+    NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
 };
 use horizon_client::{
     atlas_sources::qualified,
@@ -6819,6 +6819,20 @@ impl Game<'_> {
     /// is the sender's own bytes. The window's game only. API 40.
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
         mod_api::dispatch_net_from_server(self, mod_api::mods(), channel, data);
+    }
+    /// A play packet from the server reached the window's game, decoded,
+    /// just before the game handles it (`Connection.genericsFtw` handing it
+    /// to `ClientPacketListener`): every packet of the play phase, custom
+    /// payloads included, in the order the server sent them. Packets the
+    /// network thread handles itself are not heard: keep-alives, bundle
+    /// delimiters, resource pack pushes and pops, cookies, server links,
+    /// transfers, disconnects, the configuration switch, `minecraft:brand`
+    /// and far terrain tiles; neither is the configuration phase.
+    /// Read-only: the game handles the packet as it would without the mod.
+    /// Client-side, on any server, single player's own included.
+    /// API @API:client_packet@.
+    pub(super) fn native_client_packet(&mut self, packet: &ClientboundPlayPacket) {
+        mod_api::dispatch_client_packet(self, mod_api::mods(), packet);
     }
     /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,
     /// posted in `MinecraftServer.createLevels`): before any of its chunks

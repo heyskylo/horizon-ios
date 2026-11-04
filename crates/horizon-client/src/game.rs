@@ -67,6 +67,7 @@ mod block_entity_anims;
 mod block_entity_ticks;
 mod block_items;
 mod blockctl;
+mod boarding;
 mod boat_authority_fixture;
 mod boat_leads;
 mod boat_passengers;
@@ -344,6 +345,7 @@ mod tutorial;
 mod tweaks;
 mod ui_control;
 mod vault;
+mod vehicle_teleport;
 mod villagers;
 mod wandering_trader;
 mod win;
@@ -1841,6 +1843,8 @@ impl LevelAccess for GameLevel<'_> {
 /// FallingBlockEntity carrying a block state.
 #[derive(Clone, Debug)]
 struct FallingBlock {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
@@ -1913,8 +1917,9 @@ struct WorldCore {
     facts: BlockFacts,
     biomes: Arc<Biomes>,
     environment: Environment,
-    collision: BlockCollisionRegistry<'static>,
+    collision: Arc<BlockCollisionRegistry<'static>>,
     motion: MotionResources,
+    suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
     threads: usize,
 }
 
@@ -1948,6 +1953,7 @@ struct WorldRest {
 /// recipes, loot tables and tags from the world's pack stack, over the
 /// resource root's own. Worlds without packs use `Resources.rest` directly.
 struct WorldTables {
+    suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
     /// The pack files the tables were built from (a native mod's among
     /// them), for the advancement tree reload and the loot data.
     files: Vec<(String, Vec<Vec<u8>>)>,
@@ -2018,6 +2024,9 @@ impl Resources {
     }
     fn collision(&self) -> &BlockCollisionRegistry<'static> {
         &self.core.collision
+    }
+    fn suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
+        &self.core.suffocation
     }
     fn motion(&self) -> &MotionResources {
         &self.core.motion
@@ -2862,6 +2871,13 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// `Entity.boardingCooldown` of the acting player, and its vehicle at the
+    /// last tick (`game/boarding.rs`).
+    boarding_cooldown: i32,
+    riding_at_tick: Option<u32>,
+    /// A rotation-only write (`/rotate`, `Entity.forceSetRotation`) to the player of this
+    /// turn: `leave_guest` sends it as `ClientboundPlayerRotationPacket`, not a teleport.
+    rotation_forced: bool,
     /// The mount the last `position_rider` put the player on, to tell the tick
     /// a seat is taken (`Entity.moveTo`, no camera sweep) from the ones that
     /// follow it (`positionRider`, interpolated as usual).
@@ -3996,6 +4012,7 @@ impl Game<'_> {
         // ItemEntity.bobOffs comes from the entity's own random, not the level's.
         let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -4292,6 +4309,7 @@ impl Game<'_> {
                 self.apply_item_splash(splash);
             }
             if merging && !no_physics {
+                self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
                 self.entity_powder_snow_particles(
                     item.previous,
                     item.position,
@@ -4889,7 +4907,10 @@ impl Game<'_> {
     }
     /// ServerLevel.tick block phases: scheduled ticks, random ticks in the
     /// chunks the tickets simulate, block events and moving pistons.
-    fn tick_blocks(&mut self) -> Result<()> {
+    /// The length the block log had after the changed blocks went out
+    /// (`ServerChunkCache.tick`'s broadcast), before the block events and the
+    /// block entities ran.
+    fn tick_blocks(&mut self) -> Result<Option<usize>> {
         // ServerChunkCache.tick: the tickets that time out.
         self.tickets.tick_portal();
         self.sync_tick_chunks();
@@ -5124,6 +5145,9 @@ impl Game<'_> {
                     });
                 }
             });
+        });
+        let sent = self.lan_broadcast_changes();
+        self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
             b.tick_block_entities(level, ticks);
         });
@@ -5133,7 +5157,7 @@ impl Game<'_> {
         self.push_piston_entities(pushes);
         self.process_level_events()?;
         self.sync_moving_pistons();
-        Ok(())
+        Ok(sent)
     }
     /// Copies the moving-piston block entities into the world, where the
     /// collision queries and the renderer read them.
@@ -5530,6 +5554,7 @@ impl Game<'_> {
                     );
                     self.next_entity += 1;
                     self.falling.push(FallingBlock {
+                        rotation: [0.0, 0.0],
                         join: Default::default(),
                         id: self.next_entity,
                         state,
@@ -7705,9 +7730,10 @@ impl Game<'_> {
         // here too, before falling-block schedules run (#4510).
         horizon_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
+        let mut sent = None;
         if running {
             horizon_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
-            horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
+            sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
             self.native_joins_flush(false, 0);
@@ -7784,7 +7810,20 @@ impl Game<'_> {
         // The rest of the tick's spawns join, and what left is told of.
         self.native_joins_flush(false, 0);
         self.native_leaves_flush();
+        // ServerLevel.tick broadcasts the changed blocks after the scheduled and
+        // random ticks (`tick_blocks`), before the block events, the entities
+        // and the block entities: what those change goes out with the next
+        // tick's. A piston's moved block reaches the clients once their own
+        // copy of it finished moving, so a slow tick rate shows it slide
+        // (#8430).
+        if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
+            self.world.block_log_held = log.split_off(sent.min(log.len()));
+        }
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        let held = std::mem::take(&mut self.world.block_log_held);
+        if let Some(log) = self.world.block_log.as_mut() {
+            log.extend(held);
+        }
         // Everything that has joined has had its spawn packet.
         self.ordered.announced = horizon_client::join_seq::JoinSeq::upcoming();
         self.tick_friends();
@@ -12047,12 +12086,16 @@ impl Game<'_> {
     /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
     /// rule picks decay).
     fn explode(&mut self, center: [f64; 3], radius: f32) -> Result<()> {
+        self.explode_mob(center, radius, false)
+    }
+    /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
+    fn explode_mob(&mut self, center: [f64; 3], radius: f32, fire: bool) -> Result<()> {
         let interaction = if !self.ui.rules.bool("mob_griefing") {
             explosion::BlockInteraction::Keep
         } else {
             self.destroy_type("mob_explosion_drop_decay")
         };
-        self.server_explode(center, radius, interaction, false)
+        self.server_explode(center, radius, interaction, fire)
     }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
@@ -13718,6 +13761,7 @@ impl Game<'_> {
         let p = Vec3::new(at[0], at[1], at[2]);
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: self.next_entity,
@@ -14769,6 +14813,8 @@ impl Game<'_> {
         let Some(at) = self.sleeping_position(head) else {
             return;
         };
+        // LivingEntity.startSleeping: stopRiding once the bed is valid.
+        self.stop_riding();
         self.stop_mining();
         self.left = false;
         self.right = false;
@@ -15615,6 +15661,7 @@ impl Game<'_> {
         // compressed (a no-op once it is).
         if self.renderer.is_some() {
             self.gui.atlas.pack_pixels();
+            self.pack.render.pixels.pack();
         }
         // Before any text of this frame: a full glyph region starts over.
         self.gui.atlas.font.begin_frame();
@@ -16914,6 +16961,18 @@ impl Game<'_> {
             self.all_sections_changed();
         }
         self.prepare_lod();
+        // The columns the single-player server changed in bulk without sending them, which far terrain still drew
+        // as this window last saw them: summarized again (taken every tick, far terrain on or off, so none waits).
+        if self.remote.is_some() {
+            let changed = horizon_client::lan::handoff::take_changed();
+            if let Some(lod) = &mut self.lod {
+                for chunk in changed {
+                    if !self.world.chunks.contains_key(&(chunk.x, chunk.z)) {
+                        lod.observe(chunk, self.res.facts());
+                    }
+                }
+            }
+        }
         if self.lod.is_some() {
             for &((x, _, z), _, _) in &self.world.light_edits {
                 self.lod_observe.insert((x >> 4, z >> 4));
@@ -17008,6 +17067,15 @@ impl Game<'_> {
         let has = |column: (i32, i32)| self.world.chunks.contains_key(&column);
         let now = Instant::now();
         let arriving = self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0;
+        // Which far tiles a zoom magnifies (`lod::ZoomAim`), read before
+        // `self.renderer.as_mut()` below borrows self mutably for the rest of
+        // this function. Cheap: trigonometry on one angle, or None when the
+        // view is not zoomed.
+        let lod_aim = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+            .and_then(|camera| self.lod_aim(camera));
         if let Some(renderer) = self.renderer.as_mut() {
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
@@ -17119,13 +17187,9 @@ impl Game<'_> {
                 let detail = self.remote.as_ref().map_or(self.streaming.radius, |r| {
                     self.streaming.radius.min(r.sent_radius())
                 });
+                let camera = [player.position.x, player.position.y, player.position.z];
                 let meshes = horizon_client::spans::time("lod_update", || {
-                    lod.update(
-                        [player.position.x, player.position.y, player.position.z],
-                        detail,
-                        lod_distance,
-                        covered,
-                    )
+                    lod.update(camera, detail, lod_distance, covered, lod_aim)
                 });
                 renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
                 // A finished job can hold hundreds of tiles: spread them
@@ -19226,6 +19290,9 @@ impl<'a> Game<'a> {
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
+            boarding_cooldown: 0,
+            riding_at_tick: None,
+            rotation_forced: false,
             posed_rider: None,
             pending_vehicle: None,
             ender_items: vec![None; 27],
@@ -19693,6 +19760,11 @@ impl Game<'_> {
             None => self.res.items(),
         }
     }
+    fn mob_suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
+        self.world_tables
+            .as_ref()
+            .map_or_else(|| self.res.suffocation(), |t| &t.suffocation)
+    }
     fn recipes(&self) -> &Recipes {
         match &self.world_tables {
             Some(t) => &t.recipes,
@@ -19773,7 +19845,25 @@ impl Game<'_> {
             &items.item_tags,
             &items.block_tags,
         );
+        let causes_suffocation = items
+            .block_tags
+            .get("minecraft:causes_suffocation")
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        let suffocation = match horizon_client::mobs::suffocation::bind(
+            self.res.core.collision.clone(),
+            &causes_suffocation,
+        ) {
+            Ok(binding) => binding,
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return None;
+            }
+        };
         Some(WorldTables {
+            suffocation,
             files,
             items,
             recipes,
@@ -19991,13 +20081,14 @@ impl<'scope, T: Send + 'scope> Step<'scope, T> {
 /// `load_resources` binds them into the pack tables and `WorldCore`.
 struct CoreTables {
     assets: Assets,
+    item_defaults: Arc<horizon_world::item_defaults::Defaults>,
     render: RenderAssets,
     item_renderer: horizon_client::item_render::ItemRenderer,
     visibility: horizon_world::block_render::FaceVisibility,
     gameplay: GameplayTables,
     biomes: Arc<Biomes>,
     environment: Environment,
-    collision: BlockCollisionRegistry<'static>,
+    collision: Arc<BlockCollisionRegistry<'static>>,
 }
 /// The block facts and the tables read from them.
 struct GameplayTables {
@@ -20062,6 +20153,10 @@ fn load_core(
                 })
                 .map_err(|e| e.to_string())?;
                 let library = render.model_library.clone();
+                let item_defaults = startup::time("core.item_defaults", || {
+                    horizon_world::item_defaults::shared(root)
+                })
+                .map_err(|e| e.to_string())?;
                 let item_renderer = startup::time("core.item_models", || {
                     if headless {
                         horizon_client::item_render::ItemRenderer::load_for_server(root, library)
@@ -20070,7 +20165,7 @@ fn load_core(
                     }
                 })
                 .map_err(|e| e.to_string());
-                Ok((render, item_renderer))
+                Ok((render, item_renderer, item_defaults))
             });
             // Nor the face visibility the mesher and the block entity
             // renderer cull with (19 MB).
@@ -20115,19 +20210,20 @@ fn load_core(
             )
         });
     // The packs' failure first: it rolls back whatever else failed.
-    let (render, item_renderer) = match render {
+    let (render, item_renderer, item_defaults) = match render {
         Ok(render) => render,
         Err(e) => return Ok(Err(e)),
     };
     let gameplay = gameplay?;
     progress.set(3);
     Ok(Ok(CoreTables {
+        item_defaults,
         gameplay,
         biomes: biomes?,
         environment: environment?,
         visibility: visibility?,
         item_renderer: item_renderer?,
-        collision: collision?,
+        collision: Arc::new(collision?),
         assets,
         render,
     }))
@@ -20272,6 +20368,7 @@ fn load_resources(
     log::info!("load core tables: {:.2}s", started.elapsed().as_secs_f32());
     let CoreTables {
         assets,
+        item_defaults,
         render,
         item_renderer,
         visibility,
@@ -20316,6 +20413,8 @@ fn load_resources(
         ));
     }
     progress.set(5);
+    let suffocation =
+        horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)?;
     let resources = Resources {
         core: WorldCore {
             facts,
@@ -20323,6 +20422,7 @@ fn load_resources(
             environment,
             collision,
             motion,
+            suffocation,
             threads,
         },
         rest: std::sync::OnceLock::new(),
@@ -20347,6 +20447,7 @@ fn load_resources(
         let handle = std::thread::Builder::new()
             .name("world-rest-loader".into())
             .spawn(move || {
+                let _item_defaults = item_defaults;
                 let _step = startup::step("rest");
                 let rest = load_world_rest(
                     &root,
@@ -20633,7 +20734,7 @@ fn load_world_rest(
 fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::PreparedTextures {
     let assets = &pack.render;
     horizon_client::gfx::PreparedTextures::new(
-        &assets.pixels,
+        &assets.pixels.get(),
         assets.sprite_size,
         assets.texture_layers,
         &assets.sprite_mips,
@@ -20679,7 +20780,7 @@ fn build_renderer(
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
-        &assets.pixels,
+        &assets.pixels.get(),
         assets.sprite_size,
         assets.sprite_minimum_size,
         assets.texture_layers,
@@ -21663,10 +21764,12 @@ pub fn run_with() -> Result<()> {
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
         horizon_client::heartbeat::start();
-        if let Err(e) =
-            horizon_client::multiplayer::add_official_server(&horizon_client::logging::player_dir())
-        {
+        let player_dir = horizon_client::logging::player_dir();
+        if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
             log::warn!("could not add the official server to servers.dat: {e}");
+        }
+        if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
+            log::warn!("could not add the partner servers to servers.dat: {e}");
         }
     }
     mods::register_components(&vanilla_root)?;
@@ -22372,6 +22475,7 @@ mod tests {
     fn a_falling_block_keeps_its_model_offset() {
         let at = Vec3::new(3.5, 70.25, -1.5);
         let falling = FallingBlock {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id: 0,
             state: BlockStateId(7),

@@ -77,6 +77,110 @@ const HELD_SAMPLE_STEP: std::time::Duration = std::time::Duration::from_millis(5
 /// How long a tile whose sampling failed (`LodSampler::grid` gave no
 /// columns: a server refused or lost it) waits before it is asked again.
 const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+/// The most a tile a zoomed view magnifies may split past the plan it would
+/// have had ([`ZoomAim`]): cells three times smaller, so nine times the tiles
+/// where it applies. A spyglass covers about a sixteenth of the circle, so at
+/// the 4078 tiles and ~1500 quads a tile measured at `lodDistance` 256 this
+/// asks for roughly 45% more far tiles while the zoom is held, and gives them
+/// back when it is released. Four would be about 85%: raise it only with a
+/// measurement, because the cost grows with the square.
+const MAX_ZOOM_BOOST: i32 = 3;
+/// Yaw is rounded to this many degrees before it reaches the plan, so turning
+/// the mouse does not rebuild the quadtree every frame. The cone is widened by
+/// as much, so rounding never swings it off a tile being looked at.
+const ZOOM_YAW_STEP: f32 = 5.0;
+
+/// Where a zoomed view asks for finer far tiles (the `lodZoomDetail` extra).
+///
+/// `Plan::visit`'s falloff keeps a tile's cells roughly the same size on
+/// screen, which silently assumes the field of view never changes. A spyglass
+/// (`SpyglassItem`, a tenth of it) or the zoom mod breaks that: the same tile
+/// covers many times more pixels, so its cells look as coarse as a tile ten
+/// times nearer would. This asks the tiles the zoom actually magnifies to
+/// split further.
+///
+/// Only those: lifting the whole circle would ask for about a hundred times
+/// the tiles, which at the quads measured above is gigabytes of vertices. The
+/// cone is the narrowed view's, and `MAX_ZOOM_BOOST` caps how far it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZoomAim {
+    /// The view direction in x/z, in thousandths of a unit vector.
+    dir: [i32; 2],
+    /// The cosine of the cone's half-angle, in thousandths.
+    cos_half: i32,
+    /// How many times further than the unzoomed plan a tile inside the cone
+    /// may split. Two or more; [`ZoomAim::new`] gives `None` for less.
+    boost: i32,
+}
+
+impl ZoomAim {
+    /// `fov_degrees` is the zoomed field of view and `magnification` how many
+    /// times the view is magnified (1 when it is not). `None` when the zoom is
+    /// too slight to be worth replanning for.
+    pub fn new(yaw: f32, fov_degrees: f32, magnification: f32) -> Option<Self> {
+        if !magnification.is_finite() || !fov_degrees.is_finite() || fov_degrees <= 0.0 {
+            return None;
+        }
+        let boost = (magnification.round() as i64).clamp(1, i64::from(MAX_ZOOM_BOOST)) as i32;
+        if boost < 2 {
+            return None;
+        }
+        // Half the field of view spans the screen's width; three quarters of
+        // it reaches the corners, and the rounding step is added on top.
+        let half = (fov_degrees * 0.75 + ZOOM_YAW_STEP).clamp(5.0, 90.0);
+        let radians = ((yaw / ZOOM_YAW_STEP).round() * ZOOM_YAW_STEP).to_radians();
+        // `view_vector`'s x and z: yaw 0 looks toward +z.
+        let thousandths = |v: f32| (v * 1000.0).round() as i32;
+        Some(Self {
+            dir: [thousandths(-radians.sin()), thousandths(radians.cos())],
+            cos_half: thousandths(half.to_radians().cos()),
+            boost,
+        })
+    }
+    /// Whether the cone reaches `key`, so the zoom magnifies it.
+    ///
+    /// The tile is taken as the circle around its centre that covers it, and
+    /// that circle's own angular radius widens the cone for the test, so a
+    /// tile straddling the edge counts in rather than out. A tile whose circle
+    /// reaches the camera is always in: there is no direction to compare, and
+    /// it fills the view whichever way the player faces.
+    fn covers(&self, key: TileKey, camera: [i32; 2]) -> bool {
+        let [ox, _, oz] = key.origin();
+        let size = key.size();
+        // The camera stands in the tile: it is in view whichever way the
+        // player faces, and there is no direction to compare it with. Tested
+        // on the box rather than on the circle below, whose radius a camera
+        // on a corner matches exactly -- a float coin-toss.
+        // In i64: a level 22 tile is 67 million blocks wide, so the sum
+        // at the far edge of the world overflows an i32.
+        let (ox64, oz64, size64) = (i64::from(ox), i64::from(oz), i64::from(size));
+        if (ox64..ox64 + size64).contains(&i64::from(camera[0]))
+            && (oz64..oz64 + size64).contains(&i64::from(camera[1]))
+        {
+            return true;
+        }
+        let half = f64::from(size) / 2.0;
+        let cx = f64::from(ox) + half - f64::from(camera[0]);
+        let cz = f64::from(oz) + half - f64::from(camera[1]);
+        let distance = (cx * cx + cz * cz).sqrt();
+        let radius = half * std::f64::consts::SQRT_2;
+        if distance <= radius {
+            return true;
+        }
+        let dir = [
+            f64::from(self.dir[0]) / 1000.0,
+            f64::from(self.dir[1]) / 1000.0,
+        ];
+        let cos = (cx * dir[0] + cz * dir[1]) / distance;
+        let sin = (1.0 - cos * cos).max(0.0).sqrt();
+        // cos(angle - tile radius), expanded so no inverse trigonometry runs
+        // per tile: the quadtree asks this of every node it visits.
+        let radius_sin = (radius / distance).min(1.0);
+        let radius_cos = (1.0 - radius_sin * radius_sin).max(0.0).sqrt();
+        cos * radius_cos + sin * radius_sin >= f64::from(self.cos_half) / 1000.0
+    }
+}
+
 /// The coarsest tile level: `Plan` roots cover at most `MAX_CHUNKS` chunks
 /// around (a level-22 tile is 67 million blocks wide: the whole world).
 pub(crate) const MAX_LEVEL: u8 = 22;
@@ -598,6 +702,8 @@ struct Plan {
     /// The squared distance within which planned tiles load before the
     /// coarse backdrop (`wanted_tiles`).
     first: i64,
+    /// Where a zoomed view asks for finer tiles, if it does ([`ZoomAim`]).
+    aim: Option<ZoomAim>,
 }
 /// Chunks past the render distance where only planned tiles are drawn (two
 /// past the last near chunk, `streaming::in_view_distance`), and where they
@@ -607,7 +713,7 @@ const FIRST_CHUNKS: i32 = 4;
 impl Plan {
     #[cfg(test)]
     fn new(camera: [i32; 2], detail: i32, distance: u32) -> Self {
-        Self::with_previous(camera, detail, distance, &Self::default(), 0, false)
+        Self::with_previous(camera, detail, distance, &Self::default(), 0, false, None)
     }
     /// `reduced`: Reduced far detail (`graphics::FarDetail`), each level from
     /// half the distance.
@@ -618,6 +724,7 @@ impl Plan {
         previous: &Self,
         elevation: i32,
         reduced: bool,
+        aim: Option<ZoomAim>,
     ) -> Self {
         let range = distance.min(MAX_CHUNKS) as i32 * 16;
         let mut level = 0;
@@ -630,6 +737,7 @@ impl Plan {
             camera,
             near: i64::from((detail + SEAM_CHUNKS) * 16).pow(2),
             first: i64::from((detail + FIRST_CHUNKS) * 16).pow(2),
+            aim,
             ..Self::default()
         };
         for z in (camera[1] - range).div_euclid(size)..=(camera[1] + range).div_euclid(size) {
@@ -665,6 +773,14 @@ impl Plan {
         // Beyond the old 1024-chunk limit the cells are as large as `reduced`'s:
         // the whole world is 22 levels, not all of them worth full cells.
         let world = key.distance(camera) >= WORLD_START;
+        // A zoomed view magnifies the tiles its cone covers, so those split
+        // further; every other tile keeps the plan it would have had
+        // ([`ZoomAim`]). The world-wide threshold is boosted too: the horizon is
+        // where a spyglass shows the coarsest cells of all.
+        let boost = match self.aim {
+            Some(aim) if aim.covers(key, camera) => i64::from(aim.boost),
+            _ => 1,
+        };
         let threshold = i64::from(key.size())
             * i64::from(if world {
                 WORLD_SPLIT
@@ -672,7 +788,8 @@ impl Plan {
                 split / 2
             } else {
                 split
-            });
+            })
+            * boost;
         // The 8 to 10 band above is wide already. The ring of full detail
         // around the camera and the world-wide threshold have none: a tile
         // split last plan stays split until it is 5% past them, or it
@@ -1059,7 +1176,7 @@ pub struct Lod {
     context: Option<Arc<WorkerContext>>,
     /// A finished mesh job may have changed the selection of its ancestors.
     reselect: bool,
-    area: Option<([i32; 2], i32, u32, i32, bool)>,
+    area: Option<([i32; 2], i32, u32, i32, bool, Option<ZoomAim>)>,
     plan: Plan,
     /// Reduced far detail (`set_reduced_detail`).
     reduced_detail: bool,
@@ -2220,29 +2337,35 @@ impl Lod {
             self.shared.wake.notify_all();
         }
     }
+    /// `aim` asks the tiles a zoomed view magnifies for finer detail
+    /// ([`ZoomAim`]); `None` plans exactly as before.
     pub fn update(
         &mut self,
         camera: [f64; 3],
         detail: i32,
         distance: u32,
         covered: Option<FxHashSet<(i32, i32)>>,
+        aim: Option<ZoomAim>,
     ) -> Vec<(TileKey, SectionMesh)> {
         let elevation =
             (((camera[1] - f64::from(MIN_Y + crate::chunk::HEIGHT)).clamp(0., 16384.)) as i32 / 32)
                 * 32;
         let camera = [camera[0].floor() as i32, camera[2].floor() as i32];
         // Replan at chunk boundaries, not on every camera movement.
+        // `ZoomAim` rounds its yaw, so a zoom held still keeps one area and the
+        // quadtree is not rebuilt as the player nudges the mouse.
         let area = (
             [camera[0].div_euclid(16), camera[1].div_euclid(16)],
             detail,
             distance,
             elevation,
             self.reduced_detail,
+            aim,
         );
         if self.area != Some(area) {
             crate::spans::time("lod_plan", || {
                 self.area = Some(area);
-                self.replan(camera, detail, distance, elevation);
+                self.replan(camera, detail, distance, elevation, aim);
             });
         }
         let mut meshes = Vec::new();
@@ -2265,7 +2388,14 @@ impl Lod {
     }
     /// Rebuilds the quadtree and the selection it implies. Only runs when the
     /// planned area changes (a chunk boundary), never per finished sample.
-    fn replan(&mut self, camera: [i32; 2], detail: i32, distance: u32, elevation: i32) {
+    fn replan(
+        &mut self,
+        camera: [i32; 2],
+        detail: i32,
+        distance: u32,
+        elevation: i32,
+        aim: Option<ZoomAim>,
+    ) {
         let plan = Plan::with_previous(
             camera,
             detail,
@@ -2273,6 +2403,7 @@ impl Lod {
             &self.plan,
             elevation,
             self.reduced_detail,
+            aim,
         );
         // A tile that leaves the range before it was drawn stops being
         // unknown to its neighbours (`Snapshot::planned_leaf`): they remesh
@@ -2962,6 +3093,104 @@ fn retiring_detail<'a>(
 }
 #[cfg(test)]
 mod tests {
+    /// A spyglass or the zoom mod magnifies only what the narrowed view
+    /// covers, so `ZoomAim` asks for finer tiles there and nowhere else. Without
+    /// that cone the same request would reach the whole circle, which at the
+    /// measured quads a tile is gigabytes of vertices.
+    #[test]
+    fn a_zoomed_view_asks_for_finer_tiles_only_where_it_looks() {
+        // Yaw 0 looks toward +z (`view_vector`), ten times magnified.
+        let aim = ZoomAim::new(0.0, 7.0, 10.0).expect("a tenth of the field of view zooms");
+        // Capped, however far the zoom goes.
+        assert_eq!(aim.boost, MAX_ZOOM_BOOST);
+        let camera = [0, 0];
+        let tile = |x, z, level| TileKey { x, z, level };
+        // Straight ahead, far enough that the direction decides it.
+        assert!(aim.covers(tile(0, 8, 4), camera), "ahead");
+        // Behind, beside, and the opposite diagonal: the zoom does not
+        // magnify these, so they keep the plan they would have had.
+        assert!(!aim.covers(tile(0, -9, 4), camera), "behind");
+        assert!(!aim.covers(tile(8, 0, 4), camera), "beside");
+        assert!(!aim.covers(tile(-9, -9, 4), camera), "diagonally behind");
+        // A tile the camera stands in is in view whichever way it faces.
+        assert!(aim.covers(tile(0, 0, 4), camera), "underfoot");
+    }
+
+    /// A zoom too slight to change which level a tile wants is not worth
+    /// rebuilding the quadtree for, and an unzoomed view must plan exactly as
+    /// it did before this feature.
+    #[test]
+    fn a_slight_zoom_does_not_replan() {
+        assert_eq!(ZoomAim::new(0.0, 70.0, 1.0), None, "not zoomed");
+        assert_eq!(
+            ZoomAim::new(0.0, 60.0, 1.2),
+            None,
+            "a fifth is under one level"
+        );
+        assert!(ZoomAim::new(0.0, 35.0, 2.0).is_some(), "twice is worth it");
+        // Nothing finite comes of a broken field of view.
+        assert_eq!(ZoomAim::new(0.0, f32::NAN, 4.0), None);
+        assert_eq!(ZoomAim::new(0.0, 0.0, 4.0), None);
+        assert_eq!(ZoomAim::new(0.0, 70.0, f32::INFINITY), None);
+    }
+
+    /// The cone turns with the player, and its yaw is rounded so that a
+    /// mouse-twitch does not rebuild the quadtree: two aims within the
+    /// rounding step compare equal, and `Lod::update` replans on that.
+    #[test]
+    fn the_cone_turns_and_rounds_with_the_view() {
+        let camera = [0, 0];
+        let east = ZoomAim::new(-90.0, 7.0, 10.0).expect("zoomed");
+        let tile = |x, z| TileKey { x, z, level: 4 };
+        // Yaw -90 looks toward +x.
+        assert!(east.covers(tile(8, 0), camera), "ahead when facing +x");
+        assert!(!east.covers(tile(0, 8), camera), "+z is no longer ahead");
+        // Within the rounding step: the same aim, so no replan.
+        assert_eq!(ZoomAim::new(0.0, 7.0, 10.0), ZoomAim::new(1.0, 7.0, 10.0));
+        // Past it: a different aim, so the cone follows.
+        assert_ne!(ZoomAim::new(0.0, 7.0, 10.0), ZoomAim::new(20.0, 7.0, 10.0));
+    }
+
+    /// Inside the cone a tile splits further than it would unzoomed, and
+    /// outside it the plan is unchanged, tile for tile.
+    #[test]
+    fn the_plan_is_finer_ahead_and_untouched_behind() {
+        let camera = [0, 0];
+        let plain = Plan::with_previous(camera, 12, 256, &Plan::default(), 0, false, None);
+        let zoomed = Plan::with_previous(
+            camera,
+            12,
+            256,
+            &Plan::default(),
+            0,
+            false,
+            ZoomAim::new(0.0, 7.0, 10.0),
+        );
+        // Finer somewhere: the zoomed plan holds tiles the plain one split
+        // no further.
+        assert!(
+            zoomed.nodes.len() > plain.nodes.len(),
+            "zoomed {} tiles, plain {}",
+            zoomed.nodes.len(),
+            plain.nodes.len()
+        );
+        // Behind the camera the two agree. Tiles there are the same level in
+        // both, so every plain node well behind is still a node when zoomed.
+        let behind = |key: &&TileKey| {
+            let [_, _, oz] = key.origin();
+            oz + key.size() < -1024
+        };
+        let plain_behind: std::collections::BTreeSet<_> =
+            plain.nodes.iter().filter(behind).copied().collect();
+        let zoomed_behind: std::collections::BTreeSet<_> =
+            zoomed.nodes.iter().filter(behind).copied().collect();
+        assert!(!plain_behind.is_empty(), "nothing behind to compare");
+        assert_eq!(
+            plain_behind, zoomed_behind,
+            "the zoom changed the plan behind the player"
+        );
+    }
+
     use super::*;
     use crate::mesher::TerrainVertex;
     #[test]
@@ -3033,7 +3262,8 @@ mod tests {
         for camera in [[0, 0], [100, -40]] {
             for distance in [64, 128, 512, 1024] {
                 let full = Plan::new(camera, 12, distance);
-                let reduced = Plan::with_previous(camera, 12, distance, &Plan::default(), 0, true);
+                let reduced =
+                    Plan::with_previous(camera, 12, distance, &Plan::default(), 0, true, None);
                 // Never finer than Full anywhere, and as fine next to the
                 // full-detail area, whose edge the finest tiles match.
                 assert!(reduced.split.is_subset(&full.split));
@@ -3093,10 +3323,24 @@ mod tests {
             ([115, 135], 49_000_000),
             ([-30_000_000, 29_999_000], 90),
         ] {
-            let plan =
-                Plan::with_previous(camera, 12, MAX_CHUNKS, &Plan::default(), elevation, false);
-            let reduced =
-                Plan::with_previous(camera, 12, MAX_CHUNKS, &Plan::default(), elevation, true);
+            let plan = Plan::with_previous(
+                camera,
+                12,
+                MAX_CHUNKS,
+                &Plan::default(),
+                elevation,
+                false,
+                None,
+            );
+            let reduced = Plan::with_previous(
+                camera,
+                12,
+                MAX_CHUNKS,
+                &Plan::default(),
+                elevation,
+                true,
+                None,
+            );
             let top = plan.nodes.iter().map(|k| k.level).max().unwrap();
             assert_eq!(top, MAX_LEVEL, "{camera:?} y={elevation}: roots stop short");
             assert!(
@@ -3123,7 +3367,7 @@ mod tests {
     #[test]
     fn aerial_distance_avoids_unseen_full_detail_outside_the_near_area() {
         let ground = Plan::new([0, 0], 12, 1024);
-        let high = Plan::with_previous([0, 0], 12, 1024, &Plan::default(), 1024, false);
+        let high = Plan::with_previous([0, 0], 12, 1024, &Plan::default(), 1024, false, None);
         assert!(high.nodes.len() < ground.nodes.len());
         assert!(
             high.nodes.contains(&TileKey {
@@ -3178,7 +3422,7 @@ mod tests {
         // stand-in for a covered column, and only the roots are sampled.
         let camera = [8, 8];
         let before = Plan::new(camera, 64, 64);
-        let after = Plan::with_previous(camera, 8, 64, &before, 0, false);
+        let after = Plan::with_previous(camera, 8, 64, &before, 0, false, None);
         let mut ready: FxHashMap<TileKey, ()> = before
             .nodes
             .iter()
@@ -3217,7 +3461,7 @@ mod tests {
     #[test]
     fn detail_survives_movement_across_a_split_threshold() {
         let before = Plan::new([0, 0], 2, 256);
-        let after = Plan::with_previous([16, 0], 2, 256, &before, 0, false);
+        let after = Plan::with_previous([16, 0], 2, 256, &before, 0, false, None);
         let mut retained = 0;
         let range = i64::from(256 * 16);
         for key in &before.split {
@@ -3242,12 +3486,12 @@ mod tests {
         let before = Plan::new([0, 0], 40, 256);
         assert!(before.split.contains(&tile));
         // 670 blocks: past the ring, inside 5% of it.
-        let held = Plan::with_previous([-30, 0], 40, 256, &before, 0, false);
+        let held = Plan::with_previous([-30, 0], 40, 256, &before, 0, false, None);
         assert!(held.split.contains(&tile));
         // Not held without having been split: it was never in the ring.
         assert!(!Plan::new([-30, 0], 40, 256).split.contains(&tile));
         // 700 blocks: past the margin.
-        let gone = Plan::with_previous([-60, 0], 40, 256, &before, 0, false);
+        let gone = Plan::with_previous([-60, 0], 40, 256, &before, 0, false, None);
         assert!(!gone.split.contains(&tile));
     }
     #[test]
@@ -3749,7 +3993,7 @@ mod tests {
         // Exercise the actual worker/update seam: a parent stays displayed
         // until all four child meshes can replace it in the same update.
         let camera = [-256.0, 100.0, -256.0];
-        lod.area = Some(([-16, -16], 2, 64, 0, false));
+        lod.area = Some(([-16, -16], 2, 64, 0, false, None));
         lod.plan.roots = vec![key];
         lod.plan.nodes.insert(key);
         // As a replan does (`update` only selects after a change).
@@ -3757,7 +4001,7 @@ mod tests {
         let await_meshes = |lod: &mut Lod| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
-                let meshes = lod.update(camera, 2, 64, None);
+                let meshes = lod.update(camera, 2, 64, None, None);
                 if !meshes.is_empty() {
                     return meshes;
                 }
@@ -3775,7 +4019,7 @@ mod tests {
             lod.ready.insert(child, lod.ready[&key].clone());
         }
         lod.reselect = true;
-        assert!(lod.update(camera, 2, 64, None).is_empty());
+        assert!(lod.update(camera, 2, 64, None, None).is_empty());
         assert!(
             lod.active.contains(&key),
             "parent retired before child meshes"
@@ -3804,7 +4048,7 @@ mod tests {
         lod.reselect = true;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            lod.update(camera, 2, 64, None);
+            lod.update(camera, 2, 64, None, None);
             if lod.outstanding_meshes == 0 && lod.active.is_empty() {
                 break;
             }
@@ -3844,7 +4088,7 @@ mod tests {
             .collect();
         lod.detail_request_pending = true;
         lod.wanted_stale = true;
-        lod.update(camera, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 2, 64, Some(FxHashSet::default()), None);
         let Some(Job::Sample(nearby)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("nearby detail was not scheduled");
         };
@@ -3855,7 +4099,7 @@ mod tests {
             "the nearest tiles load first"
         );
         lod.finish_sample(nearby, vec![Column::default(); 256]);
-        lod.update(camera, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 2, 64, Some(FxHashSet::default()), None);
         let Some(Job::Sample(next)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("the next ring was not scheduled");
         };
@@ -3894,7 +4138,7 @@ mod tests {
                 level: 0,
             })
             .collect();
-        lod.update(camera, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 2, 64, Some(FxHashSet::default()), None);
         let Some(Job::Sample(first)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("no final tile scheduled")
         };
@@ -3938,7 +4182,7 @@ mod tests {
             lod.shared.jobs.lock().unwrap().clear();
             lod.pending.clear();
             lod.wanted_stale = true;
-            lod.update([-256., 64., -256.], 2, 64, Some(FxHashSet::default()));
+            lod.update([-256., 64., -256.], 2, 64, Some(FxHashSet::default()), None);
             let jobs = lod.shared.jobs.lock().unwrap();
             jobs.iter()
                 .filter(|job| matches!(job, Job::Sample(_)))
@@ -3954,7 +4198,7 @@ mod tests {
         // Leaves' cells: 1 block to 256 blocks out, 2 to 512 (Full); Reduced
         // keeps 1 to the near terrain's edge and 2 to 256.
         for (reduced, [one, two]) in [(false, [256, 512]), (true, [208, 256])] {
-            let plan = Plan::with_previous([8, 8], 12, 128, &Plan::default(), 0, reduced);
+            let plan = Plan::with_previous([8, 8], 12, 128, &Plan::default(), 0, reduced, None);
             for key in plan.nodes.iter().filter(|key| !plan.split.contains(key)) {
                 let distance = key.distance([8, 8]);
                 if distance < one {
@@ -3984,7 +4228,8 @@ mod tests {
                 }
             }
         }
-        let plan = Plan::with_previous(camera, detail, distance, &Plan::default(), 0, reduced);
+        let plan =
+            Plan::with_previous(camera, detail, distance, &Plan::default(), 0, reduced, None);
         let leaf = |x: i32, z: i32| {
             (0..=MAX_LEVEL)
                 .map(|level| TileKey {
@@ -4250,7 +4495,7 @@ mod tests {
         lod.finish_sample(a, vec![Column::default(); CELLS * CELLS]);
         lod.dirty.clear();
         // A range of one chunk around (-10, 0) keeps `a` and drops `b`.
-        lod.replan([-10, 0], 0, 1, 0);
+        lod.replan([-10, 0], 0, 1, 0, None);
         assert!(lod.plan.nodes.contains(&a) && !lod.plan.nodes.contains(&b));
         assert!(lod.dirty.contains_key(&a), "its east wall is drawn now");
     }
@@ -4305,7 +4550,7 @@ mod tests {
             keys
         };
         let none = || Some(FxHashSet::default());
-        lod.update([8., 64., 8.], 2, 64, none());
+        lod.update([8., 64., 8.], 2, 64, none(), None);
         let before = queued(&lod);
         assert_eq!(before.len(), 16, "a full queue once the near terrain is in");
         lod.shared
@@ -4315,7 +4560,7 @@ mod tests {
             .push_back(Job::Observe((5, 5)));
 
         // A chunk's move: the tiles still planned keep their place in line.
-        lod.update([24., 64., 8.], 2, 64, none());
+        lod.update([24., 64., 8.], 2, 64, none(), None);
         let moved = queued(&lod);
         let kept: Vec<_> = before
             .iter()
@@ -4328,7 +4573,7 @@ mod tests {
         assert!(observing(&lod), "only sample jobs are dropped");
 
         // A teleport: none of the old view's tiles is sampled any more.
-        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        lod.update([100_000., 64., 100_000.], 2, 64, none(), None);
         let after = queued(&lod);
         assert_eq!(after.len(), 16);
         assert!(after.iter().all(|key| !moved.contains(key)));
@@ -4346,7 +4591,7 @@ mod tests {
         assert!(lod.pending.is_empty());
         assert!(observing(&lod));
         lod.set_near_loading(false);
-        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        lod.update([100_000., 64., 100_000.], 2, 64, none(), None);
         assert_eq!(queued(&lod), after);
 
         // Larger machines keep the first `SAMPLE_JOBS` of the queue.
@@ -4754,7 +4999,7 @@ mod tests {
         };
         for _ in 0..2 {
             for _ in 0..4000 {
-                lod.update(camera, 2, 64, Some(FxHashSet::default()));
+                lod.update(camera, 2, 64, Some(FxHashSet::default()), None);
                 check(&lod);
                 if !finish_queued(&mut lod) {
                     break;
@@ -4765,11 +5010,11 @@ mod tests {
             check(&lod);
             // Move a chunk: retained samples stay selected, new ones join.
             camera[0] += 16.0;
-            lod.update(camera, 2, 64, Some(FxHashSet::default()));
+            lod.update(camera, 2, 64, Some(FxHashSet::default()), None);
             check(&lod);
         }
         // A covered level-0 stand-in completes its parent but is not drawn.
-        lod.update(camera, 2, 64, Some([(0, 0)].into_iter().collect()));
+        lod.update(camera, 2, 64, Some([(0, 0)].into_iter().collect()), None);
         check(&lod);
         assert!(lod.ready.contains_key(&TileKey {
             x: 0,
@@ -4782,7 +5027,7 @@ mod tests {
             level: 0
         }));
         // Shrinking the distance retires tiles and reports them once.
-        lod.update(camera, 0, 32, Some(FxHashSet::default()));
+        lod.update(camera, 0, 32, Some(FxHashSet::default()), None);
         check(&lod);
         let _ = lod.removed();
     }
@@ -4866,7 +5111,7 @@ mod tests {
             let mut covered = Some(covered.clone());
             let mut quiet = 0;
             while quiet < if settle { 50 } else { 3 } {
-                lod.update(camera, detail, distance, covered.take());
+                lod.update(camera, detail, distance, covered.take(), None);
                 lod.removed();
                 // Every tile sampled, but those waiting for their data.
                 let unsampled = lod.plan.nodes.iter().any(|key| {

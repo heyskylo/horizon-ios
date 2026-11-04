@@ -1,13 +1,14 @@
 //! Mod loaders for Java instances: Fabric, Quilt, Forge and NeoForge. For each Minecraft version,
 //! Fabric's and Quilt's metadata services list their versions and serve a launcher profile: a
 //! version JSON that `inheritsFrom` the game's own, with the loader's main class and its libraries
-//! by Maven name and repository. Forge's and NeoForge's versions come from their Maven repositories
-//! ([`forge`]). The profile is kept in `versions/` beside the game's, as the
+//! by Maven name and repository. Forge and NeoForge come as an installer whose processors patch the
+//! game's jar first ([`forge`]). The profile is kept in `versions/` beside the game's, as the
 //! official launcher keeps a loader's, and its libraries in `libraries/`, each checked against its
 //! sha1 (the profile's, else the one the repository publishes beside the file).
 //! `java_launch::resolve` merges the profile into the game's version.
 
 mod forge;
+mod forge_install;
 
 use crate::sources::{fetch_checked, sha1_file, write_file, Fetch};
 use serde::{Deserialize, Serialize};
@@ -191,16 +192,26 @@ pub fn maven_path(name: &str) -> Result<String, String> {
 
 /// Downloads `loader`'s profile for `minecraft` and its libraries into the game folder `dir`, and
 /// keeps the profile in `versions/` with each library's file named the way Mojang's are
-/// (`downloads.artifact`). Returns the profile's id.
+/// (`downloads.artifact`). Forge's and NeoForge's installers run on `java`, after the game itself
+/// is in `dir`. Returns the profile's id.
 pub fn install(
     loader: &Loader,
     minecraft: &str,
     dir: &Path,
+    java: &Path,
     fetch: Fetch,
     log: &dyn Fn(String),
 ) -> Result<String, String> {
     if matches!(loader.kind, Kind::Forge | Kind::NeoForge) {
-        return Err(format!("Horizon can't install {} yet.", loader.kind.name()));
+        return forge_install::install(
+            loader.kind,
+            &loader.version,
+            minecraft,
+            dir,
+            java,
+            fetch,
+            log,
+        );
     }
     let name = loader.kind.name();
     let url = format!(

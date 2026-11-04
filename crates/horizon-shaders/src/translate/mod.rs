@@ -328,6 +328,22 @@ fn translate(
                 uniforms.remove(name);
             }
         }
+        // A compatibility-profile stage keeps reading the frame's `normalMatrix`.
+        let normal = "normalMatrix";
+        if uniforms.get(normal).is_some_and(|ty| ty == "mat3")
+            && [&v, &f].into_iter().all(|stage| {
+                stage.core_matrix(normal).is_some()
+                    || !stage.uniforms.iter().any(|(name, ..)| name == normal)
+            })
+        {
+            uniforms.remove(normal);
+        }
+        // The fragment stage's own `textureMatrix` keeps its frame slot (it reads zero).
+        if !f.uniforms.iter().any(|(n, _, _)| n == "textureMatrix")
+            && uniforms.get("textureMatrix").is_some_and(|ty| ty == "mat4")
+        {
+            uniforms.remove("textureMatrix");
+        }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
     let alpha_test_ref = gbuffers
@@ -1599,6 +1615,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `normalMatrix` follows the geometry's transform in a core-profile gbuffers stage and stays
+    /// a uniform of the frame (zero) in a compatibility-profile one, as our #9136 probe's Iris
+    /// 1.11.7 pictures show at these four `#version` lines.
+    #[test]
+    fn core_normal_matrix_uses_frame_state_in_the_core_profile_only() {
+        for (profile, core) in [
+            ("330 core", true),
+            ("330", true),
+            ("150", true),
+            ("330 compatibility", false),
+        ] {
+            let source = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nin vec3 vaNormal;\nout vec3 n;\n\
+                 void main() {{ n = normalMatrix * vaNormal; gl_Position = vec4(n, 1.0); }}\n"
+            );
+            let p = core_matrix_program(&source, false).unwrap();
+            let uniform = p
+                .interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "normalMatrix");
+            assert_eq!(uniform, !core, "{profile}");
+        }
+    }
+
+    /// `textureMatrix` in the vertex stage is the texture matrix state, not a frame uniform the
+    /// game has no value for; the fragment stage's own one keeps its slot (Iris 1.11.7 reads
+    /// zero there in our probe, #9080).
+    #[test]
+    fn vertex_texture_matrix_is_not_a_frame_uniform() {
+        let vertex = "#version 460 core\nuniform mat4 textureMatrix;\nin vec2 vaUV0;\nout vec2 uv;\n\
+                      void main() { uv = mat2(textureMatrix) * vaUV0 + textureMatrix[3].xy; gl_Position = vec4(1.0); }";
+        let p = core_matrix_program(vertex, false).unwrap();
+        assert!(
+            !p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix")
+        );
+        let fragment = "#version 460 core\nuniform mat4 textureMatrix;\nout vec4 color;\n\
+                        void main() { color = textureMatrix[0]; }";
+        let files = [
+            ("shaders/gbuffers_terrain.vsh", vertex),
+            ("shaders/gbuffers_terrain.fsh", fragment),
+        ];
+        let pack = Pack::from_zip_bytes("texture-matrix.zip", zip(&files)).unwrap();
+        let macros = Macros::standard();
+        let p = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_terrain.vsh", &macros),
+            &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        assert!(
+            p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix" && u.ty == "mat4")
+        );
     }
 
     #[test]
@@ -2918,6 +2996,69 @@ in VertexData {{ {member} }} vIn;
         .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
+    /// Outputs with `component` qualifiers share one location (GLSL 4.60, 4.4.2): one target
+    /// at that location. The shapes glslangValidator rejects stay errors.
+    #[test]
+    fn outputs_sharing_a_location_by_component_are_one_target() {
+        let fsh = "#version 440\nlayout(location = 0, component = 0) out float r;\n\
+                   layout(location = 0, component = 1) out vec3 gba;\n\
+                   layout(location = 1, component = 1) out uvec3 words;\n\
+                   void main() { r = 0.0; gba = vec3(1.0, 0.0, 1.0); words = uvec3(1u); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(p.interface.outputs, [0, 1]);
+        let result = p.fragment.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &p.fragment.types[result.ty].inner else {
+            panic!("two outputs are a struct");
+        };
+        let targets: Vec<_> = members
+            .iter()
+            .map(|m| (m.binding.clone(), p.fragment.types[m.ty].inner.clone()))
+            .collect();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        for (location, scalar) in [(0, naga::Scalar::F32), (1, naga::Scalar::U32)] {
+            assert!(
+                targets.iter().any(|(binding, ty)| matches!(
+                    binding,
+                    Some(naga::Binding::Location { location: l, .. }) if *l == location
+                ) && *ty
+                    == naga::TypeInner::Vector {
+                        size: naga::VectorSize::Quad,
+                        scalar
+                    }),
+                "{targets:?}"
+            );
+        }
+        for (outputs, name) in [
+            (
+                "layout(location = 0) out vec2 a; layout(location = 0, component = 1) out float b;",
+                "b",
+            ),
+            (
+                "layout(location = 0) out uint a; layout(location = 0, component = 1) out vec3 b;",
+                "b",
+            ),
+            ("layout(location = 0, component = 2) out vec3 a;", "a"),
+        ] {
+            let fsh = format!("#version 440\n{outputs}\nvoid main() {{}}\n");
+            let errors = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{outputs} translated"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.message.contains(&format!("`{name}`"))),
+                "{outputs}: {errors:?}"
+            );
+        }
+    }
+
     #[test]
     fn narrow_outputs_widen_and_inverse_is_ours() {
         let fsh = "#version 400\nlayout(location = 0) out vec3 color;\nlayout(location = 1) out float depth;\n\
@@ -3070,6 +3211,70 @@ in VertexData {{ {member} }} vIn;
         let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
         translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
             .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    /// Atomic functions on a component of a shared vector, whatever its declaration: alone, in a
+    /// declaration of several names, a member of a shared struct (with whole-vector stores and
+    /// reads, or atomics only). The forms of #9085's probe; glslang accepts all of them.
+    #[test]
+    fn atomics_on_shared_vector_components_compile_in_lists_and_structs() {
+        let forms = [
+            (
+                "shared ivec3 mn;\nshared ivec3 mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared ivec3 mn, mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "if (i == 0) sh.mn = ivec3(1000);\n    barrier();\n    atomicMin(sh.mn.x, i);\n    \
+                 barrier();\n    ivec3 r = sh.mn;\n    sh.other = uint(r.x);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "atomicMin(sh.mn.x, i);",
+            ),
+        ];
+        for (decl, body) in forms {
+            let csh = format!(
+                "#version 460 core\nlayout(local_size_x = 8) in;\n{decl}void main() {{\n    \
+                 int i = int(gl_LocalInvocationIndex);\n    {body}\n}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            let p = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                .unwrap_or_else(|e| panic!("{csh}\n{e:?}"));
+            // The struct keeps its other member; the vector's components are atomic.
+            if decl.contains("struct") {
+                let (_, sh) = p
+                    .module
+                    .global_variables
+                    .iter()
+                    .find(|(_, g)| g.space == naga::AddressSpace::WorkGroup)
+                    .expect("the shared struct");
+                let naga::TypeInner::Struct { members, .. } = &p.module.types[sh.ty].inner else {
+                    panic!("{:?}", p.module.types[sh.ty]);
+                };
+                let inner = |m: &naga::StructMember| p.module.types[m.ty].inner.clone();
+                let [mn, other] = &members[..] else {
+                    panic!("{members:?}")
+                };
+                let naga::TypeInner::Array { base, size, .. } = inner(mn) else {
+                    panic!("{mn:?}")
+                };
+                assert_eq!(size, naga::ArraySize::Constant(3.try_into().unwrap()));
+                assert!(matches!(
+                    p.module.types[base].inner,
+                    naga::TypeInner::Atomic(naga::Scalar::I32)
+                ));
+                assert!(matches!(
+                    inner(other),
+                    naga::TypeInner::Scalar(naga::Scalar::U32)
+                ));
+            }
+        }
     }
 
     /// A stage's `#version` may come from a header it includes: the program is that version
