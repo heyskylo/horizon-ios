@@ -83,8 +83,11 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--orb-lava-fixture', action='store_true', help='guarded server orb lava contact scene')
+    parser.add_argument('--orb-lava-raw-diagnostic', action='store_true', help='retain random Pos/Motion as exact raw diagnostics')
+    parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
@@ -115,6 +118,13 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.orb_lava_fixture:
+        try:
+            from .orb_lava_corpus import orb_lava
+        except ImportError:
+            from orb_lava_corpus import orb_lava
+        groups = [('setup', corpus_module.group_setup()),
+                  ('orb lava contact', orb_lava(args.orb_lava_raw_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -166,6 +176,8 @@ def main():
     for op, reference in zip(recorded_ops, vanilla):
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
+        if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
+            sys.exit(f'Java callback guard failed: {op}: {reference.get("results")}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
     commands_by_group = []
