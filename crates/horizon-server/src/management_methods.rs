@@ -440,8 +440,27 @@ fn component(message: &Value) -> Option<Value> {
 
 /// `MinecraftServerSettingsServiceImpl.setStatusHeartbeatInterval`: the supervisor owns the heartbeat, so
 /// the new interval takes effect here, and is kept in server.properties and server.toml's `[properties]`
-/// (which writes server.properties again at the next start). The answer is the interval now in force.
+/// (which writes server.properties again at the next start). The answer is the interval now in force: the
+/// old one when the heartbeat cannot be rescheduled (`management::set_heartbeat_seconds`), which keeps
+/// nothing.
 fn status_heartbeat_interval(shared: &Shared, seconds: i32) -> Result<Value, Failure> {
+    if !management::set_heartbeat_seconds(shared, seconds) {
+        crate::supervisor::note(
+            shared,
+            "WARN",
+            &format!(
+                "The existing heartbeat was not canceled and the new heartbeat of {seconds} seconds has not been applied."
+            ),
+        );
+        crate::supervisor::note(
+            shared,
+            "INFO",
+            &format!(
+                "The heartbeat interval was not updated to the new value of {seconds} seconds as the json rpc server is null or a pre-existing heartbeat failed to get canceled"
+            ),
+        );
+        return Ok(json!(management::heartbeat_seconds(shared)));
+    }
     let path = shared.dir.join(crate::config::PROPERTIES);
     let stored = ServerProperties::from_file(&path, &mut SystemEntropy::default())
         .and_then(|p| p.update("status-heartbeat-interval", seconds.to_string()))
@@ -456,7 +475,6 @@ fn status_heartbeat_interval(shared: &Shared, seconds: i32) -> Result<Value, Fai
         toml::Value::Integer(i64::from(seconds)),
     )
     .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
-    management::set_heartbeat_seconds(shared, seconds);
     // Vanilla reads the interval for its log line after setting it, so both numbers are the new one.
     let now = management::heartbeat_seconds(shared);
     crate::supervisor::note(
@@ -1242,6 +1260,33 @@ status-heartbeat-interval=0
         // A value that is no integer is refused before anything changes.
         assert!(management_int(&json!("yes")).is_err());
         assert_eq!(management::heartbeat_seconds(&shared), -5);
+        // -5 cancelled the running 30 s heartbeat: vanilla cannot cancel it again, so it refuses every
+        // later set, answers with the interval in force and keeps nothing.
+        assert_eq!(status_heartbeat_interval(&shared, 30).unwrap(), json!(-5));
+        assert_eq!(management::heartbeat_seconds(&shared), -5);
+        let properties = std::fs::read_to_string(dir.join(crate::config::PROPERTIES)).unwrap();
+        assert!(
+            properties.contains("status-heartbeat-interval=-5"),
+            "{properties}"
+        );
+    }
+
+    /// A set to 0 or less with no heartbeat running cancels nothing, so later sets still apply.
+    #[test]
+    fn a_heartbeat_never_started_can_still_be_set() {
+        let shared = shared();
+        let dir = shared.dir.clone();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        std::fs::write(
+            dir.join(crate::config::PROPERTIES),
+            "#Minecraft server properties
+status-heartbeat-interval=0
+",
+        )
+        .unwrap();
+        assert_eq!(status_heartbeat_interval(&shared, 0).unwrap(), json!(0));
+        assert_eq!(status_heartbeat_interval(&shared, 45).unwrap(), json!(45));
+        assert_eq!(management::heartbeat_seconds(&shared), 45);
     }
 
     #[test]

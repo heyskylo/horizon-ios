@@ -41,6 +41,10 @@ pub struct Clients {
     /// How many times it was set. Each set restarts the countdown, as vanilla cancels the heartbeat and
     /// schedules a new one (`ManagementServer.scheduleHeartbeat`).
     heartbeat_set: AtomicU64,
+    /// A set to 0 or less cancelled a running heartbeat and scheduled none: vanilla's
+    /// `ManagementServer.heartbeat` keeps the cancelled future, and `cancel(true)` on it returns false, so
+    /// every later set is refused until the server restarts.
+    heartbeat_cancelled: Mutex<bool>,
 }
 
 /// `DedicatedServer.getStatusHeartbeatInterval`: the seconds between the status notifications, 0 or less for
@@ -51,15 +55,19 @@ pub fn heartbeat_seconds(shared: &Shared) -> i32 {
 
 /// `DedicatedServer.setStatusHeartbeatInterval`: from now on, a status notification every `seconds`, the first
 /// after as many; none for 0 or less. The countdown starts again even when the value is the one it had.
-pub fn set_heartbeat_seconds(shared: &Shared, seconds: i32) {
-    shared
-        .management
-        .heartbeat_seconds
-        .store(seconds, Ordering::Relaxed);
-    shared
-        .management
-        .heartbeat_set
-        .fetch_add(1, Ordering::Relaxed);
+/// False, with nothing changed, once a set to 0 or less stopped a running heartbeat
+/// (`ManagementServer.scheduleHeartbeat` cannot cancel the cancelled one again).
+pub fn set_heartbeat_seconds(shared: &Shared, seconds: i32) -> bool {
+    let m = &shared.management;
+    let mut cancelled = m.heartbeat_cancelled.lock().unwrap();
+    if *cancelled {
+        return false;
+    }
+    let was_running = m.heartbeat_seconds.load(Ordering::Relaxed) > 0;
+    *cancelled = was_running && seconds <= 0;
+    m.heartbeat_seconds.store(seconds, Ordering::Relaxed);
+    m.heartbeat_set.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 /// `MinecraftServer.SERVER_ACTIVITY_MONITOR_SECONDS_BETWEEN_NOTIFICATIONS`.
@@ -1068,12 +1076,12 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        set_heartbeat_seconds(&shared, 1);
+        assert!(set_heartbeat_seconds(&shared, 1));
         assert_eq!(heartbeat_seconds(&shared), 1);
         let beat: Value = serde_json::from_str(&next_text(&mut client)).unwrap();
         assert_eq!(beat["method"], "minecraft:notification/server/status");
         // Set to 0 (or below) it stops again.
-        set_heartbeat_seconds(&shared, 0);
+        assert!(set_heartbeat_seconds(&shared, 0));
         client
             .set_read_timeout(Some(Duration::from_millis(1200)))
             .unwrap();
