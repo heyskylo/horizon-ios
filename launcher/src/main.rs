@@ -2436,6 +2436,15 @@ fn selection_after_removal(installed: &[String], saved: Option<String>) -> Optio
         .or_else(|| installed.first().cloned())
 }
 
+/// The row menu a press on a sidebar row leaves open: that row's, or none when it was already
+/// that row's (the ⋮ and a right click on the row toggle the same way).
+fn row_menu_after_press(open: Option<(String, bool)>, id: &str) -> Option<(String, bool)> {
+    if open.as_ref().is_some_and(|(current, _)| current == id) {
+        return None;
+    }
+    Some((id.to_owned(), false))
+}
+
 fn disabled(b: Stateful<Div>) -> Stateful<Div> {
     b.opacity(theme::DISABLED).cursor_default().tab_stop(false)
 }
@@ -5611,6 +5620,28 @@ mod tests {
             "v0.2.76"
         ));
         assert!(!super::removable(&installed, None, &[], "v0.2.85"));
+    }
+
+    #[test]
+    fn a_press_on_a_sidebar_row_opens_its_menu_or_closes_it() {
+        let open = |id: &str| Some((id.to_string(), false));
+        assert_eq!(
+            super::row_menu_after_press(None, "Horizon"),
+            open("Horizon")
+        );
+        assert_eq!(
+            super::row_menu_after_press(open("Other"), "Horizon"),
+            open("Horizon")
+        );
+        assert_eq!(
+            super::row_menu_after_press(open("Horizon"), "Horizon"),
+            None
+        );
+        // A Delete… already pressed on another row does not carry over.
+        assert_eq!(
+            super::row_menu_after_press(Some(("Other".into(), true)), "Horizon"),
+            open("Horizon")
+        );
     }
 
     #[test]
