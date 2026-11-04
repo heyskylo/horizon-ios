@@ -2434,6 +2434,9 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
   shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
   of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
+  A dying player's inventory is a call of its own: after vanishing-curse items are gone and before the rest is thrown from
+  the player's eyes, with `entity` the player's id and `minecraft:player`, `player` them, no table and `used` false (take every
+  stack out of `drops` to keep the inventory for a grave or a soulbound rule). It is not heard with `keep_inventory` on.
 
 ### A block's items
 
