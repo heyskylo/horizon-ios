@@ -4379,6 +4379,115 @@ def mining_efficiency_9021():
 
 
 
+def advancement_loot_fixtures(group_names):
+    advancements, tables = {}, {}
+    if 'advancement world loot rewards' in group_names:
+        criteria = {'never': {'trigger': 'minecraft:impossible'}}
+        advancements = {'parity:loot_reward': {'criteria': criteria,
+                                             'rewards': {'loot': ['parity:reward']}},
+                        'parity:no_loot': {'criteria': criteria}}
+        tables['parity:reward'] = {'type': 'minecraft:advancement_reward',
+                                  'pools': [{'rolls': 1, 'entries': [
+                                      {'type': 'minecraft:item', 'name': 'minecraft:diamond'}]}]}
+    if 'advancement empty loot reference' in group_names:
+        tables['parity:empty_reward'] = {'type': 'minecraft:advancement_reward', 'pools': []}
+    return advancements, tables
+
+
+def advancement_world_loot_rewards(named_table=False, include_missing_ack=False):
+    """One world-only, modifier-free reward table; no XP, recipe or function reward."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/clear @s',
+                '/scoreboard objectives add reward_loot dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s Inventory')]
+    ops += setup('/data modify storage h292:identity value set from entity @s UUID',
+                 '/execute store result score clock reward_loot run time query gametime')
+    def reference(table):
+        return ('{type:"minecraft:advancement_reward",pools:[{rolls:1,entries:['
+                '{type:"minecraft:loot_table",value:"' + table + '"}]}]}')
+    target = 'parity:reward' if named_table else reference('parity:reward')
+    if not named_table:
+        # Same reference shape with a missing key must leave the inventory empty.
+        # Only its three codec/ACK rows are excluded from focused97; full100
+        # records them unchanged. Both Inventory guards always remain recorded.
+        ops += setup('/scoreboard players set missing_result reward_loot -99',
+                     '/scoreboard players set missing_success reward_loot -99')
+        ops += [cmd('/scoreboard players get missing_result reward_loot', expect_result=-99),
+                cmd('/scoreboard players get missing_success reward_loot', expect_result=-99),
+                cmd('/execute store result score missing_result reward_loot store success score missing_success reward_loot run loot give @s loot ' + reference('parity:missing_reward'), record=include_missing_ack),
+                cmd('/scoreboard players get missing_result reward_loot', record=include_missing_ack),
+                cmd('/scoreboard players get missing_success reward_loot', record=include_missing_ack),
+                cmd('/data get entity @s Inventory', expect_result=0),
+                cmd('/execute unless data entity @s Inventory[]', expect_result=1)]
+    # A reference, never an inline diamond definition, proves the world-only table.
+    ops += [cmd('/loot give @s loot ' + target, expect_result=1),
+            cmd('/data get entity @s Inventory'),
+            cmd('/execute if entity @s[nbt={Inventory:[{Slot:0b,id:"minecraft:diamond",count:1}]}]', expect_result=1),
+            cmd('/clear @s', expect_result=1),
+            cmd('/data get entity @s Inventory')]
+    cases = [('grant', 'parity:loot_reward', 1, 1, True),
+             ('grant', 'parity:loot_reward', 0, 1, True),
+             ('revoke', 'parity:loot_reward', 1, 1, False),
+             ('grant', 'parity:loot_reward', 1, 2, True),
+             ('grant', 'parity:no_loot', 1, 2, True),
+             ('grant', 'parity:no_loot', 0, 2, True),
+             ('revoke', 'parity:no_loot', 1, 2, False),
+             ('grant', 'parity:no_loot', 1, 2, True)]
+    for verb, advancement, changed, count, complete in cases:
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+        ops += setup('/scoreboard players set result reward_loot -99',
+                     '/scoreboard players set success reward_loot -99')
+        ops += [cmd('/scoreboard players get result reward_loot', expect_result=-99),
+                cmd('/scoreboard players get success reward_loot', expect_result=-99),
+                cmd(f'/execute store result score result reward_loot store success score success reward_loot run advancement {verb} @s only {advancement}'),
+                cmd('/scoreboard players get result reward_loot', expect_result=changed),
+                cmd('/scoreboard players get success reward_loot', expect_result=changed),
+                cmd('/data get entity @s Inventory'),
+                cmd(f'/execute if entity @s[nbt={{Inventory:[{{Slot:0b,id:"minecraft:diamond",count:{count}}}]}}]', expect_result=1)]
+        ops += setup('/execute store result score count reward_loot run clear @s minecraft:diamond 0')
+        ops += [cmd('/scoreboard players get count reward_loot', expect_result=count),
+                cmd(f'/execute {"if" if complete else "unless"} entity @s[advancements={{{advancement}=true}}]', expect_result=1)]
+    ops += [cmd('/loot give @s loot ' + target, expect_result=1),
+            cmd('/data get entity @s Inventory'),
+            cmd('/execute if entity @s[nbt={Inventory:[{Slot:0b,id:"minecraft:diamond",count:3}]}]', expect_result=1)]
+    ops += setup('/execute store success score identity_changed reward_loot run data modify storage h292:identity value set from entity @s UUID',
+                 '/execute store result score elapsed reward_loot run time query gametime',
+                 '/scoreboard players operation elapsed reward_loot -= clock reward_loot')
+    ops += [cmd('/scoreboard players get identity_changed reward_loot', expect_result=0),
+            cmd('/scoreboard players get elapsed reward_loot', expect_result=0)]
+    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s')
+
+
+def advancement_empty_loot_reference():
+    """Separate valid-empty table control: success with zero output, not a missing reference."""
+    reference = '{type:"minecraft:advancement_reward",pools:[{rolls:1,entries:[{type:"minecraft:loot_table",value:"parity:empty_reward"}]}]}'
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/clear @s',
+                '/scoreboard objectives add empty_loot dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s Inventory', expect_result=0)]
+    ops += setup('/data modify storage h292:empty_identity value set from entity @s UUID',
+                 '/execute store result score clock empty_loot run time query gametime',
+                 '/scoreboard players set result empty_loot -99',
+                 '/scoreboard players set success empty_loot -99')
+    ops += [cmd('/scoreboard players get result empty_loot', expect_result=-99),
+            cmd('/scoreboard players get success empty_loot', expect_result=-99),
+            cmd('/execute store result score result empty_loot store success score success empty_loot run loot give @s loot ' + reference, expect_result=0),
+            cmd('/scoreboard players get result empty_loot', expect_result=0),
+            cmd('/scoreboard players get success empty_loot', expect_result=1),
+            cmd('/data get entity @s Inventory', expect_result=0),
+            cmd('/execute unless data entity @s Inventory[]', expect_result=1)]
+    ops += setup('/execute store success score identity_changed empty_loot run data modify storage h292:empty_identity value set from entity @s UUID',
+                 '/execute store result score elapsed empty_loot run time query gametime',
+                 '/scoreboard players operation elapsed empty_loot -= clock empty_loot')
+    ops += [cmd('/scoreboard players get identity_changed empty_loot', expect_result=0),
+            cmd('/scoreboard players get elapsed empty_loot', expect_result=0)]
+    return ops + setup('/scoreboard objectives remove empty_loot')
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4386,6 +4495,8 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('advancement world loot rewards', advancement_world_loot_rewards()),
+        ('advancement empty loot reference', advancement_empty_loot_reference()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),

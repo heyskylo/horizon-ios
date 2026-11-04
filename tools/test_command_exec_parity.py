@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_datapack_fixtures(world, predicates, functions, jar):
-    if not predicates and not functions:
+def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None):
+    if not predicates and not functions and not advancements and not loot_tables:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -61,10 +61,25 @@ def install_datapack_fixtures(world, predicates, functions, jar):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents, encoding='utf-8')
 
+    for identifier, advancement in (advancements or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'advancement' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(advancement), encoding='utf-8')
+    for identifier, table in (loot_tables or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'loot_table' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(table), encoding='utf-8')
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--advancement-loot-inline-parser-diagnostic', action='store_true',
+                        help='retain all 100 inline observations, including the three missing-reference ACK differences')
+    parser.add_argument('--advancement-loot-named-diagnostic', action='store_true',
+                        help='retain the separate named world-loot registry-admission diagnostic')
     parser.add_argument('--pot-string-sherd-diagnostic', action='store_true',
                         help='use string sherd input in the pot data group (known separate codec gap)')
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
@@ -99,6 +114,12 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.advancement_loot_named_diagnostic and args.advancement_loot_inline_parser_diagnostic:
+        parser.error('choose only one advancement-loot diagnostic')
+    if args.advancement_loot_named_diagnostic or args.advancement_loot_inline_parser_diagnostic:
+        groups = [(name, corpus_module.advancement_world_loot_rewards(
+            named_table=args.advancement_loot_named_diagnostic, include_missing_ack=True)
+                   if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]
@@ -122,12 +143,13 @@ def main():
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
+    advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'])
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables)
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -140,7 +162,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'])
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
