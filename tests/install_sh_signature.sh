@@ -60,6 +60,12 @@ esac
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 CURL
 chmod +x "$W/fake/curl"
+# The fixture release is Linux x86-64 regardless of the test host.
+cat > "$W/fake/uname" <<'UNAME'
+#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac
+UNAME
+chmod +x "$W/fake/uname"
 
 # install.sh with the throwaway public key in place of the release key.
 with_key() {  # dir -> prints path of the patched copy
@@ -79,7 +85,7 @@ edit() {  # sed-expression file
   sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
 }
 mkdir -p "$W/home"
-P=/usr/bin:/bin
+P="$(dirname "$(command -v openssl)"):/usr/bin:/bin"
 
 # 1. Good signature, a Nightly (signed for the channel "nightly" under the tag nightly-2026-11-03).
 d=$W/good; make_release "$d" nightly; with_key "$d"

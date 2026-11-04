@@ -42,7 +42,11 @@ class ReadmeTests(unittest.TestCase):
 
     def test_the_readme_agrees_with_itself(self):
         text = README.read_text(encoding="utf-8")
-        total, counts = pg.written(text)
+        written = pg.written(text)
+        if written is None:
+            self.assertIsNone(pg.BADGE.search(text), "a gaps badge requires its supporting table")
+            self.skipTest("This README publishes no upstream gap-count table")
+        total, counts = written
         self.assertEqual(len(counts), len(pg.ISSUES))
         self.assertEqual(total, sum(counts), "the README's gap total is the sum of its areas")
         badge = pg.BADGE.search(text)

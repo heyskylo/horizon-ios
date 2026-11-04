@@ -217,7 +217,7 @@ pub(super) fn tesselate(
     use horizon_assets::model::Direction as D;
     let cardinal = |d: D| {
         if shader_pack_lighting {
-            1.0
+            lighting::pack_flat(nether)
         } else {
             lighting::cardinal(nether, d)
         }
@@ -462,7 +462,10 @@ pub(super) fn tesselate(
             Some(layer) if face_state.overlay => (layer, true),
             _ => (flow, false),
         };
-        let side = if matches!(d, Direction::North | Direction::South) {
+        // Vanilla's side is the up value times the side's; a shader pack's has no side factor.
+        let side = if shader_pack_lighting {
+            1.0
+        } else if matches!(d, Direction::North | Direction::South) {
             cardinal(D::North)
         } else {
             cardinal(D::West)

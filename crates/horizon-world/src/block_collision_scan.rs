@@ -121,6 +121,10 @@ pub fn scan_cells(bounds: Aabb) -> Option<usize> {
     cells(bounds).ok().map(|(_, _, count)| count)
 }
 
+/// Sections whose `may_reach_out` a scan remembers: 2 x 2 columns by two
+/// sections holds every section of a box up to 16 blocks on each side.
+const REACH_SECTIONS: usize = 8;
+
 pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     world: &'w mut W,
     context: CollisionContext<'c>,
@@ -137,8 +141,12 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     count: usize,
     budget: usize,
     chunk: Option<(ChunkPos, W::Chunk)>,
-    /// `may_reach_out` of the last section an outer cell was in.
-    reach: Option<(ChunkPos, i32, bool)>,
+    /// `may_reach_out` of the last sections outer cells were in, replaced
+    /// in turn. A box across a chunk border goes back and forth between
+    /// two columns on every row, so one remembered section is asked again
+    /// at each crossing.
+    reach: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
+    reach_next: usize,
     failed: bool,
 }
 impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
@@ -169,7 +177,8 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             count,
             budget: candidate_budget,
             chunk: None,
-            reach: None,
+            reach: [None; REACH_SECTIONS],
+            reach_next: 0,
             failed: false,
         })
     }
@@ -242,14 +251,20 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             // mob's box).
             if kind != 0 {
                 let section_y = p.y >> 4;
-                let reaches = match self.reach {
-                    Some((at, y, reaches)) if at == chunk_position && y == section_y => reaches,
-                    _ => {
+                let known = self
+                    .reach
+                    .iter()
+                    .flatten()
+                    .find(|(at, y, _)| *at == chunk_position && *y == section_y);
+                let reaches = match known {
+                    Some(&(_, _, reaches)) => reaches,
+                    None => {
                         let reaches = self
                             .world
                             .may_reach_out(chunk, section_y)
                             .map_err(CollisionScanError::World)?;
-                        self.reach = Some((chunk_position, section_y, reaches));
+                        self.reach[self.reach_next] = Some((chunk_position, section_y, reaches));
+                        self.reach_next = (self.reach_next + 1) % REACH_SECTIONS;
                         reaches
                     }
                 };

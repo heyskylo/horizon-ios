@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from test_mobile_command_keyboard import method as production_method
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,15 +38,17 @@ struct MenuFinger { id: u64, pressed: bool, closed: bool }
 #[derive(Default)]
 struct TouchInput { seen: bool, hardware: input_mode::InputMode,
     menu: Option<MenuFinger>, fingers: Touches }
-struct Game { touch: TouchInput, last_input: Instant, playing: bool,
+#[derive(Default)]struct Pad{in_use:bool}
+struct Game { pad:Pad,touch: TouchInput, last_input: Instant, playing: bool,
     actions: Vec<Out>, buttons: Vec<bool>, menu_calls: usize }
 mod horizon_gamecontroller { pub fn keyboard_connected() -> bool { true } }
 impl Game {
     fn new(playing: bool, pressed: bool) -> Self {
-        Self { touch: TouchInput { menu: Some(MenuFinger { id: 1, pressed, closed: false }),
+        Self { pad:Pad::default(),touch: TouchInput { menu: Some(MenuFinger { id: 1, pressed, closed: false }),
             ..TouchInput::default() }, last_input: Instant::now(), playing,
             actions: vec![], buttons: vec![], menu_calls: 0 }
     }
+    fn pad_cancel_inputs(&mut self,_:&dyn EventLoopCtl){panic!("no controller was active in this menu-gesture probe");}
     fn touch_batch(&self) -> Option<Batch> { Some(Batch { scale: 2.0, width: 500.0, height: 300.0 }) }
     fn touch_now(&mut self) -> f64 { 0.0 }
     fn touch_playing(&self) -> bool { self.playing }
@@ -104,7 +107,8 @@ fn cancelled_menu_finger_releases_without_delayed_press() {
         fixture = fixture.replace("TOUCH_SOURCE", str(ROOT / "crates/horizon-client/src/touch.rs"))
         fixture = fixture.replace("MODE_SOURCE", str(ROOT / "crates/horizon-client/src/game/input_mode.rs"))
         fixture = fixture.replace("METHODS", "\n".join(method(name) for name in (
-            "touch_event", "touch_release_menu", "touch_keyboard_used")))
+            "touch_event", "touch_release_menu", "touch_keyboard_used")) + "\n" + production_method(
+                (ROOT / "crates/horizon-client/src/game/pad.rs").read_text(), "pad_yield_input"))
         with tempfile.TemporaryDirectory(prefix="horizon-touch-handoff-") as folder:
             folder = Path(folder)
             (folder / "fixture.rs").write_text(fixture)

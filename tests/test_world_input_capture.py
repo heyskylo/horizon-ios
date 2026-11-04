@@ -386,6 +386,8 @@ impl Game {
     // The input trace records the motion; it does not change the turn.
     fn touch_mouse_used(&mut self,_:&ActiveEventLoop){}
     fn note_input(&mut self, _: input_trace::InputOrigin, _: input_trace::TraceKind) {}
+    // Handing input back from the controller does not change the turn either.
+    fn pad_yield_input(&mut self, _: &ActiveEventLoop) {}
 METHOD
 }
 fn main() {

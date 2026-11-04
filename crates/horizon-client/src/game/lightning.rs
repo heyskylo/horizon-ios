@@ -547,6 +547,7 @@ impl Game<'_> {
             kind: DamageKind::Generic,
             attacker: None,
             from: Some(b.at),
+            attacker_species: None,
         };
         let mut struck = Vec::new();
         let mut events = Vec::new();
@@ -789,6 +790,7 @@ mod tests {
                 knockback_resistance: 0.0,
                 jump_strength: 0.42,
                 attributes: Default::default(),
+                item_stack_limits: Default::default(),
                 gravity: 0.08,
                 safe_fall_distance: 3.0,
                 fall_damage_multiplier: 1.0,

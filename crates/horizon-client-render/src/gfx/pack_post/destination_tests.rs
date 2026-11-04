@@ -159,13 +159,20 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn new() -> Option<Self> {
+        Self::with_attachment_limit(None)
+    }
+    fn with_attachment_limit(bytes: Option<u32>) -> Option<Self> {
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("Post destination test skipped: no GPU adapter");
             return None;
         };
+        let mut limits = adapter.limits();
+        if let Some(bytes) = bytes {
+            limits.max_color_attachment_bytes_per_sample = bytes;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: adapter.limits(),
+            required_limits: limits,
             ..Default::default()
         }))
         .expect("GPU device for destination contract");
@@ -199,25 +206,7 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
-        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
-        let post = PackPost::new(
-            &self.device,
-            &self.queue,
-            post,
-            T::Rgba8Unorm,
-            World {
-                adapter: &self.adapter,
-                atlas: None,
-                lightmap,
-                terrain: None,
-                block_ids: &[],
-                celestial: None,
-                gui_size: [16, 16],
-                clouds: None,
-                weather: false,
-                hand: false,
-            },
-        );
+        let post = self.try_build(post).expect("the pack runs");
         assert!(
             post.notes.iter().all(|n| n.starts_with("shadow map ")),
             "{:?}",
@@ -226,7 +215,56 @@ impl Fixture {
         post
     }
 
+    /// [`Self::build`] for a pack that may be refused.
+    pub(super) fn try_build(&self, post: Post) -> Result<PackPost, Refused> {
+        self.try_build_with_terrain(post, None)
+    }
+
+    /// `build`, with the game's terrain geometry handed to the pack.
+    pub(super) fn build_with_terrain(&self, post: Post, terrain: Option<Geometry<'_>>) -> PackPost {
+        self.try_build_with_terrain(post, terrain)
+            .expect("the pack runs")
+    }
+
+    fn try_build_with_terrain(
+        &self,
+        post: Post,
+        terrain: Option<Geometry<'_>>,
+    ) -> Result<PackPost, Refused> {
+        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
+        PackPost::new(
+            &self.device,
+            &self.queue,
+            &self.adapter,
+            post,
+            T::Rgba8Unorm,
+            World {
+                atlas: None,
+                material_maps: None,
+                lightmap,
+                terrain,
+                block_ids: &[],
+                sprite_rects: &[],
+                celestial: None,
+                gui_size: [16, 16],
+                clouds: None,
+                weather: false,
+                hand: false,
+            },
+        )
+    }
+
     pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+        self.render_with_terrain(post, size, &mut |_, _, _, _| {})
+    }
+
+    /// `render`, with `terrain` drawing the game's terrain lists.
+    pub(super) fn render_with_terrain(
+        &self,
+        post: &mut PackPost,
+        size: [u32; 2],
+        terrain: &mut TerrainDraw<'_>,
+    ) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -251,7 +289,7 @@ impl Fixture {
             size,
             size,
             &[],
-            &mut |_, _, _, _| {},
+            terrain,
         );
         encoder.copy_texture_to_buffer(
             screen.texture().as_image_copy(),
@@ -346,8 +384,8 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
     let Some(gpu) = Fixture::new() else { return };
     for clear in [true, false] {
         let mut post = gpu.build(pack(Coverage::Full, false, false, Some(clear), false));
-        // Every frame changes which physical image is main. The other image is fully
-        // seeded red before the partial write, independent of its initial clearing.
+        // The other image is fully seeded red before the partial write, independent of its
+        // initial clearing.
         for frame in 0..3 {
             let actual = gpu.render(&mut post, [16, 16]);
             assert!(
@@ -375,7 +413,6 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
 // Frame literal adapted from MIT Horizon f700231 pack_uniforms.rs test API setup.
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
-        hand_spans: &[],
         eye: glam::DVec3::ZERO,
         eye_rotation: [0.0; 2],
         first_person: true,
@@ -434,6 +471,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -521,4 +559,112 @@ fn a_cleared_buffer_starts_every_frame_cleared_on_both_textures() {
             .collect();
         assert!(wrong.is_empty(), "frame {frame}: {wrong:?}");
     }
+}
+
+#[path = "clear_false_tests.rs"]
+mod clear_false_tests;
+
+#[test]
+fn clear_attachments_respect_a_32_byte_device_budget() {
+    let Some(fixture) = Fixture::with_attachment_limit(Some(32)) else {
+        return;
+    };
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, source) in [
+        ("final.vsh", VERTEX),
+        (
+            "final.fsh",
+            "#version 120\n/*\nconst int colortex0Format=RGBA32F;\nconst int colortex1Format=RGBA16F;\nconst int colortex2Format=RGBA8;\nconst int colortex3Format=R8; */\nuniform sampler2D colortex0; uniform sampler2D colortex1; uniform sampler2D colortex2; uniform sampler2D colortex3;\nvoid main(){gl_FragColor=vec4(texelFetch(colortex0,ivec2(0),0).r,texelFetch(colortex1,ivec2(0),0).r,texelFetch(colortex2,ivec2(0),0).r+texelFetch(colortex3,ivec2(0),0).r,1.0);}",
+        ),
+    ] {
+        zip.start_file(
+            format!("shaders/{name}"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(source.as_bytes()).unwrap();
+    }
+    let pack = horizon_shaders::Pack::from_zip_bytes("budget", zip.finish().unwrap().into_inner())
+        .unwrap();
+    let mut macros = horizon_shaders::Macros::standard();
+    let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
+    let parsed = horizon_shaders::load_post(&pack, "", &properties, &macros, &Default::default());
+    assert!(parsed.complete, "{:?}", parsed.notes);
+    let mut post = fixture.build(parsed);
+    assert!(post.complete);
+    assert!(
+        post.other_clears.contains(&3),
+        "the 33rd byte must clear separately"
+    );
+    let pixels = fixture.render(&mut post, [4, 4]);
+    assert!(post.complete);
+    assert!(pixels.iter().all(|p| p[3] == 255));
+}
+
+#[test]
+fn beacon_only_storage_images_get_storage_allocations() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, source) in [
+        (
+            "shaders.properties",
+            "image.beacon=beaconSampler rgba rgba8 unsigned_byte false true 1 1\n",
+        ),
+        (
+            "gbuffers_beaconbeam.vsh",
+            "#version 430 compatibility\nvoid main(){gl_Position=ftransform();}\n",
+        ),
+        (
+            "gbuffers_beaconbeam.fsh",
+            "#version 430 compatibility\nlayout(rgba8) writeonly uniform image2D beacon;\nvoid main(){imageStore(beacon,ivec2(0),vec4(0.25,0.5,0.75,1));gl_FragData[0]=vec4(1);}\n",
+        ),
+        ("final.vsh", VERTEX),
+        (
+            "final.fsh",
+            "#version 120\nvoid main(){gl_FragColor=vec4(1);}\n",
+        ),
+    ] {
+        zip.start_file(
+            format!("shaders/{name}"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(source.as_bytes()).unwrap();
+    }
+    let pack =
+        horizon_shaders::Pack::from_zip_bytes("beacon-storage", zip.finish().unwrap().into_inner())
+            .unwrap();
+    let mut macros = horizon_shaders::Macros::standard();
+    let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
+    let inputs = horizon_shaders::GameInputs {
+        entities: Some(super::super::pack_entities::inputs()),
+        ..Default::default()
+    };
+    let parsed = horizon_shaders::load_post(&pack, "", &properties, &macros, &inputs);
+    assert!(parsed.complete, "{:?}", parsed.notes);
+    assert!(
+        parsed.beacon_beam.is_some(),
+        "the fixture must reach the beacon stage"
+    );
+    assert!(storage_image_names(&parsed).contains("beacon"));
+    let mut post = fixture.build(parsed);
+    post.resize(&fixture.device, [4, 4]);
+    assert!(post.complete, "{:?}", post.notes);
+    let image = post
+        .images
+        .iter()
+        .find(|image| image.def.name == "beacon")
+        .expect("beacon image allocated");
+    assert!(image.storage);
+    assert!(
+        image
+            .view
+            .as_ref()
+            .expect("beacon image view")
+            .texture()
+            .usage()
+            .contains(wgpu::TextureUsages::STORAGE_BINDING)
+    );
 }

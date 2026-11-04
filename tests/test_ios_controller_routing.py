@@ -19,7 +19,13 @@ def program():
     router = router.replace('pub(in crate::game)', 'pub(crate)')
     code = '#![allow(dead_code)]\n'
     code += f'#[path={str(ROOT / "crates/horizon-gamecontroller/src/lib.rs")!r}] mod horizon_gamecontroller;\n'.replace("'", '"')
-    code += f'#[path={str(ROOT / "crates/horizon-client-input/src/gamepad.rs")!r}] mod gamepad;\n'.replace("'", '"')
+    gamepad = (ROOT / 'crates/horizon-client-input/src/gamepad.rs').read_text()
+    # This probe owns native snapshot/seat/edge behavior, not the separate
+    # keyboard binding dispatcher. Keep real production state, hysteresis,
+    # cancellation and glyph code without inventing winit/keybind shims.
+    begin = gamepad.index('/// How a bindable action reaches the game:')
+    end = gamepad.index("/// An action's name in the binds list:", begin)
+    code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[end:] + '\n}\n'
     code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\nstruct Pads;\n'
     code += '#[derive(Debug,PartialEq)]enum PadEvent{Press(PadId,Button),Gone(PadId),Back(PadId)}\n'
     return code + method(source, 'style') + '\n' + router + '\n' + CASES

@@ -203,7 +203,7 @@ pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
-        hand_spans: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -464,7 +464,8 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     assert!(parsed.complete, "parse notes: {:?}", parsed.notes);
     let world = World {
         gui_size: [1, 1],
-        adapter: &adapter,
+        sprite_rects: &[],
+        material_maps: None,
         atlas: None,
         lightmap: texture(&device, &queue, "frame regression lightmap", 1, &[255; 4]),
         terrain: None,
@@ -477,10 +478,12 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     let mut post = PackPost::new(
         &device,
         &queue,
+        &adapter,
         parsed,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     assert!(post.complete, "pipeline notes: {:?}", post.notes);
     for group in [Group::Setup, Group::Begin] {
         let stages: Vec<_> = post.passes.iter().filter(|p| p.group == group).collect();
@@ -600,7 +603,8 @@ void main(){
     assert!(parsed.shadow_pass);
     let world = World {
         gui_size: [1, 1],
-        adapter: &adapter,
+        sprite_rects: &[],
+        material_maps: None,
         atlas: None,
         lightmap: texture(&device, &queue, "shadow compute lightmap", 1, &[255; 4]),
         terrain: None,
@@ -613,10 +617,12 @@ void main(){
     let mut post = PackPost::new(
         &device,
         &queue,
+        &adapter,
         parsed,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     assert!(post.complete, "{:?}", post.notes);
     let shadow = post
         .shadow_targets
@@ -676,7 +682,8 @@ void main(){float d=texelFetch(depthtex0,ivec2(0),0).r;imageStore(volume,ivec3(g
     assert!(parsed.complete, "{:?}", parsed.notes);
     let world = World {
         gui_size: [1, 1],
-        adapter: &adapter,
+        sprite_rects: &[],
+        material_maps: None,
         atlas: None,
         lightmap: texture(&device, &queue, "compute depth lightmap", 1, &[255; 4]),
         terrain: None,
@@ -689,10 +696,12 @@ void main(){float d=texelFetch(depthtex0,ivec2(0),0).r;imageStore(volume,ivec3(g
     let mut post = PackPost::new(
         &device,
         &queue,
+        &adapter,
         parsed,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     assert!(post.complete, "{:?}", post.notes);
     assert!(post.blit_depth);
     // WorldTargets clears reverse-Z to0 (far). GL window depth is therefore1, not0.

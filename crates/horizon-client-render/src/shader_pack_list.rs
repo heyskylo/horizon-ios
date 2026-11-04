@@ -53,6 +53,47 @@ impl Entry {
         true
     }
 
+    /// Where option `i` sits on its slider, 0 to 1: float and int options are sliders.
+    pub fn slider_position(&self, i: usize) -> Option<f32> {
+        slider_position(&self.options.get(i)?.kind, *self.values.get(i)?)
+    }
+
+    /// Option `i` at the value nearest the slider position `at`. Whether its value changed.
+    pub fn set_slider_position(&mut self, i: usize, at: f32) -> bool {
+        let (Some(o), Some(v)) = (self.options.get(i), self.values.get_mut(i)) else {
+            return false;
+        };
+        let Some(new) = slider_value(&o.kind, at) else {
+            return false;
+        };
+        let changed = new != *v;
+        *v = new;
+        changed
+    }
+
+    /// Option `i`'s slider one step on (`back`: one before), stopping at its ends. Whether its
+    /// value changed.
+    pub fn nudge_option(&mut self, i: usize, back: bool) -> bool {
+        let (Some(o), Some(v)) = (self.options.get(i), self.values.get_mut(i)) else {
+            return false;
+        };
+        let dir = if back { -1.0 } else { 1.0 };
+        let new = match &o.kind {
+            OptionKind::Float { min, max, step, .. } => {
+                let (min, max, step) = (f64::from(*min), f64::from(*max), f64::from(*step));
+                let n = ((*v - min) / step).round() + dir;
+                on_f32((min + n * step).clamp(min, max))
+            }
+            OptionKind::Int { min, max, .. } => {
+                (v.round() + dir).clamp(f64::from(*min), f64::from(*max))
+            }
+            _ => return false,
+        };
+        let changed = new != *v;
+        *v = new;
+        changed
+    }
+
     /// Every option back to its default.
     pub fn reset_options(&mut self) {
         let defaults = self.options.iter().map(|o| o.kind.default_constant());
@@ -209,6 +250,42 @@ fn step_value(kind: &OptionKind, v: f64, back: bool) -> f64 {
     }
 }
 
+/// Where `v` sits between the option's minimum and maximum, 0 to 1; `None` for the options
+/// that are buttons.
+fn slider_position(kind: &OptionKind, v: f64) -> Option<f32> {
+    let (min, max) = match kind {
+        OptionKind::Float { min, max, .. } => (f64::from(*min), f64::from(*max)),
+        OptionKind::Int { min, max, .. } => (f64::from(*min), f64::from(*max)),
+        _ => return None,
+    };
+    Some(((v - min) / (max - min)).clamp(0.0, 1.0) as f32)
+}
+
+/// The option's value nearest the slider position `at`: a float on its steps from the
+/// minimum (the last one the maximum, when the range isn't a whole number of steps), an int
+/// whole.
+fn slider_value(kind: &OptionKind, at: f32) -> Option<f64> {
+    let at = f64::from(at.clamp(0.0, 1.0));
+    match kind {
+        OptionKind::Float { min, max, step, .. } => {
+            let (min, max, step) = (f64::from(*min), f64::from(*max), f64::from(*step));
+            let steps = ((max - min) / step - 1e-6).ceil();
+            Some(on_f32((min + (at * steps).round() * step).min(max)))
+        }
+        OptionKind::Int { min, max, .. } => {
+            let (min, max) = (f64::from(*min), f64::from(*max));
+            Some((min + at * (max - min)).round())
+        }
+        _ => None,
+    }
+}
+
+/// `v` as the `f32` the pack's `override` gets: a step of 0.05 is no f32, and 20 of them would
+/// otherwise miss a default of 1 by a hair.
+fn on_f32(v: f64) -> f64 {
+    f64::from(v as f32)
+}
+
 /// The value as the settings page shows it.
 pub fn show_value(kind: &OptionKind, v: f64) -> String {
     match kind {
@@ -323,5 +400,66 @@ mod tests {
         assert!(!values_path(&pack).exists());
         assert_eq!(load_values(&pack, &options), [1.0, 0.0]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sliders_take_the_nearest_step_and_stop_at_the_ends() {
+        let float = |default, max, step| OptionKind::Float {
+            default,
+            min: 0.0,
+            max,
+            step,
+        };
+        let int = OptionKind::Int {
+            default: 2,
+            min: 0,
+            max: 10,
+        };
+        let mut entry = Entry {
+            file: "p".into(),
+            title: "P".into(),
+            kind: Kind::Horizon,
+            options: vec![
+                option("a", float(1.0, 2.0, 0.05)),
+                option("b", int),
+                option("c", OptionKind::Bool { default: true }),
+                option("d", float(0.0, 1.0, 0.3)),
+            ],
+            values: vec![1.0, 2.0, 1.0, 0.0],
+            pages: Vec::new(),
+        };
+        assert_eq!(entry.slider_position(0), Some(0.5));
+        assert_eq!(entry.slider_position(1), Some(0.2));
+        // A bool (and a choice) stays a button.
+        assert_eq!(entry.slider_position(2), None);
+        assert!(!entry.set_slider_position(2, 0.0));
+        assert_eq!(entry.values[2], 1.0);
+        // 0.26 of 0..2 is 0.52: the step below.
+        assert!(entry.set_slider_position(0, 0.26));
+        assert_eq!(show_value(&entry.options[0].kind, entry.values[0]), "0.50");
+        // Twenty steps of 0.05 are the default of 1 exactly, so it isn't saved.
+        assert!(entry.set_slider_position(0, 0.5));
+        assert_eq!(entry.values[0], 1.0);
+        assert!(!entry.set_slider_position(0, 0.505));
+        // 5.7 of 0..10 is 6.
+        assert!(entry.set_slider_position(1, 0.57));
+        assert_eq!(entry.values[1], 6.0);
+        // A range that isn't a whole number of steps still reaches its maximum.
+        entry.set_slider_position(3, 1.0);
+        assert_eq!(entry.values[3], 1.0);
+        entry.set_slider_position(3, 0.6);
+        assert_eq!(entry.values[3], f64::from(0.6_f32));
+
+        // The arrow keys: a step at a time, not round past the ends.
+        entry.values[0] = 2.0;
+        assert!(!entry.nudge_option(0, false));
+        assert_eq!(entry.values[0], 2.0);
+        assert!(entry.nudge_option(0, true));
+        assert_eq!(entry.values[0], f64::from(1.95_f32));
+        entry.values[1] = 0.0;
+        assert!(!entry.nudge_option(1, true));
+        assert!(entry.nudge_option(1, false));
+        assert_eq!(entry.values[1], 1.0);
+        assert!(!entry.nudge_option(2, false));
     }
 }

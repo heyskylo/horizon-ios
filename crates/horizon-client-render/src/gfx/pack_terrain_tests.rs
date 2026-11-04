@@ -256,6 +256,10 @@ struct Gpu {
 }
 impl Gpu {
     fn open() -> Self {
+        Self::with_storage_limit(None)
+    }
+
+    fn with_storage_limit(storage: Option<u32>) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -271,15 +275,20 @@ impl Gpu {
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE
                 | wgpu::Features::VERTEX_WRITABLE_STORAGE
                 | wgpu::Features::CLEAR_TEXTURE);
+        let mut limits = adapter.limits();
+        if let Some(storage) = storage {
+            limits.max_storage_buffers_per_shader_stage = storage;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("terrain diagnostic device"),
             required_features: features,
-            required_limits: adapter.limits(),
+            required_limits: limits,
             ..Default::default()
         }))
         .unwrap();
-        // Flat terrain reads 2 storage buffers of set 1 and 3 of set 3 in the vertex stage.
-        assert!(device.limits().max_storage_buffers_per_shader_stage >= 5);
+        // Instance terrain reads state IDs, vertices, quad metadata and sprite
+        // rects; flat draws additionally need the two slot buffers.
+        assert!(device.limits().max_storage_buffers_per_shader_stage >= 4);
         // One opaque 2x2 sprite in one layer: the atlas is a single 2x2 cell.
         let sprite = device.create_texture_with_data(
             &queue,
@@ -368,9 +377,11 @@ impl Gpu {
         } else {
             vec![Some(vertex), Some(instance)]
         };
+        let sprite_rects = self.atlas.rects_table();
         let world = World {
             gui_size: [1, 1],
-            adapter: &self.adapter,
+            sprite_rects: &sprite_rects,
+            material_maps: None,
             atlas: Some((self.atlas.view.clone(), self.atlas.size())),
             lightmap: texture(
                 &self.device,
@@ -384,6 +395,7 @@ impl Gpu {
                 table: flat,
                 depth_write: true,
                 atlas: None,
+                material_maps: true,
                 ids: None,
                 cull: true,
             }),
@@ -396,10 +408,12 @@ impl Gpu {
         let post = PackPost::new(
             &self.device,
             &self.queue,
+            &self.adapter,
             parsed,
             wgpu::TextureFormat::Rgba8Unorm,
             world,
-        );
+        )
+        .expect("the pack runs");
         assert!(post.complete, "pipeline notes: {:?}", post.notes);
         assert!(post.terrain.is_some() && post.block_ids.is_some());
         post
@@ -926,5 +940,16 @@ fn colorless_geometry_program_preserves_its_depth_writes() {
                 "the geometry must write GL depth 0.5"
             );
         }
+    }
+}
+
+/// The instance fallback must retain exact metadata/UVs on devices that cannot
+/// bind all six storage buffers needed by flat shader terrain.
+#[test]
+#[ignore = "requires a Metal adapter; run explicitly on macOS"]
+fn exact_shader_terrain_runs_with_four_and_five_vertex_storage_buffers() {
+    for buffers in [4, 5] {
+        let gpu = Gpu::with_storage_limit(Some(buffers));
+        run_mode(&gpu, false);
     }
 }

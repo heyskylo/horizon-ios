@@ -274,8 +274,12 @@ fn run(mut poll: Poll, worker: &Arc<Worker>) {
     let mut touched: Vec<usize> = Vec::new();
     let mut sweep_at = Instant::now() + SWEEP;
     loop {
-        let wait = sweep_at.saturating_duration_since(Instant::now());
-        if let Err(e) = poll.poll(&mut events, Some(wait))
+        // With no connections there are no keep-alives or timeouts to sweep.
+        // Adoption posts to the inbox and wakes the poller, so idle mobile
+        // launchers can park these threads instead of waking at 10 Hz.
+        let wait =
+            (conns.len() != free.len()).then(|| sweep_at.saturating_duration_since(Instant::now()));
+        if let Err(e) = poll.poll(&mut events, wait)
             && e.kind() != ErrorKind::Interrupted
         {
             log::warn!("[lan] network poll: {e}");
@@ -816,9 +820,21 @@ mod tests {
         let client = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
         let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
         let served = serve(server, quiet, Duration::from_secs(30));
-        // More than the socket's buffers take.
-        let bodies = (0..64).map(|i| body(i, 1 << 20)).collect();
-        served.send(bodies, Some(End::Disconnect));
+        // Fill the socket until the outbox waits. A fixed amount may all go
+        // through: Windows takes a write of any size whole while its buffer
+        // has room.
+        let full = || {
+            std::thread::sleep(Duration::from_millis(50));
+            served.pending.load(Ordering::Relaxed) > 0
+        };
+        for i in 0..=u8::MAX {
+            if full() && full() && full() {
+                break;
+            }
+            assert!(i < u8::MAX, "the socket took everything");
+            served.send(vec![body(i, 1 << 20)], None);
+        }
+        served.send(Vec::new(), Some(End::Disconnect));
         std::thread::sleep(Duration::from_millis(300));
         assert!(served.seen.try_recv().is_err(), "still writing");
         served.send(Vec::new(), Some(End::Close));

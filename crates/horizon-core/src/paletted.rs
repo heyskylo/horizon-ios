@@ -249,6 +249,7 @@ impl PalettedContainer {
         self.bits
     }
     /// Entries in the palette (the global palette reports its bit capacity).
+    #[inline]
     pub fn palette_len(&self) -> usize {
         match &self.palette {
             Palette::Single(_) => 1,
@@ -256,6 +257,7 @@ impl PalettedContainer {
             Palette::Global => 1 << self.bits.min(31),
         }
     }
+    #[inline]
     pub fn is_global(&self) -> bool {
         matches!(self.palette, Palette::Global)
     }

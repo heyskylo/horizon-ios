@@ -34,13 +34,21 @@ pub struct FluidResources {
 }
 impl FluidResources {
     pub fn new(assets: &Assets, facts: &crate::blocks::BlockFacts) -> Result<Self> {
+        Self::from_registry(assets.registry, facts, &assets.blocks_fluid_flow)
+    }
+    /// Build fluid queries from the same registry, block facts and flow tag as the scene.
+    pub fn from_registry(
+        registry: &horizon_world::registry::BlockRegistry,
+        facts: &crate::blocks::BlockFacts,
+        blocks_fluid_flow: &BTreeSet<String>,
+    ) -> Result<Self> {
         Ok(Self {
-            states: FluidStateTable::new(assets.registry)?,
+            states: FluidStateTable::new(registry)?,
             sturdy: facts.states.iter().map(|s| s.sturdy_full).collect(),
             blocks_flow: facts
                 .states
                 .iter()
-                .map(|s| assets.blocks_fluid_flow.contains(&*s.name))
+                .map(|s| blocks_fluid_flow.contains(&*s.name))
                 .collect(),
             ice: facts
                 .states

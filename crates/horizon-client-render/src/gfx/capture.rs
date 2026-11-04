@@ -64,6 +64,8 @@ impl Copies {
 fn copy(mesh: &SectionMesh) -> SectionMesh {
     SectionMesh {
         solid: mesh.solid.clone(),
+        solid_states: mesh.solid_states.clone(),
+        translucent_states: mesh.translucent_states.clone(),
         sides: mesh.sides,
         translucent: mesh.translucent.clone(),
         packed: mesh.packed.clone(),
@@ -553,6 +555,7 @@ impl Scene {
                 .stars
                 .map(|(rotation, brightness)| (Mat4::from_cols_array(&rotation), brightness)),
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: f.hand_fov_degrees,
             screen: &[],
             pack: Default::default(),

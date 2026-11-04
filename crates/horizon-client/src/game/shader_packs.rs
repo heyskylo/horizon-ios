@@ -41,7 +41,7 @@ pub(super) fn read_shader_options(
     let chosen = chosen_shader_options(name);
     let pack = pack.with_chosen(chosen.clone());
     let text = pack.read_text("shaders.properties").unwrap_or_default();
-    let properties = Properties::parse(&text, &horizon_shaders::with_options(&pack, macros));
+    let properties = Properties::parse(&text, &horizon_shaders::properties_macros(&pack, macros));
     let screens = horizon_shaders::Screens::parse(&properties, &options);
     Some(ShaderOptions::new(
         name.to_owned(),
@@ -108,16 +108,14 @@ fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) ->
     }
 }
 
-/// Whether the pack `settings` pick (or `HORIZON_SHADER_PACK`) is one of Horizon's own: only
-/// then do resource loads read the resource packs' LabPBR maps (`sprites::set_labpbr_maps`).
-pub(super) fn picks_native_pack(settings: &horizon_client::settings::Settings) -> bool {
+/// A selected pack may read resource-pack material maps, whether native or GLSL.
+pub(super) fn picks_material_pack(settings: &horizon_client::settings::Settings) -> bool {
     let dev = std::env::var("HORIZON_SHADER_PACK").ok();
     let picked = active_pack(
         dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,
     );
     !picked.is_empty()
-        && horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
 }
 
 use serde_json::{Value, json};
@@ -220,6 +218,11 @@ pub(super) struct PackIds {
     /// −1, or 0 without the file (5.3).
     items: HashMap<String, i32>,
     missing_item: i32,
+    /// `currentRenderedItemId` of each block item (`StateFacts::item` of its block's default
+    /// state): that state's `block.properties` id, or 0.
+    block_items: HashMap<String, i32>,
+    /// Whether the pack has `item.properties` (`currentRenderedItemId` of an item it lacks).
+    item_file: bool,
     /// `oldHandLight` (3.2): the first held item and light are those of the brighter hand.
     old_hand_light: bool,
     /// `vignette`: `false` hides the game's vignette over the pack's image.
@@ -358,6 +361,8 @@ fn start_parser(
                             "item",
                         );
                         let entity_ids = PackIds {
+                            block_items: HashMap::new(),
+                            item_file: item_text.is_some(),
                             items: item_ids.plain(),
                             missing_item: if item_text.is_some() { -1 } else { 0 },
                             old_hand_light: properties
@@ -427,6 +432,7 @@ impl Game<'_> {
             Dim::Nether => -1,
             Dim::End => 1,
         };
+        let mut failed = None;
         if let Some(renderer) = &mut self.renderer {
             // A dimension transition must stop both active and in-flight old programs
             // before accepting any worker result or forming the next parser key.
@@ -440,6 +446,7 @@ impl Game<'_> {
             if let Some((dimension, programs, notes)) = renderer.take_shader_report() {
                 if programs.is_empty() {
                     self.pack_ids = None;
+                    failed = Some((self.native_shaders.picked.clone(), dimension, notes.clone()));
                 }
                 record_report(&self.native_shaders.picked, dimension, &programs, &notes);
                 for note in &notes {
@@ -470,6 +477,12 @@ impl Game<'_> {
                     }
                 }
             });
+        }
+        if let Some((name, dimension, notes)) = failed {
+            // This report is a completed GPU job, never the pending notice.
+            // Apply the same quarantine as the synchronous loader so a pack
+            // that the device refuses is not retried on every app launch.
+            self.shader_pack_failed(&name, dimension, &notes.join("; "));
         }
     }
 
@@ -509,6 +522,11 @@ impl Game<'_> {
         if picked.is_empty() {
             return PackInputs::default();
         }
+        if !horizon_client::sprites::labpbr_maps() {
+            horizon_client::sprites::set_labpbr_maps(true);
+            self.reload_packs();
+            return PackInputs::default();
+        }
         let name = picked;
         let dimension = match self.dim {
             Dim::Overworld => 0,
@@ -540,12 +558,24 @@ impl Game<'_> {
                             .collect();
                         parsed.post.custom.set_biomes(&names);
                         let table = state_material_table(&self.pack, &parsed.ids);
+                        parsed.entity_ids.block_items = block_item_ids(
+                            self.res.facts(),
+                            self.pack.assets.registry,
+                            &parsed.ids,
+                        );
                         renderer.set_separate_ao(parsed.entity_ids.separate_ao);
                         self.pack_ids = parsed.post.complete.then_some(parsed.entity_ids);
-                        if let Some((programs, notes)) =
-                            renderer.set_shader_pack(dimension, Some(parsed.post), &table)
-                        {
-                            record_report(&name, dimension, &programs, &notes);
+                        match renderer.set_shader_pack(dimension, Some(parsed.post), &table) {
+                            Ok(Some((programs, notes))) => {
+                                record_report(&name, dimension, &programs, &notes)
+                            }
+                            Ok(None) => {}
+                            Err(refused) => {
+                                let mut notes = refused.notes;
+                                notes.push(refused.reason.clone());
+                                self.shader_pack_failed(&name, dimension, &refused.reason);
+                                record_report(&name, dimension, &[], &notes);
+                            }
                         }
                     }
                     Err(error) => {
@@ -553,7 +583,7 @@ impl Game<'_> {
                             self.shader_pack_failed(&name, dimension, &error);
                         } else {
                             self.pack_ids = None;
-                            renderer.set_shader_pack(dimension, None, &[]);
+                            let _ = renderer.set_shader_pack(dimension, None, &[]);
                         }
                         record_report(&name, dimension, &[], &[error]);
                     }
@@ -564,7 +594,7 @@ impl Game<'_> {
                 renderer.define_pack_macros(&mut macros);
                 match start_parser(key,inputs,macros) {
                     Ok(())=>record_report(&name,dimension,&[],&["Processing shader sources in the background. Normal rendering remains active until ready.".into()]),
-                    Err(error)=>{renderer.set_shader_pack(dimension,None,&[]);record_report(&name,dimension,&[],&[error]);}
+                    Err(error)=>{let _ = renderer.set_shader_pack(dimension,None,&[]);record_report(&name,dimension,&[],&[error]);}
                 }
             }
         }
@@ -716,14 +746,16 @@ impl Game<'_> {
         }
     }
 
-    /// Turns off the pack `name` after loading it panicked: nothing runs in its place, it is no
-    /// longer the picked pack (so the next start does not load it again), and the chat says so.
+    /// Turns off the pack `name` after loading it panicked or failed: nothing runs in its place,
+    /// it is no longer the picked pack (so the next start does not load it again), and the chat
+    /// says so.
     fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
         log::error!("shader pack {name}: turned off: {error}");
         self.pack_ids = None;
         if let Some(renderer) = &mut self.renderer {
-            // Marks this dimension as loaded, without a pack, so it is not tried again.
-            renderer.set_shader_pack(dimension, None, &[]);
+            // Marks this dimension as loaded, without a pack, so it is not tried again (without
+            // a pack this can't fail).
+            let _ = renderer.set_shader_pack(dimension, None, &[]);
         }
         if self.settings.horizon.shader_pack == name {
             self.settings.horizon.shader_pack.clear();
@@ -738,6 +770,17 @@ impl Game<'_> {
     /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
     pub(super) fn vignette_shown(&self) -> bool {
         self.settings.vignette && self.pack_ids.as_ref().is_none_or(|ids| ids.vignette)
+    }
+
+    /// `currentRenderedItemId` of a held `item`, [`rendered_item_id`]'s; 0 without a pack.
+    pub(super) fn rendered_item_id(&self, item: &str) -> i32 {
+        self.pack_ids.as_ref().map_or(0, |ids| {
+            rendered_item_id(
+                ids.block_items.get(item).copied(),
+                ids.items.get(item).copied(),
+                ids.item_file,
+            )
+        })
     }
 
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
@@ -767,26 +810,6 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
-    /// Resolves the rendered stack, using block IDs for block items as required
-    /// by the shader API. This is unrelated to either currently equipped hand.
-    pub(super) fn rendered_item_id(&self, item: &str) -> i32 {
-        let Some(ids) = &self.pack_ids else { return 0 };
-        if let Some(state) = self.res.items().get(item).and_then(|item| item.block) {
-            return self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|state| {
-                    ids.blocks.id(&state.name, |key| {
-                        state.properties.get(key).map(String::as_str)
-                    })
-                })
-                .unwrap_or(ids.missing_block);
-        }
-        ids.items.get(item).copied().unwrap_or(ids.missing_item)
-    }
-
     pub(super) fn mark_rendered_item(&self, start: usize, end: usize, item: &str) {
         if self.pack_ids.is_some() && self.emitting_entity_items.get() {
             EntitySpan::item_range(
@@ -918,6 +941,41 @@ impl Game<'_> {
             _ => spans.push(span),
         }
     }
+}
+
+/// `currentRenderedItemId` of an item (Iris 1.11.7, observed with probe packs): a block item
+/// (`block`: its block's `block.properties` id, 0 when the file lacks it) reads that, whatever
+/// `item.properties` says of it; any other item its `item.properties` id (`item`), and one the
+/// file lacks 65535, or 0 when the pack has no `item.properties` (`item_file`).
+fn rendered_item_id(block: Option<i32>, item: Option<i32>, item_file: bool) -> i32 {
+    block.or(item).unwrap_or(if item_file { 65535 } else { 0 })
+}
+
+/// The block items' `currentRenderedItemId`: for each block's default state, the item it gives
+/// (`StateFacts::item`) takes the state's id in `ids`, or 0. A block named as its item wins over
+/// another block giving that item.
+fn block_item_ids(
+    facts: &horizon_client::blocks::BlockFacts,
+    registry: &horizon_world::registry::BlockRegistry,
+    ids: &BlockIds,
+) -> HashMap<String, i32> {
+    let mut out = HashMap::new();
+    for (i, state) in facts.states.iter().enumerate() {
+        let id = horizon_world::registry::BlockStateId(i as u32);
+        if &*state.item == "minecraft:air" || registry.default_state(&state.name) != Some(id) {
+            continue;
+        }
+        let value = registry
+            .state(id)
+            .and_then(|s| ids.id(&s.name, |k| s.properties.get(k).map(String::as_str)))
+            .unwrap_or(0);
+        if state.item == state.name {
+            out.insert(state.item.to_string(), value);
+        } else {
+            out.entry(state.item.to_string()).or_insert(value);
+        }
+    }
+    out
 }
 
 /// Spans for a native mod (`native_render::RenderNeeds::entity_spans`), without a pack.
@@ -1205,6 +1263,27 @@ mod integration_tests {
         assert!(at == key && result.is_err());
         assert!(!parser_busy());
         assert!(poll_parser().is_none());
+    }
+}
+
+#[cfg(test)]
+mod rendered_item_tests {
+    use super::rendered_item_id;
+
+    /// Iris 1.11.7's values (probe packs of ours): a block item reads its block's id, and 0 when
+    /// `block.properties` lacks it even if `item.properties` names it (oak planks as item 15);
+    /// other items read their `item.properties` id, or 65535 when the file lacks them, and 0
+    /// when the pack has no such file.
+    #[test]
+    fn a_held_item_reads_its_block_id_or_item_id() {
+        // Stone: block 21 and item 12.
+        assert_eq!(rendered_item_id(Some(21), Some(12), true), 21);
+        assert_eq!(rendered_item_id(Some(0), Some(15), true), 0);
+        assert_eq!(rendered_item_id(Some(0), None, true), 0);
+        assert_eq!(rendered_item_id(Some(0), None, false), 0);
+        assert_eq!(rendered_item_id(None, Some(11), true), 11);
+        assert_eq!(rendered_item_id(None, None, true), 65535);
+        assert_eq!(rendered_item_id(None, None, false), 0);
     }
 }
 

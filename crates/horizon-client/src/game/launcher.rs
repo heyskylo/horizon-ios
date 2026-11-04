@@ -362,7 +362,6 @@ impl Loading {
                     .to_string(),
                 ),
                 "launcher-start" => {
-                    horizon_client::ram_limit::launcher_waiting(false);
                     horizon_ios_launcher::start();
                     request.answer(r#"{"ok":true}"#);
                 }

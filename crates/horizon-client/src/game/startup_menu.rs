@@ -284,7 +284,8 @@ impl StartupMenu {
                 return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(KeyCode::Space)
-                if title.list_focused() || title.focused_button.is_some() =>
+                if !title.has_caret_field()
+                    && (title.list_focused() || title.focused_button.is_some()) =>
             {
                 return title.confirm_key_size(viewport).0;
             }
@@ -351,7 +352,6 @@ pub(super) fn spawn_loader(
 ) -> Result<(Receiver<LoaderMsg>, JoinHandle<()>)> {
     // Also covers a bundled launcher that could not present and started the game
     // directly, without sending a launcher-start request.
-    horizon_client::ram_limit::launcher_waiting(false);
     let (sender, receiver) = std::sync::mpsc::channel();
     let settings = settings.clone();
     let vanilla_root = vanilla_root.to_path_buf();

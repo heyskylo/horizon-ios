@@ -51,6 +51,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             .collect(),
         after,
         alpha_test: None,
+        item_id_declared: false,
     }
 }
 

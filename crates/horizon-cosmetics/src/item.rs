@@ -27,6 +27,9 @@ pub enum Slot {
     Head,
     Back,
     Shoulder,
+    /// Over the body: a shirt, its sleeves on the arms (top-level parts may ride another bone,
+    /// `Part`'s `bone` in the file).
+    Torso,
     /// A name tag style: no model, a square mark drawn before the player's
     /// name and a line under it (`Item::tag`).
     NameTag,
@@ -137,6 +140,9 @@ pub struct Item {
     pub texture: Texture,
     pub animations: Vec<Animation>,
     pub vertices: usize,
+    /// Top-level parts that ride another bone than `bone` (a shirt's sleeves on the arms), one
+    /// root per bone, named `cosmetic_<bone>`, each with the item's attachment as its pose.
+    pub limbs: Vec<(Bone, Part)>,
     /// A name tag's line (`Slot::NameTag` only; it has no parts).
     pub tag: Option<Tag>,
 }
@@ -237,6 +243,9 @@ struct TextureFile {
 #[serde(deny_unknown_fields)]
 struct PartFile {
     name: String,
+    /// A top-level part only: the bone it rides, if not the item's.
+    #[serde(default)]
+    bone: Option<Bone>,
     #[serde(default)]
     pivot: [f32; 3],
     /// Degrees.
@@ -327,11 +336,26 @@ impl Item {
         ];
         let size = [texture.width as f32, texture.height as f32];
         let mut names = Vec::new();
-        let children = file
-            .parts
-            .iter()
-            .map(|p| bake(p, size, &mut names))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut children = Vec::new();
+        let mut limbs: Vec<(Bone, Part)> = Vec::new();
+        for p in &file.parts {
+            let part = bake(p, size, &mut names, true)?;
+            match p.bone.filter(|b| *b != file.bone) {
+                None => children.push(part),
+                Some(bone) => match limbs.iter_mut().find(|(b, _)| *b == bone) {
+                    Some((_, limb)) => limb.children.push(part),
+                    None => limbs.push((
+                        bone,
+                        Part {
+                            name: format!("cosmetic_{}", bone.part()),
+                            pose,
+                            faces: Vec::new(),
+                            children: vec![part],
+                        },
+                    )),
+                },
+            }
+        }
         if names.len() > MAX_PARTS {
             return Err(Error::TooManyParts(names.len()));
         }
@@ -341,7 +365,7 @@ impl Item {
             faces: Vec::new(),
             children,
         };
-        let vertices = count(&root);
+        let vertices = count(&root) + limbs.iter().map(|(_, l)| count(l)).sum::<usize>();
         if vertices > MAX_VERTICES {
             return Err(Error::TooManyVertices(vertices));
         }
@@ -373,6 +397,7 @@ impl Item {
             texture,
             animations: file.animations,
             vertices,
+            limbs,
             tag,
         };
         let reach = item.reach();
@@ -380,6 +405,11 @@ impl Item {
             return Err(Error::TooFar(reach));
         }
         Ok(item)
+    }
+
+    /// The item's roots and the bone each rides: `root` on `bone`, then the `limbs`.
+    pub fn roots(&self) -> impl Iterator<Item = (Bone, &Part)> {
+        std::iter::once((self.bone, &self.root)).chain(self.limbs.iter().map(|(b, p)| (*b, p)))
     }
 
     /// The farthest any vertex gets from the bone's pivot (pixels): at rest,
@@ -396,9 +426,11 @@ impl Item {
             self.animate(ticks, |name, pose| {
                 poses.insert(name.to_owned(), pose);
             });
-            walk(&self.root, glam::Mat4::IDENTITY, &poses, &mut |p| {
-                far = far.max(p.length() * 16.0);
-            });
+            for (_, root) in self.roots() {
+                walk(root, glam::Mat4::IDENTITY, &poses, &mut |p| {
+                    far = far.max(p.length() * 16.0);
+                });
+            }
         }
         far
     }
@@ -412,7 +444,7 @@ impl Item {
                 continue;
             }
             done.push(&anim.part);
-            let Some(part) = find(&self.root, &anim.part) else {
+            let Some(part) = self.roots().find_map(|(_, r)| find(r, &anim.part)) else {
                 continue;
             };
             let mut pose = part.pose;
@@ -467,9 +499,20 @@ fn count(part: &Part) -> usize {
     part.faces.len() * 4 + part.children.iter().map(count).sum::<usize>()
 }
 
-fn bake(file: &PartFile, size: [f32; 2], names: &mut Vec<String>) -> Result<Part, Error> {
-    if file.name.is_empty() || file.name == "cosmetic" || names.contains(&file.name) {
+fn bake(
+    file: &PartFile,
+    size: [f32; 2],
+    names: &mut Vec<String>,
+    top: bool,
+) -> Result<Part, Error> {
+    if file.name.is_empty() || file.name.starts_with("cosmetic") || names.contains(&file.name) {
         return Err(invalid(format!("part names are unique: {:?}", file.name)));
+    }
+    if !top && file.bone.is_some() {
+        return Err(invalid(format!(
+            "only a top-level part rides its own bone: {:?}",
+            file.name
+        )));
     }
     names.push(file.name.clone());
     finite(&file.pivot, "a pivot")?;
@@ -498,7 +541,7 @@ fn bake(file: &PartFile, size: [f32; 2], names: &mut Vec<String>) -> Result<Part
     let children = file
         .children
         .iter()
-        .map(|c| bake(c, size, names))
+        .map(|c| bake(c, size, names, false))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Part {
         name: file.name.clone(),

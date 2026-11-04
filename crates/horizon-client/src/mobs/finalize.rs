@@ -504,11 +504,16 @@ pub fn default_value(m: &Mob, a: Attr) -> Option<f64> {
     m.kind.attributes.get(a.id()).copied()
 }
 pub fn base_value(m: &Mob, a: Attr) -> f64 {
+    base_value_with(m, a, || default_value(m, a))
+}
+/// [`base_value`] with the type's default given (`default_value`), for a
+/// caller that already looked it up for the mob's type.
+pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) -> f64 {
     m.extra
         .attributes
         .as_ref()
         .and_then(|s| s.bases.iter().find(|(x, _)| *x == a).map(|(_, v)| *v))
-        .or_else(|| default_value(m, a))
+        .or_else(default)
         .unwrap_or(match a {
             Attr::BurningTime => 1.0,
             // The registry's default, as the type's `flying_speed` falls back to.

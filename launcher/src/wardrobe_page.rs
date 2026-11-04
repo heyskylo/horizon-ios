@@ -1,8 +1,9 @@
-//! The Wardrobe page (top bar, between Servers and Versions), shown with the cosmetics flag on
-//! (`horizon_cosmetics::enabled`) or when the cosmetics service has a founder set to show
-//! (`horizon_launcher::shop`, `watch_shop`): the signed-in Microsoft account's skin wearing its items, a
-//! row per slot, what the account owns for the chosen slot, the founder set to claim while its
-//! window is open, and three switches: Show my cosmetics (the account's, on the service), Hide
+//! The Wardrobe page (top bar, between Servers and Versions), in the glass look, shown when the
+//! cosmetics service has a founder set to show (`horizon_launcher::shop`, `watch_shop`), or with
+//! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items, a
+//! row per slot, what the account owns for the chosen slot, the purchase history, a button to the
+//! website's shop (buying and the founder claim happen there, never here), and three switches:
+//! Show my cosmetics (the account's, on the service), Hide
 //! other players' cosmetics and Show other players' auras and trails (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
 //!
@@ -10,26 +11,35 @@
 //! service fails; a change shows at once and waits on disk until the service takes it. The talking
 //! is `horizon_launcher::wardrobe`'s, on a background thread.
 use super::*;
+use crate::glass_ui as ui;
 use gpui::RenderImage;
 use horizon_cosmetics::prefs::{self, Others, Prefs};
 use horizon_cosmetics::{preview, Item, Texture};
-use horizon_launcher::wardrobe::{Catalogue, Change, ClaimState, Error, Saved, Service, Session};
+use horizon_launcher::wardrobe::{
+    Catalogue, Change, ClaimState, Error, Saved, Service, Session, SHOP_URL,
+};
+use horizon_theme::glass::{fill, ink, radius};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+mod marks;
+mod purchases;
+pub(super) use marks::Marks;
 
 /// The still picture's size, in points.
 const W: f32 = 180.;
 const H: f32 = 264.;
-/// How long a line like "Equipped Sunlet." stays.
+/// How long a line like "Equipped Founder Visor." stays.
 const TOAST: Duration = Duration::from_secs(4);
 
-/// The slots a row each, with their names. Themes are the launcher's own; name tags have no model.
+/// The slots a row each, with their names. Name tags have no model; launcher themes are free in
+/// Settings, not worn.
 const SLOTS: [(&str, &str); 5] = [
     ("head", "Head"),
     ("back", "Back"),
+    ("torso", "Shirt"),
     ("shoulder", "Shoulder pet"),
     ("name_tag", "Name tag"),
-    ("theme", "Launcher theme"),
 ];
 
 /// Where the service stands, as the page tells it.
@@ -175,12 +185,18 @@ fn title_case(id: &str) -> String {
         .join(" ")
 }
 
-/// The service answered: what it keeps for Show my cosmetics is what the game's switch shows and
-/// what the game knows is confirmed, unless a newer wish still waits to be sent.
+/// The service answered: the game learns whether the account owns a cosmetic, and what it keeps
+/// for Show my cosmetics is what the game's switch shows and what the game knows is confirmed,
+/// unless a newer wish still waits to be sent.
 fn tell_the_game(uuid: &str, saved: &Saved) {
     let Some(me) = &saved.me else {
         return;
     };
+    let home = backend::game_home();
+    // Whether it owns a cosmetic: the game shows others' to an owner who chose nothing.
+    if let Err(e) = prefs::set_owned(&home, uuid, !me.owned.is_empty()) {
+        eprintln!("Horizon: the cosmetics ownership is not saved: {e}");
+    }
     if saved
         .pending
         .iter()
@@ -188,16 +204,24 @@ fn tell_the_game(uuid: &str, saved: &Saved) {
     {
         return;
     }
-    let home = backend::game_home();
-    let _ = prefs::set_confirmed(&home, uuid, me.visible);
+    if let Err(e) = prefs::set_confirmed(&home, uuid, me.visible) {
+        eprintln!("Horizon: the cosmetics confirmation is not saved: {e}");
+    }
     let wish = Prefs::load(&home);
     if wish.mine != me.visible {
-        let _ = Prefs {
+        let switches = Prefs {
             mine: me.visible,
             ..wish
+        };
+        if let Err(e) = switches.save(&home) {
+            eprintln!("Horizon: the cosmetics switches are not saved: {e}");
         }
-        .save(&home);
     }
+}
+
+/// "Open the shop": the website's shop in the browser, where cosmetics are browsed and bought.
+fn open_shop(id: &'static str, kind: Kind, t: &Theme) -> Stateful<Div> {
+    button(id, "Open the shop", kind, t).on_click(|_: &ClickEvent, _, cx| cx.open_url(SHOP_URL))
 }
 
 /// A day, in the player's time zone (Unix seconds).
@@ -251,7 +275,9 @@ impl Launcher {
                 result: Ok(()),
             };
             trip.result = refresh(&service, &account, &mut trip);
-            let _ = trip.saved.save(&dir(), &account.uuid);
+            if let Err(e) = trip.saved.save(&dir(), &account.uuid) {
+                eprintln!("Horizon: the outfit is not saved: {e}");
+            }
             trip
         });
         cx.spawn(async move |this, cx| {
@@ -264,39 +290,23 @@ impl Launcher {
         .detach();
     }
 
-    /// The launcher theme the selected account wears (its sky and accent hue), from the outfit
-    /// kept on disk; None with cosmetics off.
-    pub(super) fn worn_theme(&self) -> Option<([u32; 6], f32)> {
-        if !horizon_cosmetics::enabled() {
-            return None;
-        }
-        let kept;
-        let saved = match &self.wardrobe {
-            Some(w) => &w.saved,
-            None => {
-                kept = Saved::load(&dir(), &self.wardrobe_account()?.uuid);
-                &kept
-            }
-        };
-        saved.theme()
-    }
-
     /// Whether the top bar has this page: the cosmetics switch is on, or the cosmetics service
-    /// has a Shop to show, whatever the switch says (`shop::in_top_bar`): its public answer, or
-    /// the selected account's own (a preview for it, a claim), from this visit or kept on disk.
+    /// has a founder set to show, whatever the switch says (`shop::in_top_bar`): its public
+    /// answer, or the selected account's own (a preview for it, a claim), from this visit or kept
+    /// on disk.
     pub(super) fn wardrobe_shown(&self) -> bool {
         let own = (self.wardrobe.as_ref())
             .and_then(|w| w.saved.me.as_ref())
             .map(|m| &m.claim)
             .or(self.shop_kept.as_ref());
         horizon_launcher::shop::in_top_bar(
-            horizon_cosmetics::enabled(),
+            horizon_cosmetics::forced(),
             self.shop_status.as_ref(),
             own,
         )
     }
 
-    /// Ask the cosmetics service whether there is a Shop to show, at start and every half hour
+    /// Ask the cosmetics service whether there is something to show, at start and every half hour
     /// (`GET /v1/shop`, no session, nothing about the player), and read the selected account's
     /// own last answer from disk. Offline, the last answer stands.
     pub(super) fn watch_shop(&self, cx: &mut Context<Self>) {
@@ -412,14 +422,18 @@ impl Launcher {
         if let Change::Visible(on) = change {
             // The game's switch shows the wish at once; its confirmation follows the service.
             let home = backend::game_home();
-            let _ = Prefs {
+            let switches = Prefs {
                 mine: on,
                 ..Prefs::load(&home)
+            };
+            if let Err(e) = switches.save(&home) {
+                eprintln!("Horizon: the cosmetics switches are not saved: {e}");
             }
-            .save(&home);
         }
         w.saved.change(change);
-        let _ = w.saved.save(&dir(), &w.uuid);
+        if let Err(e) = w.saved.save(&dir(), &w.uuid) {
+            eprintln!("Horizon: the outfit is not saved: {e}");
+        }
         w.seen = None;
         self.restyle = true;
         let Some(w) = self.wardrobe.as_mut() else {
@@ -440,7 +454,9 @@ impl Launcher {
         let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
         let task = cx.background_executor().spawn(async move {
             let result = Service::live().sync(&session, &mut saved);
-            let _ = saved.save(&dir(), &uuid);
+            if let Err(e) = saved.save(&dir(), &uuid) {
+                eprintln!("Horizon: the outfit is not saved: {e}");
+            }
             Trip {
                 saved,
                 items: HashMap::new(),
@@ -448,32 +464,6 @@ impl Launcher {
                 result,
             }
         });
-        self.wardrobe_wait(task, done, cx);
-    }
-
-    /// Claim the founder set.
-    fn wardrobe_claim(&mut self, cx: &mut Context<Self>) {
-        let Some(w) = self.wardrobe.as_mut().filter(|w| !w.busy) else {
-            return;
-        };
-        let Some(session) = w.session.clone() else {
-            return;
-        };
-        w.busy = true;
-        let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
-        let task = cx.background_executor().spawn(async move {
-            let result = Service::live()
-                .claim(&session)
-                .map(|me| saved.me = Some(me));
-            let _ = saved.save(&dir(), &uuid);
-            Trip {
-                saved,
-                items: HashMap::new(),
-                session: None,
-                result,
-            }
-        });
-        let done = tr("Founder set claimed. It's in your wardrobe.").into();
         self.wardrobe_wait(task, done, cx);
     }
 
@@ -494,10 +484,9 @@ impl Launcher {
     /// `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
-    /// `HORIZON_WARDROBE_STATE=offline|failed|closed|empty` shows that state instead, `theme` wears
-    /// First Light.
+    /// `HORIZON_WARDROBE_STATE=offline|failed|empty` shows that state instead.
     pub(super) fn wardrobe_preview(&mut self) {
-        use horizon_launcher::wardrobe::{Claim, Entry, Me};
+        use horizon_launcher::wardrobe::{Claim, Entry, Me, Purchase};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
             return;
         };
@@ -507,10 +496,18 @@ impl Launcher {
             .flatten()
             .filter_map(|e| Item::parse(&std::fs::read(e.path()).ok()?).ok())
             .collect();
-        items.sort_by(|a, b| a.id.cmp(&b.id));
+        // The founder set's order: head, shirt, back, name tag.
+        let order = |i: &Item| {
+            use horizon_cosmetics::Slot::*;
+            [Head, Torso, Back, Shoulder, NameTag]
+                .iter()
+                .position(|s| *s == i.slot)
+        };
+        items.sort_by(|a, b| order(a).cmp(&order(b)).then(a.id.cmp(&b.id)));
         let slot = |i: &Item| match i.slot {
             horizon_cosmetics::Slot::Head => "head",
             horizon_cosmetics::Slot::Back => "back",
+            horizon_cosmetics::Slot::Torso => "torso",
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
         };
@@ -521,39 +518,36 @@ impl Launcher {
                 .entry(slot(i).to_owned())
                 .or_insert_with(|| i.id.clone());
         }
-        let mut ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
-        // A launcher theme to wear: the design brief's First Light.
-        let dawn = Entry {
-            id: "first_light".into(),
-            hash: String::new(),
-            slot: "theme".into(),
-            names: [("en_us".to_owned(), "First Light".to_owned())].into(),
-            theme: Some(horizon_launcher::wardrobe::Theme {
-                sky: [
-                    "#0b1030", "#1d2a63", "#3d4c94", "#7f78c0", "#e2a0b0", "#ffd6a0",
-                ]
-                .map(String::from),
-                accent_hue: 246.,
-            }),
-        };
-        ids.push(dawn.id.clone());
-        if state == "theme" {
-            equipped.insert("theme".to_owned(), dawn.id.clone());
-        }
+        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
         let claim = Claim {
-            state: if state == "closed" {
-                ClaimState::Closed
-            } else {
-                ClaimState::Open
-            },
+            state: ClaimState::Open,
             items: ids.clone(),
             starts_at: Some(1_793_000_000),
             ends_at: Some(1_795_000_000),
-            claimed: Some(state != "empty" && state != "closed"),
-            open: state != "closed",
+            claimed: Some(state != "empty"),
+            open: true,
             preview: false,
         };
-        let empty = state == "empty" || state == "closed";
+        let empty = state == "empty";
+        // Orders as the service keeps them, newest first.
+        let orders = vec![
+            Purchase {
+                transaction_id: "txn_01k9preview2".into(),
+                item: ids.first().cloned().unwrap_or_default(),
+                amount: 299,
+                currency: "CHF".into(),
+                status: "paid".into(),
+                at: 1_793_100_000,
+            },
+            Purchase {
+                transaction_id: "txn_01k9preview1".into(),
+                item: "founder_set".into(),
+                amount: 0,
+                currency: "CHF".into(),
+                status: "paid".into(),
+                at: 1_792_900_000,
+            },
+        ];
         let catalogue = Catalogue {
             items: items
                 .iter()
@@ -564,7 +558,6 @@ impl Launcher {
                     names: [("en_us".to_owned(), title_case(&i.id))].into(),
                     theme: None,
                 })
-                .chain([dawn])
                 .collect(),
             claim: claim.clone(),
         };
@@ -582,6 +575,7 @@ impl Launcher {
                 equipped: if empty { Default::default() } else { equipped },
                 visible: true,
                 claim,
+                purchases: if empty { Vec::new() } else { orders },
             }),
             catalogue: Some(catalogue),
             pending: Vec::new(),
@@ -648,7 +642,7 @@ impl Launcher {
         draws.extend(
             worn.iter()
                 .filter_map(|id| w.items.get(id))
-                .filter_map(|item| preview::Draw::item(item, &body, 0.0)),
+                .flat_map(|item| preview::Draw::item(item, &body, 0.0)),
         );
         let (pw, ph) = ((W * scale) as u32, (H * scale) as u32);
         // Degrees: a little turned, then a quarter more per click.
@@ -660,23 +654,54 @@ impl Launcher {
         Some(baked)
     }
 
-    /// A name tag style's mark, baked once.
-    fn wardrobe_mark(&self, item: &Item) -> Arc<RenderImage> {
+    /// A name tag style's mark (`Marks` keeps it).
+    fn wardrobe_mark(item: &Item, scale: f32) -> Arc<RenderImage> {
         let t = &item.texture;
         let texels: Vec<[u8; 4]> = t.rgba.as_chunks::<4>().0.to_vec();
-        art::bake(&texels, t.width as usize, t.height as usize, 2., self.scale)
+        art::bake(&texels, t.width as usize, t.height as usize, 2., scale)
     }
 
     pub(super) fn wardrobe_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        let signed_out = self.wardrobe.is_none() && self.wardrobe_account().is_none();
+        let reload = std::mem::take(&mut self.wardrobe_reload);
+        if !signed_out && (reload || self.wardrobe.is_none()) {
+            self.open_wardrobe(cx);
+        }
+        // An account that owns nothing finds the shop in the empty state instead of the header.
+        let owns_nothing = self
+            .wardrobe
+            .as_ref()
+            .filter(|w| matches!(w.status, Status::Loading | Status::Ready))
+            .and_then(|w| w.saved.me.as_ref())
+            .is_some_and(|me| me.owned.is_empty());
         let header = page_header(
             "Wardrobe",
             "What you wear in every Horizon world and server. Changes reach other players the next \
              time they see you.",
             &t,
         );
+        // The button sits beside the title, level with it.
+        let header = div()
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap(px(24.))
+            .child(header.flex_1().min_w_0())
+            .when(!owns_nothing, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .pt(px(if t.glass {
+                            40. - glass::CONTENT_INSET + 5.
+                        } else {
+                            4.
+                        }))
+                        .child(open_shop("wardrobe-shop", Kind::Secondary, &t)),
+                )
+            });
         let page = div().flex().flex_col().gap(px(24.)).child(header);
-        if self.wardrobe.is_none() && self.wardrobe_account().is_none() {
+        if signed_out {
             let sign_in = button(
                 "wardrobe-sign-in",
                 "Sign in with Microsoft",
@@ -689,22 +714,18 @@ impl Launcher {
                 cx.notify();
             }));
             return page.child(
-                plate(&t)
+                glass::plate(radius::PANEL)
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap(px(16.))
                     .p(px(24.))
                     .child(
-                        text(theme::UI)
-                            .text_color(t.ink)
+                        ui::text(15., FontWeight::MEDIUM, ink::FULL)
                             .child(tr("Sign in to use cosmetics.")),
                     )
                     .child(sign_in),
             );
-        }
-        if std::mem::take(&mut self.wardrobe_reload) || self.wardrobe.is_none() {
-            self.open_wardrobe(cx);
         }
         let picture = self.wardrobe_picture();
         let Some(w) = self.wardrobe.as_ref() else {
@@ -713,7 +734,13 @@ impl Launcher {
         let page = page.children(self.wardrobe_banner(w, cx));
         let Some(me) = w.saved.me.clone() else {
             // Nothing kept yet: the first answer is on its way.
-            let skeleton = |h: f32| div().h(px(h)).w_full().bg(t.well);
+            let skeleton = |h: f32| {
+                div()
+                    .h(px(h))
+                    .w_full()
+                    .rounded(px(radius::ROW))
+                    .bg(ui::white(0.06))
+            };
             return page.child(
                 div()
                     .flex()
@@ -743,12 +770,12 @@ impl Launcher {
                 .map_or(id.to_owned(), |e| e.name(lang).to_owned())
         };
         // The slots, one row each.
-        let mut slots = plate(&t)
+        let mut slots = glass::plate(radius::PANEL)
             .flex()
             .flex_col()
             .gap(px(4.))
             .p(px(8.))
-            .w(px(260.))
+            .w(px(240.))
             .flex_none();
         for (i, (slot, label)) in SLOTS.into_iter().enumerate() {
             let owns = entries
@@ -766,10 +793,12 @@ impl Launcher {
                     .flex_col()
                     .px(px(12.))
                     .py(px(8.))
+                    .rounded(px(radius::ROW))
                     .cursor_pointer()
-                    .when(chosen, |d| d.bg(t.well))
-                    .child(text(theme::LABEL).text_color(t.ink).child(tr(label)))
-                    .child(text(theme::CAPTION).text_color(t.muted).child(under))
+                    .when(chosen, |d| d.bg(ui::white(fill::ACTIVE)))
+                    .when(!chosen, |d| d.hover(|s| s.bg(ui::white(0.05))))
+                    .child(ui::text(14., FontWeight::MEDIUM, ink::FULL).child(tr(label)))
+                    .child(ui::text(12., FontWeight::NORMAL, ink::NOTE).child(under))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if let Some(w) = &mut this.wardrobe {
                             w.slot = slot;
@@ -779,15 +808,24 @@ impl Launcher {
             );
         }
         // The player, with the name tag style over the head.
-        let tag = me
-            .equipped
-            .get("name_tag")
+        let tag_id = me.equipped.get("name_tag");
+        let tag = tag_id
             .and_then(|id| w.items.get(id))
             .filter(|i| i.tag.is_some());
         let line = tag
             .and_then(|i| i.tag)
             .map(|g| gpui::rgb(u32::from_be_bytes([0, g.line[0], g.line[1], g.line[2]])));
-        let mark = tag.map(|i| self.wardrobe_mark(i));
+        let mark = tag.zip(tag_id).map(|(i, id)| {
+            let scale = self.scale;
+            // The catalogue's hash names the item's file: a new file under the id is a new mark.
+            let hash = entries
+                .iter()
+                .find(|e| &e.id == id)
+                .map_or("", |e| e.hash.as_str());
+            self.wardrobe_marks
+                .get_or_bake(id, hash, scale, || Self::wardrobe_mark(i, scale))
+                .clone()
+        });
         let name_tag = div()
             .flex()
             .items_center()
@@ -797,7 +835,9 @@ impl Launcher {
             .bg(gpui::rgba(0x0000_0066))
             .children(mark.map(|m| gpui::img(m).size(px(16.))))
             .child(
-                text(theme::UI)
+                div()
+                    .font_family(theme::MONO)
+                    .text_size(px(13.))
                     .text_color(gpui::white())
                     .child(me.name.clone()),
             )
@@ -810,7 +850,7 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        let player = plate(&t)
+        let player = glass::plate(radius::PANEL)
             .flex()
             .flex_col()
             .items_center()
@@ -834,18 +874,30 @@ impl Launcher {
         let wearing = me.equipped.get(slot).cloned();
         let mut cards = div().flex().flex_wrap().gap(px(8.));
         let card = |id: SharedString, title: String, under: String, on: bool| {
+            let look = ui::look();
             keyboard(div().id(id), &t)
                 .flex()
                 .flex_col()
                 .gap(px(2.))
                 .w(px(136.))
                 .p(px(12.))
+                .rounded(px(radius::LARGE))
                 .cursor_pointer()
-                .bg(t.well)
-                .border_2()
-                .border_color(if on { t.accent } else { t.outline })
-                .child(text(theme::LABEL).text_color(t.ink).child(title))
-                .child(text(theme::CAPTION).text_color(t.muted).child(under))
+                .bg(ui::white(0.045))
+                .when(on, |d| {
+                    d.border_2().border_color(ui::color(if ui::light() {
+                        look.accent
+                    } else {
+                        look.accent_soft
+                    }))
+                })
+                .when(!on, |d| {
+                    d.border_1()
+                        .border_color(ui::white(0.10))
+                        .hover(|s| s.bg(ui::white(0.08)))
+                })
+                .child(ui::text(14., FontWeight::MEDIUM, ink::FULL).child(title))
+                .child(ui::text(12., FontWeight::NORMAL, ink::NOTE).child(under))
         };
         cards = cards.child(
             card(
@@ -895,14 +947,14 @@ impl Launcher {
                 })),
             );
         }
-        let owned = plate(&t)
+        let owned = glass::plate(radius::PANEL)
             .flex()
             .flex_col()
             .gap(px(12.))
             .p(px(16.))
             .w(px(312.))
             .flex_none()
-            .child(text(theme::HEADING).text_color(t.ink).child(tr(label)))
+            .child(ui::text(16., FontWeight::SEMIBOLD, ink::FULL).child(tr(label)))
             .child(cards);
         let page = page
             .child(
@@ -913,34 +965,38 @@ impl Launcher {
                     .child(player)
                     .child(owned),
             )
-            .child(self.wardrobe_switches(me.visible, cx));
+            .child(self.wardrobe_switches(me.visible, !me.owned.is_empty(), cx))
+            .children(self.purchase_history(w.saved.catalogue.as_ref(), &me));
         let toast = w
             .toast
             .as_ref()
             .filter(|(_, at)| at.elapsed() < TOAST)
             .map(|(s, _)| s.clone());
         page.children(toast.map(|s| {
-            plate(&t)
-                .px(px(16.))
-                .py(px(10.))
-                .child(text(theme::UI).text_color(t.ink).child(s))
+            div().flex().justify_center().child(
+                glass::float(radius::POPOVER).px(px(16.)).py(px(12.)).child(
+                    ui::text(13., FontWeight::NORMAL, ink::FULL)
+                        .relative()
+                        .child(s),
+                ),
+            )
         }))
     }
 
-    /// Over the page: the founder set's claim, offline, a failure.
+    /// Over the page: offline, a failure, or an account that owns nothing yet.
     fn wardrobe_banner(&self, w: &Wardrobe, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let row = |said: String| {
-            plate(&t)
+            glass::plate(radius::PANEL)
                 .flex()
                 .items_center()
                 .gap(px(16.))
                 .p(px(16.))
                 .child(
-                    text(theme::UI)
+                    ui::text(14., FontWeight::NORMAL, ink::BODY)
+                        .relative()
                         .flex_1()
                         .min_w_0()
-                        .text_color(t.ink)
                         .child(said),
                 )
         };
@@ -984,45 +1040,15 @@ impl Launcher {
             Status::Account(e) => return Some(row(e.clone()).child(self.wardrobe_retry(cx))),
             Status::Loading | Status::Ready => {}
         }
+        // Nothing owned yet: the shop is on the website.
         let me = w.saved.me.as_ref()?;
-        let claim = &me.claim;
-        if claim.claimed == Some(true) {
-            return None;
-        }
-        let until = claim.ends_at.map(day).unwrap_or_default();
-        match claim.state {
-            ClaimState::Open => {
-                let said = if me.owned.is_empty() {
-                    trf(
-                        "Nothing in your wardrobe yet. The founder set is free to claim until {day}.",
-                        &[("day", &until)],
-                    )
-                } else {
-                    trf(
-                        "The founder set is free to claim until {day}.",
-                        &[("day", &until)],
-                    )
-                };
-                let b = button("wardrobe-claim", "Claim the founder set", Kind::Primary, &t);
-                Some(row(said).child(if w.busy || w.session.is_none() {
-                    disabled(b)
-                } else {
-                    b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.wardrobe_claim(cx);
-                        cx.notify();
-                    }))
-                }))
-            }
-            ClaimState::Closed => Some(row(trf(
-                "The founder set was free to claim until {day}. It isn't offered any more; \
-                 players who claimed it keep it.",
-                &[("day", &until)],
-            ))),
-            ClaimState::NotYet => me
-                .owned
-                .is_empty()
-                .then(|| row(tr("Nothing in your wardrobe yet.").into())),
-        }
+        me.owned.is_empty().then(|| {
+            row(tr("You don't own any cosmetics yet.").into()).child(open_shop(
+                "wardrobe-shop-empty",
+                Kind::Primary,
+                &t,
+            ))
+        })
     }
 
     fn wardrobe_retry(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -1037,8 +1063,9 @@ impl Launcher {
     }
 
     /// Show my cosmetics (the account's, on the service), and the game's two switches about
-    /// other players.
-    fn wardrobe_switches(&self, visible: bool, cx: &mut Context<Self>) -> Div {
+    /// other players. Others' cosmetics not chosen yet show as the game shows them: hidden unless
+    /// the account `owns` a cosmetic.
+    fn wardrobe_switches(&self, visible: bool, owns: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let home = backend::game_home();
         let prefs = Prefs::load(&home);
@@ -1055,19 +1082,21 @@ impl Launcher {
                     div()
                         .flex()
                         .flex_col()
-                        .child(text(theme::LABEL).text_color(t.ink).child(tr(title)))
-                        .child(text(theme::CAPTION).text_color(t.muted).child(tr(under))),
+                        .child(ui::text(14., FontWeight::MEDIUM, ink::FULL).child(tr(title)))
+                        .child(ui::text(12., FontWeight::NORMAL, ink::NOTE).child(tr(under))),
                 )
         };
         let save = |prefs: Prefs| {
             let home = home.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let _ = prefs.save(&home);
+                if let Err(e) = prefs.save(&home) {
+                    eprintln!("Horizon: the cosmetics switches are not saved: {e}");
+                }
                 cx.refresh_windows();
             }
         };
-        let hidden = prefs.others == Others::Hidden;
-        plate(&t)
+        let hidden = Others::effective(prefs.others, owns) == Others::Hidden;
+        glass::plate(radius::PANEL)
             .flex()
             .flex_wrap()
             .gap(px(24.))
@@ -1092,11 +1121,11 @@ impl Launcher {
                     "Others look like plain players to you. Also in the game's Horizon settings.",
                 )
                 .on_click(save(Prefs {
-                    others: if hidden {
+                    others: Some(if hidden {
                         Others::Shown
                     } else {
                         Others::Hidden
-                    },
+                    }),
                     ..prefs
                 })),
             )

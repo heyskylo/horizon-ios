@@ -6,6 +6,7 @@ use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{
     Result,
+    held::Source,
     hud::{HudBatch, rgba},
     touch::{self, Control, Out, Touches},
 };
@@ -177,6 +178,12 @@ impl Game<'_> {
         let Some(batch) = self.touch_batch() else {
             return Ok(());
         };
+        // A real finger owns input just as a hardware pointer does. Menu
+        // touches also pass through key_focus_mouse; world controls do not.
+        // Releases/cancellations only finish that finger's own actions.
+        if matches!(touch.phase, TouchPhase::Started | TouchPhase::Moved) {
+            self.pad_yield_input(event_loop);
+        }
         let at = (
             touch.location.x as f32 / batch.scale,
             touch.location.y as f32 / batch.scale,
@@ -290,17 +297,41 @@ impl Game<'_> {
                     // A toggle either way: the crouch option toggles a press, otherwise flip the held key
                     // (as a controller's stick click does).
                     if self.settings.toggle_crouch {
-                        self.mapped_key(KeyCode::ShiftLeft, true, false, KeyCode::ShiftLeft)?;
-                        self.mapped_key(KeyCode::ShiftLeft, false, false, KeyCode::ShiftLeft)?;
+                        self.mapped_key(
+                            KeyCode::ShiftLeft,
+                            true,
+                            false,
+                            KeyCode::ShiftLeft,
+                            Source::Touch,
+                        )?;
+                        self.mapped_key(
+                            KeyCode::ShiftLeft,
+                            false,
+                            false,
+                            KeyCode::ShiftLeft,
+                            Source::Touch,
+                        )?;
                     } else {
-                        let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
-                        self.mapped_key(KeyCode::ShiftLeft, !sneaking, false, KeyCode::ShiftLeft)?;
+                        let sneaking = self.keys.held_by(&KeyCode::ShiftLeft, Source::Touch);
+                        self.mapped_key(
+                            KeyCode::ShiftLeft,
+                            !sneaking,
+                            false,
+                            KeyCode::ShiftLeft,
+                            Source::Touch,
+                        )?;
                     }
                 }
                 Out::Press(control) | Out::Release(control) => {
                     if let Some(key) = key_of(control) {
                         // Touch supplies a default action directly, with no physical-key rebinding.
-                        self.mapped_key(key, matches!(o, Out::Press(_)), false, key)?;
+                        self.mapped_key(
+                            key,
+                            matches!(o, Out::Press(_)),
+                            false,
+                            key,
+                            Source::Touch,
+                        )?;
                     }
                 }
                 Out::Look(dx, dy) => {

@@ -77,7 +77,8 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
     assert!(parsed.complete, "parse notes: {:?}", parsed.notes);
     let world = World {
         gui_size: [1, 1],
-        adapter: &adapter,
+        sprite_rects: &[],
+        material_maps: None,
         atlas: None,
         lightmap: texture(&device, &queue, "storage regression lightmap", 1, &[255; 4]),
         terrain: None,
@@ -90,10 +91,12 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
     let mut post = PackPost::new(
         &device,
         &queue,
+        &adapter,
         parsed,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     assert!(post.complete, "pipeline notes: {:?}", post.notes);
     assert_eq!(
         post.shadow_comp.len(),
@@ -252,7 +255,8 @@ fn mismatched_storage_image_dimension_is_rejected_before_first_frame() {
     assert!(parsed.complete, "{:?}", parsed.notes);
     let world = World {
         gui_size: [1, 1],
-        adapter: &adapter,
+        sprite_rects: &[],
+        material_maps: None,
         atlas: None,
         lightmap: texture(&device, &queue, "mismatch test lightmap", 1, &[255; 4]),
         terrain: None,
@@ -265,10 +269,12 @@ fn mismatched_storage_image_dimension_is_rejected_before_first_frame() {
     let post = PackPost::new(
         &device,
         &queue,
+        &adapter,
         parsed,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     assert!(
         !post.complete,
         "a 2D image must not reach a 3D storage binding at render time"

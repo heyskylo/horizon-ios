@@ -7,6 +7,7 @@ use crate::{
     section_mask::SectionMask,
 };
 use horizon_world::{level::RandomTickMask, registry::BlockStateId};
+use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 /// A value snapshot, in ascending section order, with no per-chunk allocation.
@@ -55,8 +56,10 @@ struct Cached {
     read: Vec<Weak<Section>>,
     sections: Sections,
     /// Each ticking section's [`RandomTickMask`], built at its first draw
-    /// and dropped when the section is read again.
-    masks: Vec<Option<Arc<RandomTickMask>>>,
+    /// and dropped when the section is read again. `Rc`, not `Arc`: the
+    /// tick thread hands one out per ticking section per tick, and an atomic
+    /// count on a mask out of cache stalled the whole random tick loop.
+    masks: Vec<Option<Rc<RandomTickMask>>>,
 }
 /// Vanilla keeps a count of randomly ticking blocks and fluids per section,
 /// updated by every `setBlockState`, and ticks the sections where it is above
@@ -103,7 +106,7 @@ impl RandomTickSections {
         facts: &BlockFacts,
         candidate: impl FnMut(u32) -> bool,
         from_y: i32,
-    ) -> Option<(i32, Arc<RandomTickMask>)> {
+    ) -> Option<(i32, Rc<RandomTickMask>)> {
         let cached = Self::refresh(&mut self.chunks, key, chunk, &mut |id| {
             facts.get(BlockStateId(id)).random_ticks
         });
@@ -112,7 +115,7 @@ impl RandomTickSections {
         let mask = cached.masks[index].get_or_insert_with(|| {
             let mut blocks = [0u32; 4096];
             chunk.sections[index].blocks.unpack(&mut blocks);
-            Arc::new(RandomTickMask::of(&blocks, candidate))
+            Rc::new(RandomTickMask::of(&blocks, candidate))
         });
         Some((y, mask.clone()))
     }

@@ -1,5 +1,5 @@
 //! The launcher's pixel art, drawn here rather than shipped: the night sky behind every page is
-//! `sky.rs`, skins and the grass block are baked from the player's own textures. GPUI samples
+//! `sky.rs`, skins are baked from the player's own textures. GPUI samples
 //! images smoothly, so every image is baked at the window's scale with each texel a whole block of
 //! device pixels, and drawn at exactly its size: the edges stay sharp.
 use gpui::RenderImage;

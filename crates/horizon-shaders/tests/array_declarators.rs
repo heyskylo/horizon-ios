@@ -131,3 +131,28 @@ fn invalid_later_initializers_remain_errors() {
         );
     }
 }
+
+#[test]
+fn common_array_types_remain_shared_by_local_variables() {
+    count(
+        "const int[2] first = {1, 2}, second[3] = {{3, 4}, {5, 6}, {7, 8}}, tail = {9, 10}; const int count = first.length() + second.length() + tail.length(); void main() { int[2] a, b[3]; a[1]=4; b[2][1]=5; gl_FragColor = vec4(float(count+a[1]+b[2][1])); }",
+        7,
+    );
+}
+
+#[test]
+fn common_array_uniforms_keep_both_names_and_dimensions() {
+    let program = program(
+        "uniform float[2] first, second; void main(){gl_FragColor=vec4(first[1]+second[1]);}",
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    for name in ["first", "second"] {
+        let uniform = program
+            .interface
+            .uniforms
+            .iter()
+            .find(|u| u.name == name)
+            .unwrap();
+        assert_eq!(uniform.ty, "float[2]", "{name}");
+    }
+}

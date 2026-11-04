@@ -179,6 +179,7 @@ fn grace() -> MobEvent {
         effect: "minecraft:dolphins_grace",
         ticks: 100,
         amplifier: 0,
+        ambient: false,
     }
 }
 

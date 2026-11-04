@@ -1,6 +1,6 @@
 //! 3D skin layers (off by default): the player's outer skin layer drawn as
 //! its own pixels, each opaque texel extruded out of the model as a small
-//! slab (`three_d_skin_layers` in options.txt, Options → Skin Customization).
+//! slab (`threeDSkinLayers` in horizon-extras.txt, Options → Skin Customization).
 //!
 //! Vanilla draws the outer layer as one box inflated by 0.25 px, so a hat,
 //! jacket, sleeves and trousers read as a flat skin over the body. Here each

@@ -533,6 +533,13 @@ impl Game<'_> {
             bone_meal: bone_meal(),
         }
     }
+    pub(super) fn block_can_place(&self, pos: [i32; 3], slot: usize, stack: &ItemStack) -> bool {
+        let containers = self.containers();
+        let Some(view) = containers.view((pos[0], pos[1], pos[2]), false) else {
+            return false;
+        };
+        view.kind == Kind::Shulker || containers.can_place(&view, slot, stack)
+    }
     fn slot_mut_at(&mut self, view: &View, slot: usize) -> Option<&mut Option<ItemStack>> {
         let (pos, i) = view.locate(slot)?;
         let entity = self.world.block_entities.get_mut(&pos)?;
@@ -622,7 +629,12 @@ impl Game<'_> {
         }
         match target {
             None => {
-                *target = Some(stack.clone());
+                // HopperBlockEntity.setItem limits the accepted stack, then
+                // tryMoveInItem consumes the input even when it exceeded that limit.
+                *target = Some(ItemStack {
+                    count: stack.count.min(max),
+                    ..stack.clone()
+                });
                 stack.count = 0;
                 success = true;
             }
@@ -1513,6 +1525,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -1533,6 +1546,7 @@ mod item_column_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
     /// `hopper_suck`'s test: some item box meets the hopper's SUCK_AABB.

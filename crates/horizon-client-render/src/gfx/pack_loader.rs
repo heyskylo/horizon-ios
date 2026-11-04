@@ -101,6 +101,21 @@ impl Compiler {
                     request.screen,
                     &stop,
                 );
+                let post = match post {
+                    Ok(post) => post,
+                    Err(refused) => {
+                        let mut notes = refused.notes;
+                        notes.push(refused.reason);
+                        let _ = send.send(Finished {
+                            generation,
+                            dimension,
+                            post: None,
+                            programs: Vec::new(),
+                            notes,
+                        });
+                        return;
+                    }
+                };
                 let mut notes = post.notes.clone();
                 let programs: Vec<String> = if post.complete {
                     post.programs().into_iter().map(str::to_owned).collect()

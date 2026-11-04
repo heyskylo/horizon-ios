@@ -27,6 +27,8 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
+#[cfg(test)]
+pub(crate) use sides::sort_with_states;
 pub use sides::{Part, Sides, group_parts};
 use std::sync::Arc;
 
@@ -483,6 +485,23 @@ impl SectionMesh {
             .get(quad)
             .copied()
             .unwrap_or(QuadState::UNKNOWN)
+    }
+    /// Shader metadata for the actual section-arena representation. A compact
+    /// renderer can still upload raw meshes (water-only or unsuitable for packing).
+    pub fn upload_states(
+        &self,
+        compact_mode: bool,
+        split: bool,
+    ) -> Option<impl Iterator<Item = QuadState> + '_> {
+        let packed = compact_mode && !self.packed.is_empty() && !self.solid.is_empty();
+        (!packed).then(|| {
+            (0..self.solid.len() / 4)
+                .map(|q| self.solid_state(q))
+                .chain(
+                    (0..if split { 0 } else { self.translucent.len() / 4 })
+                        .map(|q| self.translucent_state(q)),
+                )
+        })
     }
     /// Each state list is empty (no block data) or has one entry per quad.
     pub fn states_match(&self) -> bool {
@@ -1533,7 +1552,8 @@ fn pack_coords(coords: u32) -> u16 {
 pub struct Mesher<'a> {
     /// CardinalLighting.NETHER: brighter up/down faces.
     pub nether_shading: bool,
-    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours.
+    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours,
+    /// only the dimension's up-face brightness (`lighting::pack_flat`).
     pub shader_pack_lighting: bool,
     /// Selected shader AO policy, retained in the mesh context. Exact AO lives in sidecars;
     /// native vertex colors keep their normal shading and HDR flags.
@@ -1792,8 +1812,10 @@ impl Mesher<'_> {
             None => ao,
         };
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = if self.shader_pack_lighting || !q.shade {
+        let directional = if !q.shade {
             1.0
+        } else if self.shader_pack_lighting {
+            lighting::pack_flat(self.nether_shading)
         } else {
             lighting::cardinal(self.nether_shading, shade_face)
         };

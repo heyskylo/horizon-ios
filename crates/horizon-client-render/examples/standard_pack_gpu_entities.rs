@@ -79,7 +79,10 @@ fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let post = horizon_shaders::load_post(&pack, "", &properties, &macros, &renderer.pack_inputs());
     assert_eq!(post.notes.is_empty(), valid, "{:?}", post.notes);
-    let (_, notes) = renderer.set_shader_pack(0, Some(post), &[]).unwrap();
+    let (_, notes) = renderer
+        .set_shader_pack(0, Some(post), &[])
+        .unwrap()
+        .unwrap();
     assert!(
         !valid || notes.iter().all(|n| !n.contains("skipped")),
         "{notes:?}"
@@ -320,7 +323,7 @@ fn main() {
 
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
-        hand_spans: &[],
+        hand_items: &[],
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
@@ -379,6 +382,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

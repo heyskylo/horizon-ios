@@ -103,6 +103,22 @@ impl Sides {
         }
     }
 
+    /// A sort with these parts' `ends` and `planes`, for tests.
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        ends: [u32; 14],
+        grouped: bool,
+        split: bool,
+        planes: [f32; 7],
+    ) -> Self {
+        Self {
+            ends,
+            grouped,
+            split,
+            planes,
+        }
+    }
+
     /// The number of solid quads the buckets hold.
     pub fn quads(&self) -> u32 {
         self.ends[13]
@@ -126,6 +142,26 @@ impl Sides {
             Bucket::Other => true,
         };
         self.runs(seen, part, draw);
+    }
+
+    /// For GPU culling's copy of `visible_from` with every part (`gfx::gpu_culling`),
+    /// which then only compares: where each bucket of a mesh sorted for one pass ends,
+    /// in `BUCKETS` order, and what `visible_from` compares the eye with for each. That
+    /// is the lowest plane less `MARGIN` for a bucket facing a positive direction, the
+    /// highest plus `MARGIN` for one facing a negative direction, and 0 for the other
+    /// bucket, which it never compares. `None` for a mesh sorted for two passes
+    /// (`group_parts`), whose buckets lie in two stretches each.
+    pub fn thresholds(&self) -> Option<([u32; 7], [f32; 7])> {
+        if self.grouped {
+            return None;
+        }
+        let t: [f32; 7] = std::array::from_fn(|i| match BUCKETS[i] {
+            Bucket::Side(_, true) => self.planes[i] - MARGIN,
+            Bucket::Side(_, false) => self.planes[i] + MARGIN,
+            Bucket::Other => 0.0,
+        });
+        // A bucket's cutout quads end it (`slot`).
+        Some((std::array::from_fn(|b| self.ends[b * 2 + 1]), t))
     }
 
     /// The runs of `part`'s quads facing every way.
@@ -265,10 +301,6 @@ pub fn sort_with_metadata(
             scratch,
         )
     })
-}
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn sort_tinted(solid: &mut Vec<TerrainVertex>, tints: &mut Vec<u32>) -> Sides {
-    sort_with_metadata(solid, &mut Vec::new(), tints)
 }
 fn sort_with(
     solid: &mut Vec<TerrainVertex>,
@@ -581,6 +613,32 @@ mod tests {
         assert!(none.is_empty());
         let plain_layers: Vec<u16> = plain.iter().step_by(4).map(|v| v.layer).collect();
         assert_eq!(plain_layers, [0, 4, 2, 5, 1, 3]);
+    }
+
+    #[test]
+    fn tint_and_shader_metadata_stay_with_the_same_quad_in_both_layouts() {
+        for grouped in [false, true] {
+            let mut solid = cube([3.0, 4.0, 5.0], 0);
+            for (i, vertex) in solid.iter_mut().enumerate() {
+                let id = (i / 4) as u16;
+                vertex.layer = id | if id % 2 == 0 { OPAQUE_LAYER } else { 0 };
+            }
+            let mut states: Vec<_> = (0..6).map(test_state).collect();
+            let mut tints: Vec<_> = (0..6).map(|id| 0xffabc000 + id).collect();
+            sort_with(
+                &mut solid,
+                &mut states,
+                &mut tints,
+                grouped,
+                &mut SortScratch::default(),
+            );
+            assert_eq!((solid.len(), states.len(), tints.len()), (24, 6, 6));
+            for (i, quad) in solid.chunks_exact(4).enumerate() {
+                let id = u32::from(quad[0].layer & !OPAQUE_LAYER);
+                assert_eq!(states[i], test_state(id));
+                assert_eq!(tints[i], 0xffabc000 + id);
+            }
+        }
     }
 
     #[test]

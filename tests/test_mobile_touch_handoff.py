@@ -19,6 +19,8 @@ def program():
     pad = (ROOT / 'crates/horizon-client/src/game/pad_menu.rs').read_text()
     methods = '\n'.join(method(touch, n) for n in ('touch_pointer', 'touch_button', 'touch_wheel', 'touch_window_event', 'touch_synthetic_input'))
     methods += '\n' + '\n'.join('pub(crate) ' + method(pad, n) for n in ('key_focus_mouse', 'key_focus_to_mouse'))
+    controller = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
+    methods += '\n' + method(controller, 'pad_yield_input')
     return STUBS + '\nmod production { use super::*; impl Game {\n' + methods + '\n}\n' + CASES + '\n}\n'
 
 
@@ -30,15 +32,16 @@ trait EventLoopCtl {} struct Loop; impl EventLoopCtl for Loop {}
 #[derive(Clone, Copy, Debug, PartialEq)] struct PhysicalPosition<T>{x:T,y:T}
 impl<T> PhysicalPosition<T>{fn new(x:T,y:T)->Self{Self{x,y}}}
 struct DeviceId; impl DeviceId {fn dummy()->Self{Self}}
-#[derive(Clone, Copy)] enum ElementState {Pressed,Released}
+#[derive(Clone, Copy, PartialEq)] enum ElementState {Pressed,Released}
 enum MouseButton {Left}
-enum WindowEvent {CursorMoved{device_id:DeviceId,position:PhysicalPosition<f64>},MouseInput{device_id:DeviceId,state:ElementState,button:MouseButton},MouseWheel{device_id:DeviceId,delta:MouseScrollDelta,phase:TouchPhase}}
+struct KeyEvent{state:ElementState}
+enum WindowEvent {KeyboardInput{event:KeyEvent},CursorMoved{device_id:DeviceId,position:PhysicalPosition<f64>},MouseInput{device_id:DeviceId,state:ElementState,button:MouseButton},MouseWheel{device_id:DeviceId,delta:MouseScrollDelta,phase:TouchPhase}}
 enum MouseScrollDelta{LineDelta(f32,f32)}enum TouchPhase{Moved}
 struct Window;impl Window{fn id(&self)->u32{1}}
 struct Batch{scale:f32}
 struct Target{rect:[f32;4]}
 #[derive(Default)]struct Menu{keyboard:bool,synthetic:bool,origin:Option<[f32;4]>,focus:Option<Target>,pos:Option<(f32,f32)>,pending:Option<()>,nudge:Option<()>,real_pointer:Option<PhysicalPosition<f64>>}
-#[derive(Default)]struct Pad{menu:Menu}
+#[derive(Default)]struct Pad{menu:Menu,in_use:bool,held_actions:Vec<&'static str>,released_actions:Vec<&'static str>}
 #[derive(Default)]struct TouchInput{synthetic:bool}
 type WindowId=u32;
 struct Game{touch:TouchInput,window:Option<Window>,pad:Pad,cursor:PhysicalPosition<f64>,clicks:Vec<PhysicalPosition<f64>>,scale:f32,airplay_scale:f32}
@@ -51,6 +54,10 @@ impl Game{
   self.key_focus_mouse(l,&e);
   match e {WindowEvent::CursorMoved{position,..}=>self.cursor=position,WindowEvent::MouseInput{state:ElementState::Pressed,..}=>self.clicks.push(self.cursor),_=>{}}
  }
+ // The action dispatcher endpoint records releases rather than running a
+ // world. Input ownership itself comes from the production pad_yield_input.
+ fn pad_cancel_inputs(&mut self,_:&dyn EventLoopCtl){self.pad.released_actions.append(&mut self.pad.held_actions);}
+ fn controller(&mut self){self.pad.in_use=true;self.pad.held_actions=vec!["key.forward","key.attack"];}
  fn pad_synthetic_event(&mut self,l:&dyn EventLoopCtl,id:u32,e:WindowEvent){self.pad.menu.synthetic=true;self.handle_window_event(l,id,e,InputOrigin::Game);self.pad.menu.synthetic=false;}
  fn new()->Self{Self{touch:TouchInput::default(),window:Some(Window),pad:Pad::default(),cursor:PhysicalPosition::new(0.,0.),clicks:vec![],scale:2.,airplay_scale:1.}}
  fn keyboard(&mut self){self.pad.menu.keyboard=true;self.pad.menu.focus=Some(Target{rect:[1.,1.,20.,20.]});self.pad.menu.pos=Some((1.,1.));self.cursor=PhysicalPosition::new(1.,1.);}
@@ -58,9 +65,10 @@ impl Game{
 '''
 CASES = r'''
 #[test]fn first_touch_after_keyboard_uses_finger_not_stale_mouse(){
- let mut g=Game::new();g.pad.menu.real_pointer=Some(PhysicalPosition::new(900.,800.));g.keyboard();
+ let mut g=Game::new();g.controller();g.pad.menu.real_pointer=Some(PhysicalPosition::new(900.,800.));g.keyboard();
  g.touch_pointer(&Loop,(32.,47.));g.touch_button(&Loop,true);
  assert_eq!(g.clicks,vec![PhysicalPosition::new(64.,94.)]);assert!(!g.pad.menu.keyboard);
+ assert!(!g.pad.in_use);assert!(g.pad.held_actions.is_empty());assert_eq!(g.pad.released_actions,vec!["key.forward","key.attack"]);
 }
 #[test]fn repeated_keyboard_touch_switches_preserve_each_new_location(){
  let mut g=Game::new();
@@ -71,6 +79,23 @@ CASES = r'''
 #[test]fn airplay_controller_maps_before_focus_handoff(){
  let mut g=Game::new();g.airplay_scale=3.;g.keyboard();g.touch_pointer(&Loop,(10.,20.));g.touch_button(&Loop,true);
  assert_eq!(g.clicks,vec![PhysicalPosition::new(60.,120.)]);
+}
+#[test]fn keyboard_press_yields_controller_but_release_does_not(){
+ let mut g=Game::new();g.controller();
+ g.key_focus_mouse(&Loop,&WindowEvent::KeyboardInput{event:KeyEvent{state:ElementState::Released}});
+ assert!(g.pad.in_use);assert!(g.pad.released_actions.is_empty());
+ g.key_focus_mouse(&Loop,&WindowEvent::KeyboardInput{event:KeyEvent{state:ElementState::Pressed}});
+ assert!(!g.pad.in_use);assert_eq!(g.pad.released_actions,vec!["key.forward","key.attack"]);
+ g.key_focus_mouse(&Loop,&WindowEvent::KeyboardInput{event:KeyEvent{state:ElementState::Pressed}});
+ assert_eq!(g.pad.released_actions.len(),2);
+}
+#[test]fn synthetic_pad_cursor_cannot_yield_its_own_controller(){
+ let mut g=Game::new();g.controller();
+ g.pad_synthetic_event(&Loop,1,WindowEvent::CursorMoved{device_id:DeviceId::dummy(),position:PhysicalPosition::new(40.,60.)});
+ assert!(g.pad.in_use);assert!(g.pad.released_actions.is_empty());assert_eq!(g.pad.menu.real_pointer,None);
+ g.touch_pointer(&Loop,(30.,40.));
+ assert!(!g.pad.in_use);assert_eq!(g.pad.released_actions,vec!["key.forward","key.attack"]);
+ assert_eq!(g.pad.menu.real_pointer,Some(PhysicalPosition::new(60.,80.)));
 }
 '''
 
@@ -88,4 +113,4 @@ class MobileTouchHandoffTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('4 passed', run.stdout)
+            self.assertIn('6 passed', run.stdout)
