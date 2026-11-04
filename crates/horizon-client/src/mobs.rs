@@ -2942,6 +2942,7 @@ impl Mob {
             || self.removed
             || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
     }
+    /// `LivingEntity.hurtServer`'s partial mob adapter, with health reductions inline.
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
     /// weapon's armor-effectiveness enchantments (breach) over the armor fraction.
     pub fn damage_with(
@@ -3056,9 +3057,7 @@ impl Mob {
         {
             let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
             amount = (amount * remainder as f32 / 25.0).max(0.0);
-            if amount <= 0.0 {
-                return false;
-            }
+            // actuallyHurt is void: zero health damage still lets hurtServer set hurt state.
         }
         // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
         // 85% less from `#witch_resistant_to`.
