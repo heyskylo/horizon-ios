@@ -1447,6 +1447,10 @@ fn requested_split() -> Option<u32> {
         .and_then(|v| v.parse().ok())
         .filter(|&n| (1..=SPRITE_SPLIT).contains(&n))
 }
+fn adapter_requested_split(info: &wgpu::AdapterInfo, requested: Option<u32>) -> Option<u32> {
+    // Metal can fail to sample large mipmapped array textures despite advertising the layer limit.
+    requested.or_else(|| (info.backend == wgpu::Backend::Metal).then_some(512))
+}
 /// The split the CPU mip chains are cut by before the adapter is known.
 fn sprite_split() -> u32 {
     requested_split().unwrap_or(SPRITE_SPLIT)
@@ -1882,10 +1886,11 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 /// Whether an adapter's texture arrays hold the block textures Horizon puts
 /// in one array.
 fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
+    let info = adapter.get_info();
     Ok(layer_split(
         adapter.limits().max_texture_array_layers,
-        adapter.get_info().backend == wgpu::Backend::Gl,
-        requested_split(),
+        info.backend == wgpu::Backend::Gl,
+        adapter_requested_split(&info, requested_split()),
         layers,
     )?)
 }
@@ -12542,6 +12547,30 @@ mod sprite_upload_tests {
         let err = layer_split(128, false, None, 1291).unwrap_err();
         assert!(err.contains("128 texture layers per array"), "{err}");
         assert!(layer_split(512, false, None, 512 * SPRITE_ARRAYS + 1).is_err());
+    }
+
+    #[test]
+    fn metal_uses_a_conservative_default_split_but_respects_overrides() {
+        let mut info = wgpu::AdapterInfo {
+            name: "test adapter".into(),
+            vendor: 0,
+            device: 0,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        info.backend = wgpu::Backend::Metal;
+        assert_eq!(adapter_requested_split(&info, None), Some(512));
+        assert_eq!(adapter_requested_split(&info, Some(1024)), Some(1024));
+
+        info.backend = wgpu::Backend::Vulkan;
+        assert_eq!(adapter_requested_split(&info, None), None);
     }
 
     #[test]
