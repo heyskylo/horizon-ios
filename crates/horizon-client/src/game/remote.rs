@@ -135,6 +135,16 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     comp_text(&tag_to_json(tag))
 }
 
+/// `Player.getVoicePitch`: a constant 1.0
+/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
+/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
+/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
+/// the mobs port, does both. It takes no random, so it draws nothing from the
+/// level random either.
+pub(super) fn player_voice_pitch() -> f32 {
+    1.0
+}
+
 /// The hurt sound of a `ClientboundDamageEventPacket`'s damage type, by its
 /// synchronized registry id: `Player.getHurtSound` picks the type's effects.
 fn hurt_sound_for(
@@ -654,6 +664,8 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
+    /// `Player.isReducedDebugInfo`: the server's `reduced_debug_info` rule.
+    pub(super) reduced_debug_info: bool,
     /// `LocalPlayer.doLimitedCrafting`: whether limited crafting is enabled.
     pub(super) do_limited_crafting: bool,
     player_type: Option<Arc<MobType>>,
@@ -1091,6 +1103,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            reduced_debug_info: false,
             do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
@@ -1682,6 +1695,11 @@ impl Game<'_> {
                 .map(|t| serde_json::json!({"kind": t.kind, "position": t.position, "velocity": [0.0, 0.0, 0.0]}))
                 .collect(),
         )
+    }
+
+    /// Connected to a server in online mode (its Login): each player needs its own account.
+    pub(super) fn online_server(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.online_mode)
     }
 
     /// `ClientSuggestionProvider.customCompletionSuggestions` of the server
@@ -3072,6 +3090,8 @@ impl Game<'_> {
                     r.view_distance = p.chunk_radius;
                     r.simulation_distance = p.simulation_distance;
                     r.show_death_screen = p.show_death_screen;
+                    r.reduced_debug_info = p.reduced_debug_info;
+                    r.do_limited_crafting = p.limited_crafting;
                 }
                 self.streaming.radius =
                     self.render_distance_in_use().min(p.chunk_radius + 1).max(2);
@@ -3910,9 +3930,10 @@ impl Game<'_> {
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
-            // the damage type's effects) at `getSoundVolume` with a pitch that
-            // walks 1.0 ± 0.2 on the level random. The server's sound packet
-            // reaches every other player around, never this one (#4149).
+            // the damage type's effects) at `getSoundVolume` and
+            // `Player.getVoicePitch`, which is 1.0 for every player. The
+            // server's sound packet reaches every other player around, never
+            // this one (#4149), and that copy is played at 1.0.
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
@@ -3926,9 +3947,7 @@ impl Game<'_> {
                     }
                     if let Some(at) = at {
                         let sound = self.remote_hurt_sound(p.source_type);
-                        let pitch = 1.0
-                            + (self.world.random.next_float() - self.world.random.next_float())
-                                * 0.2;
+                        let pitch = player_voice_pitch();
                         self.audio.play_on(
                             horizon_client::settings::sound_source(sound),
                             sound,
@@ -3976,6 +3995,12 @@ impl Game<'_> {
                 {
                     self.ui.registries.permission = (p.event - 24) as u8;
                     self.remote_world_options_permission(p.event >= 26);
+                }
+                // Player.handleEntityEvent 22 / 23: reduced debug info on / off.
+                if (22..=23).contains(&p.event)
+                    && let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id)
+                {
+                    r.reduced_debug_info = p.event == 22;
                 }
                 // Ravager.handleEntityEvent 69: the roar's puff and push.
                 if p.event == 69 {
@@ -4032,8 +4057,7 @@ impl Game<'_> {
                 {
                     let at = [pl.position.x, pl.position.y, pl.position.z];
                     let sound = "minecraft:entity.player.death";
-                    let pitch = 1.0
-                        + (self.world.random.next_float() - self.world.random.next_float()) * 0.2;
+                    let pitch = player_voice_pitch();
                     self.audio.play_on(
                         horizon_client::settings::sound_source(sound),
                         sound,
@@ -5084,6 +5108,41 @@ impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
+    /// The 3D skin layers model for a player (Options → Skin Customization,
+    /// `threeDSkinLayers`): `kind`'s outer layer with one slab per painted
+    /// texel, built once per (skin, slim) from the decoded image the skin
+    /// downloader still holds (`horizon_client::mobs::skin_layers`). `None`
+    /// while the option is off or the image is not in memory yet.
+    fn skin_3d_model(
+        &self,
+        kind: &std::sync::Arc<horizon_client::mobs::MobType>,
+        skin: &str,
+        slim: bool,
+    ) -> Option<std::sync::Arc<horizon_client::mobs::Part>> {
+        use horizon_client::mobs::skin_layers;
+        if !self.settings.three_d_skin_layers {
+            return None;
+        }
+        let key = (skin.to_owned(), slim);
+        if let Some(model) = self.skin_3d.borrow_mut().get(&key) {
+            return Some(model);
+        }
+        let model_key = if slim { "player_slim#main" } else { "main" };
+        let base = kind
+            .layer(model_key)
+            .cloned()
+            .unwrap_or_else(|| kind.model.clone());
+        let image = self.skin_downloads.borrow().image(skin)?.to_vec();
+        let model = std::sync::Arc::new(skin_layers::extrude(
+            &base,
+            &image,
+            skin_layers::SIZE,
+            skin_layers::DEPTH,
+        )?);
+        self.skin_3d.borrow_mut().insert(key, model.clone());
+        Some(model)
+    }
+
     pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
@@ -5200,10 +5259,13 @@ impl Game<'_> {
                 continue;
             };
             let (skin, is_slim) = self.drawn_skin(uuid, skin_of(&skins, uuid));
+            let kind = self.mobs[i].kind.clone();
+            let skin_3d = self.skin_3d_model(&kind, &skin, is_slim);
             let cape = capes.get(&uuid).filter(|c| self.again_skin(c)).cloned();
             let mob = &mut self.mobs[i];
             mob.skin = Some(skin);
             mob.slim = is_slim;
+            mob.skin_3d = skin_3d;
             mob.cape = cape;
         }
         if self.player_model.is_some() {
@@ -5214,9 +5276,14 @@ impl Game<'_> {
                 .filter(|_| self.settings.file.bool("modelPart_cape"))
                 .filter(|c| self.again_skin(c))
                 .cloned();
+            let kind = self.player_model.as_ref().map(|m| m.kind.clone());
+            let skin_3d = kind
+                .as_ref()
+                .and_then(|kind| self.skin_3d_model(kind, &skin, is_slim));
             if let Some(mob) = self.player_model.as_mut() {
                 mob.skin = Some(skin);
                 mob.slim = is_slim;
+                mob.skin_3d = skin_3d;
                 mob.cape = cape;
             }
         }
@@ -5294,6 +5361,10 @@ impl Game<'_> {
     /// Puts a downloaded skin in an atlas skin slot (`SkinSlots::place`),
     /// unless every slot holds a skin drawn in the last frame.
     pub(super) fn store_skin(&mut self, location: String, rgba: Vec<u8>) {
+        // 3D skin layers reads the pixels back when it builds the slabs.
+        self.skin_downloads
+            .borrow_mut()
+            .remember_image(&location, &rgba);
         let Some((slot, evicted)) = self.skin_slots.place(location.clone()) else {
             return;
         };
@@ -5917,6 +5988,17 @@ impl Game<'_> {
         } else if !dead && !riding {
             player.client_side = true;
             player.velocity = player.velocity.add_vector(pushed);
+            // LivingEntity.checkAutoSpinAttack: a Riptide spin that touches a
+            // mob ends and bounces back; the server deals the hit.
+            player.spin_targets.clear();
+            if player.auto_spin_attack_ticks > 0 {
+                player.spin_targets.extend(
+                    self.mobs
+                        .iter()
+                        .filter(|m| !m.removed)
+                        .map(|m| (m.id, m.bounds())),
+                );
+            }
             MotionWorld {
                 entities: &entity_collisions,
                 player,
@@ -6720,6 +6802,13 @@ impl Game<'_> {
                     }));
                 }
             }
+            // The yaw of a boat eases toward the server's over the same steps
+            // as its position, read before `step` counts one off.
+            let turns: HashMap<i32, (f32, u32)> = lerps
+                .iter()
+                .filter(|(_, l)| l.steps > 0)
+                .filter_map(|(id, l)| l.rotation.map(|r| (*id, (r.0, l.steps))))
+                .collect();
             // Boats, minecarts, projectiles and the rest ease toward the
             // server's position over three ticks (`lerps`).
             let mut step = |id: u32, at: Vec3| match lerps.get_mut(&(id as i32)) {
@@ -6734,11 +6823,19 @@ impl Game<'_> {
                 }
                 _ => at,
             };
-            self.tick_remote_objects(&mut step, |c| {
-                cart_lerps
-                    .get_mut(&(c.id as i32))
-                    .is_some_and(|l| l.tick(c))
-            });
+            self.tick_remote_objects(
+                &mut step,
+                |id, yaw| {
+                    turns.get(&(id as i32)).map_or(yaw, |&(target, steps)| {
+                        super::remote_objects::lerp_yaw_step(yaw, target, steps)
+                    })
+                },
+                |c| {
+                    cart_lerps
+                        .get_mut(&(c.id as i32))
+                        .is_some_and(|l| l.tick(c))
+                },
+            );
             self.tick_remote_projectiles(&mut step);
             // LightningBolt.tick on a client, and the sky flash fading.
             self.flash = self.flash.saturating_sub(1);
@@ -7569,6 +7666,10 @@ impl Game<'_> {
                 }
                 if let Some(placed) = &placed {
                     self.predict_place(placed, seq);
+                    if let Some(stack) = &held {
+                        let pos = placed.0;
+                        self.apply_predicted_item([pos.x, pos.y, pos.z], stack);
+                    }
                     self.with_hand(hand, Game::consume_held);
                 } else if let Some(r) = self.remote.as_mut() {
                     // BlockItem.place plays its sound only once the block is set: the
@@ -8159,6 +8260,9 @@ impl Game<'_> {
             return !self.may_build() || self.pick().is_none();
         }
         if id == "minecraft:glass_bottle" {
+            // A dragon's breath cloud never counts here: its owner is not
+            // synced, so this client's BottleItem.use finds none and PASSes;
+            // the packet still goes and the server fills the bottle.
             return !source(Some(Fluid::Water));
         }
         if super::boats::any_boat_wood(id).is_some() {
@@ -10931,6 +11035,8 @@ mod tests {
             names: &names,
             trade: None,
             maps: None,
+            limited_crafting: false,
+            known_recipes: None,
         };
         let mut menu = Menu::new(Kind::Inventory);
         let cobblestone = ItemStack {

@@ -1,5 +1,6 @@
-//! The Wardrobe page (top bar, between Servers and Versions), shown only with the cosmetics flag
-//! on (`horizon_cosmetics::enabled`): the signed-in Microsoft account's skin wearing its items, a
+//! The Wardrobe page (top bar, between Servers and Versions), shown with the cosmetics flag on
+//! (`horizon_cosmetics::enabled`) or when the cosmetics service has a founder set to show
+//! (`horizon_launcher::shop`, `watch_shop`): the signed-in Microsoft account's skin wearing its items, a
 //! row per slot, what the account owns for the chosen slot, the founder set to claim while its
 //! window is open, and three switches: Show my cosmetics (the account's, on the service), Hide
 //! other players' cosmetics and Show other players' auras and trails (the game's
@@ -280,6 +281,60 @@ impl Launcher {
         saved.theme()
     }
 
+    /// Whether the top bar has this page: the cosmetics switch is on, or the cosmetics service
+    /// has a Shop to show, whatever the switch says (`shop::in_top_bar`): its public answer, or
+    /// the selected account's own (a preview for it, a claim), from this visit or kept on disk.
+    pub(super) fn wardrobe_shown(&self) -> bool {
+        let own = (self.wardrobe.as_ref())
+            .and_then(|w| w.saved.me.as_ref())
+            .map(|m| &m.claim)
+            .or(self.shop_kept.as_ref());
+        horizon_launcher::shop::in_top_bar(
+            horizon_cosmetics::enabled(),
+            self.shop_status.as_ref(),
+            own,
+        )
+    }
+
+    /// Ask the cosmetics service whether there is a Shop to show, at start and every half hour
+    /// (`GET /v1/shop`, no session, nothing about the player), and read the selected account's
+    /// own last answer from disk. Offline, the last answer stands.
+    pub(super) fn watch_shop(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            let Ok(uuid) = this.update(cx, |this, _| this.wardrobe_account().map(|a| a.uuid))
+            else {
+                return;
+            };
+            let (public, kept) = cx
+                .background_executor()
+                .spawn(async move {
+                    let kept = uuid
+                        .and_then(|u| Saved::load(&dir(), &u).me)
+                        .map(|m| m.claim);
+                    (Service::live().shop().ok(), kept)
+                })
+                .await;
+            let gone = this.update(cx, |this, cx| {
+                if public.is_some() {
+                    this.shop_status = public;
+                }
+                this.shop_kept = kept;
+                // Taken away while shown (the window unset again): back Home.
+                if this.page == Page::Wardrobe && !this.wardrobe_shown() {
+                    this.go(Page::Play);
+                }
+                cx.notify();
+            });
+            if gone.is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(Duration::from_secs(30 * 60))
+                .await;
+        })
+        .detach();
+    }
+
     /// The account the page is for: the selected one, if it signed in with Microsoft.
     fn wardrobe_account(&self) -> Option<account::Account> {
         match self.accounts.player() {
@@ -495,6 +550,8 @@ impl Launcher {
             starts_at: Some(1_793_000_000),
             ends_at: Some(1_795_000_000),
             claimed: Some(state != "empty" && state != "closed"),
+            open: state != "closed",
+            preview: false,
         };
         let empty = state == "empty" || state == "closed";
         let catalogue = Catalogue {

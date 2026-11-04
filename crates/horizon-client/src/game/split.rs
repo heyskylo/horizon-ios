@@ -506,9 +506,20 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// P1 is playing in its own world, which others can join.
+    /// P1 is playing in a world others can join: its own (its server thread) or a server's.
     fn in_world(&self) -> bool {
-        self.host.title.is_none() && self.host.player.is_some() && self.host.integrated.is_some()
+        self.host.title.is_none()
+            && self.host.player.is_some()
+            && (self.host.integrated.is_some() || self.p1_server().is_some())
+    }
+
+    /// The server P1 joined over the network (a dedicated server, another computer's LAN
+    /// world, a friend's invite): the others join it too, each as its own profile.
+    fn p1_server(&self) -> Option<String> {
+        if self.host.integrated.is_some() || self.host.remote.is_none() {
+            return None;
+        }
+        self.host.server_address().map(str::to_owned)
     }
 
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),
@@ -762,6 +773,7 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
+        self.follow_pack_answer();
         self.sync_profiles();
         changed |= self.pick_profiles();
         changed |= self.sync_setup();

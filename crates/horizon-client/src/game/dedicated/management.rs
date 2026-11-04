@@ -211,6 +211,28 @@ impl Game<'_> {
                     "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
                 });
             }
+            "serversettings/operator_user_permission_level" => {
+                return json!({ "value": state.op_level });
+            }
+            "serversettings/operator_user_permission_level/set" => {
+                let Some(level) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .filter(|level| (0..=4).contains(level))
+                else {
+                    return json!({
+                        "error": "operator user permission level must be an integer between 0 and 4"
+                    });
+                };
+                rpc(format!(
+                    "Update operator user permission level from {} to {}",
+                    state.op_level, level
+                ));
+                state.op_level = level;
+                state.lists.lock().unwrap().op_level = level;
+                self.store_property("op-permission-level", level.to_string());
+                return json!({ "value": state.op_level });
+            }
             "serversettings/force_game_mode" => {
                 return json!({ "value": state.force_game_mode });
             }
@@ -270,6 +292,60 @@ impl Game<'_> {
                 self.store_property("allow-flight", allow.to_string());
                 return json!({
                     "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/hide_online_players" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/hide_online_players/set" => {
+                let Some(hide) = body["value"].as_bool() else {
+                    return json!({ "error": "hide online players must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.hide_online_players());
+                rpc(format!(
+                    "Update hide online players from {current} to {hide}"
+                ));
+                self.set_hide_online_players(hide);
+                self.store_property("hide-online-players", hide.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/status_replies" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
+                });
+            }
+            "serversettings/status_replies/set" => {
+                let Some(enable) = body["value"].as_bool() else {
+                    return json!({ "error": "status replies must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.enable_status());
+                rpc(format!("Update status replies from {current} to {enable}"));
+                self.set_status_replies(enable);
+                self.store_property("enable-status", enable.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
                 });
             }
             "serversettings/player_idle_timeout" => {

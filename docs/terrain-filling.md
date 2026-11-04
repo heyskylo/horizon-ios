@@ -86,3 +86,9 @@ writes, out-of-height writes and wrapping X/Z coordinates.
 This implements stage-dependent storage mutation. Scheduling, saved status
 metadata, retrogen, lighting, block entities and complete region behavior remain
 pending.
+
+## Related docs
+
+- [World generation](world-generation.md)
+- [Heightmaps](heightmaps.md)
+- [Material surfaces](material-surfaces.md)
