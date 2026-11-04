@@ -211,7 +211,17 @@ impl adv::World for View<'_, '_> {
         })
     }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
-        let items = &self.0.res.items();
+        // The world's packs' tags over the game's own, as the server's
+        // registries bind them (`TagLoader.loadTagsForExistingRegistries`).
+        if let Some(tags) = self
+            .0
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get(registry))
+        {
+            return tags.get(tag).is_some_and(|t| t.contains(id));
+        }
+        let items = self.0.items();
         match registry {
             "item" => items.item_in_tag(tag, id),
             "block" => items.block_in_tag(tag, id),
