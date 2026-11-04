@@ -136,11 +136,13 @@ pub(super) struct PotionOwner {
 pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
     brewing::effect(id).map(|e| brewing::namespaced(e.id))
 }
-/// `LivingEntity.canBeAffected` with the mob overrides (`WitherBoss` takes no
-/// effect at all, `WitherSkeleton` shrugs off wither, `Spider` and
-/// `AbstractNautilus` poison, `Parched` weakness): the immune-to-infested and
-/// immune-to-oozing tags decide first, then the tag of mobs that ignore poison
-/// and regeneration.
+/// `LivingEntity.canBeAffected` with the mob overrides (`WitherBoss` and
+/// `WitherSkeleton` shrug off wither, `Spider` and `AbstractNautilus` poison,
+/// `Parched` weakness): the immune-to-infested and immune-to-oozing tags
+/// decide first, then the tag of mobs that ignore poison and regeneration.
+/// `WitherBoss.addEffect` refusing everything is `Mob::add_effect`'s: a cloud
+/// still takes the wither as a victim (`AreaEffectCloud` asks `canBeAffected`),
+/// so its instant effects land and it shrinks.
 pub(super) fn mob_can_be_affected(
     tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     kind: &str,
@@ -149,9 +151,7 @@ pub(super) fn mob_can_be_affected(
     let effect = effect.trim_start_matches("minecraft:");
     let kind = kind.trim_start_matches("minecraft:");
     let overridden = match kind {
-        // WitherBoss.addEffect returns false for every effect.
-        "wither" => return false,
-        "wither_skeleton" => effect == "wither",
+        "wither" | "wither_skeleton" => effect == "wither",
         "spider" | "cave_spider" | "nautilus" | "zombie_nautilus" => effect == "poison",
         "parched" => effect == "weakness",
         _ => false,
@@ -1910,27 +1910,16 @@ mod tests {
     use super::*;
     use horizon_client::screen_effects::nausea_blend_added;
 
-    /// `WitherBoss.addEffect` returns false: no effect lands on the boss, while a
-    /// wither skeleton still takes everything but the wither effect.
+    /// `WitherBoss.canBeAffected` refuses only the wither effect: its `addEffect`
+    /// refuses the rest, but a cloud of strength or healing still counts the boss
+    /// as a victim (`AreaEffectCloud.serverTick` asks `canBeAffected`).
     #[test]
-    fn the_wither_takes_no_effect_at_all() {
+    fn a_cloud_still_counts_the_wither_as_a_victim() {
         let tags = std::collections::HashMap::new();
-        for effect in ["strength", "speed", "poison", "wither"] {
-            assert!(
-                !mob_can_be_affected(&tags, "minecraft:wither", effect),
-                "{effect}"
-            );
+        for effect in ["strength", "instant_health"] {
+            assert!(mob_can_be_affected(&tags, "minecraft:wither", effect), "{effect}");
         }
-        assert!(mob_can_be_affected(
-            &tags,
-            "minecraft:wither_skeleton",
-            "speed"
-        ));
-        assert!(!mob_can_be_affected(
-            &tags,
-            "minecraft:wither_skeleton",
-            "wither"
-        ));
+        assert!(!mob_can_be_affected(&tags, "minecraft:wither", "wither"));
     }
 
     /// #5876: a potion thrown straight up from inside its thrower's box does
