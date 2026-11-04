@@ -1162,5 +1162,7 @@
   "Charged back": "Bank qaytarib oldi",
   "Paid": "To‘langan",
   "Order {id}": "Buyurtma {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Da’vo o‘tmadi: to‘lov manzili Horizon’niki emas."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Da’vo o‘tmadi: to‘lov manzili Horizon’niki emas.",
+  "Paste a friend's invite code": "Do'stingizning taklif kodini joylashtiring",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} oʻynaydi: {version} emas, {mods} mahkamlagan Horizon {commit} commit asosida qurilgan."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Bank sztornowoł płatność",
   "Paid": "Zapłacōne",
   "Order {id}": "Zōmówiynie {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Żōdanie sie niy udało: adresa płatności niy należy do Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Żōdanie sie niy udało: adresa płatności niy należy do Horizon.",
+  "Paste a friend's invite code": "Wkludź kod zaproszynio od kamrata",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gra {build}, zbudowane na Horizon {commit}, commicie przipiyntym bez {mods}, a niy na {version}."
 }

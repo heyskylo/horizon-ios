@@ -812,6 +812,7 @@ impl Game<'_> {
             fluid_tables: &self.motion.fluids,
             movement: &self.motion.blocks,
             collision: self.collision,
+            suffocation: self.mob_suffocation(),
             data: self.res.mob_data(),
             controlling_player_movement: None,
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
@@ -5154,7 +5155,10 @@ impl Game<'_> {
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
-                let result = self.explode(atp, *power as f32);
+                // LargeFireball.onHit: both fire and MOB block destruction
+                // follow mob_griefing; other mob explosions keep their default.
+                let fire = self.ui.rules.bool("mob_griefing");
+                let result = self.explode_mob(atp, *power as f32, fire);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
                 self.combat.explosion_in_water = false;
@@ -5549,6 +5553,12 @@ impl Game<'_> {
         if self.interact_shear_mob(index, &item) {
             self.swing_arm();
             return Ok(true);
+        }
+        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+            if sheared {
+                self.swing_arm();
+            }
+            return Ok(sheared);
         }
         // AbstractHorse.mobInteract: feed, equip or ride.
         if self.interact_mount(index, &item) {
@@ -7867,7 +7877,11 @@ mod pearl_tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = horizon_client::collisions::load(&root, registry).unwrap();
+        let collision =
+            std::sync::Arc::new(horizon_client::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)
+                .unwrap();
         let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
         // A pool of still water one block deep at y = 4, from x = 20 on (clear of the
         // scene's pyramid): its
@@ -7887,6 +7901,7 @@ mod pearl_tests {
             fluid_tables: &motion.fluids,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
             controlling_player_movement: None,

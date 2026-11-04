@@ -106,7 +106,10 @@ mod pins which and the commit the build would use, the newest of them, and build
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
 then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
-the commit of the installed version the build starts from.
+the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
+version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
+(`native-build --ignore-pins`) builds every mod on the picked version's own commit, where a pinned mod may not
+apply or compile. Its later rebuilds keep doing so.
 
 ### Mods on the hook points
 

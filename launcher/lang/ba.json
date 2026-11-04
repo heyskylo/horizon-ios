@@ -1162,5 +1162,7 @@
   "Charged back": "Банк кире алды",
   "Paid": "Түләнде",
   "Order {id}": "Заказ {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Талап үтмәне: түләү адресы Horizon-дыҡы түгел."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Талап үтмәне: түләү адресы Horizon-дыҡы түгел.",
+  "Paste a friend's invite code": "Дуҫтың саҡырыу кодын йәбештереү",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} уйнай: Horizon {version} түгел, {mods} беркеткән Horizon {commit} коммиты өҫтөндә төҙөлгән."
 }

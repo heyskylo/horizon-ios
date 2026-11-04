@@ -1162,5 +1162,7 @@
   "Charged back": "Palautettu pankin kautta",
   "Paid": "Maksettu",
   "Order {id}": "Tilaus {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Lunastus ei onnistunut: kassan osoite ei ole Horizonin."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Lunastus ei onnistunut: kassan osoite ei ole Horizonin.",
+  "Paste a friend's invite code": "Liitä ystävän kutsukoodi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Pelaa {build}, rakennettu Horizon {commit} -commitille, jonka {mods} kiinnittää, ei {version}:lle."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "차지백됨",
   "Paid": "결제됨",
   "Order {id}": "주문 {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "받기가 완료되지 않았어요. 결제 주소가 Horizon의 주소가 아니에요."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "받기가 완료되지 않았어요. 결제 주소가 Horizon의 주소가 아니에요.",
+  "Paste a friend's invite code": "친구의 초대 코드 붙여넣기",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} 플레이 중: {version}이(가) 아니라 {mods}이(가) 고정한 커밋 Horizon {commit}에서 빌드됨."
 }

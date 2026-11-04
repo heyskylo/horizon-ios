@@ -261,6 +261,9 @@ struct Launcher {
     /// The newer Horizon the open warning's build moves to (Update), else None: a build stays
     /// on the Horizon the instance plays.
     native_update: Option<String>,
+    /// The build waiting for the trust warning builds every mod on its Horizon's own commit,
+    /// pinned or not (`native_mods::build`'s `on_base`): Rebuild on Horizon's.
+    native_on_base: bool,
     /// What each installed native build was made from, by version. A build's version names its
     /// contents, so an entry never goes stale.
     native_builds:
@@ -588,6 +591,7 @@ impl Launcher {
             native_confirm: None,
             native_for: None,
             native_update: None,
+            native_on_base: false,
             native_builds: Default::default(),
             native_mismatch: None,
             native_log: Default::default(),
@@ -937,6 +941,7 @@ impl Launcher {
         let instance = instances::selected();
         self.native_for = Some(instance.id.clone());
         let plays = self.version_of(&instance).cloned();
+        let on_base = std::mem::take(&mut self.native_on_base);
         let base = match self.native_update.take() {
             Some(newer) => Some(newer),
             None => native_mods::base_for(plays.as_deref(), &self.installed, false),
@@ -961,9 +966,17 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(&base, &folder, &instance, anyway, profile, |step| {
-                let _ = tx.send(Msg::NativeProgress(step.label()));
-            });
+            let result = native_mods::build(
+                &base,
+                &folder,
+                &instance,
+                anyway,
+                on_base,
+                profile,
+                |step| {
+                    let _ = tx.send(Msg::NativeProgress(step.label()));
+                },
+            );
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -3907,6 +3920,7 @@ impl Launcher {
                 |this, _: &ClickEvent, _, cx| {
                     this.native_confirm = None;
                     this.native_update = None;
+                    this.native_on_base = false;
                     cx.notify();
                 },
             )),

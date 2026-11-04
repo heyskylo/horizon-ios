@@ -1162,5 +1162,7 @@
   "Charged back": "チャージバック済み",
   "Paid": "支払い済み",
   "Order {id}": "注文 {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "受け取りに失敗しました。チェックアウトのアドレスが Horizon のものではありません。"
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "受け取りに失敗しました。チェックアウトのアドレスが Horizon のものではありません。",
+  "Paste a friend's invite code": "フレンドの招待コードを貼り付け",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} で動作します（{version} ではなく、{mods} が固定したコミット Horizon {commit} でビルド）。"
 }

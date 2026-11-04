@@ -1162,5 +1162,7 @@
   "Charged back": "Banka tarafından geri alındı",
   "Paid": "Ödendi",
   "Order {id}": "Sipariş {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Talep tamamlanamadı: ödeme adresi Horizon'a ait değil."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Talep tamamlanamadı: ödeme adresi Horizon'a ait değil.",
+  "Paste a friend's invite code": "Bir arkadaşının davet kodunu yapıştır",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ile oynuyor; {version} üzerinde değil, {mods} tarafından sabitlenen Horizon {commit} commit'i üzerinde derlendi."
 }

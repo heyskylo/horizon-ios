@@ -1162,5 +1162,7 @@
   "Charged back": "Bankuak atzera egin du",
   "Paid": "Ordainduta",
   "Order {id}": "Eskaera {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Eskaerak ez du aurrera egin: ordainketaren helbidea ez da Horizonena."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Eskaerak ez du aurrera egin: ordainketaren helbidea ez da Horizonena.",
+  "Paste a friend's invite code": "Itsatsi lagun baten gonbidapen-kodea",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} jokatzen du, Horizon {commit} gainean eraikia, {mods}-(e)k finkatutako commita, ez {version} gainean."
 }

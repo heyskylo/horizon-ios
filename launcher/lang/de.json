@@ -1162,5 +1162,7 @@
   "Charged back": "Rückbuchung",
   "Paid": "Bezahlt",
   "Order {id}": "Bestellung {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Die Anforderung ist fehlgeschlagen: Die Adresse des Checkouts gehört nicht zu Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Die Anforderung ist fehlgeschlagen: Die Adresse des Checkouts gehört nicht zu Horizon.",
+  "Paste a friend's invite code": "Einladungscode eines Freundes einfügen",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spielt {build}, gebaut auf Horizon {commit}, dem von {mods} festgelegten Commit, nicht auf {version}."
 }

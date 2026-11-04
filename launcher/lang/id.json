@@ -1162,5 +1162,7 @@
   "Charged back": "Chargeback",
   "Paid": "Dibayar",
   "Order {id}": "Pesanan {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Klaim tidak berhasil: alamat checkout bukan milik Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Klaim tidak berhasil: alamat checkout bukan milik Horizon.",
+  "Paste a friend's invite code": "Tempel kode undangan teman",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibangun di atas Horizon {commit}, commit yang disematkan oleh {mods}, bukan di atas {version}."
 }

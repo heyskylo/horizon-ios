@@ -1162,5 +1162,7 @@
   "Charged back": "Vun der Bank zréckbucht",
   "Paid": "Bezuelt",
   "Order {id}": "Bestellung {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "D'Ufro ass net duerchgaangen: d'Adress vum Checkout ass net déi vun Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "D'Ufro ass net duerchgaangen: d'Adress vum Checkout ass net déi vun Horizon.",
+  "Paste a friend's invite code": "Den Invitatiounscode vun engem Frënd apechen",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spillt {build}, gebaut op Horizon {commit}, dem Commit, deen {mods} festleet, net op {version}."
 }

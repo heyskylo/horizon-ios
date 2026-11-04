@@ -1162,5 +1162,7 @@
   "Charged back": "Obciążenie zwrotne",
   "Paid": "Opłacono",
   "Order {id}": "Zamówienie {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Odbiór się nie powiódł: adres płatności nie należy do Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Odbiór się nie powiódł: adres płatności nie należy do Horizon.",
+  "Paste a friend's invite code": "Wklej kod zaproszenia od znajomego",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gra na {build}, skompilowanym na Horizonie {commit}, commicie przypiętym przez {mods}, a nie na {version}."
 }
