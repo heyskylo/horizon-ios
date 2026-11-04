@@ -57,6 +57,42 @@ beetroots mature at age 3, ordinary crops at 7; torchflower crops never reach th
 still crops. Pitcher crops are not `CropBlock`s and are not harvested by this behavior. Farming still
 requires a farmer at work and `mob_griefing` enabled.
 
+## Named mob damage
+
+Native code may use `horizon_client::mobs::DamageKind::Named(NamedDamage::new(id, tags))`
+for its own damage types. The static namespaced `id` is retained in the ordinary
+mob damage record, loot damage source and death-message path. Add that type's JSON
+and damage-type tags to the mod's data pack too; player damage reads that registry.
+Build the descriptor flags from the loaded tags again after a data-pack reload.
+
+`NamedDamage` exposes common mob combat classifications: `IS_FIRE`,
+`BYPASSES_ARMOR`, `NO_KNOCKBACK`, `BYPASSES_INVULNERABILITY`, `BYPASSES_EFFECTS`,
+`BYPASSES_RESISTANCE`, `PANIC_CAUSES`, `IS_PROJECTILE`, `IS_EXPLOSION` and `IS_FALL`.
+Unset flags are false. Ordinary fire immunity, Fire Resistance, armor, enchantments,
+Resistance and knockback still run. The flags do not implement arbitrary additional
+damage tags or change vanilla `DamageKind` variants. This compiled API needs a
+matching source pin; it is not a serialized protocol enum.
+
+## Compiled particle controllers
+
+`ParticleEngine::controlled(name, position, translucent, controller)` creates a
+named sprite particle after the normal camera-distance and particle-setting
+checks. Configure its public fields and optional `set_sprite_frame`, then `push`
+it into the ordinary engine queue. Missing sprite sets return `None`.
+
+Implement `ParticleController` with owned `Clone + Debug + Send + Sync` state.
+Its tick receives the current `ParticleLevel`, and returns a `ParticleUpdate`
+with an optional sprite frame and extra normal particle requests. Use
+`Particle::advance_age` for ordinary expiry and previous-position interpolation,
+or maintain those fields in a source-specific override; `remove` ends it early.
+No vanilla movement is applied to a controlled particle. Its own `random` is
+separate from the engine/level generators. Choose blended rendering explicitly
+for alpha-fading particles; `set_full_bright` controls light without bypassing
+normal atlas, geometry or engine population limits. This is an opt-in compiled
+API, not executable particle data in a resource pack.
+Resource reload discards controlled particles and their pending instances, so
+their numeric sprite-set handles cannot refer to a different reloaded set.
+
 ## Pinned to a Nightly
 
 A native mod builds on one exact Horizon commit: `[compatibility] horizon_revision` in its `horizon-mixin.toml`,
