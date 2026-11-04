@@ -379,7 +379,8 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   countdowns (effects, a totem's pop, the hotbar's, the border's size change) wait for the world.
 - `/tick step N` moves the scene on by N ticks (flames, water, particles). What the server changes
   during a step reaches the client between its ticks whenever it arrives, so particles that
-  follow can differ from run to run. `/tick unfreeze` plays on as without the switch.
+  follow can differ from run to run. Wait a moment after a step before a capture (its last tick
+  can still ease toward the next for a client tick). `/tick unfreeze` plays on as without the switch.
 - The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an

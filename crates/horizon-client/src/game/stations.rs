@@ -1441,7 +1441,7 @@ impl Game<'_> {
             return false;
         }
         // `SmithingScreen.containerTick`: the icons of the empty slots follow the template.
-        let (now, partial) = (self.ticks, self.clock.camera_fraction() as f32);
+        let (now, partial) = (self.visual_ticks(), self.clock.camera_fraction() as f32);
         if let Some(s) = self.station.as_mut().filter(|s| s.kind == Kind::Smithing) {
             let template = s.inputs[0].as_ref().map(|t| t.item.clone());
             let (base, base_len, additions, additions_len) =
