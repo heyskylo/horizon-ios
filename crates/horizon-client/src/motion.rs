@@ -717,6 +717,23 @@ impl PlayerMotion {
         operation: &str,
         present: bool,
     ) -> Result<()> {
+        self.set_modifier_unclamped(attribute, id, amount, operation, present)?;
+        if attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
+        Ok(())
+    }
+    /// `set_modifier` without the max_health clamp, for a remove-all/re-add
+    /// batch that ends with one `clamp_health_to_max` (vanilla only removes
+    /// the modifiers that really went away, so the hearts must survive it).
+    pub fn set_modifier_unclamped(
+        &mut self,
+        attribute: &str,
+        id: &str,
+        amount: f64,
+        operation: &str,
+        present: bool,
+    ) -> Result<()> {
         let Some(key) = self.attributes.key(attribute) else {
             return Ok(());
         };
@@ -742,6 +759,16 @@ impl PlayerMotion {
                 Ok(())
             })
             .map_err(attribute_error)?;
+        Ok(())
+    }
+    /// `LivingEntity.onAttributeUpdated` for `max_health`: a health above the
+    /// new maximum drops to it (#8573: health_boost ending at 24/24 leaves 20).
+    pub fn clamp_health_to_max(&mut self) -> Result<()> {
+        let max = self.attribute("minecraft:max_health")? as f32;
+        let health = self.health.health();
+        if health > max {
+            self.set_health(max, false)?;
+        }
         Ok(())
     }
     /// `AttributeMap.pack` in `AttributeInstance.Packed.LIST_CODEC`'s form: the
@@ -1544,7 +1571,7 @@ impl MotionWorld<'_, '_, '_> {
                 }
             }
         }
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = crate::fast_hash::FxHashSet::default();
         let mut entered = Vec::new();
         for movement in &movements {
             let mut from = movement.from;
@@ -1631,7 +1658,7 @@ impl MotionWorld<'_, '_, '_> {
         &mut self,
         from: Vec3,
         to: Vec3,
-        visited: &mut std::collections::HashSet<i64>,
+        visited: &mut crate::fast_hash::FxHashSet<i64>,
         entered: &mut Vec<(i32, BlockPos)>,
         max_iterations: i32,
         damage_only: bool,
@@ -1648,6 +1675,10 @@ impl MotionWorld<'_, '_, '_> {
         let mut hits = Vec::new();
         let mut iterations = 0;
         let alive = !self.player.health.dead_or_dying();
+        // Nothing below changes a block, so each is read once, as the sweep
+        // visits it, and air (`state.isAir()`, the most of a path) is
+        // passed over there instead of being kept for the loop.
+        let (scene, registry) = (&*self.scene, self.assets.registry);
         horizon_core::geometry::sweep_intersected_blocks(
             from,
             to,
@@ -1658,23 +1689,25 @@ impl MotionWorld<'_, '_, '_> {
                     return false;
                 }
                 iterations = iteration;
-                hits.push((iteration, p));
+                let state = scene.block(p.x, p.y, p.z);
+                let air = registry.state(state).is_none_or(|d| {
+                    matches!(
+                        d.name.as_str(),
+                        "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                    )
+                });
+                if !air {
+                    hits.push((iteration, p, state));
+                }
                 true
             },
         )
         .map_err(|e| format!("block sweep: {e:?}"))?;
-        for (step, p) in hits {
-            let state = self.block(p);
+        for (step, p, state) in hits {
             let Some(definition) = self.assets.registry.state(state) else {
                 continue;
             };
             let name = definition.name.as_str();
-            if matches!(
-                name,
-                "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
-            ) {
-                continue;
-            }
             let powder_snow = name == "minecraft:powder_snow";
             // A filled cauldron's content top in blocks: the lava's 15/16
             // (LavaCauldronBlock.FILLED_SHAPE), or a layered cauldron's
@@ -2912,6 +2945,42 @@ fn fly_into_wall_damage(before: f64, after: f64) -> f32 {
     ((before - after) * 10.0 - 3.0) as f32
 }
 
+/// `Entity.getBlockSpeedFactor` for a kind that keeps no motion world of its
+/// own (mobs, boats): the factor of the block at `position`, else of the one
+/// below it, through the same port the player's move uses.
+pub fn block_speed_factor_at(
+    world: &World,
+    properties: &BoundMovementProperties,
+    position: Vec3,
+    supporting_block: Option<BlockPos>,
+) -> f32 {
+    struct Blocks<'a>(&'a World);
+    impl MovementBlockProvider for Blocks<'_> {
+        type Error = ();
+        fn movement_block_state(&mut self, p: BlockPos) -> std::result::Result<BlockStateId, ()> {
+            Ok(self.0.block(p.x, p.y, p.z))
+        }
+    }
+    let location = movement_support::MovementLocation {
+        position,
+        block_position: BlockPos::new(
+            position.x.floor() as i32,
+            position.y.floor() as i32,
+            position.z.floor() as i32,
+        ),
+        supporting_block,
+    };
+    let mut view = Blocks(world);
+    movement_support::block_speed_factor(
+        &mut RegistryMovementWorld {
+            properties,
+            world: &mut view,
+        },
+        location,
+    )
+    .unwrap_or(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     /// The glide's collision damage: a third of a block a tick lost is 0.0 and
@@ -2989,6 +3058,87 @@ mod tests {
         assert!(!p.is_sweep_attack(1.0, false, true));
         p.velocity = Vec3::new(f64::from(p.speed) * 2.5, 0.0, 0.0);
         assert!(!p.is_sweep_attack(1.0, false, true));
+    }
+
+    #[test]
+    fn max_health_modifier_changes_clamp_health() {
+        // #8573: LivingEntity.onAttributeUpdated clamps health to max_health
+        // for every modifier change, with no explicit clamp call.
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped health clamp: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        let boost = "minecraft:effect.health_boost";
+        // Health boost I: +4 max health, and the hearts are filled.
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        // An unrelated attribute change leaves the boosted hearts alone.
+        p.set_modifier("minecraft:armor", "minecraft:x", 2.0, "add_value", true)
+            .unwrap();
+        assert_eq!(p.health.health(), 24.0);
+        p.set_modifier("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        assert_eq!(p.attribute("minecraft:max_health").unwrap(), 20.0);
+        assert_eq!(p.health.health(), 20.0);
+        // Below the maximum a lost modifier never raises or lowers health.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            6.0,
+            "add_value",
+            true,
+        )
+        .unwrap();
+        p.set_health(7.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_value",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 7.0);
+        // An equipment-style multiplier is covered the same way.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.5,
+            "add_multiplied_base",
+            true,
+        )
+        .unwrap();
+        p.set_health(30.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_multiplied_base",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 20.0);
+        // A remove-all/re-add batch keeps boosted hearts (unrelated effect).
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.clamp_health_to_max().unwrap();
+        assert_eq!(p.health.health(), 24.0);
     }
 
     #[test]

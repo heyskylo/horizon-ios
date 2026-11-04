@@ -6,6 +6,7 @@
 mod fluid;
 mod leaf_culling;
 mod lighting;
+pub mod packed;
 mod sides;
 use crate::connected::{Pick, TileLayer};
 use crate::{
@@ -265,6 +266,12 @@ pub struct SectionMesh {
     /// model order before.
     pub sides: Sides,
     pub translucent: Vec<TerrainVertex>,
+    /// `solid` in the compact layout (`packed`), when the renderer reads it and it is
+    /// smaller; empty otherwise. Made by `sort_solid`.
+    pub packed: Vec<[u32; 6]>,
+    /// The tint of each solid quad as the mesher multiplied it (`packed::UNKNOWN_TINT` where
+    /// it does not say), for `packed`; dropped once that is made.
+    pub(crate) solid_tints: Vec<u32>,
     /// VisGraph: bit `a * 6 + b` is set when faces `a` and `b` (Direction
     /// order) are connected through non-opaque blocks.
     pub visibility: u64,
@@ -290,6 +297,8 @@ impl Default for SectionMesh {
             solid: Vec::new(),
             sides: Sides::default(),
             translucent: Vec::new(),
+            packed: Vec::new(),
+            solid_tints: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
             lights: Vec::new(),
@@ -322,6 +331,8 @@ impl SectionMesh {
     pub fn clear(&mut self) {
         self.solid.clear();
         self.translucent.clear();
+        self.packed.clear();
+        self.solid_tints.clear();
         self.block_entities.clear();
         self.lights.clear();
         self.sprite_layers.clear();
@@ -333,15 +344,27 @@ impl SectionMesh {
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
+            + self.packed.capacity() * std::mem::size_of::<[u32; 6]>()
+            + self.solid_tints.capacity() * std::mem::size_of::<u32>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
             + self.lights.capacity() * std::mem::size_of::<([i32; 3], u32)>()
             + self.sprite_layers.capacity() * std::mem::size_of::<u16>()
     }
     /// Sorts the solid quads by the side they face, for the renderer to
     /// leave out those facing away from the eye (`sides`).
+    /// Then lays them out compactly (`packed`) while the renderer reads that.
     pub fn sort_solid(&mut self) {
-        self.sides = sides::sort(&mut self.solid);
+        let quads = self.solid.len() / 4;
+        if !self.solid_tints.is_empty() {
+            self.solid_tints.resize(quads, packed::UNKNOWN_TINT);
+        }
+        self.sides = sides::sort_tinted(&mut self.solid, &mut self.solid_tints);
         self.bounds = self.compute_bounds();
+        self.packed.clear();
+        if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
+            self.packed = packed::layout(&self.solid, &self.solid_tints);
+        }
+        self.solid_tints.clear();
     }
 
     /// Computes the tight axis-aligned bounding box [min, max] of actual terrain geometry vertices.
@@ -483,6 +506,17 @@ fn visibility_rows(open: &[u16; 256]) -> u64 {
 mod particle_tests;
 #[cfg(test)]
 mod visibility_tests;
+/// A face's tint source as the game colours it (`BlockColors.createDefault`), for drawing a block
+/// elsewhere ([`crate::block_sprites`]): the biome's grass, foliage, dry foliage or water colour
+/// where the block is, or a fixed colour (0xRRGGBB).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TintSource {
+    Grass,
+    Foliage,
+    DryFoliage,
+    Water,
+    Fixed(u32),
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tint {
     None,
@@ -799,6 +833,29 @@ impl MeshTables {
             Tint::Constant(c) => c,
             Tint::Redstone(p) => redstone_color(p),
             Tint::Stem(age) => stem_color(age),
+        })
+    }
+    /// What tint source `index` (a face's `tintindex`) of `state` colours a face with in the
+    /// world, for drawing the block elsewhere ([`crate::block_sprites`]): `None` for an untinted
+    /// face. Grass blocks, tall grass and sugar cane are `Grass`; redstone and stems are their
+    /// colour at the state's power and age.
+    pub fn tint_source(&self, state: BlockStateId, index: i32) -> Option<TintSource> {
+        let info = self.info.get(state.0 as usize)?;
+        if index < 0 || index >= i32::from(info.tint_count) {
+            return None;
+        }
+        Some(match info.tints[index as usize] {
+            Tint::None => return None,
+            Tint::Grass | Tint::GrassBlock | Tint::TallGrassUpper | Tint::SugarCane => {
+                TintSource::Grass
+            }
+            Tint::Foliage => TintSource::Foliage,
+            Tint::DryFoliage => TintSource::DryFoliage,
+            Tint::Water => TintSource::Water,
+            Tint::LilyPad => TintSource::Fixed(0x20_8030),
+            Tint::Constant(c) => TintSource::Fixed(c),
+            Tint::Redstone(p) => TintSource::Fixed(redstone_color(p)),
+            Tint::Stem(age) => TintSource::Fixed(stem_color(age)),
         })
     }
     /// `TerrainParticle`'s colour: tint source 0's `colorAsTerrainParticle`,
@@ -1485,12 +1542,24 @@ impl Mesher<'_> {
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
-                        let hollow_leaf = self.leaf_culling == LeafCullingMode::Hollow
-                            && state.leaves
-                            && other.leaves
-                            && leaf_culling::in_section(x + dx, y + dy, z + dz);
+                        let culled_leaf = match self.leaf_culling {
+                            LeafCullingMode::Hollow | LeafCullingMode::Hidden => {
+                                state.leaves
+                                    && other.leaves
+                                    && leaf_culling::in_section(x + dx, y + dy, z + dz)
+                                    && (self.leaf_culling == LeafCullingMode::Hollow
+                                        || leaf_culling::backed(
+                                            pad,
+                                            info,
+                                            region,
+                                            base_y,
+                                            [x + 2 * dx, y + 2 * dy, z + 2 * dz],
+                                        ))
+                            }
+                            _ => false,
+                        };
                         visible[d as usize] = !opaque_leaves
-                            && !hollow_leaf
+                            && !culled_leaf
                             && self
                                 .visibility
                                 .should_render_face(
@@ -1591,7 +1660,7 @@ impl Mesher<'_> {
             None => ao,
         };
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = if self.shader_pack_lighting {
+        let directional = if self.shader_pack_lighting || !q.shade {
             1.0
         } else {
             lighting::cardinal(self.nether_shading, shade_face)
@@ -1736,8 +1805,8 @@ impl Mesher<'_> {
             TileLayer::Skip | TileLayer::Default => own,
         };
         match pick {
-            Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0)),
-            Pick::Tile(t) => self.quad(out, solid_leaves, tile(t), corners.map(|c| c.0)),
+            Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0), tint),
+            Pick::Tile(t) => self.quad(out, solid_leaves, tile(t), corners.map(|c| c.0), tint),
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
                 for s in cuts.windows(2) {
@@ -1745,7 +1814,8 @@ impl Mesher<'_> {
                         let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
-                        self.quad(out, solid_leaves, tile(tiles[quarter]), piece.map(|c| c.0));
+                        let piece = piece.map(|c| c.0);
+                        self.quad(out, solid_leaves, tile(tiles[quarter]), piece, tint);
                     }
                 }
             }
@@ -1789,7 +1859,7 @@ impl Mesher<'_> {
                 for t in cuts.windows(2) {
                     let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
                         .map(|(s, t)| bilinear(&whole, s, t).0);
-                    self.quad_as(out, false, tile, piece, false);
+                    self.quad_as(out, false, tile, piece, false, tint);
                 }
             }
         }
@@ -1802,8 +1872,9 @@ impl Mesher<'_> {
         solid_leaves: bool,
         tile: TileLayer,
         v: [TerrainVertex; 4],
+        tint: Option<u32>,
     ) {
-        self.quad_as(out, solid_leaves, tile, v, true);
+        self.quad_as(out, solid_leaves, tile, v, true, tint);
     }
     /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
     fn translucent(&self, tile: TileLayer) -> bool {
@@ -1822,7 +1893,8 @@ impl Mesher<'_> {
         }
     }
     /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
-    /// when `by_sprite`: an overlay's pass is its rule's.
+    /// when `by_sprite`: an overlay's pass is its rule's. `tint`: what its grey levels were
+    /// multiplied by, for the compact layout (`packed`).
     fn quad_as(
         &self,
         out: &mut SectionMesh,
@@ -1830,6 +1902,7 @@ impl Mesher<'_> {
         tile: TileLayer,
         mut v: [TerrainVertex; 4],
         by_sprite: bool,
+        tint: Option<u32>,
     ) {
         let TileLayer::Layer {
             layer,
@@ -1863,6 +1936,12 @@ impl Mesher<'_> {
             vertex.layer = layer;
         }
         target.extend(v);
+        if !translucent {
+            // Quads other code put in `solid` (lava) have no tint known.
+            let quad = out.solid.len() / 4 - 1;
+            out.solid_tints.resize(quad, packed::UNKNOWN_TINT);
+            out.solid_tints.push(tint.unwrap_or(packed::WHITE));
+        }
     }
 }
 /// The cuts of a `ctm_compact` face, in quad parameters, without allocating: the first `.1`

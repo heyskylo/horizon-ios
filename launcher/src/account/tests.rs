@@ -17,6 +17,8 @@ struct Mock {
     no_profile: bool,
     /// What `launcher/login` answers instead of a token (an older service, an outage).
     launcher_login_refused: Option<u16>,
+    /// Mojang's session server refuses `join` (the token was revoked since it was renewed).
+    join_refused: bool,
     /// Every request: method, path and body.
     log: Vec<(String, String, String)>,
 }
@@ -130,6 +132,18 @@ fn route(mock: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (
                           {"id": "c2", "state": "ACTIVE", "url": "http://textures.minecraft.net/texture/cape2", "alias": "Vanilla"}],
             }),
         ),
+        ("POST", "/session/session/minecraft/join") => {
+            let v: Value = serde_json::from_str(body).unwrap();
+            if mock.join_refused {
+                return reply(403, json!({"error": "ForbiddenOperationException"}));
+            }
+            assert_eq!(v["accessToken"], "mc-token");
+            assert_eq!(
+                (v["selectedProfile"].as_str(), v["serverId"].as_str()),
+                (Some(UUID), Some("svc-42"))
+            );
+            (204, String::new())
+        }
         _ => reply(404, json!({"error": "NotFound"})),
     }
 }
@@ -388,6 +402,150 @@ fn nowhere() -> PathBuf {
 
 fn kept(store: &MemoryStore) -> Secrets {
     secrets_in(store, UUID).unwrap()
+}
+
+#[test]
+fn splitscreen_gets_the_other_accounts_that_still_hold() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let other = |name: &str, uuid: &str| Account {
+        uuid: uuid.into(),
+        name: name.into(),
+        skin: None,
+        cape: None,
+    };
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    for (name, uuid, s) in [
+        ("Bea", "b", secrets("bea-token", true)),
+        ("Cal", "c", expired),
+        ("Dan", "d", secrets("dan-token", false)),
+    ] {
+        accounts.add(&store, other(name, uuid), &s).unwrap();
+    }
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-sessions-{}", std::process::id()));
+    // No network: Cal can't be renewed and Dan doesn't own the game; neither stops the launch.
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut accounts);
+    let (key, json) = &env[0];
+    assert_eq!(*key, "HORIZON_ACCOUNT_SESSIONS");
+    let list: Vec<Value> = serde_json::from_str(json).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0]["name"], "Bea");
+    assert_eq!(list[1]["name"], "Cal");
+    assert!(list[1]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    assert!(list[1].get("file").is_none());
+    assert_eq!(list[2]["name"], "Dan");
+    assert!(list[2]["skipped"].as_str().unwrap().contains("ownership"));
+    assert!(!json.contains("access_token") && !json.contains("dan-token"));
+    let path = PathBuf::from(list[0]["file"].as_str().unwrap());
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(file.contains("bea-token") && !file.contains("mc-token"));
+    // Only the Minecraft token goes: the refresh token stays in the keychain.
+    assert!(!file.contains("ms-refresh-1"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "only the player reads it");
+        assert_eq!(mode(&dir), 0o700, "nor lists the folder");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    // Alone: nothing.
+    let mut alone = signed_in(&store, &secrets("mc-token", true));
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut alone);
+    assert!(env.is_empty());
+    // Only for a game whose Splitscreen setting is on.
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:false\n",
+    )
+    .unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:true\n",
+    )
+    .unwrap();
+    assert!(splitscreen_on(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn splitscreen_never_hands_over_an_account_sent_back_to_sign_in() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    // A token with hours left, for an account the services sent back to sign-in (a refused
+    // refresh, or a token that now names another profile).
+    let refused = Secrets {
+        sign_in_required: true,
+        ..secrets("other-profile-token", true)
+    };
+    let eve = Account {
+        uuid: "e".into(),
+        name: "Eve".into(),
+        skin: None,
+        cape: None,
+    };
+    accounts.add(&store, eve, &refused).unwrap();
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-refused-{}", std::process::id()));
+    // With time to renew, and out of time: never offered either way.
+    for deadline in [
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+        std::time::Instant::now(),
+    ] {
+        let env = account_sessions_until(
+            &offline(),
+            Some("test-client"),
+            &store,
+            &dir,
+            &mut accounts,
+            deadline,
+        );
+        let list: Vec<Value> = serde_json::from_str(&env[0].1).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "Eve");
+        assert!(list[0].get("file").is_none());
+        assert!(list[0]["skipped"]
+            .as_str()
+            .unwrap()
+            .contains("Sign in again"));
+    }
+    let written = std::fs::read_dir(&dir).map_or(0, |d| d.count());
+    assert_eq!(written, 0, "no session file for it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unread_session_files_go_once_the_game_would_refuse_them() {
+    let dir = std::env::temp_dir().join(format!("hz-session-reap-{}", std::process::id()));
+    let secrets = secrets("not-a-real-token", true);
+    let waiting = write_session_file(&dir, &notch(), &secrets).unwrap();
+    let stale = write_session_file(&dir, &notch(), &secrets).unwrap();
+    let read = write_session_file(&dir, &notch(), &secrets).unwrap();
+    // A game that never started: its file is past the age the game takes.
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(300))
+        .unwrap();
+    // A game that started took its file (and deleted it).
+    std::fs::remove_file(&read).unwrap();
+    let mut unread = vec![waiting.clone(), stale.clone(), read];
+    reap(&mut unread, SESSION_FILE_LIFE);
+    assert!(waiting.exists(), "a game may still take it");
+    assert!(!stale.exists(), "no token left behind");
+    assert_eq!(unread, std::slice::from_ref(&waiting));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2083,4 +2241,86 @@ fn a_launch_as_another_account_leaves_the_selected_one() {
     );
     assert_eq!(gone.unwrap_err(), "That account isn't signed in.");
     assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+}
+
+#[test]
+fn splitscreen_stops_renewing_other_accounts_once_out_of_time() {
+    // A sign-in service that never answers: any request would hang the test.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/x", silent.local_addr().unwrap());
+    let ep = Endpoints {
+        microsoft: url.clone(),
+        xbox_user: url.clone(),
+        xsts: url.clone(),
+        minecraft: url,
+    };
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    let cal = Account {
+        uuid: "c".into(),
+        name: "Cal".into(),
+        skin: None,
+        cape: None,
+    };
+    accounts.add(&store, cal, &expired).unwrap();
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-late-{}", std::process::id()));
+    let start = std::time::Instant::now();
+    let env = account_sessions_until(
+        &ep,
+        Some("test-client"),
+        &store,
+        &dir,
+        &mut accounts,
+        std::time::Instant::now(),
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "no request started"
+    );
+    let list: Vec<Value> = serde_json::from_str(&env[0].1).unwrap();
+    assert!(list[0]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A service's account check: the launcher renews the account, then tells Mojang's session server
+/// it joins the id the service gave.
+#[test]
+fn joining_a_service_id_tells_mojangs_session_server() {
+    let (m, ep) = mock(|_| {});
+    let session = ep.minecraft.replace("/mc", "/session");
+    let store = MemoryStore::default();
+    signed_in(&store, &secrets("mc-token", true));
+    session::join_server_with(
+        &ep,
+        &session,
+        Some("test-client"),
+        &store,
+        &notch(),
+        &nowhere(),
+        "svc-42",
+    )
+    .unwrap();
+    let log = m.lock().unwrap().log.clone();
+    let joins: Vec<_> = log.iter().filter(|(_, p, _)| p.contains("/join")).collect();
+    assert_eq!(joins.len(), 1);
+    // Mojang refuses: the error says to sign in again.
+    m.lock().unwrap().join_refused = true;
+    let refused = session::join_server_with(
+        &ep,
+        &session,
+        Some("test-client"),
+        &store,
+        &notch(),
+        &nowhere(),
+        "svc-42",
+    );
+    assert!(refused.unwrap_err().contains("Sign in again"));
 }

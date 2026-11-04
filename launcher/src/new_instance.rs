@@ -4,7 +4,7 @@
 //! needs it; the game itself comes with the first Play, for an account that owns it.
 use super::*;
 use crate::plate::alpha;
-use crate::shell::{c, Action};
+use crate::shell::{Action, c};
 use horizon_launcher::loaders::{self, Kind as Loader};
 use horizon_launcher::minecraft_versions::{Kind as VersionKind, Versions};
 use servers_page::Field;
@@ -89,6 +89,19 @@ impl JavaChoice {
     }
 }
 
+/// `base`, or "base 2", "base 3"… when an instance already has it (names ignore case, as
+/// `instances::create` does).
+fn free_name(base: String, taken: &[&str]) -> String {
+    let free = |n: &String| !taken.iter().any(|t| t.eq_ignore_ascii_case(n));
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base} {n}"))
+        .find(free)
+        .unwrap_or(base)
+}
+
 /// Mojang's list as the dialog has it.
 #[derive(Default)]
 pub(super) enum VersionList {
@@ -104,17 +117,25 @@ impl Launcher {
         self.instances.dialog.as_mut().map(|d| &mut d.java)
     }
 
-    /// The name a new Java instance gets for what it plays now.
+    /// The name a new instance gets for what it plays now (the mockup's `defaultName`): "My
+    /// Horizon", "Vanilla 1.21.4", "Fabric 1.21.4", numbered past the ones already taken.
     fn default_name(&self) -> Option<String> {
         let j = &self.instances.dialog.as_ref()?.java;
         let versions = match &self.instances.versions {
             VersionList::Ready(v) => Some(v),
             _ => None,
         };
-        (j.kind != NewKind::Horizon)
-            .then(|| j.minecraft(versions))
-            .flatten()
-            .map(|mc| j.default_name(&mc))
+        let base = match j.kind {
+            NewKind::Horizon => tr("My Horizon").to_string(),
+            _ => j.default_name(&j.minecraft(versions)?),
+        };
+        let taken: Vec<&str> = self
+            .instances
+            .list
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        Some(free_name(base, &taken))
     }
 
     /// Changes what the new instance plays. Its name follows while it is the one the dialog gave
@@ -128,6 +149,15 @@ impl Launcher {
                 j.loader_version = None;
             }
         }
+        // An instance being edited keeps its name.
+        if self
+            .instances
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.editing.is_some())
+        {
+            return;
+        }
         let typed = self.servers.value(Field::InstanceName).trim().to_string();
         if typed.is_empty() || Some(&typed) == before.as_ref() {
             let after = self.default_name().unwrap_or_default();
@@ -138,7 +168,14 @@ impl Launcher {
     /// Picks the dialog's kind; a Java one fetches Mojang's list the first time.
     pub(super) fn pick_kind(&mut self, kind: NewKind, cx: &mut Context<Self>) {
         self.change(|j| j.kind = kind);
-        if kind == NewKind::Horizon || !matches!(self.instances.versions, VersionList::NotAsked) {
+        if kind != NewKind::Horizon {
+            self.load_versions(cx);
+        }
+    }
+
+    /// Asks Mojang for its versions, the first time the dialog needs them.
+    pub(super) fn load_versions(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.instances.versions, VersionList::NotAsked) {
             return;
         }
         self.instances.versions = VersionList::Loading;
@@ -387,7 +424,7 @@ impl Launcher {
             if let Some(mc) = chosen.clone() {
                 self.ask_loader_versions(&mc, cx);
                 rows = rows
-                    .child(heading("Loader version"))
+                    .child(heading("Version"))
                     .child(self.loader_version_list(&choice, cx));
             }
         }
@@ -404,21 +441,17 @@ impl Launcher {
     fn loader_version_list(&mut self, choice: &JavaChoice, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme;
         let n = t.night;
-        let name = choice.loader.name();
         let listed = match &choice.loader_versions {
             LoaderVersions::Ready(_, _, listed) => listed.clone(),
             LoaderVersions::Failed(_, _, e) => {
                 return shell::text(night::UI, c(n.danger))
                     .child(e.clone())
-                    .into_any_element()
+                    .into_any_element();
             }
             _ => {
                 return shell::text(night::UI, c(n.muted))
-                    .child(trf(
-                        "Asking {loader} for its versions…",
-                        &[("loader", name)],
-                    ))
-                    .into_any_element()
+                    .child(tr("Loading…"))
+                    .into_any_element();
             }
         };
         let row = |id: String, label: String, note: String, on: bool, pick: Option<String>| {
@@ -447,7 +480,7 @@ impl Launcher {
         let newest = listed.iter().find(|l| l.stable).or(listed.first());
         let mut rows = vec![row(
             "loader-version-newest".into(),
-            tr("Newest stable").to_string(),
+            tr("newest stable version").to_string(),
             newest.map(|l| l.version.clone()).unwrap_or_default(),
             choice.loader_version.is_none(),
             None,
@@ -456,7 +489,7 @@ impl Launcher {
             let note = if l.stable {
                 String::new()
             } else {
-                tr("beta").to_string()
+                tr("Beta").to_string()
             };
             row(
                 format!("loader-version-{}", l.version),
@@ -507,6 +540,21 @@ pub(super) fn create_java(
     }
 }
 
+/// `to`, with the newest stable version of a loader it names without one (asked of its service
+/// now, so a Minecraft version the loader doesn't support says so here).
+pub(super) fn with_loader(to: instances::Plays) -> Result<instances::Plays, String> {
+    match to {
+        instances::Plays::Java {
+            minecraft,
+            loader: Some(l),
+        } if l.version.is_empty() => Ok(instances::Plays::Java {
+            loader: Some(loaders::choose(l.kind.id(), &minecraft, None)?),
+            minecraft,
+        }),
+        other => Ok(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +572,14 @@ mod tests {
         assert_eq!(choice.minecraft(None), None);
         choice.version = Some("1.20.1".into());
         assert_eq!(choice.minecraft(None).as_deref(), Some("1.20.1"));
+    }
+
+    #[test]
+    fn a_default_name_skips_the_ones_taken() {
+        assert_eq!(free_name("My Horizon".into(), &["Horizon"]), "My Horizon");
+        assert_eq!(
+            free_name("My Horizon".into(), &["my horizon", "My Horizon 2"]),
+            "My Horizon 3"
+        );
     }
 }

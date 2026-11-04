@@ -136,6 +136,7 @@ impl Goal for Spell {
                 effect: BLINDNESS,
                 ticks: 400,
                 amplifier: 0,
+                ambient: false,
             });
         }
         cx.events.push(MobEvent::Sound(
