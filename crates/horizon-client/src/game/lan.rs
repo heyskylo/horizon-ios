@@ -78,7 +78,7 @@ pub(super) fn reload_sync_data(
     // a `/reload` that dropped them must read its own registries again.
     let packs = !overlay.files.is_empty() || kept.has_pack_entries();
     let sync = SyncData::load(root, overlay).map(|mut sync| {
-        sync.keep_registries(root, kept);
+        sync.keep_registries(root, kept, overlay);
         sync.features.clone_from(&kept.features);
         Arc::new(sync)
     });
