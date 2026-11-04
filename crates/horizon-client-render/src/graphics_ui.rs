@@ -1050,7 +1050,9 @@ impl Item {
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
-            Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
+            Item::Horizon(H::TranslucentBatching) => {
+                g.translucent_batching && crate::graphics::translucent_batching_offered()
+            }
             Item::Horizon(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
             }
@@ -3164,13 +3166,13 @@ mod tests {
         assert_eq!(page, Some(Page::Advanced));
         let mut s = Settings::default();
         s.horizon.preset = Preset::Balanced;
-        assert_eq!(item.switch(&s), Some(true));
         let mut ui = GraphicsUi::default();
         // Where the device can't, the saved On reads Off, and neither a click nor Enter
         // after it does anything: no sound, no change, no save.
         crate::graphics::offer_translucent_batching(false);
         assert!(item.blocked(&s).is_some());
         assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(item.switch(&s), Some(false));
         let r = row(&mut ui, &s, item);
         let point = (r[0] + 4.0, r[1] + 4.0);
         assert!(press(&mut ui, &mut s, point).is_empty());
@@ -3181,6 +3183,7 @@ mod tests {
         // Where it can, a click switches it and keeps the preset.
         crate::graphics::offer_translucent_batching(true);
         assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
+        assert_eq!(item.switch(&s), Some(true));
         assert_eq!(
             press(&mut ui, &mut s, point),
             [Action::ButtonClick, Action::Changed]

@@ -187,6 +187,42 @@ impl Game<'_> {
                 self.set_default_game_mode(state.game_mode);
                 return json!({ "value": GAME_MODES[state.game_mode as usize] });
             }
+            "serversettings/entity_broadcast_range" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
+            "serversettings/entity_broadcast_range/set" => {
+                let Some(percentage) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({
+                        "error": "entity broadcast range percentage must be an integer"
+                    });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(100, |host| host.hub.entity_range_percent);
+                // MinecraftServerSettingsServiceImpl logs the value asked for; the
+                // DedicatedServerProperties deserializer clamps what is applied and saved.
+                rpc(format!(
+                    "Update entity broadcast range percentage from {current}% to {percentage}%"
+                ));
+                let percentage = percentage.clamp(10, 1000);
+                self.set_entity_broadcast_range_percentage(percentage);
+                self.store_property("entity-broadcast-range-percentage", percentage.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .map_or(100, |host| host.hub.entity_range_percent)
+                });
+            }
             "serversettings/simulation_distance" => {
                 return json!({
                     "value": self
