@@ -44,6 +44,7 @@ fn pack() -> Post {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let inputs = horizon_shaders::GameInputs {
         terrain: Some(horizon_shaders::GbuffersInputs {
+            item_id_declared: false,
             declarations: "layout(location=0)in vec3 fixture_position;\n".into(),
             body: "hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);\
                    hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);\
@@ -71,6 +72,7 @@ fn shadow_pass_draws_terrain_back_faces() {
     let mut post = gpu.build_with_terrain(
         pack(),
         Some(Geometry {
+            material_maps: false,
             buffers: &layouts,
             table: None,
             depth_write: true,

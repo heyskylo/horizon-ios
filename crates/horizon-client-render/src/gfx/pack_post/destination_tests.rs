@@ -218,6 +218,7 @@ impl Fixture {
             post,
             T::Rgba8Unorm,
             World {
+                material_maps: None,
                 atlas: None,
                 lightmap,
                 terrain,
