@@ -517,77 +517,29 @@ mod tests {
         result
     }
 
+    /// `Guardian.aiStep`: a guardian out of water flops, and the flop is heard
+    /// (the elder's own sound) unless the guardian is silent (`!isSilent()`).
     #[test]
-    fn guardian_flop_plays_sound_when_not_silent() {
-        let Some((mob, events)) = flop("minecraft:guardian", false) else {
-            return;
-        };
-        assert!(!mob.on_ground);
-        assert!(mob.velocity.y > 0.0);
-        let sounds: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                MobEvent::Sound(s, _, _, _) => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(sounds, vec!["entity.guardian.flop"]);
-    }
-
-    #[test]
-    fn elder_guardian_flop_plays_sound_when_not_silent() {
-        let Some((mob, events)) = flop("minecraft:elder_guardian", false) else {
-            return;
-        };
-        assert!(!mob.on_ground);
-        assert!(mob.velocity.y > 0.0);
-        let sounds: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                MobEvent::Sound(s, _, _, _) => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(sounds, vec!["entity.elder_guardian.flop"]);
-    }
-
-    #[test]
-    fn silent_guardian_flops_without_sound() {
-        let Some((mob, events)) = flop("minecraft:guardian", true) else {
-            return;
-        };
-        assert!(!mob.on_ground);
-        assert!(mob.velocity.y > 0.0);
-        let sounds: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                MobEvent::Sound(s, _, _, _) => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            sounds.is_empty(),
-            "silent guardian must not play flop sound"
-        );
-    }
-
-    #[test]
-    fn silent_elder_guardian_flops_without_sound() {
-        let Some((mob, events)) = flop("minecraft:elder_guardian", true) else {
-            return;
-        };
-        assert!(!mob.on_ground);
-        assert!(mob.velocity.y > 0.0);
-        let sounds: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                MobEvent::Sound(s, _, _, _) => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            sounds.is_empty(),
-            "silent elder guardian must not play flop sound"
-        );
+    fn a_silent_guardian_flops_without_a_sound() {
+        for (kind, sound) in [
+            ("minecraft:guardian", "entity.guardian.flop"),
+            ("minecraft:elder_guardian", "entity.elder_guardian.flop"),
+        ] {
+            for silent in [false, true] {
+                let Some((mob, events)) = flop(kind, silent) else {
+                    return;
+                };
+                assert!(!mob.on_ground && mob.velocity.y > 0.0, "{kind} flops");
+                let sounds: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::Sound(s, ..) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
+                let heard: &[&str] = if silent { &[] } else { &[sound] };
+                assert_eq!(sounds, heard, "{kind} silent={silent}");
+            }
+        }
     }
 }
