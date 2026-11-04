@@ -648,6 +648,7 @@ mod tests {
         assert!(!push_waits_for_tick(false, 3, Some(7)), "ticks before it");
         assert!(!push_waits_for_tick(true, 3, None), "not a charge's burst");
         let tnt = crate::game::tnt::PrimedTnt {
+            rotation: [0.0, 0.0],
             id: 1,
             position: Vec3::ZERO,
             previous: Vec3::ZERO,

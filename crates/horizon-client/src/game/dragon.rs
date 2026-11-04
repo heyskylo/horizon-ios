@@ -3203,7 +3203,7 @@ impl Dragon {
             "minecraft:ender_dragon",
             self.position,
             self.velocity,
-            self.yaw,
+            [self.yaw, 0.0],
             uuid,
             raw,
         );
@@ -3240,7 +3240,7 @@ impl Crystal {
             "minecraft:end_crystal",
             self.position,
             Vec3::ZERO,
-            0.0,
+            [0.0, 0.0],
             uuid,
             raw,
         );

@@ -118,6 +118,7 @@ pub(super) fn list_box(id: &'static str, max: f32) -> Stateful<Div> {
         .flex_col()
         .max_h(px(max))
         .overflow_y_scroll()
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .p(px(6.))
         .rounded(px(radius::POPOVER))
         .bg(white(0.04))
