@@ -185,6 +185,28 @@ const FACE: &str = "    uint hz_q = (uint(gl_VertexIndex) & ~3u) * 6u;\n    \
         }\n    \
     }\n";
 
+/// `terrain` (`PackAtlas::terrain_inputs`) drawing only solid terrain, then only cutout terrain:
+/// each leaves the other part's quads outside the clip volume. Solid: the quads over opaque
+/// texels and opaque leaves (`mesher::OPAQUE_LAYER`), as vanilla picks `ChunkSectionLayer.SOLID`
+/// per quad (`FaceBakery.computeMaterialTransparency`, `SectionCompiler.compile`), and lava (a
+/// fluid face, `mesher::fluid_face`, among the solid draws), which Iris 1.11.7 drew with
+/// `gbuffers_terrain_solid` in our probe.
+pub fn terrain_parts(
+    terrain: &horizon_shaders::GbuffersInputs,
+) -> [horizon_shaders::GbuffersInputs; 2] {
+    let opaque = crate::mesher::OPAQUE_LAYER;
+    let part = |solid: bool| {
+        let mut inputs = terrain.clone();
+        inputs.after.push_str(&format!(
+            "    uint hz_part = uint(round(hz_v_color.a * 255.0)) >> 4u;\n    \
+             bool hz_solid = (hz_v_layer & {opaque}u) != 0u || (hz_part >= 8u && (hz_part & 7u) < 6u);\n    \
+             if (hz_solid != {solid}) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n"
+        ));
+        inputs
+    };
+    [part(true), part(false)]
+}
+
 impl PackAtlas {
     /// The vertex inputs of a gbuffers program drawing terrain (`TerrainVertex`, terrain.wgsl's
     /// `vs_terrain` or, for `flat` draws, `vs_terrain_flat`), in atlas coordinates.

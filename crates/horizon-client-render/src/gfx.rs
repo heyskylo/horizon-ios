@@ -6144,6 +6144,7 @@ impl Renderer {
                 }
             });
         horizon_shaders::GameInputs {
+            terrain_parts: terrain.as_ref().map(pack_atlas::terrain_parts),
             terrain,
             terrain_geometry,
             entity_geometry: Some(pack_entities::geometry_inputs()),
