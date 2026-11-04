@@ -1203,4 +1203,96 @@ mod tests {
         assert!(shared.restart.load(Ordering::SeqCst));
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    fn config_reply(response: Response) -> Value {
+        assert!(response.stream.is_none());
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": response.headers,
+            "body": serde_json::from_str::<Value>(&response.body).unwrap(),
+        })
+    }
+
+    #[test]
+    fn config_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-config.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-config-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = crate::config::TEMPLATE
+            .replace("token = \"\"", "token = \"a-token-for-the-config-test\"")
+            .replace(
+                "webhook = \"\"",
+                "webhook = \"https://discord.com/api/webhooks/123/config-test\"",
+            );
+        std::fs::write(dir.join(crate::config::FILE), toml).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        let call = |method: &str, body: &[u8]| {
+            config_reply(route(
+                &shared,
+                &Request {
+                    method: method.into(),
+                    path: "/api/v1/config".into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: body.to_vec(),
+                },
+            ))
+        };
+        let check = |case: &str, method: &str, body: &[u8]| {
+            assert_eq!(call(method, body), golden[case], "{case}");
+        };
+
+        check("get", "GET", b"");
+        check("malformed", "PATCH", b"not json");
+        check(
+            "protected",
+            "PATCH",
+            br#"{"changes":{"api.token":"replacement"}}"#,
+        );
+        check(
+            "invalid_range",
+            "PATCH",
+            br#"{"changes":{"server.max_players":0}}"#,
+        );
+        check(
+            "invalid_shape",
+            "PATCH",
+            br#"{"changes":{"world.seed":[1,2]}}"#,
+        );
+        check(
+            "unknown",
+            "PATCH",
+            br#"{"changes":{"server.unknown":true}}"#,
+        );
+        check(
+            "patch_stopped",
+            "PATCH",
+            br#"{"changes":{"world.difficulty":"hard","server.max_players":50}}"#,
+        );
+
+        shared.set_phase(Phase::Running);
+        check(
+            "patch_running",
+            "PATCH",
+            br#"{"changes":{"server.port":25566,"backups.keep":7}}"#,
+        );
+        let saved = crate::config::Config::load(&dir).unwrap();
+        assert_eq!(
+            (
+                saved.world.difficulty.as_str(),
+                saved.server.max_players,
+                saved.server.port,
+                saved.backups.keep,
+            ),
+            ("hard", 50, 25566, 7)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
