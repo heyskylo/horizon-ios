@@ -1098,7 +1098,6 @@
   "August": "agosto",
   "Back to the wardrobe": "Volver á roupa",
   "Bound to your Minecraft account, on every computer you sign in on.": "Vinculado á túa conta de Minecraft, en todos os ordenadores nos que inicies sesión.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Vinculado á túa conta de Minecraft. Nada que pagar, sen pedir tarxeta.",
   "Changes waiting to sync: {n}": "Cambios pendentes de sincronizar: {n}",
   "Claimed · Open the wardrobe": "Reclamado · Abrir a roupa",
   "Claiming…": "Reclamando…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Borráronse {bytes} bytes da caché de compilación nativa. A seguinte compilación con cambios compilarase desde cero.",
   "Could not access the native build cache: {error}": "Non se puido acceder á caché de compilación nativa: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Introduce un límite de caché en GiB; 0 desactiva a limpeza automática.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rexéitase a limpeza da caché nativa nun ficheiro ou ligazón inesperados: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rexéitase a limpeza da caché nativa nun ficheiro ou ligazón inesperados: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Vinculado á túa conta de Minecraft. Gratis: un pagamento de 0 CHF a través de Paddle rexistra a túa reclamación.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Remata o pagamento gratuíto no navegador. O set chegará aquí un momento despois.",
+  "Open the checkout again": "Abrir o pagamento de novo",
+  "Waiting for the checkout…": "Agardando polo pagamento…",
+  "Your purchases": "As túas compras",
+  "Refunded": "Reembolsado",
+  "Partly refunded": "Reembolsado parcialmente",
+  "Charged back": "Devolto polo banco",
+  "Paid": "Pagado",
+  "Order {id}": "Pedido {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "A reclamación non se completou: o enderezo do pagamento non é o de Horizon.",
+  "Paste a friend's invite code": "Pega o código de invitación dun amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Xoga {build}, construído sobre Horizon {commit}, o commit fixado por {mods}, non sobre {version}."
 }

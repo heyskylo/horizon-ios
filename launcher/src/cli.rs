@@ -820,6 +820,10 @@ enum Cmd {
         /// Build mods made for different Horizon versions together anyway, on the newest of them
         #[arg(long)]
         allow_version_mismatch: bool,
+        /// Build every mod on the commit of the version the build starts from, even the mods that
+        /// pin another Horizon commit (they may not apply or compile there)
+        #[arg(long)]
+        ignore_pins: bool,
         /// The build profile: performance (the default: incremental, quick to rebuild), dev (quickest
         /// to rebuild a mod, slow game) or release (thin LTO: slowest to build, slightly faster
         /// game). Default: the native-profile setting
@@ -1295,6 +1299,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             update,
             trust_native_code,
             allow_version_mismatch,
+            ignore_pins,
             profile,
         } => {
             if !trust_native_code {
@@ -1325,6 +1330,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     &folder,
                     &output,
                     allow_version_mismatch,
+                    ignore_pins,
                     profile,
                     steps,
                 )
@@ -1371,6 +1377,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 &folder,
                 &target,
                 allow_version_mismatch,
+                ignore_pins,
                 profile,
                 steps,
             )

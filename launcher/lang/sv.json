@@ -1098,7 +1098,6 @@
   "August": "augusti",
   "Back to the wardrobe": "Tillbaka till garderoben",
   "Bound to your Minecraft account, on every computer you sign in on.": "Knuten till ditt Minecraft-konto, på varje dator du loggar in på.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Knuten till ditt Minecraft-konto. Inget att betala, inget kort behövs.",
   "Changes waiting to sync: {n}": "Ändringar som väntar på synkronisering: {n}",
   "Claimed · Open the wardrobe": "Hämtad · Öppna garderoben",
   "Claiming…": "Hämtar…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Rensade {bytes} byte ur cachen för kompilering av plattformsspecifik kod. Nästa kompilering med ändringar börjar om från början.",
   "Could not access the native build cache: {error}": "Det gick inte att komma åt cachen för kompilering av plattformsspecifik kod: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Ange en cachegräns i GiB; 0 inaktiverar automatisk rensning.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rensning av cachen för plattformsspecifik kod nekades vid en oväntad fil eller länk: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rensning av cachen för plattformsspecifik kod nekades vid en oväntad fil eller länk: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Knuten till ditt Minecraft-konto. Gratis: en kassa på 0 CHF via Paddle registrerar ditt anspråk.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Slutför den gratis kassan i webbläsaren. Setet dyker upp här en stund senare.",
+  "Open the checkout again": "Öppna kassan igen",
+  "Waiting for the checkout…": "Väntar på kassan…",
+  "Your purchases": "Dina köp",
+  "Refunded": "Återbetald",
+  "Partly refunded": "Delvis återbetald",
+  "Charged back": "Återkrävd av banken",
+  "Paid": "Betald",
+  "Order {id}": "Order {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Anspråket gick inte igenom: kassans adress är inte Horizons.",
+  "Paste a friend's invite code": "Klistra in en väns inbjudningskod",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spelar {build}, byggd på Horizon {commit}, commiten som {mods} låser, inte på {version}."
 }

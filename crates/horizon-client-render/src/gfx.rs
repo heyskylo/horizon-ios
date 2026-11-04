@@ -90,6 +90,20 @@ fn occlusion_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> b
     env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
 }
 
+/// `DrawableGizmoPrimitives.getGroup`: a line whose ARGB alpha is 255 joins the
+/// opaque group, drawn with `RenderTypes.lines` (depth written); the rest
+/// with `RenderTypes.linesTranslucentNoDepthWrite`.
+fn debug_line_opaque(line: &[f32; 8]) -> bool {
+    line[6].to_bits() >> 24 == 0xFF
+}
+
+/// The depth-tested gizmo lines in their upload order: the opaque group first,
+/// then the translucent one, each in submission order.
+fn debug_lines_opaque_first(lines: &[[f32; 8]]) -> impl Iterator<Item = &[f32; 8]> {
+    let opaque = lines.iter().filter(|l| debug_line_opaque(l));
+    opaque.chain(lines.iter().filter(|l| !debug_line_opaque(l)))
+}
+
 /// Whether Translucent Batching is offered (`graphics::offer_translucent_batching`): where
 /// indirect multi-draws (`multi_draw`) take its batches, but not OpenGL's, which loop over
 /// their entries on the CPU (and without them every section is a call of its own anyway).
@@ -1094,8 +1108,10 @@ pub struct Renderer {
     lines_secondary: wgpu::RenderPipeline,
     /// A resource pack's `core/rendertype_lines`, which draws the block outline in their place.
     core_lines: Option<core_lines::CoreLines>,
-    /// Gizmo lines (`RenderTypes.linesTranslucentNoDepthWrite`) and the
+    /// Gizmo lines: opaque ones (`RenderTypes.lines`, which writes depth),
+    /// translucent ones (`RenderTypes.linesTranslucentNoDepthWrite`) and the
     /// always-on-top ones.
+    debug_lines_opaque: wgpu::RenderPipeline,
     debug_lines: wgpu::RenderPipeline,
     debug_lines_on_top: wgpu::RenderPipeline,
     debug_line_buffer: wgpu::Buffer,
@@ -2888,6 +2904,19 @@ impl Renderer {
             true,
             Some(alpha_blend),
         );
+        // RenderPipelines.LINES: DepthStencilState.DEFAULT, so an opaque hitbox or
+        // chunk border keeps the water and clouds drawn after it behind it.
+        let debug_lines_opaque = pipeline(
+            "Debug lines opaque",
+            "vs_debug_line",
+            "fs_debug_line",
+            &debug_line_buffers,
+            wgpu::PrimitiveTopology::TriangleStrip,
+            None,
+            true,
+            true,
+            Some(alpha_blend),
+        );
         let debug_lines = pipeline(
             "Debug lines",
             "vs_debug_line",
@@ -4450,6 +4479,7 @@ impl Renderer {
             lines,
             lines_secondary,
             core_lines: None,
+            debug_lines_opaque,
             debug_lines,
             debug_lines_on_top,
             debug_line_buffer,
@@ -6207,13 +6237,14 @@ impl Renderer {
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
     /// (its block's light), three values a layer.
-    /// Returns the programs that run and the notes of loading them.
+    /// Returns the programs that run and the notes of loading them, or why the pack can't run:
+    /// the dimension then runs without a pack.
     pub fn set_shader_pack(
         &mut self,
         dimension: i32,
         pack: Option<horizon_shaders::Post>,
         block_ids: &[i32],
-    ) -> Option<(Vec<String>, Vec<String>)> {
+    ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
         if pack.is_none() {
             self.pack_atlas = None;
             self.pack_material_atlases = None;
@@ -6231,9 +6262,14 @@ impl Renderer {
         };
         let buffers = [Some(vertex), Some(instances)];
         let flat = self.pack_terrain_flat;
+        let sprite_rects = self
+            .pack_atlas
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.rects_table());
         let post = pack.map(|post| {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+                sprite_rects: &sprite_rects,
                 material_maps: self
                     .pack_material_atlases
                     .as_ref()
@@ -6272,6 +6308,15 @@ impl Renderer {
                 world,
             )
         });
+        let post = match post.transpose() {
+            Ok(post) => post,
+            Err(e) => {
+                self.pack_post = Some((dimension, None));
+                self.pack_atlas = None;
+                self.pack_material_atlases = None;
+                return Err(e);
+            }
+        };
         let report = post.as_ref().map(|p| {
             let programs = p.programs().into_iter().map(str::to_owned).collect();
             (programs, p.notes.clone())
@@ -6280,7 +6325,7 @@ impl Renderer {
         if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
             self.native = None;
         }
-        report
+        Ok(report)
     }
     /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
@@ -7958,6 +8003,11 @@ impl Renderer {
             self.section_draw_calls += gpu.draw_calls();
         }
         let debug_depth = frame.debug_lines.len() as u32;
+        let debug_opaque = frame
+            .debug_lines
+            .iter()
+            .filter(|l| debug_line_opaque(l))
+            .count() as u32;
         let debug_top = frame.debug_lines_on_top.len() as u32;
         let crosshair = frame.debug_crosshair.len() as u32;
         if debug_depth + debug_top + crosshair > 0 {
@@ -7971,9 +8021,7 @@ impl Renderer {
                     mapped_at_creation: false,
                 });
             }
-            let all: Vec<[f32; 8]> = frame
-                .debug_lines
-                .iter()
+            let all: Vec<[f32; 8]> = debug_lines_opaque_first(frame.debug_lines)
                 .chain(frame.debug_lines_on_top)
                 .chain(frame.debug_crosshair)
                 .copied()
@@ -9549,10 +9597,16 @@ impl Renderer {
             if outline_edges > 0 && !frame.outline_after_terrain && !pack_draws_outline {
                 self.draw_outline(&mut pass, outline_edges as u32, frame.outline_high_contrast);
             }
-            if debug_depth > 0 {
+            // DrawableGizmoPrimitives' opaque group writes depth, the translucent one does not.
+            if debug_opaque > 0 {
+                pass.set_pipeline(&self.debug_lines_opaque);
+                pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
+                pass.draw(0..4, 0..debug_opaque);
+            }
+            if debug_depth > debug_opaque {
                 pass.set_pipeline(&self.debug_lines);
                 pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
-                pass.draw(0..4, 0..debug_depth);
+                pass.draw(0..4, debug_opaque..debug_depth);
             }
             if debug_top > 0 {
                 pass.set_pipeline(&self.debug_lines_on_top);
@@ -11126,6 +11180,20 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opaque_gizmo_lines_upload_first_for_the_depth_writing_pipeline() {
+        let line = |argb: u32| [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, f32::from_bits(argb), 2.5];
+        // A hitbox's white, the chunk border's outer red columns (alpha 0x7F),
+        // and the chunk border's yellow.
+        let lines = [line(0xFFFF_FFFF), line(0x7FFF_0000), line(0xFFFF_FF00)];
+        assert!(super::debug_line_opaque(&lines[0]));
+        assert!(!super::debug_line_opaque(&lines[1]));
+        assert!(!super::debug_line_opaque(&line(0xFE00_0000)));
+        let order: Vec<u32> = super::debug_lines_opaque_first(&lines)
+            .map(|l| l[6].to_bits())
+            .collect();
+        assert_eq!(order, [0xFFFF_FFFF, 0xFFFF_FF00, 0x7FFF_0000]);
+    }
     use crate::gfx::static_entity_shader;
 
     fn adapter(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
@@ -11175,12 +11243,16 @@ mod tests {
     /// shaders with storage buffers enough, where Translucent Batching is (indirect
     /// multi-draws that aren't OpenGL's) and vanilla frames are never drawn flat, and never
     /// on Intel Gen11/Gen12's Vulkan driver, whose draws read instance-rate origins from the
-    /// wrong first instance, even with flat draws off there.
+    /// wrong first instance, even with flat draws off there, nor on DX12 with flat page
+    /// groups, whose count draws leave the base vertex out of the pulled pipelines'
+    /// `vertex_index`.
     #[test]
     fn gpu_culling_is_offered_where_counts_are_drawn_and_vanilla_never_draws_flat() {
         let vulkan = adapter(wgpu::DeviceType::DiscreteGpu);
         let mut gl = adapter(wgpu::DeviceType::DiscreteGpu);
         gl.backend = wgpu::Backend::Gl;
+        let mut dx12 = adapter(wgpu::DeviceType::DiscreteGpu);
+        dx12.backend = wgpu::Backend::Dx12;
         let mut intel = adapter(wgpu::DeviceType::IntegratedGpu);
         (intel.vendor, intel.device) = (0x8086, 0x9a49); // Tiger Lake
         let counts = wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
@@ -11214,6 +11286,8 @@ mod tests {
         assert!(!offered(&vulkan, counts, compute, 8, false, None));
         assert!(!offered(&gl, counts, compute, 8, true, None));
         assert!(!offered(&intel, counts, compute, 8, true, None));
+        assert!(offered(&dx12, counts, compute, 8, true, None));
+        assert!(!offered(&dx12, counts, compute, 8, true, Some(usize::MAX)));
     }
 
     /// The pack-flat rule: with Translucent Batching translucent quads have an arena of

@@ -1098,7 +1098,6 @@
   "August": "srpna",
   "Back to the wardrobe": "Zpět do šatní skříně",
   "Bound to your Minecraft account, on every computer you sign in on.": "Vázáno na váš účet Minecraft, na každém počítači, kde se přihlásíte.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Vázáno na váš účet Minecraft. Nic neplatíte, nežádá se žádná karta.",
   "Changes waiting to sync: {n}": "Změny čekající na synchronizaci: {n}",
   "Claimed · Open the wardrobe": "Získáno · Otevřít šatní skříň",
   "Claiming…": "Získávání…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Z mezipaměti nativního sestavení bylo odstraněno {bytes} bajtů. Příští sestavení se změnami začne od začátku.",
   "Could not access the native build cache: {error}": "Nepodařilo se získat přístup k mezipaměti nativního sestavení: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Zadejte limit mezipaměti v GiB; 0 vypne automatické čištění.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "Čištění nativní mezipaměti odmítnuto kvůli neočekávanému souboru nebo odkazu: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Čištění nativní mezipaměti odmítnuto kvůli neočekávanému souboru nebo odkazu: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Vázáno na váš účet Minecraft. Zdarma: platba za 0 CHF přes Paddle zaznamená váš nárok.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Dokončete bezplatnou platbu v prohlížeči. Sada se tu za chvíli objeví.",
+  "Open the checkout again": "Znovu otevřít platbu",
+  "Waiting for the checkout…": "Čekání na platbu…",
+  "Your purchases": "Vaše nákupy",
+  "Refunded": "Vráceno",
+  "Partly refunded": "Částečně vráceno",
+  "Charged back": "Vráceno bankou",
+  "Paid": "Zaplaceno",
+  "Order {id}": "Objednávka {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Nárok se nepodařilo uplatnit: adresa platby nepatří Horizonu.",
+  "Paste a friend's invite code": "Vložte kód pozvánky od přítele",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hraje {build}, postavený na Horizon {commit}, commitu připnutém {mods}, ne na {version}."
 }

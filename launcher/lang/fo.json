@@ -1098,7 +1098,6 @@
   "August": "august",
   "Back to the wardrobe": "Aftur til klædnaskápsins",
   "Bound to your Minecraft account, on every computer you sign in on.": "Bundið at tínari Minecraft-kontu, á hvørjari teldu sum tú rita inn á.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Bundið at tínari Minecraft-kontu. Einki at gjalda, einki kort verður kravt.",
   "Changes waiting to sync: {n}": "Broytingar sum bíða eftir samstilling: {n}",
   "Claimed · Open the wardrobe": "Kravt · Opna klædnaskápin",
   "Claiming…": "Krevur…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} být av goymsluni til upprunabygging eru strikað. Næsta broytta bygging verður samansett frá byrjan.",
   "Could not access the native build cache: {error}": "Kundi ikki fáa atgongd til goymsluna til upprunabygging: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Skriva eitt goymslumark í GiB; 0 sløkkir sjálvvirka reinsan.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "Noktar at reinsa upprunagoymsluna við eini óvæntaðari fílu ella leinki: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Noktar at reinsa upprunagoymsluna við eini óvæntaðari fílu ella leinki: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Bundið at tínari Minecraft-kontu. Ókeypis: ein 0 CHF útrokning gjøgnum Paddle skrásetir kravið hjá tær.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Enda tann ókeypis útrokningina í tínum kaga. Settið kemur higar eina løtu seinni.",
+  "Open the checkout again": "Opna útrokningina aftur",
+  "Waiting for the checkout…": "Bíðar eftir útrokningini…",
+  "Your purchases": "Tíni keyp",
+  "Refunded": "Endurgoldið",
+  "Partly refunded": "Partvíst endurgoldið",
+  "Charged back": "Afturført av bankanum",
+  "Paid": "Goldið",
+  "Order {id}": "Pantan {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Kravið gekk ikki gjøgnum: adressan á útrokningini er ikki hjá Horizon.",
+  "Paste a friend's invite code": "Set boðkotu hjá vini inn",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Leikur {build}, bygt á Horizon {commit}, commit sum {mods} festir, ikki á {version}."
 }

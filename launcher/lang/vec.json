@@ -1098,7 +1098,6 @@
   "August": "agosto",
   "Back to the wardrobe": "Torna al armadio",
   "Bound to your Minecraft account, on every computer you sign in on.": "Ligà al to account Minecraft, so ogni computer dove te entri.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Ligà al to account Minecraft. Gnente da pagar, nissuna carta richiesta.",
   "Changes waiting to sync: {n}": "Modifeghe in atesa de sincronizasion: {n}",
   "Claimed · Open the wardrobe": "Ritirà · Verzi l’armadio",
   "Claiming…": "Ritiro in corso…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Xe stà netà {bytes} byte de ła cache de compiłasion nativa. Ła prosima compiłasion canbià ła vegnarà compiłà da zero.",
   "Could not access the native build cache: {error}": "No se xe riusìo a ndar so ła cache de compiłasion nativa: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Meti un łimite de cache in GiB; 0 el destuda ła pułizia automàtega.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "Se refuda ła pułizia de ła cache nativa so un file o cołegamento mìa spetà: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Se refuda ła pułizia de ła cache nativa so un file o cołegamento mìa spetà: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Ligà al to account Minecraft. Gratis: un pagamento de 0 CHF tramite Paddle el registra la to richiesta.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Fenisi el pagamento gratis nel to browser. El set el riva qua un momento dopo.",
+  "Open the checkout again": "Verzi de novo el pagamento",
+  "Waiting for the checkout…": "Se speta el pagamento…",
+  "Your purchases": "I to aquisti",
+  "Refunded": "Rimborsà",
+  "Partly refunded": "Rimborsà in parte",
+  "Charged back": "Stornà da la banca",
+  "Paid": "Pagà",
+  "Order {id}": "Ordine {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta no la xe ndà a bon fin: l'indirizzo del pagamento no 'l xe quel de Horizon.",
+  "Paste a friend's invite code": "Incoła el còdexe de invito de un amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gioca {build}, costruito su Horizon {commit}, el commit fisà da {mods}, no su {version}."
 }

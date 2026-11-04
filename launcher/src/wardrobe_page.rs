@@ -195,14 +195,18 @@ fn tell_the_game(uuid: &str, saved: &Saved) {
         return;
     }
     let home = backend::game_home();
-    let _ = prefs::set_confirmed(&home, uuid, me.visible);
+    if let Err(e) = prefs::set_confirmed(&home, uuid, me.visible) {
+        eprintln!("Horizon: the cosmetics confirmation is not saved: {e}");
+    }
     let wish = Prefs::load(&home);
     if wish.mine != me.visible {
-        let _ = Prefs {
+        let switches = Prefs {
             mine: me.visible,
             ..wish
+        };
+        if let Err(e) = switches.save(&home) {
+            eprintln!("Horizon: the cosmetics switches are not saved: {e}");
         }
-        .save(&home);
     }
 }
 
@@ -257,7 +261,9 @@ impl Launcher {
                 result: Ok(()),
             };
             trip.result = refresh(&service, &account, &mut trip);
-            let _ = trip.saved.save(&dir(), &account.uuid);
+            if let Err(e) = trip.saved.save(&dir(), &account.uuid) {
+                eprintln!("Horizon: the outfit is not saved: {e}");
+            }
             trip
         });
         cx.spawn(async move |this, cx| {
@@ -401,14 +407,18 @@ impl Launcher {
         if let Change::Visible(on) = change {
             // The game's switch shows the wish at once; its confirmation follows the service.
             let home = backend::game_home();
-            let _ = Prefs {
+            let switches = Prefs {
                 mine: on,
                 ..Prefs::load(&home)
+            };
+            if let Err(e) = switches.save(&home) {
+                eprintln!("Horizon: the cosmetics switches are not saved: {e}");
             }
-            .save(&home);
         }
         w.saved.change(change);
-        let _ = w.saved.save(&dir(), &w.uuid);
+        if let Err(e) = w.saved.save(&dir(), &w.uuid) {
+            eprintln!("Horizon: the outfit is not saved: {e}");
+        }
         w.seen = None;
         self.restyle = true;
         let Some(w) = self.wardrobe.as_mut() else {
@@ -429,7 +439,9 @@ impl Launcher {
         let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
         let task = cx.background_executor().spawn(async move {
             let result = Service::live().sync(&session, &mut saved);
-            let _ = saved.save(&dir(), &uuid);
+            if let Err(e) = saved.save(&dir(), &uuid) {
+                eprintln!("Horizon: the outfit is not saved: {e}");
+            }
             Trip {
                 saved,
                 items: HashMap::new(),
@@ -440,30 +452,9 @@ impl Launcher {
         self.wardrobe_wait(task, done, cx);
     }
 
-    /// Claim the founder set.
+    /// Claim the founder set, as the Shop does (a free Paddle checkout when the service asks).
     fn wardrobe_claim(&mut self, cx: &mut Context<Self>) {
-        let Some(w) = self.wardrobe.as_mut().filter(|w| !w.busy) else {
-            return;
-        };
-        let Some(session) = w.session.clone() else {
-            return;
-        };
-        w.busy = true;
-        let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
-        let task = cx.background_executor().spawn(async move {
-            let result = Service::live()
-                .claim(&session)
-                .map(|me| saved.me = Some(me));
-            let _ = saved.save(&dir(), &uuid);
-            Trip {
-                saved,
-                items: HashMap::new(),
-                session: None,
-                result,
-            }
-        });
-        let done = tr("Founder set claimed. It's in your wardrobe.").into();
-        self.wardrobe_wait(task, done, cx);
+        self.shop_claim(cx);
     }
 
     fn wardrobe_wait(&mut self, task: gpui::Task<Trip>, done: String, cx: &mut Context<Self>) {
@@ -561,6 +552,8 @@ impl Launcher {
                 equipped: if empty { Default::default() } else { equipped },
                 visible: true,
                 claim,
+                purchases: Vec::new(),
+                checkout: None,
             }),
             catalogue: Some(catalogue),
             pending: Vec::new(),
@@ -1082,7 +1075,9 @@ impl Launcher {
         let save = |prefs: Prefs| {
             let home = home.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let _ = prefs.save(&home);
+                if let Err(e) = prefs.save(&home) {
+                    eprintln!("Horizon: the cosmetics switches are not saved: {e}");
+                }
                 cx.refresh_windows();
             }
         };

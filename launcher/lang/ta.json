@@ -1098,7 +1098,6 @@
   "August": "ஆகஸ்ட்",
   "Back to the wardrobe": "அலமாரிக்குத் திரும்பு",
   "Bound to your Minecraft account, on every computer you sign in on.": "உங்கள் Minecraft கணக்குடன் இணைக்கப்பட்டது; நீங்கள் உள்நுழையும் ஒவ்வொரு கணினியிலும்.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "உங்கள் Minecraft கணக்குடன் இணைக்கப்பட்டது. கட்டணம் இல்லை, அட்டை கேட்கப்படாது.",
   "Changes waiting to sync: {n}": "ஒத்திசைவுக்காகக் காத்திருக்கும் மாற்றங்கள்: {n}",
   "Claimed · Open the wardrobe": "பெறப்பட்டது · அலமாரியைத் திற",
   "Claiming…": "பெறுகிறது…",
@@ -1157,5 +1156,18 @@
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "நேட்டிவ் உருவாக்க தற்காலிக சேமிப்பிலிருந்து {bytes} பைட்டுகள் அழிக்கப்பட்டன. அடுத்த மாற்றப்பட்ட உருவாக்கம் தொடக்கத்திலிருந்து தொகுக்கப்படும்.",
   "Could not access the native build cache: {error}": "நேட்டிவ் உருவாக்க தற்காலிக சேமிப்பை அணுக முடியவில்லை: {error}",
   "Enter a cache limit in GiB; 0 disables automatic cleanup.": "தற்காலிக சேமிப்பு வரம்பை GiB-இல் உள்ளிடவும்; 0 தானியங்கு சுத்தத்தை முடக்கும்.",
-  "Refusing native cache cleanup at an unexpected file or link: {path}": "எதிர்பாராத கோப்பு அல்லது இணைப்பில் நேட்டிவ் தற்காலிக சேமிப்பு சுத்தம் மறுக்கப்படுகிறது: {path}"
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "எதிர்பாராத கோப்பு அல்லது இணைப்பில் நேட்டிவ் தற்காலிக சேமிப்பு சுத்தம் மறுக்கப்படுகிறது: {path}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "உங்கள் Minecraft கணக்குடன் இணைக்கப்பட்டது. இலவசம்: Paddle வழியாக 0 CHF செக்அவுட் உங்கள் கோரிக்கையைப் பதிவு செய்யும்.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "உங்கள் உலாவியில் இலவச செக்அவுட்டை முடிக்கவும். சிறிது நேரத்தில் செட் இங்கே வந்து சேரும்.",
+  "Open the checkout again": "செக்அவுட்டை மீண்டும் திற",
+  "Waiting for the checkout…": "செக்அவுட்டுக்காகக் காத்திருக்கிறது…",
+  "Your purchases": "உங்கள் கொள்முதல்கள்",
+  "Refunded": "பணம் திருப்பியளிக்கப்பட்டது",
+  "Partly refunded": "பகுதியளவு திருப்பியளிக்கப்பட்டது",
+  "Charged back": "வங்கியால் திரும்பப் பெறப்பட்டது",
+  "Paid": "செலுத்தப்பட்டது",
+  "Order {id}": "ஆர்டர் {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "கோரிக்கை நிறைவேறவில்லை: செக்அவுட்டின் முகவரி Horizon-உடையது அல்ல.",
+  "Paste a friend's invite code": "நண்பரின் அழைப்புக் குறியீட்டை ஒட்டவும்",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} விளையாடுகிறது, {version} இல் அல்ல, {mods} பின் செய்த commit ஆன Horizon {commit} இல் கட்டப்பட்டது."
 }

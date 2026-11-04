@@ -1135,7 +1135,6 @@
   "The founder set was free to claim until {date}.": "창립자 세트는 {date}까지 무료였어요.",
   "The founder set isn't offered any more.": "창립자 세트는 더 이상 제공되지 않아요.",
   "Bound to your Minecraft account, on every computer you sign in on.": "Minecraft 계정에 묶여 있어서 로그인하는 모든 컴퓨터에서 쓸 수 있어요.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Minecraft 계정에 묶여요. 결제도, 카드도 필요 없어요.",
   "Cosmetics show only to Horizon players. Nothing changes how the game plays.": "코스메틱은 Horizon 플레이어에게만 보여요. 게임 플레이는 바뀌지 않아요.",
   "For the players who were here first. Free to claim from {date}; once claimed, it's yours to keep.": "처음부터 함께한 플레이어를 위해. {date}부터 무료로 받을 수 있고, 받으면 계속 내 것이에요.",
   "For the players who were here first. Free to claim until {date}; once claimed, it's yours to keep.": "처음부터 함께한 플레이어를 위해. {date}까지 무료로 받을 수 있고, 받으면 계속 내 것이에요.",
@@ -1157,5 +1156,18 @@
   "A native build or cache cleanup is running. Try again when it finishes.": "네이티브 빌드 또는 캐시 정리가 진행 중입니다. 완료된 후 다시 시도하세요.",
   "Refusing native cache cleanup at an unexpected file or link: {path}": "예상하지 못한 파일 또는 링크로 인해 네이티브 캐시 정리를 거부했습니다: {path}",
   "Could not access the native build cache: {error}": "네이티브 빌드 캐시에 접근할 수 없습니다: {error}",
-  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "캐시 한도를 GiB 단위로 입력하세요. 0은 자동 정리를 비활성화합니다."
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "캐시 한도를 GiB 단위로 입력하세요. 0은 자동 정리를 비활성화합니다.",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Minecraft 계정에 묶여 있어요. 무료: Paddle을 통한 0 CHF 결제로 받기가 기록돼요.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "브라우저에서 무료 결제를 마무리하세요. 잠시 뒤 세트가 여기에 도착해요.",
+  "Open the checkout again": "결제 창 다시 열기",
+  "Waiting for the checkout…": "결제를 기다리는 중…",
+  "Your purchases": "구매 내역",
+  "Refunded": "환불됨",
+  "Partly refunded": "부분 환불됨",
+  "Charged back": "차지백됨",
+  "Paid": "결제됨",
+  "Order {id}": "주문 {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "받기가 완료되지 않았어요. 결제 주소가 Horizon의 주소가 아니에요.",
+  "Paste a friend's invite code": "친구의 초대 코드 붙여넣기",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} 플레이 중: {version}이(가) 아니라 {mods}이(가) 고정한 커밋 Horizon {commit}에서 빌드됨."
 }
