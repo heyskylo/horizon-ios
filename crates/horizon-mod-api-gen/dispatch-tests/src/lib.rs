@@ -8,6 +8,7 @@ mod tests {
         count: i32,
     }
     struct BlockEntityDraw(Vec<u32>);
+    struct NativeWorldDraw(Vec<u32>);
     #[allow(dead_code)]
     mod stubs {
         #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,6 +145,9 @@ mod tests {
         calls: Arc<Mutex<Vec<u32>>>,
     }
     impl Hooks for Mod {
+        fn world_submit(&self, _: &dyn Host, event: &mut WorldSubmitEvent<'_>) {
+            event.draw.0.push(self.id);
+        }
         fn block_entity_submit(&self, _: &dyn Host, event: &mut BlockEntitySubmitEvent<'_>) {
             assert_eq!(event.pos, [1, 2, 3]);
             assert_eq!(event.block, "example:machine");
@@ -225,6 +229,22 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn world_submit_dispatches_in_order_with_shared_draw() {
+        let mods: Vec<Box<dyn Hooks>> = vec![1, 2]
+            .into_iter()
+            .map(|id| {
+                Box::new(Mod {
+                    id,
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }) as Box<dyn Hooks>
+            })
+            .collect();
+        let mut draw = NativeWorldDraw(Vec::new());
+        dispatch_world_submit(&TestHost, &mods, &mut draw);
+        assert_eq!(draw.0, [1, 2]);
+    }
+
     #[test]
     fn block_entity_submit_dispatches_in_order_with_shared_draw() {
         let calls = Arc::new(Mutex::new(Vec::new()));
