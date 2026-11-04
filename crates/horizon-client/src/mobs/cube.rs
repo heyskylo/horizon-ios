@@ -179,16 +179,31 @@ fn landing_splash(m: &mut Mob, events: &mut Vec<MobEvent>) {
         i += 1;
     }
 }
-/// `AbstractCubeMob.tick` on a client of a server: the landing splash follows
-/// the on-ground flag the server sends.
+/// `AbstractCubeMob.tick` on a client of a server: the squish scale (`oSquish`,
+/// the step toward `targetSquish`, the land and takeoff targets, then
+/// `decreaseSquish`) and the landing splash follow the on-ground flag the
+/// server sends. The squish sound stays the server's broadcast.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.species() == Species::SulfurCube {
         super::sulfur_cube::client_tick(m);
     }
-    if m.on_ground && !m.extra.flag2 {
+    // `AbstractCubeMob.tick`: `oSquish = squish`, then squish toward the target.
+    m.anim.vo[SQUISH] = m.anim.v[SQUISH];
+    m.anim.v[SQUISH] += (m.anim.v[TARGET_SQUISH] - m.anim.v[SQUISH]) * 0.5;
+    let was = m.extra.flag2;
+    if m.on_ground && !was {
         landing_splash(m, events);
+        m.anim.v[TARGET_SQUISH] = -0.5;
+    } else if !m.on_ground && was {
+        m.anim.v[TARGET_SQUISH] = 1.0;
     }
     m.extra.flag2 = m.on_ground;
+    // `AbstractCubeMob.decreaseSquish`; `MagmaCube` multiplies by 0.9.
+    m.anim.v[TARGET_SQUISH] *= if m.species() == Species::MagmaCube {
+        0.9
+    } else {
+        0.6
+    };
 }
 /// AbstractCubeMob.tick squish and landing sounds, plus contact damage.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {

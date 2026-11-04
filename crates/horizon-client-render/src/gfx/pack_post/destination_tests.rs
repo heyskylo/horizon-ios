@@ -208,6 +208,7 @@ impl Fixture {
             T::Rgba8Unorm,
             World {
                 atlas: None,
+                material_maps: None,
                 lightmap,
                 terrain: None,
                 block_ids: &[],
@@ -346,8 +347,8 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
     let Some(gpu) = Fixture::new() else { return };
     for clear in [true, false] {
         let mut post = gpu.build(pack(Coverage::Full, false, false, Some(clear), false));
-        // Every frame changes which physical image is main. The other image is fully
-        // seeded red before the partial write, independent of its initial clearing.
+        // The other image is fully seeded red before the partial write, independent of its
+        // initial clearing.
         for frame in 0..3 {
             let actual = gpu.render(&mut post, [16, 16]);
             assert!(
@@ -433,6 +434,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -521,3 +523,6 @@ fn a_cleared_buffer_starts_every_frame_cleared_on_both_textures() {
         assert!(wrong.is_empty(), "frame {frame}: {wrong:?}");
     }
 }
+
+#[path = "clear_false_tests.rs"]
+mod clear_false_tests;

@@ -78,7 +78,7 @@ pub(super) fn reload_sync_data(
     // a `/reload` that dropped them must read its own registries again.
     let packs = !overlay.files.is_empty() || kept.has_pack_entries();
     let sync = SyncData::load(root, overlay).map(|mut sync| {
-        sync.keep_registries(root, kept);
+        sync.keep_registries(root, kept, overlay);
         sync.features.clone_from(&kept.features);
         Arc::new(sync)
     });
@@ -1687,6 +1687,27 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live view distance used for player chunk tracking.
+    pub(super) fn set_view_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_view_distance(distance);
+        }
+    }
+
+    /// Update the live spawn-protection radius.
+    pub(super) fn set_spawn_protection(&mut self, radius: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.spawn_protection = radius;
+        }
+    }
+
+    /// Update the live simulation distance sent to player clients.
+    pub(super) fn set_simulation_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_simulation_distance(distance);
+        }
+    }
+
     /// Update the live movement check's flight policy.
     pub(super) fn set_allow_flight(&mut self, allow: bool) {
         if let Some(host) = self.lan.as_mut() {
@@ -1747,6 +1768,7 @@ impl Game<'_> {
         after: u32,
     ) {
         out.clear();
+        let mut speeds = super::lan_attributes::SpeedByType::default();
         for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
@@ -1785,7 +1807,7 @@ impl Game<'_> {
                 && horizon_client::mobs::happy_ghast::on_still_timeout(m);
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
             mob_equipment(m, hub, &mut e.equipment);
-            self.mob_attributes(m, &mut e.attributes);
+            self.mob_attributes(m, &mut speeds, &mut e.attributes);
             e.leash = leash;
         }
         for d in self.dropped.iter().filter(|d| d.id > after) {
@@ -2666,6 +2688,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
+        if event == 63 && self.options.execution_role.is_client() {
+            self.start_sniffer_digging_sound(id as u32);
         }
         // Event 21: a window that simulates the world itself is its own
         // client, and hears the guardian's hum too.
