@@ -405,6 +405,10 @@ impl<'a> Split<'a> {
             batching,
             self.host.settings.horizon.wide_frame(),
             shader_pack,
+            (
+                self.host.settings.file.int("textureFiltering"),
+                self.host.settings.file.int("maxAnisotropyBit"),
+            ),
         );
         let renderer = match built {
             Ok(r) => r,
@@ -483,6 +487,10 @@ impl<'a> Split<'a> {
             batching,
             self.host.settings.horizon.wide_frame(),
             shader_pack,
+            (
+                self.host.settings.file.int("textureFiltering"),
+                self.host.settings.file.int("maxAnisotropyBit"),
+            ),
         );
         let renderer = match built {
             Ok(r) => r,

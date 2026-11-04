@@ -14316,6 +14316,10 @@ impl Game<'_> {
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
+            (
+                self.settings.file.int("textureFiltering"),
+                self.settings.file.int("maxAnisotropyBit"),
+            ),
         )?;
         renderer.screenshot = screenshot;
         renderer.screenshot_result = screenshot_result;
@@ -14353,6 +14357,10 @@ impl Game<'_> {
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
+            (
+                self.settings.file.int("textureFiltering"),
+                self.settings.file.int("maxAnisotropyBit"),
+            ),
         )
     }
     fn apply_settings(&mut self) {
@@ -20567,6 +20575,7 @@ fn build_renderer(
     // offered (`Renderer::new`).
     wide_frame: bool,
     shader_pack: bool,
+    filtering: (i32, i32),
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -20614,6 +20623,8 @@ fn build_renderer(
     renderer
         .hud
         .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
+    pack.item_renderer
+        .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
     renderer
@@ -21257,6 +21268,10 @@ impl Loading {
                 self.settings.horizon.translucent_batching,
                 self.settings.horizon.wide_frame(),
                 shader_packs::picked_pack_draws_flat(&self.settings),
+                (
+                    self.settings.file.int("textureFiltering"),
+                    self.settings.file.int("maxAnisotropyBit"),
+                ),
             )
         })?;
         log::info!(
