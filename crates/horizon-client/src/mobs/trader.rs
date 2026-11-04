@@ -331,7 +331,7 @@ mod tests {
         use horizon_core::geometry::Vec3;
         use horizon_core::random::LegacyRandom;
         use std::sync::Arc;
-        let ran = with_test_world(&[], |w, types| {
+        let _ = with_test_world(&[], |w, types| {
             let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
             let mut potion = DrinkItem {
@@ -384,8 +384,5 @@ mod tests {
                 (false, false)
             );
         });
-        if !ran {
-            return;
-        }
     }
 }
