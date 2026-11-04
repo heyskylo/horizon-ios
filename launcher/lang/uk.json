@@ -1139,5 +1139,7 @@
   "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
   "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
-  "The Founder Set is yours.": "Набір засновника тепер ваш."
+  "The Founder Set is yours.": "Набір засновника тепер ваш.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it."
 }
