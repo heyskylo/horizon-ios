@@ -1098,7 +1098,6 @@
   "August": "augustus",
   "Back to the wardrobe": "Trök nao de kledingkast",
   "Bound to your Minecraft account, on every computer you sign in on.": "Gebónje aan dien Minecraft-account, op eder computer woe se op inlogs.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Gebónje aan dien Minecraft-account. Niks te betale, geine pas gevraagd.",
   "Changes waiting to sync: {n}": "Wijziginge die op synchronisatie wachte: {n}",
   "Claimed · Open the wardrobe": "Opgeëis · Maak de kledingkast open",
   "Claiming…": "Aan 't opeise…",
@@ -1152,5 +1151,16 @@
   "{d} days {h} h": "{d} dage {h} oor",
   "{h} h {m} min": "{h} oor {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "Nog {time} um 't op te eise"
+  "{time} left to claim it": "Nog {time} um 't op te eise",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Gebónje aan dien Minecraft-account. Gratis: e checkout van 0 CHF via Paddle leg dien aanspraak vas.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Rond de gratis checkout aaf in dien browser. De set kömp ei momentje later hie aan.",
+  "Open the checkout again": "Checkout opnuuj opene",
+  "Waiting for the checkout…": "Waachte op de checkout…",
+  "Your purchases": "Dien aankäöp",
+  "Refunded": "Trökbetaald",
+  "Partly refunded": "Gedeeltelik trökbetaald",
+  "Charged back": "Trökgeboekt door de bank",
+  "Paid": "Betaald",
+  "Order {id}": "Bestèlling {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "De aanspraak is neet geslaag: 't adres van de checkout is neet dat van Horizon."
 }

@@ -299,6 +299,22 @@ impl Game<'_> {
                     self.harness_owner(|g| g.break_block(pos))?;
                 }
                 "portal" => self.harness_portal()?,
+                "destroy_progress" => {
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    let bits = self.harness_owner(|g| {
+                        if let Some(player) = g.player.as_mut() {
+                            player.ground.on_ground = true;
+                        }
+                        Ok(g.destroy_progress(pos).to_bits())
+                    })?;
+                    let record = json!({
+                        "cmd": "#destroy_progress",
+                        "messages": [],
+                        "results": [[true, bits]],
+                    });
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "falling" => {
                     // Physical falling blocks are not command-selector targets
                     // yet. Inspect the actual level rather than that unrelated gap.

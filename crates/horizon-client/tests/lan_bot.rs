@@ -1143,6 +1143,92 @@ fn guests_see_each_other_and_the_world_entities() {
     drop(second);
 }
 
+/// A menu opened with extra data (a mod menu type's, NeoForge's `openMenu`
+/// with an extra-data writer) reaches the client as a `horizon:menu_extra`
+/// payload naming the window and the block, right before that window's
+/// `OpenScreen`; a menu without it sends no payload.
+#[test]
+fn menu_extra_data_comes_right_before_its_menu() {
+    use horizon_client::{items::ItemStack, lan::menu::Slots};
+    use horizon_protocol::menu_extra;
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let bot = run(&mut s, move || connect(port, "Machinist", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    let conn = s.hub.guests[0].conn;
+    bot.c
+        .reader
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let key = (3, 70, -5);
+    let items: Vec<Option<ItemStack>> = vec![None; 9];
+    let title = || horizon_protocol::text::translatable("container.dispenser", &[]);
+    /// The packets up to the next `OpenScreen`: the menu extra payloads met
+    /// on the way, each with whether the screen came right after it, then
+    /// the screen's window.
+    type Extras = Vec<(menu_extra::Message, bool)>;
+    fn until_screen(mut bot: Bot) -> Result<(Bot, Extras, i32), String> {
+        let mut extras = Extras::new();
+        loop {
+            match bot.recv_play()? {
+                C::CustomPayload(p) if p.channel == menu_extra::CHANNEL => {
+                    let message = menu_extra::decode(&p.data).map_err(|e| e.to_string())?;
+                    extras.push((message, true));
+                }
+                C::OpenScreen(p) => return Ok((bot, extras, p.container)),
+                _ => {
+                    if let Some(last) = extras.last_mut() {
+                        last.1 = false;
+                    }
+                }
+            }
+        }
+    }
+    s.hub.open_container(
+        conn,
+        "minecraft:generic_3x3",
+        title(),
+        key,
+        Slots::Block(key),
+        items.clone(),
+        None,
+    );
+    let (bot, extras, _) = run(&mut s, move || until_screen(bot));
+    assert!(extras.is_empty(), "a stock menu sends no extra data");
+    s.hub.open_container(
+        conn,
+        "minecraft:generic_3x3",
+        title(),
+        key,
+        Slots::Block(key),
+        items,
+        Some(vec![7, 0, 255]),
+    );
+    let window = s.hub.guests[0].menu.as_ref().unwrap().window;
+    let (_, extras, opened) = run(&mut s, move || until_screen(bot));
+    assert_eq!(opened, window);
+    assert_eq!(
+        extras,
+        [(
+            menu_extra::Message {
+                window,
+                pos: [3, 70, -5],
+                data: vec![7, 0, 255],
+            },
+            true
+        )],
+        "one payload, for this window and block, with nothing between it and the screen"
+    );
+}
+
 /// `ServerGamePacketListenerImpl.handleContainerClick`: a spectator looks
 /// into a chest but its clicks change nothing, and `sendAllDataToRemote`
 /// takes back what its client predicted.
@@ -1194,6 +1280,7 @@ fn a_spectators_container_click_is_taken_back() {
         key,
         Slots::Block(key),
         items.clone(),
+        None,
     );
     let window = s.hub.guests[0].menu.as_ref().unwrap().window;
     // The menu's own contents, as the client first sees them.
@@ -1352,6 +1439,7 @@ fn a_click_past_the_menu_is_ignored() {
         key,
         Slots::Block(key),
         items,
+        None,
     );
     let stone = Some(ItemStack::new("minecraft:stone", 64));
     s.hub.guests[0].inventory[9] = stone.clone();

@@ -1531,11 +1531,18 @@ impl Game<'_> {
     /// `key.screenshot` mapping (F2 by default) takes the picture before a
     /// screen or a text box sees the key, and the debug modifier suppresses it.
     pub(super) fn screenshot_shortcut(&mut self, key: KeyCode, repeat: bool) -> bool {
-        if repeat || self.debug_keys.modifier_down {
+        if repeat
+            || horizon_client::keybinds::key_name(key)
+                != Some(self.settings.keys.get("key.screenshot"))
+        {
             return false;
         }
-        if horizon_client::keybinds::key_name(key) != Some(self.settings.keys.get("key.screenshot"))
-        {
+        self.screenshot_action()
+    }
+    /// key.screenshot from any device: not while F3 is down, where F3+F2 is a
+    /// debug key.
+    pub(super) fn screenshot_action(&mut self) -> bool {
+        if self.debug_keys.modifier_down {
             return false;
         }
         self.take_screenshot();

@@ -248,6 +248,31 @@ public final class VanillaCommandExecOracle {
                         player.gameMode.destroyBlock(new BlockPos(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt()));
                     }
                     case "portal" -> portal();
+                    case "destroy_progress" -> {
+                        JsonArray coords = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(coords.get(0).getAsInt(), coords.get(1).getAsInt(), coords.get(2).getAsInt());
+                        // The fixture server does not tick its standalone player. Run
+                        // LivingEntity's actual equipment refresh before observing mining.
+                        try {
+                            var refresh = net.minecraft.world.entity.LivingEntity.class.getDeclaredMethod("detectEquipmentUpdates");
+                            refresh.setAccessible(true);
+                            refresh.invoke(player);
+                        } catch (ReflectiveOperationException error) {
+                            throw new IllegalStateException(error);
+                        }
+                        player.setOnGround(true);
+                        float progress = player.level().getBlockState(pos).getDestroyProgress(player, player.level(), pos);
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#destroy_progress");
+                        record.add("messages", new JsonArray());
+                        JsonArray value = new JsonArray();
+                        value.add(true);
+                        value.add(Float.floatToRawIntBits(progress));
+                        JsonArray results = new JsonArray();
+                        results.add(value);
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "falling" -> {
                         String dimension = op.get("dimension").getAsString();
                         String block = op.get("block").getAsString();

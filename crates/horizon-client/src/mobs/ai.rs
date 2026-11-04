@@ -1589,6 +1589,7 @@ impl Mob {
             && !matches!(self.species(), Species::Bat | Species::Shulker)
             && (!self.kind.flags.climber || !self.climbing)
             && (self.species() != Species::Creaking || super::creaking::can_move(self))
+            && (self.species() != Species::Warden || !super::warden::digging_or_emerging(self))
     }
 }
 /// LivingEntity.onClimbable for the pusher (Spider.onClimbable: climbing a wall).
@@ -1620,6 +1621,7 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && m.species() != Species::Shulker
         && !on_climbable(m, w)
         && (m.species() != Species::Creaking || super::creaking::can_move(m))
+        && (m.species() != Species::Warden || !super::warden::digging_or_emerging(m))
         && !super::equine::is_vehicle(m);
     // Each with whether it rides a vehicle (`Entity.isPassenger`) and
     // whether it shares this one's root vehicle (`isPassengerOfSameVehicle`).
@@ -3664,6 +3666,75 @@ mod same_vehicle_push_tests {
             vec![1],
             "the cow pushes a horse nobody rides"
         );
+    }
+}
+
+#[cfg(test)]
+mod warden_push_tests {
+    use super::*;
+    use crate::mobs::warden::{Pose, set_pose};
+    use crate::mobs::world::{test_player, with_test_world};
+
+    #[test]
+    fn a_warden_in_the_ground_does_not_take_collision_pushes() {
+        with_test_world(&[], |world, types| {
+            let mob = |id, kind: &str, x| {
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types[kind].clone()),
+                    Vec3::new(x, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            for pose in [Pose::Emerging, Pose::Digging, Pose::Standing] {
+                let mut warden = mob(1, "minecraft:warden", 0.5);
+                set_pose(&mut warden, pose);
+                let standing = pose == Pose::Standing;
+                assert_eq!(warden.pushable(), standing, "{pose:?}");
+                assert_eq!(warden.seen(None).pushable, standing, "{pose:?}");
+
+                // The warden's tick: an overlapping mob must not move it.
+                let mut cow = mob(2, "minecraft:cow", 1.0);
+                let others = [cow.seen(None)];
+                let mut w = world.clone();
+                w.others = &others;
+                let mut events = Vec::new();
+                push_entities(&mut warden, &w, &mut events);
+                assert_eq!(warden.velocity.x != 0.0, standing, "mob: {pose:?}");
+                // Non-pushable is not an early return: it still pushes others.
+                assert!(events.iter().any(|e| matches!(
+                    e,
+                    MobEvent::Push {
+                        target: Who::Mob(2),
+                        ..
+                    }
+                )));
+
+                // The other mob's tick: the warden's Seen must exclude it.
+                let others = [warden.seen(None)];
+                w.others = &others;
+                events.clear();
+                push_entities(&mut cow, &w, &mut events);
+                let pushes_warden = events.iter().any(|e| {
+                    matches!(
+                        e,
+                        MobEvent::Push {
+                            target: Who::Mob(1),
+                            ..
+                        }
+                    )
+                });
+                assert_eq!(pushes_warden, standing, "other tick: {pose:?}");
+
+                // The player branch of the warden's tick has its own target path.
+                w.others = &[];
+                w.player = Some(test_player(Vec3::new(1.0, 64.0, 0.5)));
+                warden.velocity = Vec3::ZERO;
+                events.clear();
+                push_entities(&mut warden, &w, &mut events);
+                assert_eq!(warden.velocity.x != 0.0, standing, "player: {pose:?}");
+            }
+        });
     }
 }
 

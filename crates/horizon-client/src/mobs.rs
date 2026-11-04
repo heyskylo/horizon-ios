@@ -619,8 +619,39 @@ impl MobTypes {
     }
 }
 pub use horizon_client_core::who::Who;
+/// A native damage type's registry name and the tags consumed by mob combat.
+///
+/// Native code supplies a static name (no interning or leaked runtime strings)
+/// and flags matching its data-pack damage tags. Register the same name/data for
+/// player damage, death messages and loot predicates. Unset tags are false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedDamage {
+    pub name: &'static str,
+    pub tags: u32,
+}
+impl NamedDamage {
+    pub const IS_FIRE: u32 = 1 << 0;
+    pub const BYPASSES_ARMOR: u32 = 1 << 1;
+    pub const NO_KNOCKBACK: u32 = 1 << 2;
+    pub const BYPASSES_INVULNERABILITY: u32 = 1 << 3;
+    pub const BYPASSES_EFFECTS: u32 = 1 << 4;
+    pub const BYPASSES_RESISTANCE: u32 = 1 << 5;
+    pub const PANIC_CAUSES: u32 = 1 << 6;
+    pub const IS_PROJECTILE: u32 = 1 << 7;
+    pub const IS_EXPLOSION: u32 = 1 << 8;
+    pub const IS_FALL: u32 = 1 << 9;
+
+    pub const fn new(name: &'static str, tags: u32) -> Self {
+        Self { name, tags }
+    }
+    pub const fn has(self, tag: u32) -> bool {
+        self.tags & tag != 0
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DamageKind {
+    /// A registered native damage type; vanilla kinds keep their existing tags.
+    Named(NamedDamage),
     PlayerAttack,
     /// `mace_smash`: a mace hit after a fall (the player attack tags too).
     MaceSmash,
@@ -690,14 +721,23 @@ pub enum DamageKind {
 impl DamageKind {
     /// DamageTypeTags.BYPASSES_INVULNERABILITY
     pub fn bypasses_invulnerability(self) -> bool {
+        if let Self::Named(named) = self {
+            return named.has(NamedDamage::BYPASSES_INVULNERABILITY);
+        }
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
     /// DamageTypeTags.BYPASSES_EFFECTS
     pub fn bypasses_effects(self) -> bool {
+        if let Self::Named(named) = self {
+            return named.has(NamedDamage::BYPASSES_EFFECTS);
+        }
         matches!(self, DamageKind::Starve)
     }
     /// DamageTypeTags.BYPASSES_RESISTANCE
     pub fn bypasses_resistance(self) -> bool {
+        if let Self::Named(named) = self {
+            return named.has(NamedDamage::BYPASSES_RESISTANCE);
+        }
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
 }
@@ -783,6 +823,9 @@ impl Damage {
     }
     /// DamageTypeTags.PANIC_CAUSES
     pub fn causes_panic(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::PANIC_CAUSES);
+        }
         !matches!(
             self.kind,
             DamageKind::Fall
@@ -805,6 +848,9 @@ impl Damage {
     }
     /// DamageTypeTags.BYPASSES_ARMOR
     pub fn bypasses_armor(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::BYPASSES_ARMOR);
+        }
         matches!(
             self.kind,
             DamageKind::Fall
@@ -826,6 +872,9 @@ impl Damage {
         )
     }
     pub fn is_fire(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::IS_FIRE);
+        }
         matches!(
             self.kind,
             DamageKind::OnFire
@@ -839,6 +888,9 @@ impl Damage {
     }
     /// DamageTypeTags.NO_KNOCKBACK
     pub fn no_knockback(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::NO_KNOCKBACK);
+        }
         matches!(
             self.kind,
             DamageKind::Explosion
@@ -869,6 +921,9 @@ impl Damage {
         )
     }
     pub fn is_projectile(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::IS_PROJECTILE);
+        }
         matches!(
             self.kind,
             DamageKind::Arrow
@@ -5158,6 +5213,86 @@ mod effect_refusal_tests {
     }
 }
 crate::impl_joined!(Mob);
+
+#[cfg(test)]
+mod named_damage_tests {
+    use super::*;
+
+    fn pig() -> Mob {
+        let mut kind = super::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = Species::Pig;
+        def.armor = 20.0;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+    fn fire(tags: u32) -> Damage {
+        Damage::of(DamageKind::Named(NamedDamage::new(
+            "example:fan_fire",
+            NamedDamage::IS_FIRE | NamedDamage::BYPASSES_ARMOR | tags,
+        )))
+    }
+    #[test]
+    fn named_fire_uses_normal_immunity_and_protection_without_becoming_on_fire() {
+        let mut resistant = pig();
+        resistant.add_effect("minecraft:fire_resistance", -1, 0);
+        assert!(!resistant.damage(2.0, fire(0)));
+        assert_eq!((resistant.health, resistant.invulnerable), (10.0, 0));
+        let mut immune = pig();
+        Arc::make_mut(&mut immune.kind).flags.fire_immune = true;
+        assert!(!immune.damage(2.0, fire(0)));
+        let mut bare = pig();
+        assert!(bare.damage(2.0, fire(0)));
+        assert_eq!(bare.health, 8.0); // bypasses the 20 armor points
+        assert!(bare.velocity.x != 0.0 || bare.velocity.z != 0.0);
+        assert_eq!(bare.last_damage.unwrap().0.kind, fire(0).kind);
+        let mut protected = pig();
+        gear::set(
+            &mut protected,
+            gear::CHEST,
+            vec![("minecraft:fire_protection".into(), 4)],
+        );
+        assert!(protected.damage(2.0, fire(0)));
+        assert!((protected.health - 8.64).abs() < 0.00001);
+        let mut still = pig();
+        assert!(still.damage(2.0, fire(NamedDamage::NO_KNOCKBACK)));
+        assert_eq!(still.velocity, Vec3::ZERO);
+    }
+    #[test]
+    fn named_tags_control_resistance_and_specialist_enchantments() {
+        let mut mob = pig();
+        mob.add_effect("minecraft:resistance", -1, 0);
+        assert!(mob.damage(2.0, fire(0)));
+        assert!((mob.health - 8.4).abs() < 0.00001);
+        let mut bypass = pig();
+        bypass.add_effect("minecraft:resistance", -1, 0);
+        assert!(bypass.damage(2.0, fire(NamedDamage::BYPASSES_RESISTANCE)));
+        assert_eq!(bypass.health, 8.0);
+        let mut no_effects = pig();
+        no_effects.add_effect("minecraft:resistance", -1, 0);
+        gear::set(
+            &mut no_effects,
+            gear::CHEST,
+            vec![("minecraft:fire_protection".into(), 4)],
+        );
+        assert!(no_effects.damage(2.0, fire(NamedDamage::BYPASSES_EFFECTS)));
+        assert_eq!(no_effects.health, 8.0);
+        let mut armor = gear::Gear::default();
+        armor.slots[gear::FEET] = vec![("minecraft:feather_falling".into(), 4)];
+        armor.slots[gear::CHEST] = vec![("minecraft:blast_protection".into(), 4)];
+        let kind = |tags| DamageKind::Named(NamedDamage::new("example:impact", tags));
+        assert_eq!(gear::protection_points(&armor, kind(0)), 0.0);
+        assert_eq!(
+            gear::protection_points(&armor, kind(NamedDamage::IS_FALL)),
+            12.0
+        );
+        assert_eq!(
+            gear::protection_points(&armor, kind(NamedDamage::IS_EXPLOSION)),
+            8.0
+        );
+    }
+}
+
 #[cfg(test)]
 mod silent_voice_tests {
     use super::*;
