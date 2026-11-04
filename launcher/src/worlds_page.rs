@@ -147,7 +147,7 @@ impl Launcher {
                     let dir = zip.parent().map(Path::to_path_buf).unwrap_or(zip);
                     line = line.child(
                         button("world-backups", "Open backups", Kind::Ghost, &t)
-                            .on_click(move |_, _, cx| cx.open_with_system(&dir)),
+                            .on_click(move |_, _, cx| crate::glass_toast::open(cx, &dir)),
                     );
                 }
                 section = section.child(line);
@@ -172,7 +172,7 @@ impl Launcher {
                             button("worlds-folder", "Open folder", Kind::Ghost, &t).on_click(
                                 move |_, _, cx| {
                                     let _ = std::fs::create_dir_all(&saves);
-                                    cx.open_with_system(&saves);
+                                    crate::glass_toast::open(cx, &saves);
                                 },
                             ),
                         ),
@@ -310,7 +310,7 @@ impl Launcher {
                 })
                 .child(
                     act("world-folder", "Open folder", Kind::Ghost)
-                        .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
                 );
         }
         plate(&t)

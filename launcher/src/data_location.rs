@@ -5,7 +5,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -45,25 +48,137 @@ fn has_override() -> bool {
     overridden("HORIZON_LAUNCHER_HOME") || overridden("HORIZON_HOME")
 }
 
+/// Roots resolved once per process. `retry` clears it so a repaired location is read again.
+static LOCATION: Mutex<Option<Result<Option<Roots>>>> = Mutex::new(None);
+/// A startup failure falls back to the default folders, so a window can still open.
+static FORCE_DEFAULT: AtomicBool = AtomicBool::new(false);
+static STARTUP_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static STARTUP_LEASE: Mutex<Option<File>> = Mutex::new(None);
+
+fn location() -> std::sync::MutexGuard<'static, Option<Result<Option<Roots>>>> {
+    LOCATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn open_error(error: &str) -> String {
+    format!("Cannot open the data folder: {error}")
+}
+
+fn remember_startup_error(error: Option<String>) {
+    *STARTUP_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+}
+
 /// Stable for the lifetime of this process, including errors. Environment overrides are
 /// applied per root by the caller; fully isolated callers need not read the real bootstrap.
-pub fn configured_roots() -> Result<Option<&'static Roots>> {
-    static LOCATION: OnceLock<Result<Option<Roots>>> = OnceLock::new();
-    LOCATION
-        .get_or_init(|| {
-            if overridden("HORIZON_LAUNCHER_HOME") && overridden("HORIZON_HOME") {
-                Ok(None)
-            } else {
-                resolve_at(&bootstrap_path()?)
+pub fn configured_roots() -> Result<Option<Roots>> {
+    if FORCE_DEFAULT.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let mut slot = location();
+    if slot.is_none() {
+        let resolved = if overridden("HORIZON_LAUNCHER_HOME") && overridden("HORIZON_HOME") {
+            Ok(None)
+        } else {
+            match bootstrap_path() {
+                Ok(bootstrap) => resolve_at(&bootstrap),
+                Err(error) => Err(error),
             }
-        })
-        .as_ref()
-        .map(Option::as_ref)
-        .map_err(Clone::clone)
+        };
+        *slot = Some(resolved);
+    }
+    slot.as_ref().expect("roots are resolved above").clone()
 }
 
 pub fn validate() -> Result<()> {
     configured_roots().map(|_| ())
+}
+
+/// Run before any launcher path is used. A broken location never ends the process: it is
+/// recorded for Settings, and the default folders stand in until the player retries or keeps
+/// them. The returned text is also [`startup_error`].
+pub fn startup() -> Option<String> {
+    let mut problems = Vec::new();
+    if let Err(error) = configured_roots() {
+        FORCE_DEFAULT.store(true, Ordering::Release);
+        problems.push(open_error(&error));
+    }
+    match acquire_startup_lock() {
+        Ok(lease) => {
+            *STARTUP_LEASE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = lease;
+        }
+        Err(error) => problems.push(error),
+    }
+    let error = (!problems.is_empty()).then(|| {
+        problems.join(
+            "
+",
+        )
+    });
+    remember_startup_error(error.clone());
+    error
+}
+
+pub fn startup_error() -> Option<String> {
+    STARTUP_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Try the configured location again. Success requires a restart: paths already resolved to
+/// the default folders are not switched under a running window.
+pub fn retry() -> Result<()> {
+    FORCE_DEFAULT.store(false, Ordering::Release);
+    *location() = None;
+    if let Err(error) = configured_roots() {
+        FORCE_DEFAULT.store(true, Ordering::Release);
+        remember_startup_error(Some(error.clone()));
+        return Err(error);
+    }
+    match acquire_startup_lock() {
+        Ok(lease) => {
+            *STARTUP_LEASE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = lease;
+        }
+        Err(error) => {
+            remember_startup_error(Some(error.clone()));
+            return Err(error);
+        }
+    }
+    remember_startup_error(None);
+    Ok(())
+}
+
+/// The error `startup` would report for one bootstrap; the UI opens with it instead of
+/// the launcher exiting.
+pub fn startup_error_at(bootstrap: &Path) -> Option<String> {
+    resolve_at(bootstrap).err().map(|error| open_error(&error))
+}
+
+/// Forget the pointer and keep the default folders. The old folders are untouched and the
+/// pointer is kept beside it as `location.json.old`, so it can be restored by hand.
+pub fn use_default_folder() -> Result<()> {
+    use_default_at(&bootstrap_path()?)
+}
+
+fn use_default_at(bootstrap: &Path) -> Result<()> {
+    if bootstrap.exists() {
+        let backup = bootstrap.with_file_name("location.json.old");
+        if backup.exists() {
+            fs::remove_file(&backup).map_err(|e| problem(&backup, e))?;
+        }
+        fs::rename(bootstrap, &backup).map_err(|e| problem(bootstrap, e))?;
+    }
+    FORCE_DEFAULT.store(true, Ordering::Release);
+    *location() = Some(Ok(None));
+    remember_startup_error(None);
+    Ok(())
 }
 
 /// Explicit paths make tests independent of the real user's bootstrap and environment.

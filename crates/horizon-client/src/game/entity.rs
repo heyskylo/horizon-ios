@@ -155,8 +155,9 @@ pub(super) trait Entity: EntityRules {
         let b = self.explosion_box();
         f64::from((b.max_position().y - b.min_position().y) as f32 * 0.85f32)
     }
-    /// Whether this kind ticks after the projectiles do (orbs, falling blocks,
-    /// primed TNT), where vanilla ticks every entity in the order it joined.
+    /// Whether this kind can still be waiting for its tick when a projectile
+    /// ticks, though it joined before it (orbs, falling blocks, primed TNT: they
+    /// tick between the batches, `game/ordered_tick.rs`).
     fn ticks_after_projectiles(&self) -> bool {
         false
     }
@@ -305,20 +306,26 @@ pub(super) fn tick_item(
     no_physics: bool,
     entity_boxes: &[Aabb],
     border: Option<&horizon_core::geometry::border::BorderGeometry>,
+    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
 ) -> bool {
-    let heights = item.push_by_fluid(world, fluids);
+    let (water, _lava) = item.push_by_fluid(world, fluids);
+    // `Entity.baseTick` splashes before the item moves. The first tick does not.
+    item.water_entry(water > 0.0, item.ticks == 0, splash);
     let step = item.tick_move(
         world,
         facts,
         collision,
         no_physics,
-        heights,
+        (water, _lava),
         entity_boxes,
         border,
     );
     item.push_by_bubble_column(world, registry, facts, collision);
     let alive = item.tick_settle(world, facts, no_physics, step);
-    item.push_by_fluid(world, fluids);
+    // `ItemEntity.tick` refreshes immersion after moving and splashes if that
+    // move is what entered the water.
+    let (water, _) = item.push_by_fluid(world, fluids);
+    item.water_entry(water > 0.0, false, splash);
     alive
 }
 

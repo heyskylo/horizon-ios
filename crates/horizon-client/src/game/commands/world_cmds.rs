@@ -824,6 +824,10 @@ impl Game<'_> {
                         let _ = player.attributes.edit(&handle, |value, observer| {
                             value.set_base_value(value_arg, observer)
                         });
+                        // onAttributeUpdated: a lowered max_health clamps health.
+                        if attribute == "minecraft:max_health" {
+                            let _ = player.clamp_health_to_max();
+                        }
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.set.success",
                             &[description, name, java_double_text(value_arg)],
@@ -842,6 +846,9 @@ impl Game<'_> {
                             .attributes
                             .value(Some(key.clone()), ValueKind::Base)
                             .unwrap_or(0.0);
+                        if attribute == "minecraft:max_health" {
+                            let _ = player.clamp_health_to_max();
+                        }
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.reset.success",
                             &[description, name, java_double_text(v)],
@@ -941,10 +948,7 @@ impl Game<'_> {
             }
             Target::Mob(_) | Target::Stand(_)
                 if !(matches!(target, Target::Mob(_))
-                    && matches!(
-                        short.as_str(),
-                        "max_health" | "movement_speed" | "attack_damage"
-                    )) =>
+                    && finalize::command_attr(short.as_str()).is_some()) =>
             {
                 let op = ctx
                     .literals
@@ -963,28 +967,28 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) else {
                     return Ok(0);
                 };
-                // Core mob attributes also have cached gameplay fields.
-                let slot: Option<f64> = match short.as_str() {
-                    "max_health" => Some(if id == "attribute.base.get" {
-                        finalize::base_value(m, Attr::MaxHealth)
-                    } else {
-                        finalize::value(m, Attr::MaxHealth)
-                    }),
-                    "movement_speed" => Some(if id == "attribute.base.get" {
-                        finalize::base_value(m, Attr::MovementSpeed)
-                    } else {
-                        m.attrs.speed
-                    }),
-                    "attack_damage" => Some(if id == "attribute.base.get" {
-                        finalize::base_value(m, Attr::AttackDamage)
-                    } else {
-                        f64::from(m.attrs.attack_damage)
-                    }),
-                    _ => None,
-                };
-                let Some(current) = slot else {
+                // The attributes the mob's gameplay reads live in `finalize`;
+                // the command edits that store, never a copy of it.
+                let Some(attr) = finalize::command_attr(short.as_str())
+                    .filter(|a| finalize::default_value(m, *a).is_some())
+                else {
                     return Err(no_attribute(&name, &description));
                 };
+                let current = if id == "attribute.base.get" {
+                    finalize::base_value(m, attr)
+                } else if attr == Attr::MovementSpeed {
+                    m.attrs.speed
+                } else {
+                    finalize::value(m, attr)
+                };
+                let no_modifier = text_error(
+                    "commands.attribute.failed.no_modifier",
+                    &[
+                        description.clone(),
+                        name.clone(),
+                        Text::literal(modifier_id.clone()),
+                    ],
+                );
                 match id {
                     "attribute.get" | "attribute.base.get" => {
                         let k = if id == "attribute.get" {
@@ -999,17 +1003,9 @@ impl Game<'_> {
                         Ok((current * scale) as i32)
                     }
                     "attribute.base.set" => {
-                        match short.as_str() {
-                            "max_health" => {
-                                // AttributeInstance keeps the raw base, clamps only
-                                // the effective value, and does not change Health.
-                                finalize::set_base(m, Attr::MaxHealth, value_arg);
-                            }
-                            "movement_speed" => {
-                                finalize::set_base(m, Attr::MovementSpeed, value_arg)
-                            }
-                            _ => finalize::set_base(m, Attr::AttackDamage, value_arg),
-                        }
+                        // AttributeInstance keeps the raw base and clamps only the
+                        // effective value; Health is unchanged.
+                        finalize::set_base(m, attr, value_arg);
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.set.success",
                             &[description, name, java_double_text(value_arg)],
@@ -1017,39 +1013,60 @@ impl Game<'_> {
                         Ok(1)
                     }
                     "attribute.base.reset" => {
-                        match short.as_str() {
-                            "max_health" => {
-                                let default = f64::from(m.kind.max_health);
-                                finalize::set_base(m, Attr::MaxHealth, default);
-                            }
-                            "movement_speed" => {
-                                let default = m.kind.speed;
-                                finalize::set_base(m, Attr::MovementSpeed, default);
-                            }
-                            _ => {
-                                let default = f64::from(m.kind.attack_damage);
-                                finalize::set_base(m, Attr::AttackDamage, default);
-                            }
-                        }
-                        let v = match short.as_str() {
-                            "max_health" => finalize::base_value(m, Attr::MaxHealth),
-                            "movement_speed" => finalize::base_value(m, Attr::MovementSpeed),
-                            _ => finalize::base_value(m, Attr::AttackDamage),
-                        };
+                        let default = finalize::default_value(m, attr).unwrap_or_default();
+                        finalize::set_base(m, attr, default);
+                        let v = finalize::base_value(m, attr);
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.reset.success",
                             &[description, name, java_double_text(v)],
                         ));
                         Ok(1)
                     }
-                    _ => Err(text_error(
-                        "commands.attribute.failed.no_modifier",
-                        &[
-                            description.clone(),
-                            name.clone(),
-                            Text::literal(modifier_id.clone()),
-                        ],
-                    )),
+                    "attribute.modifier.add" => {
+                        if finalize::has_modifier(m, attr, &modifier_id) {
+                            return Err(text_error(
+                                "commands.attribute.failed.modifier_already_present",
+                                &[Text::literal(modifier_id.clone()), description, name],
+                            ));
+                        }
+                        let op = match ctx.literals.last().map(String::as_str) {
+                            Some("add_multiplied_base") => finalize::Op::AddMultipliedBase,
+                            Some("add_multiplied_total") => finalize::Op::AddMultipliedTotal,
+                            _ => finalize::Op::AddValue,
+                        };
+                        finalize::add_modifier(m, attr, modifier_id.clone(), value_arg, op);
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.add.success",
+                            &[Text::literal(modifier_id.clone()), description, name],
+                        ));
+                        Ok(1)
+                    }
+                    "attribute.modifier.remove" => {
+                        if !finalize::has_modifier(m, attr, &modifier_id) {
+                            return Err(no_modifier);
+                        }
+                        finalize::remove_modifier(m, attr, &modifier_id);
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.remove.success",
+                            &[Text::literal(modifier_id.clone()), description, name],
+                        ));
+                        Ok(1)
+                    }
+                    _ => {
+                        let Some(v) = finalize::modifier_amount(m, attr, &modifier_id) else {
+                            return Err(no_modifier);
+                        };
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.value.get.success",
+                            &[
+                                Text::literal(modifier_id.clone()),
+                                description,
+                                name,
+                                java_double_text(v),
+                            ],
+                        ));
+                        Ok((v * scale) as i32)
+                    }
                 }
             }
             _ => Err(text_error(

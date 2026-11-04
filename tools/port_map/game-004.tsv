@@ -71,7 +71,7 @@ Display.tick	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDis
 Display.defineSynchedData	port	crates/horizon-client/src/text_display.rs::TextDisplayData::default	the defaults of entries 8 to 22
 Display.readAdditionalSaveData	port	crates/horizon-client/src/text_display.rs::display_data	the synched data entries (ids 8 to 22) of a saved display, matrix transformation included
 Display.setTransformation	port	crates/horizon-client/src/game/native_entities.rs::Game::native_set_display	a display Horizon keeps as a saved tag (block_display, item_display, text_display) eases from what it showed: the transformation and its interpolation and teleport durations, written for the mod API (native_set_display); nothing writes the brightness, billboard or shadow values back
-Display.addAdditionalSaveData	missing		minor: no local display entity to save
+Display.addAdditionalSaveData	inline	crates/horizon-client/src/game/native_entities.rs::NativeDisplay::write	the transformation and both durations of a display Horizon holds, plus the start delay flipped between 0 and -1; billboard, brightness, glow colour, view range, shadow and the width and height are not written
 Display.getInterpolatedBoundingBox	port	crates/horizon-client/src/text_display.rs::culling_box	width-centred XZ box from y to y+height at the interpolated origin; used by Game::display_in_view
 Display.setBrightnessOverride	missing		minor: server side setter; there is no local display entity
 Display.getBrightnessOverride	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the packed sky and block light of the brightness entry (-1 uses the world light)

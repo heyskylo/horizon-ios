@@ -8,8 +8,24 @@ fn env_value(key: &str) -> Option<String> {
 }
 
 pub(super) fn startup_error() -> Option<String> {
-    env_value("HORIZON_RELOCATION_ERROR")
-        .map(|error| trf("Data move failed: {error}", &[("error", &error)]))
+    horizon_launcher::data_location::startup_error()
+        .map(|error| {
+            trf(
+                "Could not open the data folder: {error}",
+                &[("error", &error)],
+            )
+        })
+        .or_else(|| {
+            env_value("HORIZON_RELOCATION_ERROR")
+                .map(|error| trf("Data move failed: {error}", &[("error", &error)]))
+        })
+}
+
+fn open_error(error: &str) -> String {
+    trf(
+        "Could not open the data folder: {error}",
+        &[("error", error)],
+    )
 }
 
 pub(super) fn startup_note() -> Option<String> {
@@ -107,6 +123,30 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Try the configured folder again. A success restarts the launcher, because paths already
+    /// resolved to the fallback folders cannot be swapped under a running window.
+    fn retry_location(&mut self, cx: &mut Context<Self>) {
+        match horizon_launcher::data_location::retry() {
+            Ok(()) => {
+                self.location_error = Some(backend::restart());
+            }
+            Err(error) => self.location_error = Some(open_error(&error)),
+        }
+        cx.notify();
+    }
+
+    /// Keep the default folders: the pointer is kept beside the old one as `location.json.old`,
+    /// and nothing in the moved folders is deleted.
+    fn use_default_location(&mut self, cx: &mut Context<Self>) {
+        match horizon_launcher::data_location::use_default_folder() {
+            Ok(()) => {
+                self.location_error = Some(backend::restart());
+            }
+            Err(error) => self.location_error = Some(open_error(&error)),
+        }
+        cx.notify();
+    }
+
     fn location_picker_error(&mut self, error: String) {
         self.location_error = Some(trf(
             "Could not choose data folder: {error}",
@@ -181,6 +221,31 @@ impl Launcher {
             .children(self.location_error.as_ref().map(|message| {
                 text(theme::CAPTION).text_color(t.danger).child(message.clone())
             }));
+        if horizon_launcher::data_location::startup_error().is_some() {
+            body = body.child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        button("retry-data-location", "Retry", Kind::Primary, &t).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.retry_location(cx)),
+                        ),
+                    )
+                    .child(
+                        button(
+                            "use-default-data-location",
+                            "Use the default folder",
+                            Kind::Secondary,
+                            &t,
+                        )
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.use_default_location(cx);
+                            },
+                        )),
+                    ),
+            );
+        }
         if let Some(target) = &self.location_target {
             let confirm = button("confirm-move-data", "Move and restart", Kind::Primary, &t);
             let confirm = if self.location_blocked().is_some() {

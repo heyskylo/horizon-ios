@@ -54,6 +54,8 @@ fn active_worlds_cannot_be_backed_up_copied_or_deleted() {
     assert!(!home.join("saves/Active (1)").exists());
     assert_eq!(fs::read(dir.join("region/r.0.0.mca")).unwrap(), [7u8; 1000]);
 
+    // As the game does when it closes; dropping alone could leave it held by a process another
+    // test is starting.
     game.unlock().unwrap();
     drop(game);
     assert!(backup(&home, &w).unwrap().is_file());

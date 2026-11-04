@@ -370,3 +370,59 @@ fn canonical_windows_paths_are_validated_from_the_complete_root() {
     assert_eq!(std::fs::canonicalize(&plain).unwrap(), path);
     assert_eq!(checked_path(&plain).unwrap(), plain);
 }
+
+#[test]
+fn a_missing_or_unreadable_location_is_reported_before_the_window_opens() {
+    let temp = Temp::new();
+    let bootstrap = temp.0.join("location.json");
+    let roots = Roots {
+        launcher: temp.0.join("unplugged/launcher"),
+        game: temp.0.join("unplugged/game"),
+        build: temp.0.join("unplugged/build"),
+    };
+    let pointer = serde_json::to_vec(&Location {
+        version: 1,
+        roots: roots.clone(),
+    })
+    .unwrap();
+    fs::write(&bootstrap, &pointer).unwrap();
+    let error = startup_error_at(&bootstrap).expect("a missing folder must reach the window");
+    assert!(error.contains("is missing"), "{error}");
+
+    // A damaged pointer is the other way the launcher finds no data folder.
+    fs::write(&bootstrap, b"not json").unwrap();
+    let damaged = startup_error_at(&bootstrap).expect("a damaged pointer must reach the window");
+    assert!(damaged.contains("Invalid"), "{damaged}");
+}
+
+#[test]
+fn using_the_default_folder_keeps_the_pointer_beside_it() {
+    let temp = Temp::new();
+    let bootstrap = temp.0.join("location.json");
+    let source = Roots {
+        launcher: temp.0.join("source/launcher"),
+        game: temp.0.join("source/game"),
+        build: temp.0.join("source/build"),
+    };
+    for root in [&source.launcher, &source.game, &source.build] {
+        fs::create_dir_all(root).unwrap();
+    }
+    let pointer = serde_json::to_vec(&Location {
+        version: 1,
+        roots: source.clone(),
+    })
+    .unwrap();
+    fs::write(&bootstrap, &pointer).unwrap();
+
+    use_default_at(&bootstrap).unwrap();
+
+    assert!(!bootstrap.exists());
+    assert_eq!(
+        fs::read(temp.0.join("location.json.old")).unwrap(),
+        pointer,
+        "the old pointer stays recoverable"
+    );
+    for root in [&source.launcher, &source.game, &source.build] {
+        assert!(root.is_dir(), "{} is not deleted", root.display());
+    }
+}

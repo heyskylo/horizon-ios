@@ -271,6 +271,7 @@ impl Launcher {
 
     /// Opens the dialog for a new instance, or for changing `editing`.
     pub(super) fn open_instance_dialog(&mut self, editing: Option<Instance>) {
+        let editing_one = editing.is_some();
         let (name, group) = editing
             .as_ref()
             .map(|i| (i.name.clone(), i.group.clone().unwrap_or_default()))
@@ -278,6 +279,22 @@ impl Launcher {
         self.servers.text(Field::InstanceName).set(name);
         self.servers.text(Field::InstanceGroup).set(group);
         self.servers.focus_soon = Some(Field::InstanceName);
+        // What it plays now: Edit can switch it (`instances::switch`).
+        let java = match editing.as_ref().and_then(|i| i.java.as_ref()) {
+            None => Default::default(),
+            Some(j) => new_instance::JavaChoice {
+                kind: match &j.loader {
+                    Some(_) => new_instance::NewKind::Modded,
+                    None => new_instance::NewKind::Vanilla,
+                },
+                loader: j
+                    .loader
+                    .as_ref()
+                    .map_or(horizon_launcher::loaders::Kind::Fabric, |l| l.kind),
+                version: Some(j.minecraft.clone()),
+                ..Default::default()
+            },
+        };
         self.instances.dialog = Some(InstanceDialog {
             icon: editing.as_ref().and_then(|i| i.icon.clone()),
             pin: editing.as_ref().and_then(|i| i.version.clone()),
@@ -287,9 +304,13 @@ impl Launcher {
             copy: false,
             error: None,
             busy: false,
-            java: Default::default(),
+            java,
         });
         self.servers.text(Field::InstanceVersion).set(String::new());
+        // A new one starts with the name it would get ("My Horizon"), until the player types one.
+        if !editing_one {
+            self.change(|_| {});
+        }
     }
 
     /// Opens the dialog for a copy of the selected instance, named after it.
@@ -321,6 +342,22 @@ impl Launcher {
         let selected = self.selected_instance().map(|i| i.id.clone());
         let name = self.servers.value(Field::InstanceName).trim().to_string();
         let group = Some(self.servers.value(Field::InstanceGroup).to_string());
+        // A Horizon version picked but not installed downloads once the instance is saved.
+        let download = self
+            .draft_horizon()
+            .and_then(|tag| self.release_to_install(&tag));
+        // An edited instance switched to another game (`instances::switch`).
+        let switch_to = self
+            .instances
+            .dialog
+            .as_ref()
+            .and_then(|d| d.editing.as_ref())
+            .and_then(|id| self.instances.list.iter().find(|i| &i.id == id))
+            .filter(|i| i.kind == InstanceKind::Own)
+            .and_then(|i| {
+                self.draft_plays(i)
+                    .filter(|to| *to != instances::Plays::of(i))
+            });
         let Some(d) = self.instances.dialog.as_mut().filter(|d| !d.busy) else {
             return;
         };
@@ -331,16 +368,10 @@ impl Launcher {
             .as_ref()
             .map(|p| p.as_ref().map(|c| c.png.clone()));
         let editing = d.editing.clone();
+        let edited = editing.is_some();
         let copy = selected.filter(|_| d.copy);
         // The Horizon version is Horizon's instances' alone: a Java one plays its own game.
-        let plays_horizon = match &editing {
-            Some(id) => self
-                .instances
-                .list
-                .iter()
-                .any(|i| &i.id == id && i.java.is_none()),
-            None => d.java.kind == new_instance::NewKind::Horizon,
-        };
+        let plays_horizon = d.java.kind == new_instance::NewKind::Horizon;
         // A new Java instance: what it plays, and its name when none is typed.
         let java = (editing.is_none() && d.java.kind != new_instance::NewKind::Horizon)
             .then(|| d.java.clone());
@@ -353,6 +384,7 @@ impl Launcher {
         let Some(d) = self.instances.dialog.as_mut() else {
             return;
         };
+        let download = download.filter(|_| plays_horizon);
         let (java, name) = match (java, minecraft) {
             (Some(_), Some(None)) => {
                 d.error = Some(tr("Mojang's version list isn't here yet.").into());
@@ -372,7 +404,12 @@ impl Launcher {
         d.error = None;
         let task = cx.background_executor().spawn(async move {
             let id = match (editing, java) {
-                (Some(id), _) => id,
+                (Some(id), _) => {
+                    if let Some(to) = switch_to {
+                        instances::switch(&id, new_instance::with_loader(to)?)?;
+                    }
+                    id
+                }
                 (None, Some((j, mc))) => new_instance::create_java(&j, &name, &mc)?.id,
                 (None, None) => instances::create(&name, copy.as_deref())?.id,
             };
@@ -398,9 +435,19 @@ impl Launcher {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(instance) => {
+                        let name = [("name", instance.name.as_str())];
+                        crate::glass_toast::say(if edited {
+                            trf("Saved {name}", &name)
+                        } else {
+                            trf("Created {name}", &name)
+                        });
                         this.instances.dialog = None;
                         this.select_instance(&instance);
                         this.reload_instances();
+                        // Play shows the download's progress; Versions shows it too.
+                        if let Some(release) = download {
+                            this.install_for_instance(release);
+                        }
                         if matches!(instance.kind, InstanceKind::Default | InstanceKind::Own) {
                             this.go(Page::Play);
                         }
@@ -420,7 +467,7 @@ impl Launcher {
 
     pub(super) fn instance_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_instance_dialog(cx);
         }
         let d = self.instances.dialog.as_ref()?;
@@ -779,7 +826,7 @@ impl Launcher {
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     },
                 ),
             )
@@ -881,8 +928,17 @@ impl Launcher {
         if self.client.is_some() || self.starting_client.is_some() {
             return;
         }
+        let name = self
+            .instances
+            .list
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.name.clone());
         match instances::delete_with_selection(id) {
             Ok((_, saved)) => {
+                if let Some(name) = name {
+                    crate::glass_toast::say(trf("Deleted {name}", &[("name", &name)]));
+                }
                 self.instances.confirm_delete = None;
                 self.instances.delete_error = None;
                 // Play starts Horizon again; the window's copy of the settings says so too.
