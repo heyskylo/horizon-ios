@@ -20,7 +20,7 @@ pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
     NativeConfig, NativeConfigFile, NativeConfigKind, NativeDataMapType, NativeExperienceOrb,
     NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayerRender, NativeShake,
+    NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -125,7 +125,12 @@ pub struct NativeLootDrops<'a> {
     /// what dropped them. API 100. A mob that a player killed while
     /// leashed drops its lead on its next tick as a call of its own (`entity`
     /// the mob, `player` its killer, `table` empty, `used` false). API
-    /// 102.
+    /// 102. A dying player's inventory is a call of its own too, after
+    /// vanishing curse items are gone and before they are thrown (`entity`
+    /// the player's id and `minecraft:player`, `player` them, `table` empty,
+    /// `origin` where the items leave, `used` false); `drops` empty means
+    /// the mod took the whole inventory. Not heard with keepInventory. API
+    /// @API:player_death_drops@.
     pub used: bool,
 }
 
@@ -316,8 +321,11 @@ pub struct NativeServerPlayer {
     pub pitch: f32,
     /// The network entity id the player has this session, the one hooks that only know entity ids
     /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
-    /// API @API:server_player_entity_id@.
+    /// API 398.
     pub entity_id: i32,
+    /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
+    /// empty when not known. API @API:server_player_address@.
+    pub address: String,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -701,6 +709,7 @@ mod tests {
                 yaw: 0.0,
                 pitch: 0.0,
                 entity_id: 0,
+                address: String::new(),
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {

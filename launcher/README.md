@@ -42,10 +42,13 @@ The opening, then Play ([clip](docs/opening.webm)):
   starts the game. With no install on the computer the Play page offers the download alone and the
   Minecraft folder row says none is needed. Without an owner,
   the Play page asks to sign in first. `horizon-launcher prepare --download`.
-- **Mods**: **Mods** and **Shader packs** search Horizon's own registry (a Java instance's mods
-  come from Modrinth), **Resource packs** searches Modrinth, each marked Works, Partly or Doesn't
-  run in Horizon; Modrinth's data packs aren't usable yet and have no tab. Install puts a file in the game folder only after its checksum matches, and a
-  modpack (the sidebar's +) goes to the Modpacks page; installed packs show their source and checksum, with Update,
+- **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks
+  and Resource packs search Horizon's own registry or Modrinth (CurseForge support is coming soon);
+  Shader packs search the registry, Data packs Modrinth (into the world picked there). A Java
+  instance's files come from Modrinth for its version and loader; on a Horizon instance, Modrinth's
+  Java mods are listed too, each marked Works, Partly or Doesn't run in Horizon. Install puts a file in
+  the game folder only after its SHA-512 matches, and a
+  modpack goes to the Modpacks page; installed packs show their source and checksum, with Update,
   **Update all** and Remove ([docs/mod-browser.md](../docs/mod-browser.md)).
 - **Modpacks**: import a Java modpack (a Modrinth `.mrpack`, a CurseForge zip, or a Prism,
   MultiMC or CurseForge instance folder) and see its coverage report: per mod, ported, partial,
@@ -190,9 +193,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   `datapacks/` under its row: what is there (and which the game has turned off), **Add data pack…**,
   and **Remove** (to the trash); a data pack `.zip` dropped on a world goes into it. The game turns
   a new one on when the world opens. From the command line: `horizon-launcher worlds
-  datapack-list|datapack-add|datapack-remove <world> …`. `horizon-launcher mods search --kind datapack`
-  finds them on Modrinth and `mods install <pack> --world <world>` installs one, saying what of it
-  runs in Horizon.
+  datapack-list|datapack-add|datapack-remove <world> …`. The Mods page's **Data packs**
+  tab finds them on Modrinth and installs one into the world picked there (`mods search --kind
+  datapack`, `mods install <pack> --world <world>`), saying what of it runs in Horizon.
 - **Packs**: Home lists the selected instance's resource packs and shader packs, each with a switch.
   The choice is the game's own: `resourcePacks` in options.txt (a pack turned on goes on top, as
   the game's Resource Packs screen does) and `pickedShaderPack` in `horizon-graphics.txt` (one shader

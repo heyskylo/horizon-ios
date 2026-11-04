@@ -21,9 +21,7 @@ pub(super) struct LaunchPanel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MemorySaved {
     /// Saved Java heap size in MB.
-    Ok(Option<u32>),
-    /// What was typed was not a valid memory limit.
-    Invalid,
+    Ok(u32),
     /// Saving failed on disk.
     Error(String),
 }
@@ -35,7 +33,7 @@ pub(super) struct MemorySlider {
     total: Option<u32>,
     area: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// The Java heap size being dragged to.
-    dragging: Option<Option<u32>>,
+    dragging: Option<u32>,
     /// What the last change did, or why not.
     saved: Option<MemorySaved>,
     /// The instance whose value is being typed: saved to it when the box loses the keyboard, even
@@ -161,7 +159,7 @@ impl Launcher {
         let total = slider.total();
         let picked = launch::memory_at((across / width).clamp(0., 1.), total);
         slider.saved = None;
-        slider.dragging = Some(Some(picked));
+        slider.dragging = Some(picked);
         cx.notify();
     }
 
@@ -177,10 +175,10 @@ impl Launcher {
         cx.notify();
     }
 
-    fn save_memory(&mut self, id: &str, memory: Option<u32>) {
+    fn save_memory(&mut self, id: &str, memory: u32) {
         let saved = instances::edit(id, |m| {
             if let Some(java) = &mut m.java {
-                java.memory_mb = memory;
+                java.memory_mb = Some(memory);
             }
         });
         self.memory_slider.saved = Some(match saved {
@@ -202,14 +200,16 @@ impl Launcher {
     fn save_typed_memory(&mut self, id: &str) {
         let typed = self.servers.value(Field::MemoryLimit).to_owned();
         let Ok(memory) = launch::parse_memory(&typed) else {
-            self.memory_slider.saved = Some(MemorySaved::Invalid);
+            self.memory_slider.saved = None;
+            self.servers.set_field_invalid(Field::MemoryLimit, true);
             return;
         };
-        let memory = Some(memory.unwrap_or(instances::DEFAULT_MEMORY_MB));
+        let memory = memory.unwrap_or(instances::DEFAULT_MEMORY_MB);
+        self.servers.set_field_invalid(Field::MemoryLimit, false);
         let same = instances::list()
             .iter()
             .find(|i| i.id == id)
-            .is_some_and(|i| Self::saved_memory(i) == memory);
+            .is_some_and(|i| Self::saved_memory(i) == Some(memory));
         if !same {
             self.save_memory(id, memory);
         }
@@ -224,7 +224,7 @@ impl Launcher {
 
     /// The box follows the saved value and the slider except while it has the keyboard, and saves
     /// when it loses it. Read every frame.
-    fn sync_memory_box(&mut self, instance: &str, memory: Option<u32>) {
+    fn sync_memory_box(&mut self, instance: &str, memory: u32) {
         if self.memory_slider.shown.as_deref() != Some(instance) {
             self.memory_slider.saved = None;
             self.memory_slider.shown = Some(instance.to_owned());
@@ -237,7 +237,7 @@ impl Launcher {
             self.save_typed_memory(&id);
             return;
         }
-        let shown = memory.map_or_else(String::new, |mb| mb.to_string());
+        let shown = memory.to_string();
         if self.servers.value(Field::MemoryLimit) != shown {
             self.servers.text(Field::MemoryLimit).set(shown);
         }
@@ -250,19 +250,16 @@ impl Launcher {
         instance.java.as_ref()?;
         let total = self.memory_slider.total();
         let area = self.memory_slider.area.clone();
-        let memory = self
-            .memory_slider
-            .dragging
-            .unwrap_or_else(|| Self::saved_memory(&instance));
+        let saved = Self::saved_memory(&instance)?;
+        let memory = self.memory_slider.dragging.unwrap_or(saved);
         self.sync_memory_box(&instance.id, memory);
         let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
         // While typing, the slider follows a value it can read.
         let memory = match (self.servers.has_focus(Field::MemoryLimit), typed) {
-            (true, Ok(typed)) => Some(typed.unwrap_or(instances::DEFAULT_MEMORY_MB)),
+            (true, Ok(typed)) => typed.unwrap_or(instances::DEFAULT_MEMORY_MB),
             _ => memory,
         };
-        let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
-            .then(|| text(theme::LABEL).text_color(t.ink_soft).child("MB"));
+        let unit = text(theme::LABEL).text_color(t.ink_soft).child("MB");
         let input = self.field(Field::MemoryLimit, "4096", 120., cx);
         let about = "How much memory Java may use (-Xmx). Set it too low and the game can crash.";
         let track = div()
@@ -318,15 +315,9 @@ impl Launcher {
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
             );
         let result = self.memory_slider.saved.as_ref().map(|s| match s {
-            MemorySaved::Ok(Some(mb)) => text(theme::CAPTION).text_color(t.muted).child(trf(
-                "Saved: the next Play uses at most {mb} MB of Java heap.",
+            MemorySaved::Ok(mb) => text(theme::CAPTION).text_color(t.muted).child(trf(
+                "Saved: the next Play uses at most {mb} MB.",
                 &[("mb", &mb.to_string())],
-            )),
-            MemorySaved::Ok(None) => text(theme::CAPTION)
-                .text_color(t.muted)
-                .child(tr("Saved: the next Play uses the default Java heap size.")),
-            MemorySaved::Invalid => text(theme::CAPTION).text_color(t.danger).child(tr(
-                "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
             )),
             MemorySaved::Error(e) => text(theme::CAPTION).text_color(t.danger).child(e.clone()),
         });
@@ -354,7 +345,7 @@ impl Launcher {
                                 .items_center()
                                 .gap(px(8.))
                                 .child(input)
-                                .children(unit),
+                                .child(unit),
                         ),
                 )
                 .child(track)
@@ -372,14 +363,12 @@ impl Launcher {
         let instance = self.memory_instance()?;
         let total = self.memory_slider.total();
         let area = self.memory_slider.area.clone();
-        let memory = self
-            .memory_slider
-            .dragging
-            .unwrap_or_else(|| Self::saved_memory(&instance));
+        let saved = Self::saved_memory(&instance)?;
+        let memory = self.memory_slider.dragging.unwrap_or(saved);
         self.sync_memory_box(&instance.id, memory);
         let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
         let memory = match (self.servers.has_focus(Field::MemoryLimit), typed) {
-            (true, Ok(typed)) => Some(typed.unwrap_or(instances::DEFAULT_MEMORY_MB)),
+            (true, Ok(typed)) => typed.unwrap_or(instances::DEFAULT_MEMORY_MB),
             _ => memory,
         };
         let f = launch::memory_fraction(memory, total).clamp(0., 1.);
@@ -440,19 +429,12 @@ impl Launcher {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
             );
-        let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
-            .then(|| ui::text(13., FontWeight::NORMAL, 0.6).child("MB"));
+        let unit = ui::text(13., FontWeight::NORMAL, 0.6).child("MB");
         let input = self.field(Field::MemoryLimit, "4096", 96., cx);
         let result = self.memory_slider.saved.as_ref().map(|s| match s {
-            MemorySaved::Ok(Some(mb)) => div().child(trf(
-                "Saved: the next Play uses at most {mb} MB of Java heap.",
+            MemorySaved::Ok(mb) => div().child(trf(
+                "Saved: the next Play uses at most {mb} MB.",
                 &[("mb", &mb.to_string())],
-            )),
-            MemorySaved::Ok(None) => {
-                div().child(tr("Saved: the next Play uses the default Java heap size."))
-            }
-            MemorySaved::Invalid => div().text_color(ui::danger()).child(tr(
-                "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
             )),
             MemorySaved::Error(e) => div().text_color(ui::danger()).child(e.clone()),
         });
@@ -473,7 +455,7 @@ impl Launcher {
                         .gap(px(12.))
                         .child(track)
                         .child(input)
-                        .children(unit)
+                        .child(unit)
                         .into_any_element(),
                 ),
             )

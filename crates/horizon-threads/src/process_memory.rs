@@ -61,3 +61,21 @@ pub fn resident_bytes() -> Option<u64> {
 pub fn resident_bytes() -> Option<u64> {
     None
 }
+
+#[cfg(all(test, any(windows, target_os = "linux", target_vendor = "apple")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touched_memory_counts_as_resident() {
+        const SIZE: usize = 256 << 20;
+        let before = resident_bytes().unwrap();
+        let block = vec![1u8; SIZE];
+        let during = resident_bytes().unwrap();
+        std::hint::black_box(&block);
+        assert!(
+            during >= before + SIZE as u64 / 2,
+            "{before} then {during} bytes"
+        );
+    }
+}

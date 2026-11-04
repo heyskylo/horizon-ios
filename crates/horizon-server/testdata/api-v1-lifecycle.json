@@ -1,0 +1,69 @@
+[
+  {
+    "name": "status",
+    "method": "GET",
+    "path": "/api/v1/status",
+    "phase": "running",
+    "status": 200,
+    "body": {
+      "phase": "running",
+      "version": "$VERSION",
+      "pid": "$PID",
+      "uptime_seconds": "$TIME",
+      "engine_pid": 4242,
+      "engine_uptime_seconds": "$TIME",
+      "crashes": 2,
+      "last_crash": "exit status: 1",
+      "sample": {"t": 200, "tps": 20, "players": 2},
+      "update": null
+    }
+  },
+  {
+    "name": "metrics after a timestamp",
+    "method": "GET",
+    "path": "/api/v1/metrics?since=100",
+    "phase": "running",
+    "status": 200,
+    "body": {"samples": [{"t": 200, "tps": 20, "players": 2}]}
+  },
+  {
+    "name": "logs after a line",
+    "method": "GET",
+    "path": "/api/v1/logs?since=1",
+    "phase": "running",
+    "status": 200,
+    "body": {"next": 2, "lines": ["second"]}
+  },
+  {
+    "name": "start a stopped game",
+    "method": "POST",
+    "path": "/api/v1/start",
+    "phase": "stopped",
+    "status": 200,
+    "body": {"ok": true}
+  },
+  {
+    "name": "start while running",
+    "method": "POST",
+    "path": "/api/v1/start",
+    "phase": "running",
+    "status": 409,
+    "body": {"error": "the game isn't stopped right now"}
+  },
+  {
+    "name": "stop",
+    "method": "POST",
+    "path": "/api/v1/stop",
+    "phase": "running",
+    "status": 200,
+    "body": {"ok": true}
+  },
+  {
+    "name": "restart",
+    "method": "POST",
+    "path": "/api/v1/restart",
+    "phase": "running",
+    "status": 200,
+    "body": {"ok": true}
+  }
+]

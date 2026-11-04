@@ -28,10 +28,10 @@ fn the_java_heap_slider_reaches_the_computers_memory() {
     assert_eq!(memory_at(0., 16384), 1);
     assert_eq!(memory_at(0.25, 16384), 4096);
     assert_eq!(memory_at(0.5, 8000), 4032);
-    assert_eq!(memory_fraction(None, 16384), 1.);
-    assert_eq!(memory_fraction(Some(4096), 16384), 0.25);
+    assert_eq!(memory_fraction(16384, 16384), 1.);
+    assert_eq!(memory_fraction(4096, 16384), 0.25);
     // Saved on a computer with more memory.
-    assert_eq!(memory_fraction(Some(32768), 16384), 1.);
+    assert_eq!(memory_fraction(32768, 16384), 1.);
 }
 
 #[test]

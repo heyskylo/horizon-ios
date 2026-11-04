@@ -42,17 +42,31 @@ impl Output {
     }
 }
 
+/// `HORIZON_HDR_OUTPUT`'s names, in order of preference.
+const NAMES: [(Output, &str); 2] = [(Output::Pq, "pq"), (Output::ScRgb, "scrgb")];
+
 /// The HDR output `caps` can present: HDR10 where offered, else scRGB.
 /// `HORIZON_HDR_OUTPUT=pq` or `scrgb` allows only that one.
 pub fn output(caps: &wgpu::SurfaceCapabilities) -> Option<Output> {
     pick(caps, std::env::var("HORIZON_HDR_OUTPUT").ok().as_deref())
 }
 fn pick(caps: &wgpu::SurfaceCapabilities, only: Option<&str>) -> Option<Output> {
-    [(Output::Pq, "pq"), (Output::ScRgb, "scrgb")]
+    NAMES
         .into_iter()
         .filter(|(_, name)| only.is_none_or(|o| o == *name))
         .map(|(output, _)| output)
         .find(|o| caps.color_spaces(o.format()).contains(o.space()))
+}
+/// The HDR output an offscreen renderer (`--offscreen`) offers: it has no display to ask, so
+/// only the one `HORIZON_HDR_OUTPUT` names, for HDR screenshots without an HDR display.
+pub fn offscreen_output() -> Option<Output> {
+    named(std::env::var("HORIZON_HDR_OUTPUT").ok().as_deref())
+}
+fn named(name: Option<&str>) -> Option<Output> {
+    NAMES
+        .into_iter()
+        .find(|(_, n)| name == Some(*n))
+        .map(|(output, _)| output)
 }
 
 struct Targets {
@@ -637,7 +651,7 @@ fn scene_gain(peak: f32, paper_white: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Output, pick};
+    use super::{Output, named, pick};
     use wgpu::{SurfaceColorSpaces as S, TextureFormat as F};
 
     #[test]
@@ -686,6 +700,14 @@ mod tests {
         assert_eq!(pick(&scrgb, None), Some(Output::ScRgb));
         assert_eq!(pick(&scrgb, Some("pq")), None);
         assert_eq!(pick(&caps(&[(F::Bgra8UnormSrgb, S::SRGB)]), None), None);
+    }
+
+    #[test]
+    fn offscreen_offers_only_the_named_output() {
+        assert_eq!(named(Some("pq")), Some(Output::Pq));
+        assert_eq!(named(Some("scrgb")), Some(Output::ScRgb));
+        assert_eq!(named(Some("hdr10")), None);
+        assert_eq!(named(None), None);
     }
 }
 

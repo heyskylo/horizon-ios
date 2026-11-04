@@ -12,7 +12,11 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     sculk::{self, Context, Info, SculkEntity, SculkKind, WardenSpawnTracker},
 };
-use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Direction, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 use horizon_world::registry::BlockStateId;
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
@@ -87,6 +91,8 @@ pub(super) struct SculkState {
     pub known_revision: Option<u64>,
     // Keyed by mob ids the server gives out: the fast hasher is safe.
     steps: FxHashMap<Who, Steps>,
+    /// Items that have fallen since last touching the ground or water.
+    falling_items: HashSet<u32>,
     /// The vehicle each rider had last tick and where it stood.
     mounts: FxHashMap<Who, (u32, [f64; 3])>,
     damaged: FxHashMap<u32, i64>,
@@ -1621,6 +1627,10 @@ impl Game<'_> {
     fn tick_entity_events(&mut self) {
         self.tick_player_sculk_events();
         self.tick_mob_sculk_events();
+        if !self.sculk.falling_items.is_empty() {
+            let present: HashSet<u32> = self.dropped.iter().map(|item| item.id).collect();
+            self.sculk.falling_items.retain(|id| present.contains(id));
+        }
         // Dropped items are entities too: Entity.applyEffectsFromBlocks.
         let items: Vec<[f64; 3]> = self
             .dropped
@@ -1631,6 +1641,48 @@ impl Game<'_> {
         for at in items {
             self.step_on_redstone_ore(at, false, false);
         }
+    }
+
+    /// `Entity.checkFallDamage` for item movement: retain a fall across an
+    /// exact-height contact, without changing the saved fall-distance getter.
+    pub(super) fn item_landing_event(
+        &mut self,
+        id: u32,
+        previous: Vec3,
+        position: Vec3,
+        on_ground: bool,
+    ) {
+        let at = [position.x, position.y, position.z];
+        if self.in_water_at(at) {
+            self.sculk.falling_items.remove(&id);
+            return;
+        }
+        if position.y < previous.y {
+            self.sculk.falling_items.insert(id);
+        }
+        if on_ground && self.sculk.falling_items.remove(&id) {
+            self.post_landing_event(position, false);
+        }
+    }
+
+    /// `Entity.checkFallDamage` emits HIT_GROUND after the block's fallOn.
+    pub(super) fn post_landing_event(&mut self, position: Vec3, living: bool) {
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        self.sculk_prepare();
+        let state = self.world.block(
+            position.x.floor() as i32,
+            (position.y - 0.2).floor() as i32,
+            position.z.floor() as i32,
+        );
+        let mut context = self.who_context(None, Some(state));
+        context.living = living;
+        self.post_game_event(
+            "minecraft:hit_ground",
+            [position.x, position.y, position.z],
+            context,
+        );
     }
 
     /// Entity.move emits on the authoritative server too, for each ServerPlayer.

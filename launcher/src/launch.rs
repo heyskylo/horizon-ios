@@ -85,8 +85,8 @@ pub fn parse_memory(typed: &str) -> Result<Option<u32>, NotMemory> {
 }
 
 /// Where `mb` sits on a slider over `total_mb`; [`memory_at`]'s inverse.
-pub fn memory_fraction(mb: Option<u32>, total_mb: u32) -> f32 {
-    mb.map_or(1., |mb| (mb as f32 / total_mb.max(1) as f32).min(1.))
+pub fn memory_fraction(mb: u32, total_mb: u32) -> f32 {
+    (mb as f32 / total_mb.max(1) as f32).min(1.)
 }
 
 /// This computer's memory in MiB, the top of the slider.
