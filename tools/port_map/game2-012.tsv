@@ -147,3 +147,5 @@ ChestBlock.getTicker	port	crates/horizon-client-render/src/block_entity_anim.rs:
 ChestBlock.isCatSittingOnChest	port	crates/horizon-client/src/game/storage.rs::Game::chest_blocked_at	A sitting cat above blocks the chest.
 ChestBlock.rotate	skip:data		Rotation is a precomputed table from extracted data.
 ChestBlock.createBlockStateDefinition	skip:data		Block state properties come from extracted data.
+ComparatorBlockEntity.saveAdditional	port	crates/horizon-client/src/game/commands/data.rs::Game::comparator_data	Command NBT reads the live LevelTicks comparator output; gap: major: chunk save/reopen and components are not bridged here.
+ComparatorBlockEntity.loadAdditional	port	crates/horizon-client/src/game/commands/data.rs::Game::set_data_of	Command NBT uses the existing canonical getIntOr codec and updates the live LevelTicks output; gap: major: chunk loading and components are not bridged here.

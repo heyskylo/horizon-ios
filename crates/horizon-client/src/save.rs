@@ -2562,16 +2562,18 @@ impl SaveDir {
             let Some(root) = self.read_record_raw("region", pos.x, pos.z) else {
                 continue;
             };
-            let old = match root.tag.get("DataVersion") {
-                Some(Tag::Int(version)) => *version < 4997,
-                _ => true,
-            } || root.tag.get("blending_data").is_some();
-            if old {
+            if record_is_old(&root) {
                 let index = ((pos.x & 31) + (pos.z & 31) * 32) as usize;
                 bits[index / 64] |= 1 << (index % 64);
             }
         }
         bits
+    }
+    /// Whether the saved chunk at `x, z` is old ([`Self::old_chunk_bits`]'s test), from its
+    /// record alone: false for a chunk not saved.
+    pub fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        self.read_record_raw("region", x, z)
+            .is_some_and(|root| record_is_old(&root))
     }
     /// A saved chunk brought to the current version, for the readers of its
     /// fields that `load` does not decode (`blending_data`).
@@ -5064,6 +5066,15 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
 }
 
+/// `IOWorker.createOldDataForRegion`'s test of one record: saved before DataVersion 4997, or
+/// with `blending_data`.
+fn record_is_old(root: &NamedTag) -> bool {
+    let before_blending = match root.tag.get("DataVersion") {
+        Some(Tag::Int(version)) => *version < 4997,
+        _ => true,
+    };
+    before_blending || root.tag.get("blending_data").is_some()
+}
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -7440,6 +7451,30 @@ mod tests {
         let upgraded = nether.raw_chunk(0, 0).expect("the chunk reads");
         assert!(upgraded.tag.get("blending_data").is_none());
         assert_ne!(nether.old_chunk_bits(0, 0)[0] & 1, 0);
+        // One chunk's record tells the same, without the region's other chunks; a chunk this
+        // version saved, and one not saved, are not old.
+        let current = Record::Tag(Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                ("xPos", Tag::Int(1)),
+                ("zPos", Tag::Int(0)),
+                ("yPos", Tag::Int(0)),
+                ("Status", string("minecraft:full")),
+                ("sections", Tag::List(Vec::new())),
+            ]),
+        }));
+        super::write_region_records(
+            &nether.root,
+            &nether.regions,
+            "region",
+            &[((1, 0), &current)],
+        )
+        .unwrap();
+        assert!(nether.is_old_chunk(0, 0));
+        assert!(!nether.is_old_chunk(1, 0));
+        assert!(!nether.is_old_chunk(2, 0));
+        assert_eq!(nether.old_chunk_bits(0, 0)[0] & 0b110, 0);
         // A POI record of before 1.14.4 (no DataVersion, read as 1945): its
         // sections at the root, which 1946 moved under `Sections`.
         let overworld = SaveDir::new(

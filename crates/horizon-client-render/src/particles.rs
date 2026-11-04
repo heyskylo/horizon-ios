@@ -26,6 +26,8 @@ use std::{
 
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
+mod native;
+pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
@@ -215,6 +217,9 @@ enum Light {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
     Base,
+    Controlled {
+        translucent: bool,
+    },
     Mod {
         size: [f32; 2],
         alpha: [f32; 2],
@@ -508,6 +513,7 @@ pub struct Particle {
     pre_tick: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
+    controller: Option<Box<dyn native::Controller>>,
 }
 fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
@@ -844,7 +850,36 @@ impl Particle {
             pre_tick: false,
             frame_ticks: 0,
             random: LegacyRandom::new(0),
+            controller: None,
         }
+    }
+    /// The normal age/removal test and previous pose, without vanilla motion.
+    /// Returns false when this tick expires the particle.
+    pub fn advance_age(&mut self) -> bool {
+        self.previous = self.position;
+        self.o_roll = self.roll;
+        let alive = self.age < self.lifetime;
+        self.age = self.age.saturating_add(1);
+        self.removed |= !alive;
+        alive
+    }
+    pub fn remove(&mut self) {
+        self.removed = true;
+    }
+    /// Hide geometry while retaining the particle's lifetime and controller.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.no_render = !visible;
+    }
+    /// The particle's own random, distinct from the engine and level generators.
+    pub fn random(&mut self) -> &mut LegacyRandom {
+        &mut self.random
+    }
+    pub fn set_full_bright(&mut self, full_bright: bool) {
+        self.light = if full_bright {
+            Light::FullBright
+        } else {
+            Light::World
+        };
     }
     /// `Particle(level, x, y, z, xa, ya, za)`: jittered, normalized initial velocity.
     fn moving(random: &mut LegacyRandom, ty: ParticleType, p: [f64; 3], v: [f64; 3]) -> Self {
@@ -1423,6 +1458,10 @@ impl ParticleEngine {
         atlas: &HashMap<String, Rect>,
         translucent: &HashSet<String>,
     ) {
+        // Controllers' numeric sprite-set handles belong to this resource
+        // generation. Discard them rather than selecting another set after reload.
+        self.particles.retain(|p| p.controller.is_none());
+        self.pending.retain(|p| p.controller.is_none());
         self.atlas = atlas
             .iter()
             .map(|(name, &rect)| (name.clone(), (rect, translucent.contains(name))))
@@ -1586,6 +1625,45 @@ impl ParticleEngine {
     /// `ParticleEngine.add` (via `particlesToAdd`, applied on the next tick).
     pub fn push(&mut self, particle: Particle) {
         self.pending.push(particle);
+    }
+    /// Create a named billboard with custom compiled behavior and no vanilla
+    /// motion. Like `add`, respects camera distance and the Particles setting.
+    /// Configure its public fields, then `push` it to the ordinary engine queue.
+    /// Missing sprite sets return None. The constructor has the ordinary
+    /// stationary SingleQuadParticle random size/lifetime and no velocity draws.
+    pub fn controlled<C: ParticleController>(
+        &mut self,
+        name: &str,
+        position: [f64; 3],
+        translucent: bool,
+        controller: C,
+    ) -> Option<Particle> {
+        let minimal = self.calculate_particle_level(false) == 2;
+        let distance: f64 = position
+            .iter()
+            .zip(self.camera)
+            .map(|(p, c)| (p - c).powi(2))
+            .sum();
+        if minimal || !distance.is_finite() || distance > 1024.0 {
+            return None;
+        }
+        let (set, _) = *self.mod_sets.get(name)?;
+        let mut random = LegacyRandom::new(self.seeds.next_long());
+        let mut particle = Particle::at(&mut random, ParticleType::Smoke, position);
+        particle.random = random;
+        particle.set = Some(set);
+        particle.sprite = Sprite::Index(*self.set_sprites.get(set as usize)?.first()?);
+        particle.behaviour = Behaviour::Controlled { translucent };
+        particle.controller = Some(Box::new(controller));
+        Some(particle)
+    }
+    /// Choose a frame from this particle's declared sprite set.
+    pub fn set_sprite_frame(&self, particle: &mut Particle, frame: usize) {
+        if let Some(sprites) = particle.set.and_then(|s| self.set_sprites.get(s as usize))
+            && !sprites.is_empty()
+        {
+            particle.sprite = Sprite::Index(sprites[frame.min(sprites.len() - 1)]);
+        }
     }
     /// Random generator shared by particle constructors and spawners.
     pub fn random(&mut self) -> &mut LegacyRandom {
@@ -3732,6 +3810,20 @@ impl ParticleEngine {
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
             Behaviour::Base => p.base_tick(level),
+            Behaviour::Controlled { .. } => {
+                if let Some(mut controller) = p.controller.take() {
+                    let update = controller.tick(p, level);
+                    p.controller = Some(controller);
+                    if let Some(frame) = update.frame {
+                        self.set_sprite_frame(p, frame);
+                    }
+                    for (options, pos, velocity) in update.spawned {
+                        self.add(&options, pos, velocity);
+                    }
+                } else {
+                    p.remove();
+                }
+            }
             Behaviour::Mod { size, alpha } => {
                 p.base_tick(level);
                 p.size = mod_curve(size, p.age, p.lifetime);
@@ -4649,6 +4741,7 @@ impl ParticleEngine {
                 Sprite::Index(i) => (
                     self.rects.get(*i as usize).copied().flatten(),
                     p.ty.translucent_layer()
+                        || matches!(p.behaviour, Behaviour::Controlled { translucent: true })
                         || matches!(p.behaviour, Behaviour::Mod { alpha, .. } if alpha != [1.0; 2]),
                 ),
                 Sprite::Named(name) => match self.atlas.get(name) {

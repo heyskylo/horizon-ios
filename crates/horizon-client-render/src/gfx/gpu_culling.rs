@@ -14,9 +14,11 @@
 //! each in one draw (the pipelines cull the faces turned away), with the origin
 //! the walk would give it: `resident::origin`'s f32 bits, copied, never
 //! computed on the GPU. Within the render distance the CPU's walk then lists
-//! only the sections whose translucent quads it draws, or that have no record
-//! (`Resident::walk`); past it, it lists every section as before.
-//! Unlike the walk, the pass draws sections fading in or out whole.
+//! only the sections whose translucent quads it draws, that have no record, or
+//! that fade (`Resident::walk`); past it, it lists every section as before. A
+//! section whose instance carries a fade, fading in or out, has its record
+//! flagged (`FADING`, gfx.rs `mark_fades`) until it is whole: the pass leaves
+//! it out, and the CPU draws it with its fade.
 //!
 //! The graph is the one the walk reads that frame (`occlusion::Reach`). Its
 //! search keeps the cells it reached as bits too, and `Occlusion` a generation
@@ -59,6 +61,7 @@ use super::{
     upload::Uploads,
 };
 use glam::{DVec3, DVec4, Vec3};
+use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
 
 /// One section (`gpu_culling.wgsl`'s `Section`).
 #[repr(C)]
@@ -68,9 +71,13 @@ pub(super) struct Record {
     key: [i32; 4],
     /// The first vertex of its solid quads (a draw's base vertex, an i32: a
     /// page holds fewer vertices), its solid quads, its box (`rounded_box`),
-    /// then a word kept at 0.
+    /// then its flags (`FADING`).
     a: [u32; 4],
 }
+
+/// In `Record::a[3]`: the CPU draws the section's solid quads while it fades
+/// (gfx.rs `SectionGpu::gpu_fading`), and the pass leaves it out.
+const FADING: u32 = 1;
 
 impl Record {
     const FREE: Self = Self {
@@ -86,8 +93,18 @@ impl Record {
             a: [start as u32, quads, boxed, 0],
         }
     }
+    /// The record, `FADING` when `on`.
+    pub fn fading(mut self, on: bool) -> Self {
+        if on {
+            self.a[3] |= FADING;
+        }
+        self
+    }
     fn page(&self) -> Option<u32> {
         u32::try_from(self.key[3]).ok()
+    }
+    fn is_fading(&self) -> bool {
+        (self.a[3] & FADING) != 0
     }
 }
 
@@ -359,6 +376,10 @@ pub(super) fn supported(
         // The pass binds 8, the last cave culling's graph.
         && limits.max_storage_buffers_per_shader_stage >= 8
         && !super::flat::is_broken_intel_vulkan(info)
+        // DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
+        // pulled solid pipelines (those of a device with flat page groups) read the page.
+        // shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
+        && !(info.backend == wgpu::Backend::Dx12 && flat_min_sections.is_some())
 }
 
 /// A buffer that is recreated larger when it must hold more.
@@ -419,6 +440,8 @@ pub(super) struct Records {
     all_dirty: bool,
     /// Per arena page, the records on it.
     page_sections: Vec<u32>,
+    /// The records flagged `FADING`.
+    fading: u32,
 }
 
 impl Records {
@@ -435,6 +458,7 @@ impl Records {
         };
         self.records[id as usize] = record;
         self.add_to(record.key[3] as u32);
+        self.fading += u32::from(record.is_fading());
         self.mark(id);
         id
     }
@@ -455,6 +479,7 @@ impl Records {
                 continue;
             };
             self.page_sections[page as usize] -= 1;
+            self.fading -= u32::from(self.records[id as usize].is_fading());
             self.records[id as usize] = Record::FREE;
             // shortcut: a teleport frees more than `DIRTY_LIMIT`, so `prepare` writes the
             // whole table (0.6-2.6 ms at render distance 64); upgrade to a list of freed ids
@@ -502,6 +527,22 @@ impl Records {
         self.add_to(page);
         self.mark(id);
     }
+    /// The section with `id` began to draw faded, or stopped (gfx.rs
+    /// `SectionGpu::gpu_fading`): its record is `FADING` when `on`.
+    pub fn set_fading(&mut self, id: u32, on: bool) {
+        let page = self.records.get(id as usize).and_then(Record::page);
+        debug_assert!(page.is_some(), "no record {id} to flag");
+        if page.is_none() || self.records[id as usize].is_fading() == on {
+            return;
+        }
+        self.records[id as usize].a[3] ^= FADING;
+        if on {
+            self.fading += 1;
+        } else {
+            self.fading -= 1;
+        }
+        self.mark(id);
+    }
     /// Every section went.
     pub fn clear(&mut self) {
         self.records.clear();
@@ -510,11 +551,16 @@ impl Records {
         self.dirty = Vec::new();
         self.all_dirty = false;
         self.page_sections.clear();
+        self.fading = 0;
     }
     /// The sections with a record.
     pub fn live(&self) -> usize {
         let free: u32 = self.free.iter().map(|word| word.count_ones()).sum();
         self.records.len() - free as usize
+    }
+    /// The sections whose record is `FADING`, which the CPU draws.
+    pub fn fading(&self) -> u32 {
+        self.fading
     }
     /// The record of the section with `id`; `None` for a free id.
     #[cfg(any(test, debug_assertions))]
@@ -549,6 +595,42 @@ impl Records {
     }
 }
 
+/// The flagged sections by when their fade is over at the latest (gfx.rs
+/// `SectionGpu::fade_end`), for gfx.rs `mark_fades` to look at them again
+/// then, and the chunk fade-in time their flags were decided with: `None`
+/// until a frame has decided them, just after GPU culling was switched on.
+/// The ends of sections that went or were handed back are skipped as they come.
+#[derive(Default)]
+pub(super) struct Fades {
+    due: BinaryHeap<Reverse<(Instant, SectionKey)>>,
+    pub fade_ms: Option<u64>,
+}
+
+impl Fades {
+    /// The section at `key` is looked at again at `end`.
+    pub fn push(&mut self, end: Instant, key: SectionKey) {
+        self.due.push(Reverse((end, key)));
+    }
+    /// The section of the earliest end at or before `now`, taken out.
+    pub fn pop_due(&mut self, now: Instant) -> Option<SectionKey> {
+        let &Reverse((end, key)) = self.due.peek()?;
+        if end > now {
+            return None;
+        }
+        self.due.pop();
+        Some(key)
+    }
+    /// Every end goes; `fade_ms` stays.
+    pub fn clear(&mut self) {
+        self.due.clear();
+    }
+    /// The sections an end is waited for.
+    #[cfg(debug_assertions)]
+    pub fn pending(&self) -> impl Iterator<Item = SectionKey> {
+        self.due.iter().map(|r| r.0.1)
+    }
+}
+
 /// The pass, its buffers and the records it draws from: made when GPU culling
 /// is switched on, dropped when it is switched off.
 pub(super) struct GpuCulling {
@@ -574,6 +656,9 @@ pub(super) struct GpuCulling {
     /// that the arena's compaction moves records while it borrows the
     /// renderer's other fields.
     pub records: Records,
+    /// When the flagged records' fades end, a field of its own as `records`
+    /// is: gfx.rs `mark_fades` takes both beside the renderer's sections.
+    pub fades: Fades,
     /// This frame's pages with records: (page, first draw of its region, the
     /// region's size).
     pages: Vec<(u32, u32, u32)>,
@@ -700,6 +785,7 @@ impl GpuCulling {
             reach_generation: None,
             group: None,
             records: Records::default(),
+            fades: Fades::default(),
             pages: Vec::new(),
             ids: 0,
             n_updates: 0,
@@ -975,8 +1061,8 @@ mod tests {
     }
 
     /// Where a section's solid quads are: key, arena page, first vertex, quads,
-    /// and its box.
-    type Placed = (SectionKey, u32, u64, u32, u32);
+    /// its box, and whether it fades (`FADING`).
+    type Placed = (SectionKey, u32, u64, u32, u32, bool);
 
     /// `gpu_culling.wgsl`'s `near`, on the CPU.
     fn near(params: &Params, x: i32, z: i32) -> bool {
@@ -1025,7 +1111,7 @@ mod tests {
     /// (and the pages `prepare` gives them).
     fn keeps(params: &Params, words: &[u32], record: &Record) -> bool {
         let (key, a) = (record.key, record.a);
-        if key[3] < 0 || a[1] == 0 || !near(params, key[0], key[2]) {
+        if key[3] < 0 || a[1] == 0 || (a[3] & FADING) != 0 || !near(params, key[0], key[2]) {
             return false;
         }
         let c: [u32; 3] = std::array::from_fn(|i| key[i].wrapping_sub(params.first[i]) as u32);
@@ -1099,10 +1185,13 @@ mod tests {
         Some([min, max])
     }
 
-    /// Ids, page counts and changes against a plain list of what each id holds:
-    /// the lowest free id comes back, free ids at the end leave, counts follow
-    /// moves (to pages past the last too), a move keeps the box, a free is a
-    /// change, and more changes than updates take mark the whole table.
+    /// Ids, page counts, flags and changes against a plain list of what each id
+    /// holds: the lowest free id comes back, flagged only if inserted so, free
+    /// ids at the end leave, counts follow moves (to pages past the last too), a
+    /// move keeps the box and the flag, a free is a change, a flag set changes
+    /// its record only when it differs, the flagged ones are counted through
+    /// inserts, flags, removals and clears, and more changes than updates take
+    /// mark the whole table.
     #[test]
     fn records_keep_ids_page_counts_and_moves() {
         let mut records = Records::default();
@@ -1140,7 +1229,7 @@ mod tests {
         };
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         // What each id holds; `None`: a free id.
-        let mut model: Vec<Option<Placed>> = vec![Some(((2, 0, 0), 1, 0, 3, 11))];
+        let mut model: Vec<Option<Placed>> = vec![Some(((2, 0, 0), 1, 0, 3, 11, false))];
         for step in 0..4_000 {
             let live: Vec<u32> = (0..model.len() as u32)
                 .filter(|&id| model[id as usize].is_some())
@@ -1149,20 +1238,22 @@ mod tests {
                 rng.below(4 + step / 500),
                 u64::from(rng.below(1 << 20)) * 256,
             );
-            match rng.below(5) {
+            let dirty = records.dirty.len();
+            match rng.below(6) {
                 op if op < 2 || live.is_empty() => {
                     let key = (rng.range(-9, 9), rng.range(0, 23), rng.range(-9, 9));
                     let (quads, boxed) = (1 + rng.below(500), rng.below(1 << 30));
+                    let fading = rng.below(4) == 0;
                     let lowest = model
                         .iter()
                         .position(Option::is_none)
                         .unwrap_or(model.len());
-                    let record = Record::new(key, page, start, quads, boxed);
+                    let record = Record::new(key, page, start, quads, boxed).fading(fading);
                     assert_eq!(records.insert(record) as usize, lowest);
                     if lowest == model.len() {
                         model.push(None);
                     }
-                    model[lowest] = Some((key, page, start, quads, boxed));
+                    model[lowest] = Some((key, page, start, quads, boxed, fading));
                 }
                 op => {
                     let id = live[rng.below(live.len() as u32) as usize];
@@ -1170,6 +1261,12 @@ mod tests {
                     if op < 4 {
                         records.relocate(id, page, start);
                         (held.1, held.2) = (page, start);
+                    } else if op == 4 {
+                        let on = rng.below(2) == 0;
+                        records.set_fading(id, on);
+                        let changed = usize::from(held.5 != on);
+                        assert_eq!(records.dirty.len(), dirty + changed, "step {step}");
+                        held.5 = on;
                     } else {
                         records.remove(id);
                         // Marked: the GPU must have it free before the pass culls.
@@ -1183,11 +1280,13 @@ mod tests {
             }
             assert_eq!(records.ids() as usize, model.len(), "step {step}");
             assert_eq!(records.live(), model.iter().flatten().count());
+            let flagged = model.iter().flatten().filter(|held| held.5).count();
+            assert_eq!(records.fading() as usize, flagged, "step {step}");
             let mut pages = vec![0; records.page_sections().len()];
             for (id, held) in model.iter().enumerate() {
-                let record = held.map(|(key, page, start, quads, boxed)| {
+                let record = held.map(|(key, page, start, quads, boxed, fading)| {
                     pages[page as usize] += 1;
-                    Record::new(key, page, start, quads, boxed)
+                    Record::new(key, page, start, quads, boxed).fading(fading)
                 });
                 assert_eq!(
                     records.at(id as u32),
@@ -1204,16 +1303,17 @@ mod tests {
         let (mut each, mut all) = (Records::default(), Records::default());
         for n in 0..1_000 {
             let (key, page, start) = ((n % 31, n % 24, n / 31), n as u32 % 3, n as u64 * 256);
-            let record = Record::new(key, page, start, 1, 0);
+            let record = Record::new(key, page, start, 1, 0).fading(n % 7 == 0);
             assert_eq!(each.insert(record), all.insert(record));
         }
         let gone: Vec<u32> = (0..1_000).filter(|id| id % 3 != 1 || *id >= 900).collect();
+        let counts = |r: &Records| (r.ids(), r.live(), r.fading());
         for ids in [&[1u32, 4, 898][..], &gone[..]] {
             for &id in ids {
                 each.remove(id);
             }
             all.remove_all(ids.iter().copied());
-            assert_eq!((all.ids(), all.live()), (each.ids(), each.live()));
+            assert_eq!(counts(&all), counts(&each));
             assert_eq!(all.page_sections(), each.page_sections());
             assert_eq!(free_ids(&all), free_ids(&each));
             assert_eq!(all.dirty, each.dirty);
@@ -1228,8 +1328,9 @@ mod tests {
         assert_eq!((all.ids(), all.live(), all.free.len()), (0, 0, 0));
         assert!(all.page_sections().iter().all(|&n| n == 0));
 
+        assert!(records.fading() > 0);
         records.clear();
-        assert_eq!((records.ids(), records.live()), (0, 0));
+        assert_eq!((records.ids(), records.live(), records.fading()), (0, 0, 0));
         assert!(records.page_sections().is_empty() && records.dirty.is_empty());
         for x in 0..DIRTY_LIMIT as i32 {
             records.insert(Record::new((x, 0, 0), 0, 0, 1, 0));
@@ -1360,6 +1461,7 @@ mod tests {
             ("UNBOUNDED", u64::from(UNBOUNDED)),
             ("REACH", u64::from(REACH)),
             ("SKY", u64::from(SKY)),
+            ("FADING", u64::from(FADING)),
         ] {
             assert_eq!(constant(name), value, "{name}");
         }
@@ -1784,7 +1886,9 @@ mod tests {
     /// reached or not: the pass reads the copy it holds when a frame brings the
     /// same graph (once through a bind group made anew), sends a new one after
     /// a frame the CPU draws, and makes its copy anew for one too large for its
-    /// room.
+    /// room. A fifth of the sections fade, flagged anew before each case
+    /// (`FADING`, sent as updates or with the whole table): the pass leaves
+    /// them to the CPU.
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
@@ -1792,11 +1896,14 @@ mod tests {
 
     fn draws_match(device: &wgpu::Device, queue: &Queue) {
         let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        // The flags have their own sequence: the cases are otherwise as before.
+        let mut flags = Rng(0x9E37_79B9_7F4A_7C15);
         let (min_y, height) = (-64, 24);
         let mut gpu = GpuCulling::new(device).expect("the pass");
         let mut uploads = Uploads::new(device);
         let mut held: BTreeMap<u32, Placed> = BTreeMap::new();
-        let (mut camera, mut compared, mut culled) = (DVec3::ZERO, 0, 0);
+        // Fading sections the frustum and the graph keep, left to the CPU.
+        let (mut camera, mut compared, mut culled, mut faded) = (DVec3::ZERO, 0, 0, 0);
         let mut words = Vec::new();
         // Cave culling's graph while a case has one (its generation, from x and
         // z, radius, height and whether its search reached the sky) and its bits.
@@ -1897,7 +2004,8 @@ mod tests {
                     .records
                     .insert(Record::new(key, page, start, quads, boxed));
                 assert!(
-                    held.insert(id, (key, page, start, quads, boxed)).is_none(),
+                    held.insert(id, (key, page, start, quads, boxed, false))
+                        .is_none(),
                     "id {id} twice"
                 );
             };
@@ -1911,6 +2019,13 @@ mod tests {
                 while u64::from(gpu.records.ids()) * Record::BYTES <= room {
                     place(&mut gpu, &mut held, &mut rng);
                 }
+            }
+            // A fifth of the sections fade: the flags that change go up as
+            // updates, or with the whole table (cases 4 and 18), and through
+            // case 7's frame the CPU draws.
+            for (&id, placed) in held.iter_mut() {
+                placed.5 = flags.below(5) == 0;
+                gpu.records.set_fading(id, placed.5);
             }
             let whole = gpu.records.all_dirty;
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -1947,10 +2062,12 @@ mod tests {
             let mut params = tables(&input, &mut words).expect("the planes fit");
             params.pages = gpu.pass_pages;
             let mut expected = Vec::new();
-            for &(key, page, start, quads, boxed) in held.values() {
+            for &(key, page, start, quads, boxed, fading) in held.values() {
                 let record = Record::new(key, page, start, quads, boxed);
-                let kept = keeps(&params, &words, &record);
+                let kept = keeps(&params, &words, &record.fading(fading));
                 let reached = reach.is_none_or(|r| r.contains(key));
+                // In view, but fading: the CPU's.
+                faded += usize::from(fading && reached && keeps(&params, &words, &record));
                 if kept && let Some(r) = reach {
                     graphed += 1;
                     unreached += usize::from(!reached);
@@ -1965,7 +2082,7 @@ mod tests {
                     let origin = resident::origin(key, min_y, camera).as_vec3();
                     let instance = super::super::section_instance(origin.to_array(), 0, 1.0);
                     expected.push((page, start as u32, quads * 6, instance.map(f32::to_bits)));
-                } else if in_view_distance((cx, cz), radius, key.0, key.2) {
+                } else if !fading && in_view_distance((cx, cz), radius, key.0, key.2) {
                     culled += 1;
                 }
             }
@@ -2012,8 +2129,10 @@ mod tests {
         // Not a comparison of empty lists, nor of a test that keeps everything.
         // The graphs leave out a real share of what the frustum keeps, and their
         // sky band keeps sections above a box in some cases and not in others.
+        // The flags leave out about a fifth of what they would keep.
         assert!(compared > 2_000, "{compared} draws");
         assert!(culled > 2_000, "{culled} within the distance left out");
+        assert!(faded * 10 > compared, "{faded} fading of {compared} drawn");
         assert!(
             unreached * 10 > graphed && unreached < graphed,
             "{unreached} of {graphed} in view unreached"

@@ -1902,7 +1902,9 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let lid_openers = std::collections::HashMap::new();
         for (ground, bounces, health) in [
             ("minecraft:slime_block", true, 10.0),
@@ -1932,6 +1934,7 @@ mod tests {
                 fluid_tables: &motion.fluids,
                 movement: &motion.blocks,
                 collision: &collision,
+                suffocation: &suffocation,
                 data: &data,
                 player: None,
                 controlling_player_movement: None,
@@ -2022,7 +2025,9 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let lid_openers = std::collections::HashMap::new();
         let air = registry.default_state("minecraft:air").unwrap();
         let water = registry.default_state("minecraft:water").unwrap();
@@ -2046,6 +2051,7 @@ mod tests {
             fluid_tables: &motion.fluids,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
             controlling_player_movement: None,
