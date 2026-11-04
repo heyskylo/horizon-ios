@@ -153,7 +153,8 @@ pub fn decode_png(bytes: &[u8]) -> Result<Image, String> {
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
-/// its type in some stage. Returns every problem found, not just the first.
+/// its type in some stage, or one `[shadow]` sizes its map by. Returns every problem
+/// found, not just the first.
 pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
     let m = &pack.manifest;
     let stages = m
@@ -174,8 +175,14 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             Err(p) => problems.extend(p),
         }
     }
+    // The options the shadow map's size follows need no `override`: the frame has the size.
+    let sizes: Vec<&String> = m
+        .shadow
+        .iter()
+        .flat_map(|s| s.resolution_option.iter().chain(&s.distance_option))
+        .collect();
     if problems.is_empty() {
-        for option in &m.options {
+        for option in m.options.iter().filter(|o| !sizes.contains(&&o.id)) {
             let used = checked.iter().any(|c| {
                 c.module
                     .overrides

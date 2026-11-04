@@ -1098,7 +1098,6 @@
   "August": "Awst",
   "Back to the wardrobe": "Yn ôl i’r cwpwrdd dillad",
   "Bound to your Minecraft account, on every computer you sign in on.": "Wedi’i rwymo wrth eich cyfrif Minecraft, ar bob cyfrifiadur rydych chi’n mewngofnodi arno.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Wedi’i rwymo wrth eich cyfrif Minecraft. Dim byd i’w dalu, dim cerdyn.",
   "Changes waiting to sync: {n}": "Newidiadau’n aros i gysoni: {n}",
   "Claimed · Open the wardrobe": "Wedi’i hawlio · Agor y cwpwrdd dillad",
   "Claiming…": "Yn hawlio…",
@@ -1152,5 +1151,18 @@
   "{d} days {h} h": "{d} diwrnod {h} awr",
   "{h} h {m} min": "{h} awr {m} munud",
   "{m} min": "{m} munud",
-  "{time} left to claim it": "{time} ar ôl i’w hawlio"
+  "{time} left to claim it": "{time} ar ôl i’w hawlio",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Wedi'i rwymo wrth eich cyfrif Minecraft. Am ddim: mae desg dalu 0 CHF trwy Paddle yn cofnodi eich cais.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Gorffennwch y ddesg dalu am ddim yn eich porwr. Bydd y set yn glanio yma ymhen ychydig.",
+  "Open the checkout again": "Agor y ddesg dalu eto",
+  "Waiting for the checkout…": "Yn aros am y ddesg dalu…",
+  "Your purchases": "Eich pryniannau",
+  "Refunded": "Ad-dalwyd",
+  "Partly refunded": "Ad-dalwyd yn rhannol",
+  "Charged back": "Gwrthdroiwyd gan y banc",
+  "Paid": "Talwyd",
+  "Order {id}": "Archeb {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ni aeth y cais drwodd: nid cyfeiriad Horizon yw cyfeiriad y ddesg dalu.",
+  "Paste a friend's invite code": "Gludwch god gwahoddiad ffrind",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Yn chwarae {build}, wedi'i adeiladu ar Horizon {commit}, y commit a binnwyd gan {mods}, nid ar {version}."
 }

@@ -29,6 +29,8 @@ use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
 const BUFFERS: usize = horizon_shaders::BUFFERS;
 
+mod packed;
+
 #[cfg(test)]
 mod world_target_tests;
 
@@ -436,6 +438,9 @@ struct Targets {
 pub(super) struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
+    /// Of a stitched block atlas, each sprite layer's place (`PackAtlas::rects_table`); empty
+    /// for a grid.
+    pub sprite_rects: &'a [u32],
     pub material_maps: Option<[wgpu::TextureView; 2]>,
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
@@ -562,9 +567,9 @@ pub struct PackPost {
     down: HashMap<wgpu::TextureFormat, (wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The per-draw uniforms of gbuffers programs.
     draws: DrawUniforms,
-    /// Set 3 of flat terrain (`mc_Entity`'s table) and its bind group for each arena page,
-    /// with the page buffer it was made for.
-    block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer)>,
+    /// Set 3 of flat terrain (`mc_Entity`'s table, then the sprites' places) and its bind group
+    /// for each arena page, with the page buffer it was made for.
+    block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer)>,
     page_groups: HashMap<u32, (wgpu::Buffer, wgpu::BindGroup)>,
     gui_size: [u32; 2],
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
@@ -1033,19 +1038,29 @@ pub(super) struct ShadowView {
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
-/// and fluid, `at_midBlock.w`; -1, -1, 0 when empty) and, per arena page, the page's vertices
-/// (a vertex reads its quad's corners for its normal).
-fn block_ids(device: &wgpu::Device, table: &[i32]) -> (wgpu::BindGroupLayout, wgpu::Buffer) {
+/// and fluid, `at_midBlock.w`; -1, -1, 0 when empty), per arena page, the page's vertices
+/// (a vertex reads its quad's corners for its normal), and each sprite's place in a stitched
+/// atlas (`rects`; zeros for a grid, which doesn't read them).
+fn block_ids(
+    device: &wgpu::Device,
+    table: &[i32],
+    rects: &[u32],
+) -> (wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer) {
     let empty = [-1, -1, 0];
     let table = if table.is_empty() { &empty[..] } else { table };
-    let buffer = wgpu::util::DeviceExt::create_buffer_init(
-        device,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Shader pack block ids"),
-            contents: bytemuck::cast_slice(table),
-            usage: wgpu::BufferUsages::STORAGE,
-        },
-    );
+    let buffer = |label, contents: &[u8]| {
+        wgpu::util::DeviceExt::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::STORAGE,
+            },
+        )
+    };
+    let rects = if rects.is_empty() { &[0, 0][..] } else { rects };
+    let ids = buffer("Shader pack block ids", bytemuck::cast_slice(table));
+    let rects = buffer("Shader pack sprite rects", bytemuck::cast_slice(rects));
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX,
@@ -1058,9 +1073,9 @@ fn block_ids(device: &wgpu::Device, table: &[i32]) -> (wgpu::BindGroupLayout, wg
     };
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Shader pack terrain"),
-        entries: &[storage(0), storage(1)],
+        entries: &[storage(0), storage(1), storage(2)],
     });
-    (layout, buffer)
+    (layout, ids, rects)
 }
 
 /// The game's geometry a gbuffers program draws: its vertex buffers and, for flat draws
@@ -1094,6 +1109,8 @@ struct Resources<'a> {
     storable: u16,
     /// The buffers of a three-channel format (`rgb`): they have no alpha to write, and read 1.
     rgb: u16,
+    /// The bits per channel a buffer of a small packed format keeps ([`packed::bits`]).
+    packed: [Option<[u8; 4]>; BUFFERS],
     /// The stage (`texture.<stage>`) of the programs built so far, and the buffers one of them
     /// flipped: a `texture.<stage>.colortexN` no longer stands in for buffer N in the stage's
     /// later programs, which read what was written, as in Iris. `final` continues
@@ -1499,6 +1516,8 @@ fn build_pass(
     let final_pass = p.group == Group::Final;
     let mut targets = Vec::new();
     let mut writes = Vec::new();
+    // Outputs into a buffer of a small packed format, and the bits it keeps.
+    let mut packed_outputs = Vec::new();
     for &location in &interface.outputs {
         let l = location as usize;
         if targets.len() <= l {
@@ -1529,6 +1548,11 @@ fn build_pass(
                 .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
             {
                 t.blend = Some(blend_state(b));
+            }
+            if !p.group.shadow()
+                && let Some(bits) = pack.packed[buffer as usize]
+            {
+                packed_outputs.push((location, bits));
             }
             targets[l] = state;
             writes.push((location, buffer as usize));
@@ -1589,7 +1613,9 @@ fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
-        let (vs, fs) = (module(program.vertex), module(program.fragment));
+        let mut fragment = program.fragment;
+        packed::quantise_outputs(&mut fragment, &packed_outputs);
+        let (vs, fs) = (module(program.vertex), module(fragment));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -1860,6 +1886,10 @@ impl PackPost {
         let rgb = (0..BUFFERS)
             .filter(|&i| post.config.buffers[i].format.channels == 3)
             .fold(0u16, |m, i| m | 1 << i);
+        // A small packed format's buffer reads back fewer bits, as in Iris: its clears and
+        // what its passes write keep only those.
+        let packed: [Option<[u8; 4]>; BUFFERS] =
+            std::array::from_fn(|i| packed::bits(post.config.buffers[i].format));
         let clears = std::array::from_fn(|i| {
             let b = &post.config.buffers[i];
             b.clear.then(|| {
@@ -1867,7 +1897,7 @@ impl PackPost {
                 if rgb & 1 << i != 0 {
                     c[3] = 1.0;
                 }
-                c
+                packed[i].map_or(c, |bits| packed::quantise(c, bits))
             })
         });
         let mut notes = post.notes;
@@ -1972,6 +2002,7 @@ impl PackPost {
             gpu,
             storable,
             rgb,
+            packed,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
@@ -2067,7 +2098,7 @@ impl PackPost {
             .terrain
             .as_ref()
             .filter(|g| g.table.is_some())
-            .map(|_| block_ids(device, world.block_ids));
+            .map(|_| block_ids(device, world.block_ids, world.sprite_rects));
         let terrain_geometry = world.terrain.as_ref().map(|g| Geometry {
             buffers: g.buffers,
             table: g.table,
@@ -4204,7 +4235,7 @@ impl PackPost {
         terrain: &mut TerrainDraw<'_>,
     ) {
         self.resize(device, size);
-        if let Some((layout, ids)) = &self.block_ids {
+        if let Some((layout, ids, rects)) = &self.block_ids {
             // A page that grew has a new buffer.
             self.page_groups
                 .retain(|p, (b, _)| pages.iter().any(|(q, c)| q == p && c == b));
@@ -4221,6 +4252,10 @@ impl PackPost {
                             wgpu::BindGroupEntry {
                                 binding: 1,
                                 resource: buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: rects.as_entire_binding(),
                             },
                         ],
                     });
@@ -4768,6 +4803,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -4943,6 +4979,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -5084,6 +5121,7 @@ mod tests {
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
             rgb: 0,
+            packed: [None; BUFFERS],
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
@@ -5255,6 +5293,9 @@ mod material_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod packed_tests;
 
 #[cfg(test)]
 mod trinary_tests;

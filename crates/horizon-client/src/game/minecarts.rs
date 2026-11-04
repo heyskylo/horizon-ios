@@ -422,6 +422,20 @@ impl Minecart {
         (total * 14.0).floor() as i32 + i32::from(total > 0.0)
     }
 }
+/// `AbstractMinecartContainer.applyNaturalSlowdown`'s keep factor, in the
+/// float arithmetic vanilla uses: 0.98 plus a thousandth per empty step of the
+/// comparator signal (none while a loot table is still unrolled), times 0.95
+/// in water.
+fn container_keep(signal: i32, loot_pending: bool, in_water: bool) -> f64 {
+    let mut keep = 0.98_f32;
+    if !loot_pending {
+        keep += (15 - signal) as f32 * 0.001_f32;
+    }
+    if in_water {
+        keep *= 0.95_f32;
+    }
+    f64::from(keep)
+}
 pub(super) struct CartModels {
     pub models: HashMap<CartKind, Part>,
 }
@@ -682,6 +696,14 @@ impl Game<'_> {
             } else {
                 v = Vec3::new(v.x * 0.98, 0.0, v.z * 0.98);
             }
+        }
+        if matches!(c.kind, CartKind::Chest | CartKind::Hopper) {
+            // `AbstractMinecartContainer.applyNaturalSlowdown` replaces the
+            // base one whole: the keep factor leans on how empty it is, and
+            // riders and the behavior's own factor do not enter.
+            let signal = Minecart::container_signal(&c.items, self.items());
+            let keep = container_keep(signal, c.loot.is_some(), water);
+            return Vec3::new(v.x * keep, 0.0, v.z * keep);
         }
         let f = if ridden { 0.997 } else { factor };
         let mut out = Vec3::new(v.x * f, 0.0, v.z * f);
@@ -2785,8 +2807,12 @@ impl Minecart {
         c.custom_offset = int("DisplayOffset");
         if kind == CartKind::CommandBlock {
             c.command = horizon_client::command_block::CommandBlock::load(tag);
-            // readAdditionalSaveData sets both synched values.
-            c.synced_command.clone_from(&c.command.command);
+            // MinecartCommandBlock.readAdditionalSaveData sets the synched command.
+            // A changed value invokes onSyncedDataUpdated -> setCommand, resetting successes.
+            if c.synced_command != c.command.command {
+                c.synced_command.clone_from(&c.command.command);
+                c.command.set_command(&c.synced_command);
+            }
             c.synced_output = c.command.last_output_string();
         }
         // MinecartSpawner.readAdditionalSaveData: BaseSpawner.load.
@@ -2849,6 +2875,17 @@ mod tests {
         assert!(!tnt_ignites_by_collision(false, 0.36), "nothing in the way");
     }
     use super::*;
+
+    /// Issue #8624: chest and hopper carts keep 0.995 of their speed when
+    /// empty (0.98 when full), not the plain cart's 0.96, so powered rails
+    /// carry them much further.
+    #[test]
+    fn container_carts_keep_more_speed_than_the_plain_cart() {
+        assert!((container_keep(0, false, false) - 0.995).abs() < 1e-6);
+        assert!((container_keep(15, false, false) - 0.98).abs() < 1e-6);
+        assert!((container_keep(5, true, false) - 0.98).abs() < 1e-6);
+        assert!((container_keep(0, false, true) - 0.995 * 0.95).abs() < 1e-6);
+    }
 
     #[test]
     fn a_tnt_cart_lets_the_held_item_be_used() {
@@ -3101,18 +3138,13 @@ mod tests {
         ]);
         let cart = Minecart::from_nbt(&saved, 1, CartKind::CommandBlock).unwrap();
         assert_eq!(cart.command.command, "say hi");
-        assert_eq!(cart.command.success_count, 3);
+        assert_eq!(cart.command.success_count, 0);
         // readAdditionalSaveData syncs both values.
         assert_eq!(cart.synced_command, "say hi");
         assert_eq!(cart.synced_output, "[12:00:00] hi");
         let out = cart.to_nbt([0; 4], Some(&saved));
-        for key in [
-            "Command",
-            "SuccessCount",
-            "TrackOutput",
-            "LastOutput",
-            "LastExecution",
-        ] {
+        assert_eq!(out.get("SuccessCount"), Some(&Tag::Int(0)));
+        for key in ["Command", "TrackOutput", "LastOutput", "LastExecution"] {
             assert_eq!(out.get(key), saved.get(key), "{key}");
         }
         assert_eq!(out.get("UpdateLastExecution"), Some(&Tag::Byte(1)));
