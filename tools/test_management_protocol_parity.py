@@ -19,8 +19,8 @@ sent the same things over TLS, and every answer is compared exactly:
   message, difficulty, default and forced game mode read and changed (including saved properties), operator
   permission level read and changed (including saved properties and restart), autosave read and changed
   (including its reset after restart), spawn-protection radius read and changed (including invalid input,
-  saved properties and restart), allow-flight read and changed (including invalid input, saved properties and
-  restart), hidden online players read and changed (including invalid input, saved properties and restart),
+  saved properties and restart), accepts-transfers and allow-flight read and changed (including invalid input,
+  saved properties and restart), hidden online players read and changed (including invalid input, saved properties and restart),
   status replies read and changed (including invalid input, saved properties and restart), allowlist use and
   enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
@@ -214,6 +214,14 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":300,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":301,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":302,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":303,"method":"minecraft:serversettings/accept_transfers/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":304,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":305,"method":"minecraft:serversettings/accept_transfers/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":306,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":307,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
     '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
     '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
@@ -576,6 +584,9 @@ def main():
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_accepts_transfers'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('accepts-transfers=')), None)
                 sides[side]['saved_hide_online_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('hide-online-players=')), None)
@@ -609,6 +620,8 @@ def main():
                     sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_accepts_transfers'] = 'accepts-transfers = true' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_hide_online_players'] = 'hide-online-players = true' in (
                         folder / 'server.toml').read_text()
@@ -669,6 +682,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":308,"method":"minecraft:serversettings/accept_transfers"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_accepts_transfers'] = reply
                     ws.send('{"jsonrpc":"2.0","id":189,"method":"minecraft:serversettings/entity_broadcast_range"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -827,6 +846,14 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_accepts_transfers'] != horizon['saved_accepts_transfers'] or \
+                vanilla['saved_accepts_transfers'] != 'true':
+            failures.append(f"saved accepts-transfers: vanilla {vanilla['saved_accepts_transfers']!r}, Horizon {horizon['saved_accepts_transfers']!r}")
+        if not horizon['saved_config_accepts_transfers']:
+            failures.append('Horizon did not save accepts-transfers in server.toml')
+        if vanilla['restarted_accepts_transfers'] != horizon['restarted_accepts_transfers'] or \
+                vanilla['restarted_accepts_transfers'] != {'jsonrpc': '2.0', 'id': 308, 'result': True}:
+            failures.append(f"restarted accepts-transfers: vanilla {vanilla['restarted_accepts_transfers']!r}, Horizon {horizon['restarted_accepts_transfers']!r}")
         if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
                 vanilla['saved_hide_online_players'] != 'true':
             failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")
