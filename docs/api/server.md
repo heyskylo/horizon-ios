@@ -75,7 +75,6 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 
 ## Not there yet
 
-- **Metrics**: entities and per-dimension counts in the Prometheus text.
 - **Mods on a dedicated server**: turn on and off, and their settings, once native mods can be built for the
   server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)). `GET /api/v1/mods` lists the native
   mods the game program was built with.
