@@ -135,6 +135,17 @@ impl Hook {
     pub(super) fn applies_block_effects(&self) -> bool {
         !matches!(self.state, State::Hooked(_))
     }
+    /// `FishingHook.catchingFish`: nibble timer and initial downward plunge impulse
+    /// (`-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`).
+    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource) {
+        self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
+        self.velocity.y = bite_impulse(r);
+    }
+}
+/// `FishingHook.onSyncedDataUpdated` on DATA_BITING: initial downward plunge impulse
+/// `-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`.
+fn bite_impulse(r: &mut impl RandomSource) -> f64 {
+    -0.4 * (0.6 + f64::from(r.next_float()) * 0.4)
 }
 /// RandomSource.triangle(mode, deviation).
 fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
@@ -538,7 +549,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.nibble = 20 + self.world.random.next_int_bound(21).unwrap_or(0);
+                h.trigger_bite(&mut self.world.random);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -1262,15 +1273,26 @@ impl Game<'_> {
         {
             for (index, _, value) in values {
                 match (index, value) {
-                    (9, Value::Bool(biting)) => h.nibble = i32::from(*biting),
+                    (9, Value::Bool(biting)) => {
+                        h.nibble = i32::from(*biting);
+                        if *biting {
+                            h.velocity.y = bite_impulse(&mut self.world.random);
+                        }
+                    }
                     (8, value) => h.state = hooked(value),
                     _ => {}
                 }
             }
         } else if let Some(h) = self.remote_hooks.iter_mut().find(|h| h.id == id) {
             for (index, _, value) in values {
-                if *index == 8 {
-                    h.state = hooked(value);
+                match (index, value) {
+                    (9, Value::Bool(biting)) => {
+                        if *biting {
+                            h.velocity.y = bite_impulse(&mut self.world.random);
+                        }
+                    }
+                    (8, value) => h.state = hooked(value),
+                    _ => {}
                 }
             }
         }
@@ -1478,9 +1500,10 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
+    use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
+    use horizon_core::random::LegacyRandom;
 
     #[test]
     fn casting_straight_down_aims_down_and_straight_up_aims_up() {
@@ -1593,5 +1616,30 @@ mod tests {
             first_entity_hit(start, end, 0.0, [(2, far), (1, near)]),
             Some(1)
         );
+    }
+
+    #[test]
+    fn bite_triggers_initial_downward_plunge_impulse() {
+        let mut rng = LegacyRandom::new(12345);
+        for _ in 0..100 {
+            let mut hook = Hook::remote(1, Vec3::ZERO);
+            assert_eq!(hook.velocity.y, 0.0);
+            hook.trigger_bite(&mut rng);
+            assert!(
+                hook.velocity.y < 0.0,
+                "vertical velocity should be negative on bite, got {}",
+                hook.velocity.y
+            );
+            assert!(
+                hook.velocity.y <= -0.24 && hook.velocity.y >= -0.40,
+                "vertical velocity {} not between -0.24 and -0.40",
+                hook.velocity.y
+            );
+            assert!(
+                hook.nibble >= 20 && hook.nibble <= 40,
+                "nibble {} not in 20..=40",
+                hook.nibble
+            );
+        }
     }
 }
