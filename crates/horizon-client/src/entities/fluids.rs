@@ -279,6 +279,7 @@ mod tests {
             false,
             &fluids,
             &[],
+            None,
             None
         ));
         assert_eq!(still.position.x, at.x);
@@ -293,6 +294,7 @@ mod tests {
             false,
             &fluids,
             &[],
+            None,
             None
         ));
         // First push is damped by buoyancy before motion, second follows drag.
@@ -307,6 +309,7 @@ mod tests {
                 false,
                 &fluids,
                 &[],
+                None,
                 None,
             );
         }

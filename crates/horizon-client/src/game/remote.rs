@@ -6902,6 +6902,7 @@ impl Game<'_> {
                 // The server decides what an item rests on; this copy only moves between updates.
                 &[],
                 border,
+                Some(&self.res.motion().blocks),
                 &mut |splash| entered.push(splash),
             );
         }
