@@ -137,6 +137,11 @@ impl adv::World for View<'_, '_> {
     fn dimension(&self) -> &str {
         self.0.dim.id()
     }
+    /// `Level.isRaining` / `isThundering`: dimension-aware effective levels.
+    fn weather(&self) -> (bool, bool) {
+        let (rain, thunder) = self.0.weather_levels(1.0);
+        (f64::from(rain) > 0.2, f64::from(thunder) > 0.9)
+    }
     fn biome(&self, p: [i32; 3]) -> String {
         self.0
             .world

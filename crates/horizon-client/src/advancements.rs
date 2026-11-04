@@ -455,6 +455,8 @@ impl Progress {
 /// What predicates may ask about the world.
 pub trait World {
     fn dimension(&self) -> &str;
+    /// Effective `Level.isRaining` and `Level.isThundering`, not saved flags.
+    fn weather(&self) -> (bool, bool);
     fn biome(&self, pos: [i32; 3]) -> String;
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
     /// Block name and properties.
@@ -1029,6 +1031,12 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     block(&Value::Object(pred), b, w)
                 }),
                 "minecraft:match_tool" => ctx.tool.is_some_and(|t| item(&v["predicate"], t, w)),
+                "minecraft:weather_check" => {
+                    // WeatherCheck.test: absent fields impose no constraint.
+                    let (rain, thunder) = w.weather();
+                    v["raining"].as_bool().is_none_or(|r| r == rain)
+                        && v["thundering"].as_bool().is_none_or(|t| t == thunder)
+                }
                 "minecraft:inverted" => !conditions(&v["term"], ctx, w),
                 "minecraft:all_of" => v["terms"]
                     .as_array()
@@ -1423,6 +1431,9 @@ mod tests {
         fn dimension(&self) -> &str {
             "minecraft:overworld"
         }
+        fn weather(&self) -> (bool, bool) {
+            (false, false)
+        }
         fn biome(&self, _: [i32; 3]) -> String {
             "minecraft:plains".into()
         }
@@ -1451,6 +1462,47 @@ mod tests {
                     && matches!(id, "minecraft:fireball" | "minecraft:arrow"))
         }
     }
+    #[test]
+    fn weather_conditions_leave_absent_fields_unconstrained_and_compose() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for (mut predicate, expected) in [
+            (serde_json::json!({}), true),
+            (serde_json::json!({"raining": false}), true),
+            (serde_json::json!({"raining": true}), false),
+            (serde_json::json!({"thundering": false}), true),
+            (serde_json::json!({"thundering": true}), false),
+            (
+                serde_json::json!({"raining": false, "thundering": false}),
+                true,
+            ),
+            (
+                serde_json::json!({"raining": false, "thundering": true}),
+                false,
+            ),
+        ] {
+            predicate["type"] = "minecraft:weather_check".into();
+            assert_eq!(conditions(&predicate, &ctx, &Flat), expected, "{predicate}");
+        }
+        let dry = serde_json::json!({"type": "minecraft:weather_check", "raining": false});
+        let wet = serde_json::json!({"type": "minecraft:inverted", "term": dry});
+        assert!(!conditions(&wet, &ctx, &Flat));
+        assert!(conditions(
+            &serde_json::json!({"type": "minecraft:all_of", "terms": [dry]}),
+            &ctx,
+            &Flat
+        ));
+        assert!(!conditions(
+            &serde_json::json!({"type": "minecraft:any_of", "terms": [wet]}),
+            &ctx,
+            &Flat
+        ));
+    }
+
     /// A `recipe_crafted` criterion names `minecraft:x`; the craft hands
     /// the recipe book and the trigger the same whole id (`award_crafted`
     /// qualifies). The bare name the crafting copy uses never matched —

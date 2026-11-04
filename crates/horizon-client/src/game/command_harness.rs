@@ -210,6 +210,26 @@ impl Game<'_> {
                         out.push('\n');
                     }
                 }
+                "weather_state" => {
+                    // Saved state guards, separate from effective-weather predicates.
+                    let state = self.harness_owner(|g| {
+                        let w = g.world.weather;
+                        Ok([
+                            i32::from(w.raining),
+                            i32::from(w.thundering),
+                            w.clear_time,
+                            w.rain_time,
+                            w.thunder_time,
+                        ])
+                    })?;
+                    let record = json!({
+                        "cmd": format!("#weather_state {}", op["label"].as_str().unwrap_or("")),
+                        "messages": [],
+                        "results": state.iter().map(|value| json!([true, value])).collect::<Vec<_>>(),
+                    });
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "mobs" => {
                     // Observe authoritative AI state without a control-socket race.
                     let record = self.harness_owner(|g| Ok(g.control_mobs(128.0)))?;
