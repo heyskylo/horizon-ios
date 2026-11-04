@@ -108,7 +108,7 @@ pub(super) const LINGERING_WAIT: i32 = 10;
 const REAPPLICATION_DELAY: i32 = 20;
 /// An entity a cloud has affected (`AreaEffectCloud.victims`).
 #[derive(Clone, Copy, PartialEq)]
-enum Victim {
+pub(super) enum Victim {
     Mob(u32),
     Player(FightWho),
 }
@@ -208,6 +208,24 @@ pub(super) fn mob_can_be_affected(
     } else {
         !in_tag("minecraft:ignores_poison_and_regen")
             || (effect != "regeneration" && effect != "poison")
+    }
+}
+impl Game<'_> {
+    /// The dragon's breath (`AreaEffectCloud` with instant damage at
+    /// `amplifier`) on a mob: what a cloud puts on it, `indirectMagic(cloud,
+    /// dragon)` with no owner to credit (the dragon is not a mob here).
+    pub(super) fn breath_affect_mob(&mut self, mob: u32, amplifier: i32, at: [f64; 3]) {
+        let source = Text::translate("entity.minecraft.area_effect_cloud", &[]);
+        let effect = [("instant_damage", 1, amplifier)];
+        // DragonFireball.onHit and the flame phase: `setPotionDurationScale(0.25)`.
+        self.cloud_affect(
+            Victim::Mob(mob),
+            &effect,
+            (&[], &[], 0.25),
+            at,
+            &source,
+            (None, None),
+        );
     }
 }
 /// `ThrownSplashPotion.onHitAsPotion`: the squared distance from the potion's
