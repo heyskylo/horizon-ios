@@ -74,20 +74,19 @@ pub fn main() -> Result<()> {
         }
     }
     let mut engine = ParticleEngine::new(root, &HashMap::new(), &Default::default());
-    // One all-campfire world per state the block tick cases name: the whole
+    // One all-of-that-block world per state the tick cases name: the whole
     // animateTick loop samples inside the box the barriers already fill.
-    let mut campfire_worlds: HashMap<String, World> = HashMap::new();
+    let mut tick_worlds: HashMap<String, World> = HashMap::new();
     let mut out = BufWriter::new(File::create(&args[2])?);
     for (index, line) in BufReader::new(File::open(&args[1])?).lines().enumerate() {
         let case: Value = serde_json::from_str(&line?)?;
         let kind = case["kind"].as_str().unwrap_or("marker");
-        // The campfire block's own tick through the whole ClientLevel.animateTick
-        // loop, over a world that is all campfire: the crackle sound and the
-        // lava particles it asks the engine for, from the level random seeded
-        // by the case.
+        // A block's own tick through the whole ClientLevel.animateTick loop,
+        // over a world that is all of it: every particle and sound it asks the
+        // engine for, from the level random seeded by the case.
         if kind == "tick" {
             let spec = case["state"].as_str().ok_or("state")?.to_owned();
-            if !campfire_worlds.contains_key(&spec) {
+            if !tick_worlds.contains_key(&spec) {
                 let state = assets.registry.resolve(&parse_state(&spec))?;
                 let mut world = World::new(facts.air, 0);
                 for cz in -2..2 {
@@ -104,9 +103,9 @@ pub fn main() -> Result<()> {
                         }
                     }
                 }
-                campfire_worlds.insert(spec.clone(), world);
+                tick_worlds.insert(spec.clone(), world);
             }
-            let world = &campfire_worlds[&spec];
+            let world = &tick_worlds[&spec];
             let ctx = AnimateContext {
                 world,
                 facts: &facts,

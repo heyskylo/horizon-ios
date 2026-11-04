@@ -1,0 +1,65 @@
+{
+  "list": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"backups": [{"name": "2026-11-04_00-00-00-golden.zip", "bytes": 7}]}
+  },
+  "download": {
+    "status": 200,
+    "content_type": "application/octet-stream",
+    "headers": [
+      ["Content-Length", "7"],
+      ["Content-Disposition", "attachment; filename=\"2026-11-04_00-00-00-golden.zip\""]
+    ],
+    "body": "504b05067a6970"
+  },
+  "restore": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"name": "2026-11-04_00-00-00-golden.zip", "dimension": null}
+  },
+  "restore_dimension": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"name": "2026-11-04_00-00-00-golden.zip", "dimension": "minecraft:the_end"}
+  },
+  "bad_dimension": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "\"../end\" is not a dimension id (like minecraft:the_nether)"}
+  },
+  "restore_missing": {
+    "status": 404,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "no backup \"missing\" in backups/ (`horizon-server backups` lists them)"}
+  },
+  "delete_missing": {
+    "status": 404,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "no such backup (`GET /api/v1/backups` lists them)"}
+  },
+  "delete": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"name": "2026-11-04_00-00-00-golden.zip"}
+  },
+  "list_empty": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"backups": []}
+  },
+  "create": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"name": "$BACKUP"}
+  }
+}

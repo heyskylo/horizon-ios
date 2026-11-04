@@ -2247,6 +2247,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         ticks: 0,
         needs_sync: false,
         stuck: Vec3::ZERO,
+        was_touching_water: false,
     })
 }
 
@@ -2509,19 +2510,10 @@ pub fn fireball_to_nbt(
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
-    // Fireball.addAdditionalSaveData: the item it is drawn as, one of the loaded
-    // item or else a fire charge (`setItem` refuses an empty stack and keeps one).
-    if matches!(
-        p.kind,
-        ProjectileKind::LargeFireball { .. } | ProjectileKind::SmallFireball
-    ) {
-        let mut item = tag
-            .get("Item")
-            .and_then(item_from_nbt)
-            .filter(|i| i.count > 0 && &*i.item != "minecraft:air")
-            .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:fire_charge", 1));
-        item.count = 1;
-        put(&mut tag, "Item", item_to_nbt(&item));
+    // Fireball.addAdditionalSaveData: the item `getItem` returns, a fire
+    // charge unless `setItem` was given another (kept as a single one).
+    if let Some(item) = &p.item {
+        put(&mut tag, "Item", item_to_nbt(item));
     }
     Some(tag)
 }
@@ -2733,6 +2725,10 @@ pub fn owner_uuid(tag: &Tag) -> Option<[i32; 4]> {
     uuid_from_tag(tag.get("Owner"))
 }
 
+/// `Fireball.readAdditionalSaveData` (and, around it, `Projectile`'s Owner and
+/// LeftOwner and `AbstractHurtingProjectile`'s acceleration power): a fireball
+/// also reads the item it is drawn as through `setItem`, whose default is the
+/// fire charge; a wind charge is no `Fireball` and has none.
 pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
     let kind = match kind(tag)?.as_str() {
         "minecraft:fireball" => ProjectileKind::LargeFireball {
@@ -2753,6 +2749,9 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
+    if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
+        p.set_item(item);
+    }
     Some(p)
 }
 
@@ -2836,6 +2835,7 @@ pub struct TridentSave<'a> {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
 pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -2867,6 +2867,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         ("SoundEvent", string("minecraft:item.trident.hit_ground")),
         ("item", item_to_nbt(t.item)),
         ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
+        ("Fire", Tag::Short(t.fire_ticks as i16)),
     ] {
         put(&mut tag, key, value);
     }
@@ -2891,6 +2892,7 @@ pub struct TridentNbt {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
 pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
@@ -2906,6 +2908,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         dealt_damage: flag(tag, "DealtDamage"),
         creative_only: number(tag.get("pickup")) == Some(2),
         no_gravity: flag(tag, "NoGravity"),
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
             .get("item")
             .and_then(item_from_nbt)
@@ -3210,14 +3213,18 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
             ("AbsorptionAmount", Tag::Float(0)),
             ("FallFlying", Tag::Byte(0)),
             ("current_impulse_context_reset_grace_time", Tag::Int(0)),
-            // AttributeMap.pack: the movement_speed instance every living
-            // entity's first tick makes (removeFrost), at the registry default.
+            // AttributeMap.pack: the movement_speed instance the stand's first
+            // tick makes (removeFrost), at the registry default.
             (
                 "attributes",
-                Tag::List(vec![Tag::compound([
-                    ("id", string("minecraft:movement_speed")),
-                    ("base", Tag::Double(0.7f64.to_bits())),
-                ])]),
+                Tag::List(if a.speed_instance {
+                    vec![Tag::compound([
+                        ("id", string(SPEED_ATTRIBUTE)),
+                        ("base", Tag::Double(0.7f64.to_bits())),
+                    ])]
+                } else {
+                    Vec::new()
+                }),
             ),
             (
                 "Brain",
@@ -3231,8 +3238,13 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
     }
     tag
 }
+/// The attribute every living entity's first tick makes (`removeFrost`).
+const SPEED_ATTRIBUTE: &str = "minecraft:movement_speed";
 pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     let mut a = ArmorStand::new(id, position(tag)?, rotation(tag)[0]);
+    // AttributeMap.load makes an instance for each saved attribute.
+    a.speed_instance = matches!(tag.get("attributes"), Some(Tag::List(list))
+        if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
     a.velocity = motion(tag);
     a.health = float(tag.get("Health")).unwrap_or(20.0) as f32;
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
@@ -3815,6 +3827,7 @@ mod tests {
                 dealt_damage: true,
                 creative_only: true,
                 no_gravity: true,
+                fire_ticks: 0,
                 item: &trident,
             },
             [1, 2, 3, 4],
@@ -4078,6 +4091,7 @@ mod tests {
             bob_offset: 0.0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -4176,11 +4190,26 @@ mod tests {
         };
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
-        let stand = armor_stand_to_nbt(&ArmorStand::new(1, Vec3::ZERO, 0.0), [0; 4], None);
-        let Some(Tag::List(attrs)) = stand.get("attributes") else {
-            panic!("no attributes");
-        };
-        assert_eq!(attrs.len(), 1);
+        // A stand summoned this tick has no instance yet; its first tick makes
+        // it, and a save that lists it (`/data merge`, a reload) keeps it.
+        let attributes =
+            |stand: &ArmorStand| match armor_stand_to_nbt(stand, [0; 4], None).get("attributes") {
+                Some(Tag::List(attrs)) => attrs
+                    .iter()
+                    .map(|a| (text(a.get("id")).unwrap(), a.get("base").cloned()))
+                    .collect::<Vec<_>>(),
+                other => panic!("attributes: {other:?}"),
+            };
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        assert_eq!(attributes(&stand), []);
+        stand.speed_instance = true;
+        let speed = vec![(
+            "minecraft:movement_speed".to_owned(),
+            Some(Tag::Double(0.7f64.to_bits())),
+        )];
+        assert_eq!(attributes(&stand), speed);
+        let saved = armor_stand_to_nbt(&stand, [0; 4], None);
+        assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
     }
     #[test]
     fn ghast_and_trident_save_their_always_present_keys() {
@@ -4302,8 +4331,14 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
             } else {
                 0
             };
-            m.extra.variant2 = ((packed >> 16) & 15) as u8;
-            m.extra.variant3 = ((packed >> 24) & 15) as u8;
+            // TropicalFish.getBaseColor/getPatternColor use DyeColor.byId:
+            // read the full byte, then default invalid color ids to white.
+            let color = |shift| match (packed >> shift) & 0xFF {
+                value @ 0..=15 => value as u8,
+                _ => 0,
+            };
+            m.extra.variant2 = color(16);
+            m.extra.variant3 = color(24);
         }
         _ => {}
     }
@@ -5722,7 +5757,7 @@ mod fireball_nbt_tests {
                 ("minecraft:fire_charge".to_owned(), 1),
                 "{id}"
             );
-            // A loaded item stays, as a single one.
+            // A loaded item stays, as a single one, on the entity itself.
             let mut loaded = plain.clone();
             put(
                 &mut loaded,
@@ -5730,7 +5765,18 @@ mod fireball_nbt_tests {
                 item_to_nbt(&crate::items::ItemStack::new("minecraft:diamond", 5)),
             );
             let p = fireball_from_nbt(&loaded, None).unwrap();
-            let back = fireball_to_nbt(&p, [1, 2, 3, 4], None, Some(&loaded)).unwrap();
+            let held = p.item.as_ref().unwrap();
+            assert_eq!((&*held.item, held.count), ("minecraft:diamond", 1), "{id}");
+            // `addAdditionalSaveData` writes `getItem()`: the item in the
+            // compound it was loaded from does not replace the one it holds,
+            // which is what `/data get` and the chunk save then report.
+            let mut stale = plain.clone();
+            put(
+                &mut stale,
+                "Item",
+                item_to_nbt(&crate::items::ItemStack::new("minecraft:stone", 8)),
+            );
+            let back = fireball_to_nbt(&p, [1, 2, 3, 4], None, Some(&stale)).unwrap();
             assert_eq!(item_of(&back), ("minecraft:diamond".to_owned(), 1), "{id}");
             // An empty one falls back to the fire charge.
             let mut empty = plain.clone();
