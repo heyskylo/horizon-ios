@@ -166,7 +166,7 @@ pub(super) struct GuestSwap {
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
-    host_keys: std::collections::HashSet<KeyCode>,
+    host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
     host_book: Option<super::books::BookScreen>,
@@ -1199,6 +1199,7 @@ impl Game<'_> {
             .facts()
             .get(self.world.block(pos.0, pos.1, pos.2))
             .name;
+        let block = name.to_string();
         let (menu, slots) = if &**name == "minecraft:ender_chest" {
             // EnderChestBlock.useWithoutItem: the player's own inventory.
             ("minecraft:generic_9x3", Slots::Ender)
@@ -1353,8 +1354,28 @@ impl Game<'_> {
         // lid (a vehicle keeps its own `Container`, an ender chest has none).
         let counts_openers = matches!(slots, Slots::Block(_) | Slots::Double(_, _));
         let hidden = self.native_hidden_slots(pos, items.len());
+        // A mod menu type's block tells the client where it is, with what its
+        // mod writes (`openMenu` with an extra-data writer); a stock menu
+        // sends nothing more.
+        let extra = match slots {
+            Slots::Block(k) if self.mod_menu_at(k).is_some() => {
+                let mut data = None;
+                self.native_menu_extra_data(uuid, menu, &block, [k.0, k.1, k.2], &mut data);
+                let mut data = data.unwrap_or_default();
+                if data.len() > horizon_protocol::menu_extra::MAX_DATA {
+                    log::warn!(
+                        "Horizon: {block}'s menu extra data ({} bytes) is past {} bytes; sent without it",
+                        data.len(),
+                        horizon_protocol::menu_extra::MAX_DATA
+                    );
+                    data.clear();
+                }
+                Some(data)
+            }
+            _ => None,
+        };
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, extra);
         if !hidden.is_empty() {
             host.hub.hide_menu_slots(conn, hidden);
         }
@@ -1418,7 +1439,7 @@ impl Game<'_> {
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, None);
         true
     }
 
@@ -2096,7 +2117,9 @@ impl Game<'_> {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                            g.trigger_any_block_use(p.pos, &stack);
+                            horizon_client::spans::time("use_advancements", || {
+                                g.trigger_any_block_use(p.pos, &stack);
+                            });
                         }
                         g.forced_hit = None;
                         g.guest_use = None;
@@ -3930,7 +3953,7 @@ impl Game<'_> {
             // the `deaths` statistic and the two timers it resets.
             self.as_guest(host, conn, |game| {
                 if let Some(eyes) = drops {
-                    game.drop_inventory(eyes);
+                    game.drop_inventory(eyes, (uuid, id));
                 }
                 game.score_player_died();
                 game.award_custom_stat("deaths", 1);

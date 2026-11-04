@@ -419,6 +419,11 @@ impl Game<'_> {
         tag: Tag,
     ) -> std::result::Result<(), Tag> {
         match kind {
+            "minecraft:area_effect_cloud" => {
+                if let Some(id) = self.load_potion_cloud(&tag) {
+                    self.remember(id, uuid, tag);
+                }
+            }
             "minecraft:evoker_fangs" => {
                 if let Some(at) = entity_nbt::position(&tag) {
                     self.next_entity += 1;
@@ -644,6 +649,9 @@ impl Game<'_> {
                 // PrimedTnt.readAdditionalSaveData: 4 by default,
                 // kept to 0..128.
                 power: entity_nbt::tnt_power(&tag),
+                block_state: tag
+                    .get("block_state")
+                    .and_then(|v| entity_nbt::state_from_nbt(self.pack.assets.registry, v)),
             });
             // `Entity.load`: the `PortalCooldown` of one that just came through.
             self.remember(id, uuid, tag);
@@ -1728,6 +1736,7 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.block_state_nbt(self.pack.assets.registry),
                 t.rotation,
                 uuid,
                 self.persist.raw.get(&id),

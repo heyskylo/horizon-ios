@@ -962,6 +962,7 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.block_state_nbt(self.pack.assets.registry),
                 t.rotation,
                 uuid,
                 self.persist_raw(id),

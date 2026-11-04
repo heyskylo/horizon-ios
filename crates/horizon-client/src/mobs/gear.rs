@@ -211,29 +211,18 @@ pub fn protection(m: &Mob, kind: DamageKind) -> f32 {
     protection_points(g, kind).min(20.0)
 }
 pub fn protection_points(g: &Gear, kind: DamageKind) -> f32 {
-    // Protection's `damage_protection` skips only #bypasses_invulnerability;
-    // plain `generic` damage (the `/damage` default) is protected like any other.
-    if kind.bypasses_invulnerability() {
+    // getDamageAfterMagicAbsorb returns before enchantments for #bypasses_effects;
+    // Protection itself skips #bypasses_invulnerability. Plain generic is protected.
+    if kind.bypasses_invulnerability() || kind.bypasses_effects() {
         return 0.0;
     }
-    let fire = matches!(
-        kind,
-        DamageKind::OnFire
-            | DamageKind::InFire
-            | DamageKind::Campfire
-            | DamageKind::HotFloor
-            | DamageKind::Lava
-            | DamageKind::Fireball
-            | DamageKind::SulfurCubeHot
-    );
-    let projectile = matches!(
-        kind,
-        DamageKind::Arrow
-            | DamageKind::Thrown
-            | DamageKind::Fireball
-            | DamageKind::WindCharge
-            | DamageKind::WitherSkull
-    );
+    let source = super::Damage::of(kind);
+    let fire = source.is_fire();
+    let projectile = source.is_projectile();
+    let explosion = matches!(kind, DamageKind::Explosion | DamageKind::Fireworks)
+        || matches!(kind, DamageKind::Named(n) if n.has(super::NamedDamage::IS_EXPLOSION));
+    let fall = matches!(kind, DamageKind::Fall | DamageKind::Stalagmite)
+        || matches!(kind, DamageKind::Named(n) if n.has(super::NamedDamage::IS_FALL));
     let mut total = 0.0;
     for slot in ARMOR {
         for (id, l) in &g.slots[slot] {
@@ -241,17 +230,9 @@ pub fn protection_points(g: &Gear, kind: DamageKind) -> f32 {
             total += match &**id {
                 "minecraft:protection" => l,
                 "minecraft:fire_protection" if fire => 2.0 * l,
-                "minecraft:blast_protection"
-                    if matches!(kind, DamageKind::Explosion | DamageKind::Fireworks) =>
-                {
-                    2.0 * l
-                }
+                "minecraft:blast_protection" if explosion => 2.0 * l,
                 "minecraft:projectile_protection" if projectile => 2.0 * l,
-                "minecraft:feather_falling"
-                    if matches!(kind, DamageKind::Fall | DamageKind::Stalagmite) =>
-                {
-                    3.0 * l
-                }
+                "minecraft:feather_falling" if fall => 3.0 * l,
                 _ => 0.0,
             };
         }
