@@ -65,7 +65,7 @@ impl VoxelShape {
         if (0..3).any(|i| min[i] >= max[i]) {
             return Ok(Self::empty());
         }
-        let mut coords = (*self.coords).clone();
+        let mut coords = self.coords.to_vecs();
         coords[a] = vec![0.0, 1.0];
         if (0..3).all(|i| {
             coords[i].len() == 2

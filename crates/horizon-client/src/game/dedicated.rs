@@ -766,6 +766,27 @@ fn save_all_reply(saved: bool) -> Text {
     )
 }
 
+/// `BanIpCommands.banIp`'s `commands.banip.info`: the count of affected players and
+/// `EntitySelector.joinNames` of them (a gray ", " between names). None when no one is affected,
+/// as vanilla sends no line then.
+fn ban_ip_info(names: &[&str]) -> Option<Text> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(Text::translate(
+        "commands.banip.info",
+        &[
+            Text::literal(names.len().to_string()),
+            horizon_client::scoreboard_cmd::format_list(
+                names
+                    .iter()
+                    .map(|n| Text::literal((*n).to_owned()))
+                    .collect(),
+            ),
+        ],
+    ))
+}
+
 /// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
 fn auto_save(state: &ServerState) -> bool {
     state.lists.lock().unwrap().autosave
@@ -1164,7 +1185,9 @@ impl Game<'_> {
         let watchdog = Watchdog::start(props.max_tick_time);
         let mut braked = Instant::now();
         let mut overload_warned: Option<Instant> = None;
-        while !state.lists.lock().unwrap().stop {
+        // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
+        // saved below.
+        while !state.lists.lock().unwrap().stop && horizon_threads::stop_requests() == 0 {
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
@@ -1472,6 +1495,19 @@ impl Game<'_> {
         self.admin_feedback.clear();
     }
 
+    /// `MinecraftServer.createCommandSourceStack`: the console's source is
+    /// bound to the overworld, whichever level the last server tick left in
+    /// place (the last one ticked, often the nether). Its commands run there
+    /// and the level in place is put back afterwards.
+    fn as_console_in_overworld<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let back = console_level(self.dim).and_then(|dim| self.enter_command_level(dim));
+        let out = self.as_console(f);
+        if let Some(back) = back {
+            self.enter_command_level(back);
+        }
+        out
+    }
+
     /// DedicatedServer.handleConsoleInputs: one console line, run as the
     /// server (permission level 4). The dedicated-only commands are here;
     /// everything else goes to the game's dispatcher.
@@ -1706,7 +1742,7 @@ impl Game<'_> {
                         ),
                     ],
                 ));
-                let banned: Vec<u128> = self
+                let banned: Vec<(u128, String)> = self
                     .lan
                     .as_ref()
                     .map(|h| {
@@ -1714,17 +1750,15 @@ impl Game<'_> {
                             .guests
                             .iter()
                             .filter(|g| g.address.ip().to_string() == ip)
-                            .map(|g| g.uuid)
+                            .map(|g| (g.uuid, g.name.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
-                if !banned.is_empty() {
-                    self.console_reply(Text::translate(
-                        "commands.banip.info",
-                        &[lit(&banned.len().to_string()), lit("")],
-                    ));
+                let names: Vec<&str> = banned.iter().map(|(_, n)| n.as_str()).collect();
+                if let Some(info) = ban_ip_info(&names) {
+                    self.console_reply(info);
                 }
-                for uuid in banned {
+                for (uuid, _) in banned {
                     self.kick_uuid(uuid, translatable("multiplayer.disconnect.ip_banned", &[]));
                 }
             }
@@ -1841,7 +1875,7 @@ impl Game<'_> {
                 // A command a native mod registered goes to the mods first,
                 // looked up by the same first word the match above read.
                 if !self.perform_native_console_command(line.trim()) {
-                    self.as_console(|g| g.run_command(line));
+                    self.as_console_in_overworld(|g| g.run_command(line));
                 }
                 for text in self.chat_capture.take().unwrap_or_default() {
                     self.console_reply(text);
@@ -1966,6 +2000,15 @@ impl Game<'_> {
             lan.hub.lan.shared.set_max_players(max_players);
         }
         self.store_property("max-players", max_players.to_string());
+    }
+
+    /// `DedicatedServer.setAcceptsTransfers`: whether a transfer's handshake is accepted from
+    /// now on, and `accepts-transfers` in server.properties.
+    fn set_accepts_transfers(&mut self, accept: bool) {
+        if let Some(lan) = &self.lan {
+            lan.hub.lan.shared.set_accepts_transfers(accept);
+        }
+        self.store_property("accepts-transfers", accept.to_string());
     }
 
     /// `DedicatedServer.setEnforceWhitelist`: the flag, and `enforce-whitelist` in
@@ -2220,6 +2263,13 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// The level a console command runs in when `active` is in place: always
+/// the overworld (`MinecraftServer.createCommandSourceStack` uses
+/// `overworld()`), so None when it already is.
+fn console_level(active: super::Dim) -> Option<super::Dim> {
+    (active != super::Dim::Overworld).then_some(super::Dim::Overworld)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2231,6 +2281,42 @@ mod tests {
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// A console line runs in the overworld even after a server tick left the nether in place.
+    #[test]
+    fn console_commands_run_in_the_overworld() {
+        use super::super::Dim;
+        assert_eq!(super::console_level(Dim::Nether), Some(Dim::Overworld));
+        assert_eq!(super::console_level(Dim::End), Some(Dim::Overworld));
+        assert_eq!(super::console_level(Dim::Overworld), None);
+    }
+
+    /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is
+    /// absent when no one is affected.
+    #[test]
+    fn ban_ip_info_names_the_affected_players() {
+        let args = |t: &super::Text| {
+            let c = t.component();
+            c["with"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(super::ban_ip_info(&[]).is_none());
+        let one = super::ban_ip_info(&["Alex"]).unwrap();
+        assert_eq!(one.translation_key(), Some("commands.banip.info"));
+        let a = args(&one);
+        assert!(a[0].contains('1') && a[1].contains("Alex"), "{a:?}");
+        let two = super::ban_ip_info(&["Alex", "Steve"]).unwrap();
+        let a = args(&two);
+        assert!(a[0].contains('2'), "{a:?}");
+        assert!(
+            a[1].contains("Alex") && a[1].contains(", ") && a[1].contains("Steve"),
+            "{a:?}"
+        );
+    }
 
     #[test]
     fn whitelist_bypass_file_takes_uuid_prefixes_and_refuses_junk() {

@@ -15,12 +15,14 @@ pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeFluidTank;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeDataMapType, NativeExperienceOrb,
-    NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayerRender, NativeShake,
+    ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -41,6 +43,10 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// The server's play packets `client_packet` hands over, decoded.
+pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
+/// The play packets a client sends, as `native_send_packet` takes them.
+pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
@@ -80,6 +86,38 @@ pub struct NativeCamera {
 /// A dispenser hook's answer: the slot's remainder (None empties it) and the
 /// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
 pub type NativeDispensed = (Option<ItemStack>, i32);
+
+/// What a mod's fake player uses its item on (`Host::use_as_player`), as a
+/// player's click would.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeUseTarget {
+    /// `ServerPlayerGameMode.useItemOn`: the block at `pos`, clicked on its
+    /// `face` at `point` (world coordinates on that face).
+    Block {
+        pos: [i32; 3],
+        face: Direction,
+        point: [f64; 3],
+    },
+    /// `ServerPlayerGameMode.useItem`: the item alone, in the air.
+    Item,
+    /// `Player.interactOn`: the entity with this id, clicked at `location`
+    /// (from the entity's position), as an interact packet names one.
+    Entity { id: i32, location: [f64; 3] },
+}
+
+/// What a mod's fake player did (`Host::use_as_player`).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeFakeUse {
+    /// Whether the use did something (`InteractionResult.consumesAction`).
+    pub consumed: bool,
+    /// What its hand holds afterwards: what is left of the stack, or what the
+    /// item became (a filled bucket).
+    pub held: Option<ItemStack>,
+    /// What else ended up in its inventory (a bowl of stew from a stack of
+    /// bowls, a bottle), for the mod to keep or drop.
+    pub other: Vec<ItemStack>,
+}
 
 /// Context for a player tuning a note block.
 #[derive(Clone, Copy, Debug)]
@@ -125,7 +163,12 @@ pub struct NativeLootDrops<'a> {
     /// what dropped them. API 100. A mob that a player killed while
     /// leashed drops its lead on its next tick as a call of its own (`entity`
     /// the mob, `player` its killer, `table` empty, `used` false). API
-    /// 102.
+    /// 102. A dying player's inventory is a call of its own too, after
+    /// vanishing curse items are gone and before they are thrown (`entity`
+    /// the player's id and `minecraft:player`, `player` them, `table` empty,
+    /// `origin` where the items leave, `used` false); `drops` empty means
+    /// the mod took the whole inventory. Not heard with keepInventory. API
+    /// 405.
     pub used: bool,
 }
 
@@ -204,6 +247,28 @@ pub struct NativeMinimap {
     pub blocks_per_pixel: f32,
     pub rotate: bool,
     pub round: bool,
+}
+
+/// One block of a scene a mod draws in a screen (`Host::draw_scene`): its
+/// place in the scene, its state, and the block entity drawn with it, if any
+/// (a mod's, through `native_block_entity_submit` as in the world).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSceneBlock<'a> {
+    pub pos: [i32; 3],
+    pub state: BlockStateId,
+    pub entity: Option<&'a ModBlockEntity>,
+}
+
+/// How a scene in a screen is seen (`Host::draw_scene`): the point at the
+/// middle of the screen's box, in blocks; the turn about the scene's vertical
+/// axis and the tilt of its top towards the viewer, in degrees; and how many
+/// GUI pixels a block is across.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeSceneView {
+    pub center: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub scale: f32,
 }
 
 /// A mod block's screen over its menu (`native_screen`): its size, where
@@ -316,8 +381,11 @@ pub struct NativeServerPlayer {
     pub pitch: f32,
     /// The network entity id the player has this session, the one hooks that only know entity ids
     /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
-    /// API @API:server_player_entity_id@.
+    /// API 398.
     pub entity_id: i32,
+    /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
+    /// empty when not known. API 407.
+    pub address: String,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -701,6 +769,7 @@ mod tests {
                 yaw: 0.0,
                 pitch: 0.0,
                 entity_id: 0,
+                address: String::new(),
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {

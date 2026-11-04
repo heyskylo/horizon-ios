@@ -58,6 +58,14 @@ fn shows_world(c: vec3<f32>, w: vec3<f32>) -> bool {
     return f <= 1.01 && f > 0.02 && all(abs(c - f * w) <= 0.03 * w + 1.0 / 255.0);
 }
 
+// A texel with its alpha as an 8-bit frame holds it. A 16-bit frame
+// (Renderer::frame_format) keeps alpha between 8-bit steps, where the marks below
+// would read differently (an alpha of 0.001 would count as the hand); its colour
+// keeps the gradients 8 bits would band. On an 8-bit frame nothing changes.
+fn frame_texel(v: vec4<f32>) -> vec4<f32> {
+    return vec4(saturate(v.rgb), round(saturate(v.a) * 255.0) / 255.0);
+}
+
 // Linear BT.709 to BT.2020 (ITU-R BT.2087), columns first.
 const BT709_TO_BT2020 = mat3x3<f32>(
     vec3(0.6274, 0.0691, 0.0164),
@@ -152,7 +160,7 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
         }
         return vec4(nits / 80.0, 1.0);
     }
-    let f = textureLoad(frame, at, 0);
+    let f = frame_texel(textureLoad(frame, at, 0));
     let c = f.rgb;
     // What covers the world here (Hdr::keep_world): nothing at 0, the hand at
     // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
@@ -162,7 +170,7 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     let ui = select(f.a, 0.0, hand);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(max(c, vec3(0.0)), vec3(2.2));
-    let w = textureLoad(world, at, 0);
+    let w = frame_texel(textureLoad(world, at, 0));
     // The world's alpha is below 0.75 on light sources, the sun and the moon
     // (terrain.wgsl, entity.wgsl): only those shine, and only where nothing was
     // drawn over them since: grey text over the white sun still looks like the sun

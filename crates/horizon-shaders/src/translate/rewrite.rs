@@ -60,6 +60,9 @@ impl Stage<'_> {
         if self.scalar_normalize {
             p.push_str("float normalize(float x) { return sign(x); }\n");
         }
+        for name in &self.trinary {
+            p.push_str(&trinary(name));
+        }
         if self.gbuffers {
             // Set by our `main` from the frame's matrices (gbuffers.rs).
             p.push_str(
@@ -798,6 +801,32 @@ const TYPE_NAMES: [&str; 35] = [
 /// offsets, so each footprint is gathered at `P` moved by its offset over the texture's size,
 /// which picks the same four texels; the component, a constant in GLSL, picks one of four
 /// gathers.
+/// GL_AMD_shader_trinary_minmax's `min3`, `max3` or `mid3` (its additions to GLSL 4.30
+/// Section 8.3: genType, genIType and genUType overloads): the per-component minimum, maximum
+/// or median of x, y and z.
+fn trinary(name: &str) -> String {
+    let body = match name {
+        "min3" => "min(x, min(y, z))",
+        "max3" => "max(x, max(y, z))",
+        _ => "max(min(x, y), min(max(x, y), z))",
+    };
+    let mut p = String::new();
+    for (scalar, vector) in [("float", "vec"), ("int", "ivec"), ("uint", "uvec")] {
+        for n in 1..=4 {
+            let ty = match n {
+                1 => scalar.to_owned(),
+                _ => format!("{vector}{n}"),
+            };
+            writeln!(
+                p,
+                "{ty} {name}({ty} x, {ty} y, {ty} z) {{ return {body}; }}"
+            )
+            .unwrap();
+        }
+    }
+    p
+}
+
 fn gather_offsets() -> String {
     let mut p = String::new();
     for prefix in ["", "i", "u"] {

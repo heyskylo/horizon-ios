@@ -116,6 +116,64 @@ fn a_shadow_map_stays_in_range_and_needs_a_stage_to_read_it() {
 }
 
 #[test]
+fn the_shadow_map_may_follow_options() {
+    let with = |keys: &str| {
+        let sizes = "[[options]]\nid = \"shadow_size\"\nname = \"Size\"\ntype = \"choice\"\n\
+                     values = [\"1024\", \"2048\", \"4096\"]\ndefault = \"2048\"\n\
+                     [[options]]\nid = \"shadow_reach\"\nname = \"Reach\"\ntype = \"int\"\n\
+                     default = 128\nmin = 64\nmax = 256\n";
+        let text = sample_text().replace("distance = 96.0", &format!("distance = 96.0\n{keys}"));
+        format!("{text}\n{sizes}")
+    };
+    let m = Manifest::parse(&with(
+        "option = \"reflections\"\nresolution_option = \"shadow_size\"\n\
+         distance_option = \"shadow_reach\"\n",
+    ))
+    .unwrap();
+    let s = m.shadow.unwrap();
+    assert_eq!(
+        (
+            s.option.as_deref(),
+            s.resolution_option.as_deref(),
+            s.distance_option.as_deref()
+        ),
+        (
+            Some("reflections"),
+            Some("shadow_size"),
+            Some("shadow_reach")
+        )
+    );
+    let cases = [
+        (
+            "option = \"shadows\"\n",
+            "shadow.option: `shadows` is no option",
+        ),
+        // An int below 256 texels, words, a float.
+        (
+            "resolution_option = \"samples\"\n",
+            "shadow.resolution_option: `samples`",
+        ),
+        (
+            "resolution_option = \"tonemap\"\n",
+            "shadow.resolution_option: `tonemap`",
+        ),
+        (
+            "resolution_option = \"saturation\"\n",
+            "shadow.resolution_option: `saturation`",
+        ),
+        // 1024 blocks and more.
+        (
+            "distance_option = \"shadow_size\"\n",
+            "shadow.distance_option: `shadow_size`",
+        ),
+    ];
+    for (keys, needle) in cases {
+        let e = refused(&with(keys));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+}
+
+#[test]
 fn material_ids_go_by_the_first_entry_and_may_cut_shadows_whole() {
     let manifest = |rest: &str| {
         Manifest::parse(&format!(

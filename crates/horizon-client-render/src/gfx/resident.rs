@@ -92,7 +92,7 @@ impl<T> Resident<T> {
         self.items.iter_mut().map(|(_, v)| v)
     }
     /// Every section's key, value and bounds.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, debug_assertions))]
     pub fn iter(&self) -> impl Iterator<Item = (SectionKey, &T, Option<[Vec3; 2]>)> {
         let items = self.items.iter().zip(&self.bounds);
         items.map(|((key, value), bounds)| (*key, value, *bounds))
@@ -193,6 +193,12 @@ impl<T> Resident<T> {
         }
         column.low = column.low.min(key.1);
         column.high = column.high.max(key.1);
+    }
+    /// Marks or unmarks the section at `key`, if it is resident.
+    pub fn set_marked(&mut self, key: SectionKey, marked: bool) {
+        if let Some(&slot) = self.slots.get(&key) {
+            self.mark_slot(slot, marked);
+        }
     }
     /// Marks or unmarks the section in `slot`, in its column's list too.
     fn mark_slot(&mut self, slot: u32, marked: bool) {
@@ -657,7 +663,8 @@ mod tests {
             (!value.is_multiple_of(3)).then(|| [Vec3::splat((value % 5) as f32), Vec3::splat(16.0)])
         };
         // A deterministic mix of inserts, replacements and removals, marked at
-        // random: a replacement can mark or unmark its section.
+        // random: a replacement can mark or unmark its section, and so can a
+        // mark set alone (`set_marked`), which leaves a key not resident alone.
         let mut seed = 0x2545_f491_u32;
         for step in 0..4000u32 {
             seed ^= seed << 13;
@@ -694,6 +701,12 @@ mod tests {
                 assert_eq!(removed, expected);
             } else if (seed >> 12).is_multiple_of(3) {
                 assert_eq!(r.remove(key), model.remove(&key).map(|(value, _)| value));
+            } else if (seed >> 12).is_multiple_of(5) {
+                let marked = (seed >> 20).is_multiple_of(2);
+                r.set_marked(key, marked);
+                if let Some(held) = model.get_mut(&key) {
+                    held.1 = marked;
+                }
             } else {
                 let marked = (seed >> 20).is_multiple_of(2);
                 r.insert_marked(key, step, bounds(step), marked);

@@ -44,6 +44,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             op: ">",
             reference: 0.1,
         }),
+        item_id_declared: false,
     }
 }
 

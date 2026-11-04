@@ -43,23 +43,52 @@ const SWATCH: f32 = 26.;
 const STRIP: f32 = 120.;
 
 impl Launcher {
-    /// The theme Settings ask for, under the window's own light or dark.
-    /// The player's look; a launcher theme worn in the Wardrobe brings its own sky and accent.
+    /// The theme Settings ask for, under the window's own light or dark: the player's look,
+    /// under the launcher theme's sky if they picked one.
     pub(super) fn settings_theme(&self, window: &Window) -> Theme {
-        let worn = self.worn_theme();
-        let theme =
-            Theme::for_appearance(self.settings.appearance, self.accent(), window.appearance())
-                .with_glass(self.settings.glass_tint(), self.settings.glass_blur());
-        match worn {
-            Some((sky, _)) => theme.with_sky(sky),
+        let theme = Theme::for_appearance(
+            self.settings.appearance,
+            self.settings.accent,
+            window.appearance(),
+        )
+        .with_glass(self.settings.glass_tint(), self.settings.glass_blur());
+        match themes::theme(self.settings.theme.as_deref()) {
+            Some(picked) => theme.with_sky(picked.sky),
             None => theme,
         }
     }
 
-    /// The accent worn: the player's, or a launcher theme's from the Wardrobe.
-    fn accent(&self) -> Accent {
-        self.worn_theme()
-            .map_or(self.settings.accent, |(_, hue)| Accent::custom(hue))
+    /// Settings' launcher theme: Horizon's own sky or First Light, free for everyone. Picking one
+    /// brings its accent too; the accent row can change it after.
+    pub(super) fn launcher_theme_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let current = themes::theme(self.settings.theme.as_deref()).map(|th| th.id);
+        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Horizon")];
+        options.extend(themes::THEMES.iter().map(|th| (Some(th.id), th.name)));
+        let this = cx.entity().downgrade();
+        let picker = ui::segments("launcher-theme", &options, current, &t, move |id, _, cx| {
+            let _ = this.update(cx, |this, cx| {
+                this.settings.theme = id.map(str::to_owned);
+                this.settings.accent = match themes::theme(id) {
+                    Some(picked) => Accent::custom(picked.accent_hue),
+                    None => Accent::VIOLET,
+                };
+                this.save_settings();
+                this.restyle = true;
+                cx.notify();
+            });
+        });
+        ui::setting_row(
+            tr("Launcher theme"),
+            Some(
+                div()
+                    .child(tr(
+                        "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(picker.into_any_element()),
+        )
     }
 
     /// The picture behind Home, if the player keeps one.
@@ -311,6 +340,32 @@ impl Launcher {
         )
     }
 
+    /// The Performance mode row: the cheaper scene for older computers (a quarter-resolution
+    /// sky, a box blur, resizes baked in the background, no frame per mouse move).
+    pub(super) fn performance_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let on = self.settings.performance();
+        ui::setting_row(
+            tr("Performance mode"),
+            Some(
+                div()
+                    .child(tr(
+                        "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                crate::switch("performance", on, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.performance = Some(!this.settings.performance());
+                        this.save_settings();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
+    }
+
     /// The value under the pointer, in whole steps, as the look; saved when the drag ends.
     fn pick_look(&mut self, knob: LookKnob, at: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(area) = self.look_sliders.areas[knob as usize].get() else {
@@ -366,6 +421,7 @@ impl Launcher {
                     let s = &mut this.settings;
                     s.appearance = Default::default();
                     s.accent = Accent::VIOLET;
+                    s.theme = None;
                     s.glass = None;
                     s.blur = None;
                     s.background = None;
@@ -496,7 +552,7 @@ impl Launcher {
     }
 
     /// The hue under the pointer, as the accent. Saving waits until the mouse comes up, so a drag
-    /// writes `settings.json` once.
+    /// writes `settings.json` once. A move that stays on the same degree changes nothing.
     fn pick_hue(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(area) = self.hue_area.get() else {
             return;
@@ -506,8 +562,12 @@ impl Launcher {
             return;
         }
         let across: f32 = (at.x - area.origin.x).into();
-        self.settings.accent = Accent::custom((across / width).clamp(0., 1.) * 360.);
+        let accent = Accent::custom(((across / width).clamp(0., 1.) * 360.).round());
         self.hue_dragging = true;
+        if accent == self.settings.accent {
+            return;
+        }
+        self.settings.accent = accent;
         self.theme = self.settings_theme(window);
         cx.notify();
     }

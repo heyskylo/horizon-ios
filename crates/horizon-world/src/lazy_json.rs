@@ -22,6 +22,10 @@ impl LazyJson {
         self.value
             .get_or_init(|| serde_json::from_str(&self.json).expect("written from a Value"))
     }
+    /// The JSON text as written, without reading it.
+    pub fn json(&self) -> &str {
+        &self.json
+    }
     /// The value without keeping it: for a pass over every entry (an
     /// index) that would otherwise keep them all.
     pub fn read(&self) -> std::borrow::Cow<'_, Value> {

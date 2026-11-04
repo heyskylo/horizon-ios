@@ -1203,6 +1203,39 @@ def scenario_native_pointer():
         g.quit()
 
 
+def scenario_launcher():
+    print("launcher: its other accounts are profiles; offline ones stay in this instance")
+    folder = Path(tempfile.mkdtemp(prefix='hz-launcher-'))
+    # Another signed-in account's session, as the launcher writes it (a token nobody checks:
+    # P1's own world is offline-mode).
+    session = folder / 'session-ann.json'
+    session.write_text(json.dumps({'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
+    os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}, {'name': 'Cal', 'uuid': '00000000000000000000000000000001', 'skipped': 'Sign in again'}])
+    g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
+    try:
+        menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
+        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Cal', 'Bea'])
+        check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        check('unavailable account marked offline', 'Cal (Offline)' in g.labels(2), True)
+        check('unavailable account cannot be forgotten', 'Forget Cal' in g.labels(2), False)
+        g.ctl(2, 'click-button', 'Ann (Microsoft)')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
+        g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")
+        g.ctl(3, 'click-button', 'New Profile...')
+        g.ctl(3, 'type', 'Dan')
+        g.ctl(3, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'Dan in the world')
+        check('a new offline profile is kept in the instance',
+              (g.home / 'splitscreen/profiles/Dan').is_dir(), True)
+    finally:
+        g.quit()
+        os.environ.pop('HORIZON_ACCOUNT_SESSIONS', None)
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
@@ -1233,6 +1266,7 @@ SCENARIOS = {
     'packs': scenario_packs,
     'dedicated_profiles': scenario_dedicated_profiles,
     'integrated_profiles': scenario_integrated_profiles,
+    'launcher': scenario_launcher,
 }
 
 

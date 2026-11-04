@@ -4,10 +4,9 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
-pub mod capped;
 pub mod heap_census;
 pub mod jobs;
-pub mod memory_limit;
+pub mod process_memory;
 
 use std::sync::{
     OnceLock,
@@ -283,7 +282,11 @@ pub fn catch_stop_signals() {
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only touches an atomic and calls _exit, both async-signal-safe.
         unsafe {
-            libc::signal(signal, handler as libc::sighandler_t);
+            // A signal ignored from the start stays ignored, as the JVM leaves it (`nohup`'s SIGHUP:
+            // a server started that way outlives its terminal).
+            if libc::signal(signal, handler as libc::sighandler_t) == libc::SIG_IGN {
+                libc::signal(signal, libc::SIG_IGN);
+            }
         }
     }
 }
@@ -296,10 +299,9 @@ pub fn catch_stop_signals() {}
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
-///
-/// It sits behind [`capped`]'s hard ceiling: with none set, every request is
-/// passed on unchanged and only the byte counter moves.
-pub use capped::{ALLOCATOR, Allocator};
+pub type Allocator = mimalloc::MiMalloc;
+/// The game's mimalloc allocator.
+pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
 
 /// The global allocator of a build with the `alloc-census` feature: live
 /// heap bytes by startup step and thread, for `horizon-ctl memory`.

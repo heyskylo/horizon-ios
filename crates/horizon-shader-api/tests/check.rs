@@ -95,6 +95,31 @@ fn a_pack_declares_no_bindings_entry_points_or_horizon_names() {
 }
 
 #[test]
+fn the_options_sizing_the_shadow_map_need_no_override() {
+    let manifest = |keys: &str| {
+        let text = String::from_utf8(sample().files[MANIFEST].clone()).unwrap();
+        let text = text.replace("distance = 96.0", &format!("distance = 96.0\n{keys}"));
+        format!(
+            "{text}\n[[options]]\nid = \"shadow_size\"\nname = \"Size\"\ntype = \"choice\"\n\
+             values = [\"1024\", \"2048\"]\ndefault = \"1024\"\n"
+        )
+    };
+    let mut files = sample().files;
+    files.insert(
+        MANIFEST.into(),
+        manifest("resolution_option = \"shadow_size\"\n").into_bytes(),
+    );
+    let report = check(&Pack::from_files(files).unwrap()).unwrap();
+    let shadow = report.shadow.unwrap();
+    assert_eq!(shadow.resolution_option.as_deref(), Some("shadow_size"));
+    one(
+        MANIFEST,
+        &manifest(""),
+        "option \"shadow_size\": no stage declares `override shadow_size: u32`",
+    );
+}
+
+#[test]
 fn overrides_match_the_options() {
     let post = "fn post(input: PostInput) -> vec4<f32> { return input.color; }\n";
     one(

@@ -113,19 +113,56 @@ fn possible_biomes(source: &ResolvedBiomeSource) -> Vec<String> {
         .filter(|name| seen.insert(name.clone()))
         .collect()
 }
+/// `FlatLevelGeneratorSettings.adjustGenerationSettings`: what a superflat world keeps of its
+/// biome's generation settings.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FlatDecoration {
+    /// `(!voidGen || biome is the_void) && decoration`: the biome's own placed features, but
+    /// those of the two structure steps (and of the lakes step when `lakes` is on).
+    pub(super) features: bool,
+    /// `addLakes`: the lakes step is `createLakesList`.
+    pub(super) lakes: bool,
+}
+/// `GenerationStep.Decoration` ordinals `adjustGenerationSettings` treats on their own.
+const LAKES_STEP: usize = 1;
+const UNDERGROUND_STRUCTURES_STEP: usize = 3;
+const SURFACE_STRUCTURES_STEP: usize = 4;
+/// `FlatLevelGeneratorSettings.createLakesList`.
+const FLAT_LAKES: [&str; 2] = [
+    "minecraft:lake_lava_underground",
+    "minecraft:lake_lava_surface",
+];
+impl FlatDecoration {
+    /// The settings' `features` and `lakes`, for layers that are all air (`void_gen`) or not and a
+    /// biome that is the_void or not.
+    pub(super) fn new(features: bool, lakes: bool, void_gen: bool, the_void: bool) -> Self {
+        Self {
+            features: (!void_gen || the_void) && features,
+            lakes,
+        }
+    }
+    /// Which of the biome's own entries step `step` keeps.
+    fn keeps_biome_step(self, step: usize) -> bool {
+        self.features
+            && step != UNDERGROUND_STRUCTURES_STEP
+            && step != SURFACE_STRUCTURES_STEP
+            && !(self.lakes && step == LAKES_STEP)
+    }
+}
 impl Decoration {
     pub(super) fn new(
         data: &Arc<GeneratorData>,
         source: &ResolvedBiomeSource,
     ) -> Result<Option<Self>, GeneratorError> {
-        Self::new_with(data, source, true)
+        Self::new_with(data, source, None)
     }
-    /// `new`, with `features` off: the biome's decoration steps, none of its placed features
-    /// (a superflat world without `features`).
+    /// `new` for a superflat world (`flat`): its fixed biome's settings as
+    /// `adjustGenerationSettings` leaves them. The steps stay (structures place in them);
+    /// the `FillLayerFeature`s are `top_layers`.
     pub(super) fn new_with(
         data: &Arc<GeneratorData>,
         source: &ResolvedBiomeSource,
-        with_features: bool,
+        flat: Option<FlatDecoration>,
     ) -> Result<Option<Self>, GeneratorError> {
         let Some(resources) = &data.feature_resources else {
             return Ok(None);
@@ -201,8 +238,25 @@ impl Decoration {
                 .ok_or_else(|| resource(format!("unknown biome {name}")))?;
             let json: Value = serde_json::from_str(data.biome_json(id))?;
             let mut steps = Vec::new();
-            for step in json["features"].as_array().into_iter().flatten() {
+            for (index, step) in json["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
                 let mut list = Vec::new();
+                // The builder takes the lakes first, then the biome's steps it keeps.
+                if flat.is_some_and(|f| f.lakes) && index == LAKES_STEP {
+                    for name in FLAT_LAKES {
+                        let feature = identity(name);
+                        list.push(feature);
+                        biome_features[id.0 as usize].insert(feature);
+                    }
+                }
+                if flat.is_some_and(|f| !f.keeps_biome_step(index)) {
+                    steps.push(list);
+                    continue;
+                }
                 let entries = match step {
                     Value::String(tag) if tag.starts_with('#') => tags
                         .get(&super::tags::identifier(&tag[1..])?)
@@ -220,14 +274,18 @@ impl Decoration {
                     _ => return Err(resource("biome feature step")),
                 };
                 for entry in entries {
-                    if !with_features {
-                        continue;
-                    }
                     let feature = identity(&super::tags::identifier(&entry)?);
                     list.push(feature);
                     biome_features[id.0 as usize].insert(feature);
                 }
                 steps.push(list);
+            }
+            // A biome with fewer steps still gets the lakes (`PlainBuilder` grows its list).
+            if flat.is_some_and(|f| f.lakes) && steps.len() <= LAKES_STEP {
+                steps.resize_with(LAKES_STEP, Vec::new);
+                let lakes = FLAT_LAKES.map(&mut identity).to_vec();
+                biome_features[id.0 as usize].extend(lakes.iter().copied());
+                steps.push(lakes);
             }
             plan.push((id, steps));
         }

@@ -1,8 +1,9 @@
 # Shader API
 
-Horizon has no shader packs today: the earlier implementation was removed on 2026-10-24. Two things will replace it,
-designed separately: a **Horizon shader API**, described here, and a clean-room loader for the existing pack format
-(its own spec; it is not part of this API). Both sit on the same renderer hooks, agreed between the two.
+Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before it runs. This
+page is the **Horizon shader API**. A separate clean-room loader reads the existing `shaders/` pack format (its own
+spec, not part of this API); both sit on the same renderer hooks. The earlier implementation was removed on
+2026-10-24; this API was written from scratch after it.
 
 ## Overview: what a shader author will be able to do
 
@@ -70,6 +71,9 @@ file = "weather.wgsl"
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
 solid_materials = [10]     # optional: [[materials]] ids drawn into the map whole, cutouts ignored
+option = "shadows"         # optional: drawn while this option is not 0 (else always); off, there is no shadow pass
+resolution_option = "shadow_resolution"   # optional: an int, or a choice of numbers, whose value replaces resolution
+distance_option = "shadow_distance"       # optional: the same for distance
 
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
@@ -157,16 +161,20 @@ the same way every time (files in path order, fixed dates), so a pack's SHA-256 
 
 ## Stability
 
-Not started. The first stages will be experimental (opt-in), then preview once a reference, an example and a test
-pack exist ([stability.md](stability.md)).
+Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md).
 
 ## Not there yet
 
-Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
-stages.
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
+  `step`; the value is saved, and the pack rebuilt, when the slider is let go.
+- 2026-11-03: API 0.1 (additions): `[shadow] option`, `resolution_option` and `distance_option`: a pack's
+  options can turn its shadow map off (no map, no shadow pass, `has_shadow` 0) and pick its size, so
+  one pack offers its own quality levels. The options sizing the map need no `override`.
 - 2026-11-03: API 0.1 (additions): with `[shadow]`, `[displacement]`'s grid casts into the shadow map in
   the flat faces' place, so the relief shadows itself.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a
