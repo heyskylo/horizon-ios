@@ -38,10 +38,27 @@ const QUEUED_PER_SAMPLER: usize = 32;
 const MAX_REFRESHED: usize = 64;
 /// Threads that sample far tiles beside the mesher. Sampling is the cold-load
 /// bottleneck (each task evaluates a shared density lattice for 256 columns),
-/// so medium machines use half their cores, not a quarter.
+/// so medium machines use two thirds of their cores, not half.
+///
+/// The mesher has little to do until tiles are sampled, so its threads sit
+/// idle through the part of a cold build that waits on sampling. Measured on
+/// a 12-thread machine building 4336 tiles at LOD distance 256, from the game
+/// answering the control socket until every target tile is sampled, four runs
+/// a configuration:
+///
+/// | samplers / meshers | sampling | whole build |
+/// |---|---|---|
+/// | 6 / 5 (before) | 15.0 s | 23.9 s |
+/// | 8 / 3 | 11.8 s | 18.6 s |
+/// | 9 / 2 | 10.6 s | 19.1 s |
+///
+/// Nine samplers finish sampling sooner still, but leave the mesher two
+/// threads and the whole build ends later. The cap keeps a large machine
+/// from starving its mesher, and `meshing_threads` keeps the frame and the
+/// ticks a core either way.
 fn sampling_threads(cores: usize) -> usize {
     if cores >= 8 {
-        (cores / 2).min(8)
+        (cores * 2 / 3).min(8)
     } else {
         (cores / 4).clamp(1, 3)
     }
@@ -283,7 +300,11 @@ pub struct Column {
 }
 impl Column {
     /// Reduce an entire horizontal footprint, rather than inflating its corner
-    /// column (a single leaf used to become a whole distant tree-sized slab).
+    /// column. A height is drawn where any column of the footprint holds a
+    /// block there, in the material most of them hold: anything joined to
+    /// the ground stays joined at every width. Drawing only heights most of
+    /// the footprint held dropped trunks (one column of 16 or 256) under the
+    /// crowns they hold up, and the crowns hung in the air as slabs.
     pub fn reduced(columns: &[Column; 256], x: usize, z: usize, width: usize) -> Self {
         if width == 1 {
             return columns[z * 16 + x].clone();
@@ -307,7 +328,7 @@ impl Column {
         let mut bottom = MIN_Y as i16;
         for (y, material, change) in events {
             if bottom < y {
-                if occupied * 2 >= (width * width) as i32
+                if occupied > 0
                     && let Some(&((state, biome), _)) =
                         votes.iter().max_by_key(|&(material, count)| {
                             (*count, std::cmp::Reverse((material.0.0, material.1)))
@@ -971,7 +992,16 @@ struct MeshInput {
 }
 struct ReducedColumns {
     columns: Arc<[Column; 256]>,
-    levels: [Vec<Column>; 4],
+    /// The chunk reduced to cells 2, 4, 8 and 16 blocks wide, each built the
+    /// first time a tile of that width asks for it.
+    ///
+    /// One chunk is covered by one far tile, so one of the four is what gets
+    /// read, and a chunk whose detail arrives while full-detail terrain still
+    /// draws it reads none. Building all four up front cost 405 us of a far
+    /// terrain thread for every chunk the world sent (`Column::reduced` walks
+    /// every span of the footprint four times over), and held 85 columns
+    /// beside the chunk's 256.
+    levels: [std::sync::OnceLock<Vec<Column>>; 4],
 }
 impl MeshInput {
     /// The column of every cell: the tile's own samples unless the snapshot
@@ -1001,25 +1031,26 @@ impl MeshInput {
 }
 impl ReducedColumns {
     fn new(columns: Arc<[Column; 256]>) -> Self {
-        let levels = std::array::from_fn(|level| {
-            let width = 2 << level;
+        Self {
+            columns,
+            levels: std::array::from_fn(|_| std::sync::OnceLock::new()),
+        }
+    }
+    fn get(&self, x: usize, z: usize, width: usize) -> &Column {
+        if width == 1 {
+            return &self.columns[z * 16 + x];
+        }
+        let level = width.trailing_zeros() as usize - 1;
+        let reduced = self.levels[level].get_or_init(|| {
+            let columns = &self.columns;
             (0..16 / width)
                 .flat_map(|z| {
-                    let columns = &columns;
                     (0..16 / width)
                         .map(move |x| Column::reduced(columns, x * width, z * width, width))
                 })
                 .collect()
         });
-        Self { columns, levels }
-    }
-    fn get(&self, x: usize, z: usize, width: usize) -> &Column {
-        if width == 1 {
-            &self.columns[z * 16 + x]
-        } else {
-            &self.levels[width.trailing_zeros() as usize - 1]
-                [(z / width) * (16 / width) + x / width]
-        }
+        &reduced[(z / width) * (16 / width) + x / width]
     }
 }
 enum Job {
@@ -1120,6 +1151,18 @@ struct Shared {
     approximate: AtomicBool,
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
+    /// The near terrain is loading: the far threads step behind it
+    /// (`horizon_threads::far_terrain_behind`) and come back once it is in.
+    near_loading: AtomicBool,
+}
+/// Puts the calling far terrain thread behind the near terrain while it
+/// loads, and back once it is in. `behind`: where the thread is now.
+fn step_behind(shared: &Shared, behind: &mut bool) {
+    let loading = shared.near_loading.load(Ordering::Relaxed);
+    if loading != *behind {
+        horizon_threads::far_terrain_behind(loading);
+        *behind = loading;
+    }
 }
 /// A background worker, sampling and meshing threads, and a bounded queue of
 /// sample jobs (`sample_jobs`). Only the current view's quadtree and a
@@ -1248,6 +1291,7 @@ impl Lod {
             stop: AtomicBool::new(false),
             approximate: AtomicBool::new(false),
             mesh_held: AtomicBool::new(false),
+            near_loading: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let (tx, results) = mpsc::channel();
@@ -1267,7 +1311,8 @@ impl Lod {
                     thread::Builder::new()
                         .name("Far meshing".into())
                         .spawn(move || {
-                            horizon_threads::behind_server();
+                            horizon_threads::far_terrain_current();
+                            let mut behind = true;
                             let mut mesher = mesh::Mesher::default();
                             loop {
                                 let job = {
@@ -1298,6 +1343,7 @@ impl Lod {
                                     }
                                     continue;
                                 }
+                                step_behind(&shared, &mut behind);
                                 let keep_finer = !job.finer.is_empty();
                                 let input = job.snapshot.mesh_input(job.key, job.finer);
                                 let columns = input.columns();
@@ -1353,7 +1399,8 @@ impl Lod {
                     .name("Far terrain".into())
                     .spawn(move || {
                         // Ticks and frames come first (horizon_threads).
-                        horizon_threads::behind_server();
+                        horizon_threads::far_terrain_current();
+                        let mut behind = true;
                         let mut sampler = source.sampler();
                         let count = sampling_threads(cores);
                         let mut sampling = Vec::new();
@@ -1367,7 +1414,8 @@ impl Lod {
                                 thread::Builder::new()
                                     .name("Far sampling".into())
                                     .spawn(move || {
-                                        horizon_threads::behind_server();
+                                        horizon_threads::far_terrain_current();
+                                        let mut behind = true;
                                         loop {
                                             let key = {
                                                 let mut jobs = shared.jobs.lock().unwrap();
@@ -1390,6 +1438,7 @@ impl Lod {
                                                     jobs = shared.wake.wait(jobs).unwrap();
                                                 }
                                             };
+                                            step_behind(&shared, &mut behind);
                                             let [x, _, z] = key.origin();
                                             sample.set_approximate(
                                                 shared.approximate.load(Ordering::Relaxed),
@@ -1455,6 +1504,7 @@ impl Lod {
                                 }
                             };
                             let Some(job) = job else { continue };
+                            step_behind(&worker, &mut behind);
                             let done = match job {
                                 Job::Observe(key) => {
                                     let chunk = worker.observed.lock().unwrap().remove(&key);
@@ -2200,6 +2250,7 @@ impl Lod {
             self.held_sample_at = std::time::Instant::now();
         }
         self.near_loading = loading;
+        self.shared.near_loading.store(loading, Ordering::Relaxed);
         let held = self.held();
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
             self.shared.mesh_wake.notify_all();
@@ -3515,7 +3566,7 @@ mod tests {
         assert_eq!(kelp.surface.unwrap().height, 40);
     }
     #[test]
-    fn coarse_voxels_reduce_the_area_instead_of_inflating_one_leaf() {
+    fn coarse_voxels_keep_what_any_column_holds_so_crowns_stay_on_trunks() {
         let span = |min, max, state| Span {
             min,
             max,
@@ -3527,8 +3578,8 @@ mod tests {
             surface: None,
             spans: vec![span(0, 4, 1)].into(),
         });
-        columns[0].spans.push(span(8, 10, 2));
-        assert_eq!(Column::reduced(&columns, 0, 0, 4).spans, [span(0, 4, 1)]);
+        // One trunk column under a crown over the whole footprint.
+        columns[0].spans.push(span(4, 12, 2));
         for z in 0..4 {
             for x in 0..4 {
                 columns[z * 16 + x].spans.push(span(12, 14, 3));
@@ -3536,17 +3587,58 @@ mod tests {
         }
         assert_eq!(
             Column::reduced(&columns, 0, 0, 4).spans,
-            [span(0, 4, 1), span(12, 14, 3)]
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)]
         );
         assert_eq!(Column::reduced(&columns, 0, 0, 1), columns[0]);
         let reduced = ReducedColumns::new(Arc::new(columns));
         assert_eq!(
-            reduced.get(0, 0, 1).spans,
-            [span(0, 4, 1), span(8, 10, 2), span(12, 14, 3)]
+            reduced.get(0, 0, 4).spans,
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)]
         );
-        assert_eq!(reduced.get(0, 0, 4).spans, [span(0, 4, 1), span(12, 14, 3)]);
         assert_eq!(reduced.get(4, 8, 4).spans, [span(0, 4, 1)]);
-        assert_eq!(reduced.get(0, 0, 16).spans, [span(0, 4, 1)]);
+        assert_eq!(
+            reduced.get(0, 0, 16).spans,
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)],
+            "a crown over one corner of a wide cell still sits on its trunk"
+        );
+    }
+    /// A chunk is reduced to the one cell width that reads it, when it does.
+    ///
+    /// Reducing to all four widths up front cost 405 us of a far terrain
+    /// thread for every chunk the world sent, where at most one is read.
+    #[test]
+    fn a_chunk_is_reduced_only_to_the_width_that_reads_it() {
+        let built = |reduced: &ReducedColumns| {
+            reduced
+                .levels
+                .iter()
+                .enumerate()
+                .filter(|(_, level)| level.get().is_some())
+                .map(|(level, _)| 2usize << level)
+                .collect::<Vec<_>>()
+        };
+        let reduced = ReducedColumns::new(Arc::new(std::array::from_fn(|i| Column {
+            surface: None,
+            spans: vec![Span {
+                min: 0,
+                max: 4 + (i % 3) as i16,
+                state: BlockStateId(1),
+                biome: 0,
+                light: 240,
+            }]
+            .into(),
+        })));
+        assert!(built(&reduced).is_empty(), "nothing is reduced unread");
+        // A tile of full-detail cells reads the chunk's own columns.
+        reduced.get(3, 5, 1);
+        assert!(built(&reduced).is_empty());
+        reduced.get(4, 8, 4);
+        assert_eq!(built(&reduced), [4]);
+        // Read again, and the reduction is the one already built.
+        reduced.get(0, 0, 4);
+        assert_eq!(built(&reduced), [4]);
+        reduced.get(0, 0, 16);
+        assert_eq!(built(&reduced), [4, 16]);
     }
     /// Detail read before a refresh over its chunk is dropped (asked
     /// again); elsewhere, or read after, it is kept.
@@ -4253,9 +4345,22 @@ mod tests {
     }
     #[test]
     fn extra_sampling_threads_only_on_large_machines() {
-        assert_eq!([1, 2, 4, 8, 11].map(sampling_threads), [1, 1, 1, 4, 5]);
-        assert_eq!([12, 16, 64].map(sampling_threads), [6, 8, 8]);
-        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 3, 5, 7]);
+        // Small machines are unchanged: a quarter of their cores, never more
+        // than three, so the near chunks and the frame keep theirs.
+        assert_eq!([1, 2, 4].map(sampling_threads), [1, 1, 1]);
+        // From eight, two thirds rather than half, still capped at eight.
+        assert_eq!([8, 11, 12].map(sampling_threads), [5, 7, 8]);
+        assert_eq!([16, 64].map(sampling_threads), [8, 8]);
+        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 2, 3, 7]);
+        // From four cores up the two pools together leave one for the frame
+        // and the ticks. Below that both clamp to one and there is nothing
+        // to spare, which is the existing behaviour.
+        for cores in [4usize, 8, 11, 12, 16, 64] {
+            assert!(
+                sampling_threads(cores) + meshing_threads(cores) < cores,
+                "{cores} cores leaves nothing for the frame"
+            );
+        }
     }
 
     /// Review point 3 on #4747: a result from a batch that is no longer the
