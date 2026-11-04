@@ -17,7 +17,8 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Our checks runners (label horizon-checks, docs/ci-runners.md); SELF_HOSTED_CI=light or off: GitHub's.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     defaults:
       run:
@@ -25,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      # Ours keep their build folder between jobs.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           workspaces: crates/horizon-telemetry-server
           save-if: ${{ github.ref == 'refs/heads/main' }}

@@ -26,13 +26,15 @@ Every setting applies at once, except worker threads, the graphics API and trans
 | Quality | clouds, cloud distance, weather radius, particles, smooth lighting, biome blend, entity distance, entity shadows, vignette, chunk fade, mipmap levels, cutout leaves, improved transparency | `options.txt` |
 | | sky, fog, weather, animated textures, distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up), resolution scale, anti-aliasing (FXAA or TAA), TAA upscaling, screenshot quality, frame generation | `horizon-graphics.txt` |
 | Performance | chunk builder | `options.txt` |
-| | chunk updates and upload budget per frame, worker threads, cave culling, entity culling mode, leaf culling, shadow cache, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
+| | chunk updates and upload budget per frame, worker threads, cave culling, entity and particle culling modes, leaf culling, shadow cache, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
 | Advanced | present mode, frame pacing, graphics API, translucent batching, performance overlay (FPS, frame/CPU/GPU times, frame-time graph) | `horizon-graphics.txt` |
 | HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness, a shortcut key to the page | `horizon-graphics.txt` |
 
-`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, and paces frames on a fixed grid of slots (vanilla starts each slot when the thread wakes up, so every late wake-up lengthens a frame), which changes timing, not pixels.
+`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity, particle and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, and paces frames on a fixed grid of slots (vanilla starts each slot when the thread wakes up, so every late wake-up lengthens a frame), which changes timing, not pixels.
 
 **Entity Culling** is off by default and disabled with non-vanilla resource packs. It applies to entity models; block entities keep their section and per-block frustum culling and use the separate Block Entities caches. Synchronous mode uses the existing same-frame CPU test. Asynchronous mode checks meshes on a worker and uses a result only when the camera and mesh bounds still match and the opaque chunks and rendered sections that proved occlusion are unchanged and ready. Until then, it leaves the mesh visible. Both modes leave simulation and interaction unchanged; older `entityCulling:true` settings select Synchronous.
+
+**Particle Culling** is off by default. Synchronous and asynchronous modes skip particles outside the camera frustum, below half a projected pixel, or hidden by opaque terrain. Asynchronous mode defers occlusion checks and leaves particles visible until a current result is available. Particle simulation is unchanged.
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 
@@ -107,6 +109,12 @@ Upscaling (`upscaling` in `horizon-graphics.txt`) renders the world smaller than
 
 Not implemented: anisotropic filtering (wgpu needs linear magnification for it, which blurs close blocks), MSAA (FXAA or TAA instead) and exclusive fullscreen (fullscreen is borderless).
 
+## Visibility buffer (experimental)
+
+`HORIZON_VISBUFFER=1` (read at startup, off by default) draws solid terrain through a visibility buffer (`gfx/visbuffer.rs`, `visbuffer.wgsl`). Pass 1 rasterises the solid draws, near sections and far terrain alike, writing only depth and, per pixel, a 32-bit ID of the quad it shows (bit 31 set, the arena page in bits 22 to 30, the quad in that page below); cutout and fading quads keep their alpha test and dither there, the other quads never discard, so a tiled GPU still hides what lies behind them. Pass 2 is one full-screen draw with up to 16 arena pages bound (more pages, more draws; one draw per page made each GPU thread group shade once for every page among its pixels, 36 ms instead of 2 at 1440p): it reads the quad's corners from its page and its section's origin (through a copy of the drawn pages' block tables in one buffer) as the vertex shaders do, runs the terrain vertex code on the triangle the pixel falls in, interpolates with perspective-correct barycentrics (homogeneous 2D rasterisation, so corners behind the camera need no clipping) and works out the UV's screen gradients over that triangle as `dpdxFine`/`dpdyFine` would, so the texel, mip level and RGSS blend, light, HDR marks and fog come out as in the normal path. Both passes sample only the side of RGSS's blend with nearest texels that it keeps (one tap where the texels are large), which gives the same value. Each solid pixel is then shaded once, however many quads were drawn over it and however small they are.
+
+It runs only in frames drawn flat (Metal past `flat::MIN_SECTIONS` sections in view, or `HORIZON_FLAT_DRAWS=1` elsewhere), with or without occlusion culling. Frames with a shader pack's terrain, one of Horizon's own packs with a material stage or a shadow pass, a pack's surface target, and the title screen keep the normal solid passes, as do translucent terrain and the water mirror's own pass.
+
 ## Benchmark
 
 `tools/graphics_bench.py` opens a fresh creative world (seed 1234) on a virtual screen and flies the camera along four fixed 192-block paths, over a village, a forest, the ocean and a mountain, at render distances 8, 16 and 32, one game per distance. Each flight takes 12 seconds and reports average FPS, 1% lows, frame-time percentiles, CPU time per frame (frame time minus waits for the GPU, the display and the limiter), the split of that CPU time (world update, ticks, frame preparation, renderer) for all frames and for the slowest 1%, and GPU time per frame from timestamp queries.
@@ -121,6 +129,27 @@ python3 tools/graphics_bench.py --compare baseline-4080 mine-gpu   # markdown ta
 vscreen is a headless compositor whose frames are software-rendered (lavapipe), so its frame times measure the CPU, rasterisation included. `--offscreen` (`horizon-client --offscreen`) renders into a texture on the most powerful GPU instead of the window, which measures the RTX 4080 under the same compositor. `--distances`, `--scenes` and `--build` pick a subset or another build. Results go to `benchmarks/graphics/<label>.json`, with the load average before and after: the desktop is shared, and other sessions' builds move the numbers.
 
 Two tools find where a slow frame goes: `HORIZON_SPIKES=MS` prints the timed spans (ticks by system, streaming, uploads, saving, renderer) of every frame slower than MS milliseconds, with the render thread's CPU time in the frame and, after a span that mostly waited (for the GPU, a lock or a core), its CPU time (`submit 30.2/0.1`), and a frame-pointer build (`RUSTFLAGS="-C force-frame-pointers=yes"`) profiles with `perf record --call-graph fp`.
+
+### Render capture and replay
+
+A renderer change can be measured in seconds on a fixed scene, without starting the game, loading a world or waiting for far terrain: capture the scene once from a running game, then replay it offscreen with the real `Renderer` as often as needed.
+
+```sh
+# In the running game. "on" keeps CPU copies of every section and far tile mesh from now on and
+# meshes everything again once, so wait for near and far terrain to settle before capturing.
+# Starting the game with HORIZON_RENDER_CAPTURE=1 keeps them from the start instead.
+horizon-ctl render-capture on
+horizon-ctl render-capture /tmp/scene
+
+# Anywhere, no game (throwaway HORIZON_HOME and XDG folders, as for any run):
+cargo run --release -p horizon-client-render --example scene_replay -- /tmp/scene
+cargo run --release -p horizon-client-render --example scene_replay -- /tmp/scene \
+    --frames 300 --texture-filtering 0 --lod-distance 0 --yaw-offsets 0,90,180,270
+```
+
+The capture directory holds `scene.json` (the camera, the frame's sky, fog, cloud, star and lightmap inputs, the game's graphics settings, the renderer's own switches and frame size, and the far terrain cutout), every resident near section mesh and every far tile mesh drawn for good, as the renderer received them (`sections.*`, `tiles.*`), and the sun and moon (`celestial.bin`). Entities, block entities, particles, weather, the hand, the outline, the HUD and post effects are left out, and a running shader pack is not replayed (the reply and the report say when one was on). Only the build that wrote a capture reads it.
+
+The replay loads the block sprites from the prepared resources the game used (`--root` for another folder) and refuses to run when they differ from the capture's, as with resource packs or mods. It uploads the sections and then the far tiles through `Renderer::upload` and `queue_lods`, draws `--warmup` frames (60), then `--frames` (300) per view, and prints JSON per view: GPU milliseconds per frame from timestamp queries (`gpu_ms`: avg, p50, p95, max), the wall time of each `render` call and its CPU time without waits, the median GPU time of each of Horizon's own passes over the last 15 frames (as `gpu-passes on` reports them), and the sections and draw calls drawn. Overrides: `--texture-filtering`, `--anisotropy-bit`, `--mipmaps`, `--lod-distance` and `--render-distance` (chunks, around the camera), `--size WxH`, `--section-draws flat|indirect`, `--section-cull`, `--section-sides` and `--gpu-culling on|off`, `--yaw-offsets` (degrees added to the captured yaw, one view each). Keeping the copies costs about as much memory as the terrain meshes themselves, so it stays off unless asked for.
 
 ## Results
 

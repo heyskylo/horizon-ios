@@ -18,6 +18,8 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
+use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
+
 /// The inside-block effects of fire and lava (`InsideBlockEffectType`
 /// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.
 fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
@@ -837,6 +839,16 @@ fn effects_from_blocks(
                             m.fall_distance = 0.0;
                             m.stuck_multiplier =
                                 Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                            let known_movement =
+                                w.controlling_player_movement.unwrap_or(m.velocity);
+                            if let Some(velocity) =
+                                powder_snow_particle_velocity(known_movement, level_random)
+                            {
+                                events.push(MobEvent::PowderSnowParticle {
+                                    at: [m.position.x, f64::from(y + 1), m.position.z],
+                                    velocity,
+                                });
+                            }
                         }
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
@@ -846,6 +858,69 @@ fn effects_from_blocks(
         }
     }
 }
+
+#[cfg(test)]
+mod powder_snow_particle_tests {
+    use super::*;
+
+    /// A ridden mount uses the controlling player's known movement for the
+    /// powder-snow roll, even when the mount's own delta is zero.
+    #[test]
+    #[ignore = "requires prepared vanilla resources in .local/horizon-client"]
+    fn a_controlled_mount_uses_its_riders_known_movement() {
+        let seed = (0..1000)
+            .find(|seed| {
+                let mut random = LegacyRandom::new(*seed);
+                random.next_boolean()
+            })
+            .unwrap();
+        let player_movement = Vec3::new(0.2, 0.0, 0.0);
+        let mut expected_random = LegacyRandom::new(seed);
+        let expected =
+            powder_snow_particle_velocity(player_movement, &mut expected_random).unwrap();
+
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world.chunks.insert(
+                            (cx, cz),
+                            std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                        );
+                    }
+                }
+                world
+                    .set(
+                        0,
+                        64,
+                        0,
+                        registry.default_state("minecraft:powder_snow").unwrap(),
+                    )
+                    .unwrap();
+            },
+            |w, types| {
+                let mut w = w.clone();
+                w.controlling_player_movement = Some(player_movement);
+                let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+                let mut horse = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                horse.extra.saddled = true;
+                horse.rider = Some(crate::mobs::equine::Rider::default());
+                let mut random = LegacyRandom::new(seed);
+                let mut events = Vec::new();
+
+                effects_from_blocks(&mut horse, &w, &mut random, &mut events);
+
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    MobEvent::PowderSnowParticle { velocity, .. } if *velocity == expected
+                )));
+            },
+        );
+        assert!(ran, "the vanilla test resources must be available");
+    }
+}
+
 /// `HoneyBlock.entityInside` for a mob: a falling mob beside the honey block at
 /// `p` slides down it (`isSlidingDown`, `doSlideMovement`, `maybeDoSlideEffects`).
 fn honey_slide(
@@ -2630,13 +2705,9 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
                         "minecraft:wither_rose" => {
                             // World difficulty, not the regional one, and
                             // isInvulnerableTo(wither) (the invulnerable
-                            // flag, not the hit timer); WitherBoss and
-                            // WitherSkeleton refuse the effect
-                            // (`canBeAffected`).
-                            if w.difficulty.base != 0
-                                && !m.invulnerable_flag
-                                && !matches!(m.species(), Species::Wither | Species::WitherSkeleton)
-                            {
+                            // flag, not the hit timer); a wither and a wither
+                            // skeleton refuse the effect in `addEffect`.
+                            if w.difficulty.base != 0 && !m.invulnerable_flag {
                                 m.add_effect("minecraft:wither", 40, 0);
                             }
                         }
@@ -2742,17 +2813,24 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));
 }
 
-/// `Entity.getMovementEmission` is not NONE (silverfish, endermites,
-/// shulkers, guardians and breezes emit only events, no step sounds).
+/// `Entity.getMovementEmission` is not NONE: only a shulker moves without
+/// emitting anything at all, neither events nor sounds.
 pub fn emits_movement(m: &Mob) -> bool {
     !matches!(m.species(), Species::Shulker)
 }
-/// The movement emission includes sounds.
+/// `Entity.getMovementEmission` includes sounds (`MovementEmission.ALL`): a
+/// silverfish, an endermite, a bat, a squid and a glow squid, a guardian, an
+/// elder guardian and a breeze answer `EVENTS`, which keeps their footfalls and
+/// swim strokes quiet while `Entity.vibrationAndSoundEffectsFromBlock` still
+/// sends the step game event. Every other type is `ALL`.
 pub fn movement_sounds(m: &Mob) -> bool {
     !matches!(
         m.species(),
         Species::Silverfish
             | Species::Endermite
+            | Species::Bat
+            | Species::Squid
+            | Species::GlowSquid
             | Species::Guardian
             | Species::ElderGuardian
             | Species::Breeze
@@ -2769,9 +2847,10 @@ pub fn step_sound(
     let baby = m.is_baby();
     let quiet = |s: &'static str| Some((s, 0.15, 1.0));
     match m.species() {
-        // Silent footsteps, or only movement events.
+        // `playStepSound` overridden with an empty body: a fish, an allay, a bee,
+        // a happy ghast and a nautilus have no footfall of their own, so the
+        // block's step sound is not taken either.
         S::Allay
-        | S::Bat
         | S::Bee
         | S::Cod
         | S::Salmon
@@ -2780,12 +2859,7 @@ pub fn step_sound(
         | S::Tadpole
         | S::HappyGhast
         | S::Nautilus
-        | S::ZombieNautilus
-        | S::Silverfish
-        | S::Endermite
-        | S::Guardian
-        | S::ElderGuardian
-        | S::Breeze => None,
+        | S::ZombieNautilus => None,
         S::Armadillo => quiet("entity.armadillo.step"),
         S::Chicken | S::Cow | S::Pig | S::Wolf => {
             super::finalize::variant_sound(m, "step").and_then(quiet)
@@ -2813,6 +2887,11 @@ pub fn step_sound(
         S::Parched => quiet("entity.parched.step"),
         S::WitherSkeleton => quiet("entity.wither_skeleton.step"),
         S::Spider | S::CaveSpider => quiet("entity.spider.step"),
+        // Silverfish.playStepSound and Endermite.playStepSound: both ask for
+        // their own step at 15%, though neither type's movement emission plays
+        // it (`movement_sounds`).
+        S::Silverfish => quiet("entity.silverfish.step"),
+        S::Endermite => quiet("entity.endermite.step"),
         S::Zombie | S::ZombifiedPiglin => quiet("entity.zombie.step"),
         S::Husk => quiet("entity.husk.step"),
         S::Drowned => quiet("entity.drowned.step"),

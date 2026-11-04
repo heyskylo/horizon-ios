@@ -255,7 +255,8 @@ jobs:
     # Tells the thread that asked for this build how it ended. A conflict `pick` already explained there.
     needs: [pick, build, sign, publish]
     if: always() && inputs.issue != '' && needs.pick.result == 'success'
-    runs-on: ubuntu-latest
+    # One comment, no checkout and no secret: one of our small runners (label horizon-light, docs/ci-runners.md).
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       issues: write

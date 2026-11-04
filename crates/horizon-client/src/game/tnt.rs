@@ -241,6 +241,8 @@ impl Game<'_> {
             &self.res.motion().fluids,
             Some(self.border.geometry()),
         )?;
+        let snow = (t.previous, t.position, t.bounds(), t.velocity);
+        self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
         for pos in tops {
             self.bubble_column_particles(pos);
         }
