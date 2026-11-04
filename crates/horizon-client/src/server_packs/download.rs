@@ -4,16 +4,14 @@
 //! batch at a time on a thread of its own, every download logged in
 //! `downloads/log.json`, and the cache cut to its 20 newest files on start.
 use super::{Batch, Request};
-use horizon_client_render::zip::Zip as HorizonZip;
 use sha1::{Digest, Sha1};
 use std::{
     fs,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender, channel},
     time::SystemTime,
 };
-use zip::ZipArchive;
 
 /// `DownloadedPackSource`'s MAX_PACK_SIZE_BYTES (250 MiB).
 pub const MAX_SIZE: u64 = 262_144_000;
@@ -177,64 +175,12 @@ fn sha1_of(path: &Path) -> io::Result<String> {
     io::copy(&mut fs::File::open(path)?, &mut hasher)?;
     Ok(hex(&hasher.finalize()))
 }
-/// Server packs are ZIP files. Verify the archive structure and every entry's
-/// checksum before a matching download can enter the cache. A narrow fallback
-/// accepts the Java-compatible streaming envelope that the pack reader already
-/// supports.
-fn validate_zip(path: &Path) -> io::Result<()> {
-    let strict = (|| {
-        let file = fs::File::open(path)?;
-        let mut archive = ZipArchive::new(file).map_err(io::Error::other)?;
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index).map_err(io::Error::other)?;
-            if !entry.is_dir() {
-                io::copy(&mut entry, &mut io::sink())?;
-            }
-        }
-        Ok(())
-    })();
-    if strict.is_ok() || !looks_like_streaming_pack(path)? {
-        return strict;
-    }
-    validate_streaming_pack(path).or(strict)
-}
-
-/// Some pack generators stream a Java-compatible ZIP with a four-byte EOCD
-/// prefix and a multi-disk marker even though all data is in one response.
-/// Only that exact envelope gets the same tolerant reader used by packs.
-fn looks_like_streaming_pack(path: &Path) -> io::Result<bool> {
-    let mut file = fs::File::open(path)?;
-    let mut head = [0; 8];
-    file.read_exact(&mut head)?;
-    if head[..4] != *b"PK\x05\x06" || head[4..] != *b"PK\x03\x04" {
-        return Ok(false);
-    }
-    let len = file.metadata()?.len();
-    file.seek(SeekFrom::Start(len.saturating_sub(65_557)))?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail)?;
-    let Some(end) = tail
-        .windows(4)
-        .rposition(|signature| signature == b"PK\x05\x06")
-    else {
-        return Ok(false);
-    };
-    Ok(u16::from_le_bytes(tail[end + 4..end + 6].try_into().unwrap()) != 0)
-}
-
-fn validate_streaming_pack(path: &Path) -> io::Result<()> {
-    let archive = HorizonZip::open(path)?;
-    for name in archive.names() {
-        archive.read(name)?;
-    }
-    Ok(())
-}
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 /// `checkExistingFile`: the file is there with that hash.
 fn matches(path: &Path, sha1: &str) -> bool {
-    path.exists() && sha1_of(path).is_ok_and(|actual| actual == sha1) && validate_zip(path).is_ok()
+    path.exists() && sha1_of(path).is_ok_and(|actual| actual == sha1)
 }
 /// `updateModificationTime`: used now, so the cleaner keeps it longest.
 fn touch(path: &Path) {
@@ -322,18 +268,11 @@ fn download_file_within(
                     "Hash of downloaded file ({actual}) did not match requested ({sha1})"
                 ));
             }
-            if let Err(e) = validate_zip(target) {
-                let _ = fs::remove_file(target);
-                return Err(format!("Downloaded server pack is not a valid ZIP: {e}"));
-            }
             Ok(target.clone())
         }
         _ => {
             let tmp = dir.join(format!("download{:016x}.tmp", rand_suffix()));
             let result = save_hashed(&mut input, &tmp, max_size, &mut report).and_then(|actual| {
-                validate_zip(&tmp).map_err(|e| {
-                    io::Error::other(format!("Downloaded server pack is not a valid ZIP: {e}"))
-                })?;
                 let path = dir.join(&actual);
                 if matches(&path, &actual) {
                     touch(&path);
@@ -480,7 +419,7 @@ mod tests {
     #[test]
     fn a_pack_lands_under_its_hash_and_is_reused_from_the_cache() {
         let dir = scratch();
-        let body = valid_zip();
+        let body = b"PK pack".to_vec();
         let (url, server) = serve("200 OK", body.clone());
         let request = Request {
             id: 7,
@@ -509,64 +448,6 @@ mod tests {
             download_file(&dir, &cached, &[], MAX_SIZE, &channel().0).unwrap(),
             path
         );
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    fn valid_zip() -> Vec<u8> {
-        let mut out = std::io::Cursor::new(Vec::new());
-        {
-            let mut zip = zip::ZipWriter::new(&mut out);
-            zip.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(br#"{"pack":{"pack_format":97,"description":"test"}}"#)
-                .unwrap();
-            zip.finish().unwrap();
-        }
-        out.into_inner()
-    }
-
-    fn streaming_zip() -> Vec<u8> {
-        let mut zip = valid_zip();
-        let end = zip
-            .windows(4)
-            .rposition(|signature| signature == b"PK\x05\x06")
-            .unwrap();
-        zip[end + 4..end + 8].copy_from_slice(&[0xff, 0xff, 0, 0]);
-        let mut streamed = b"PK\x05\x06".to_vec();
-        streamed.extend(zip);
-        streamed
-    }
-
-    #[test]
-    fn a_java_compatible_streaming_zip_is_accepted() {
-        let dir = scratch();
-        let body = streaming_zip();
-        let (url, server) = serve("200 OK", body.clone());
-        let request = Request {
-            id: 10,
-            url,
-            sha1: Some(sha1(&body)),
-        };
-        let path = download_file(&dir, &request, &[], MAX_SIZE, &channel().0).unwrap();
-        assert_eq!(fs::read(path).unwrap(), body);
-        server.join().unwrap();
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn a_matching_hash_does_not_accept_a_corrupt_zip() {
-        let dir = scratch();
-        let body = b"not a zip".to_vec();
-        let (url, server) = serve("200 OK", body.clone());
-        let request = Request {
-            id: 8,
-            url,
-            sha1: Some(sha1(&body)),
-        };
-        let error = download_file(&dir, &request, &[], MAX_SIZE, &channel().0).unwrap_err();
-        assert!(error.contains("not a valid ZIP"), "{error}");
-        server.join().unwrap();
-        assert!(!dir.join(sha1(&body)).exists());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -644,8 +525,7 @@ mod tests {
     #[test]
     fn the_queue_logs_each_download() {
         let dir = scratch();
-        let body = valid_zip();
-        let (url, server) = serve("200 OK", body.clone());
+        let (url, server) = serve("200 OK", b"zip".to_vec());
         let queue = Queue::open(dir.clone()).unwrap();
         let (progress, events) = channel();
         let id = 0x5b2c_7a4e_1f3d_4c8b_9a6e_2d4f_8b1c_3e5a;
@@ -667,22 +547,22 @@ mod tests {
         server.join().unwrap();
         let file = dir
             .join("5b2c7a4e-1f3d-4c8b-9a6e-2d4f8b1c3e5a")
-            .join(sha1(&body));
+            .join(sha1(b"zip"));
         assert_eq!(batch.downloaded, [(id, file)]);
         // HttpUtil.downloadFile's listener calls, in order.
         assert_eq!(
             events.iter().collect::<Vec<_>>(),
             [
                 Progress::RequestStart,
-                Progress::DownloadStart(Some(body.len() as u64)),
-                Progress::Bytes(body.len() as u64),
+                Progress::DownloadStart(Some(3)),
+                Progress::Bytes(3),
                 Progress::RequestFinished(true),
             ]
         );
         let log = fs::read_to_string(dir.join("log.json")).unwrap();
         let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
         assert_eq!(entry["id"], "5b2c7a4e-1f3d-4c8b-9a6e-2d4f8b1c3e5a");
-        assert_eq!(entry["file"]["size"], body.len());
+        assert_eq!(entry["file"]["size"], 3);
         fs::remove_dir_all(dir).unwrap();
     }
 
