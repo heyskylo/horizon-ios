@@ -3014,6 +3014,46 @@ def axolotl_hunting_memory():
                        '/forceload remove 0 0')
 
 
+def mannequin_pose_anchors():
+    """Saved mannequin pose -> existing live dimensions -> exact eye anchor."""
+    ops = setup('/tp @s 40.5 230 8.5', '/forceload add 32 0 63 31')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 200 {z}', expect_result=1)
+            for x, z in ((32, 0), (48, 0), (32, 16), (48, 16))]
+    ops += setup('/tick freeze', '/fill 32 200 0 47 204 15 air')
+    # Raw pose getter normalization is separate; this gate pins live anchors.
+    # Java 26.3 scale-1 eye positions, independent of Horizon's pose math.
+    cases = ((None, '201.62000000476837'), ('standing', '201.62000000476837'),
+             ('crouching', '201.2699999809265'), ('swimming', '200.40000000596046'),
+             ('fall_flying', '200.40000000596046'), ('sleeping', '200.20000000298023'),
+             ('spin_attack', '201.62000000476837'), ('dying', '201.62000000476837'),
+             ('unknown', '201.62000000476837'), ('CROUCHING', '201.62000000476837'))
+    for index, (pose, eye_y) in enumerate(cases):
+        tag = f'mannequin_pose_{index}'
+        target = f'@e[tag={tag},limit=1]'
+        uuid = f'0,0,217,{index + 1}'
+        pose_nbt = f',pose:"{pose}"' if pose is not None else ''
+        ops += setup(f'/summon mannequin 36.5 200 4.5 {{UUID:[I;{uuid}],Tags:["mannequin_pose_actor","{tag}"],NoAI:1b,NoGravity:1b,immovable:1b{pose_nbt}}}')
+        for tick in (0, 1):
+            if tick:
+                ops += setup('/tick step 1')
+                ops += [{'op': 'tick', 'n': 1}]
+            ops += setup('/kill @e[tag=mannequin_pose_eye]')
+            eye_tag = f'mannequin_eye_{index}_{tick}'
+            eye = f'@e[tag={eye_tag},limit=1]'
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/execute if entity @e[tag={tag},nbt={{UUID:[I;{uuid}]}}]', expect_result=1),
+                    cmd(f'/data get entity {target} Pos'),
+                    cmd(f'/execute if entity @e[tag={tag},nbt={{Pos:[36.5d,200d,4.5d]}}]', expect_result=1),
+                    cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ run summon marker ~ ~ ~ {{Tags:["mannequin_pose_eye","{eye_tag}"]}}', expect_result=1),
+                    cmd(f'/execute if entity {eye}', expect_result=1),
+                    cmd(f'/data get entity {eye} Pos'),
+                    cmd(f'/execute if entity @e[tag={eye_tag},nbt={{Pos:[36.5d,{eye_y}d,4.5d]}}]', expect_result=1)]
+        ops += setup('/kill @e[tag=mannequin_pose_eye]', '/kill @e[tag=mannequin_pose_actor]', '/tick step 25')
+        ops += [{'op': 'tick', 'n': 25}]
+    return ops + setup('/tick unfreeze', '/tp @s 8.5 230 8.5')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3060,6 +3100,7 @@ def groups():
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
+        ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
