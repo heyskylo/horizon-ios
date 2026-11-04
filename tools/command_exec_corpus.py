@@ -766,6 +766,39 @@ def execute():
     ]
 
 
+
+def projectile_origin():
+    """TraceableEntity.getOwner resolves any loaded entity, not only a mob."""
+    ops = setup('/forceload add 0 0 31 31', '/scoreboard objectives add origin_probe dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 100 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze', '/fill 2 99 2 10 103 10 air',
+                 '/summon armor_stand 3.5 100 4.5 {Tags:["origin_actor","origin_stand"],CustomName:"owner_stand",UUID:[I;208,1,2,3],NoGravity:1b}',
+                 '/summon pig 4 100 4 {Tags:["origin_actor","origin_pig"],CustomName:"owner_pig",UUID:[I;208,11,12,13],NoAI:1b,NoGravity:1b}')
+    for tag, words in (('origin_stand', '208,1,2,3'), ('origin_pig', '208,11,12,13')):
+        target = f'@e[tag={tag},limit=1]'
+        ops += [cmd(f'/execute if entity @e[tag={tag},nbt={{UUID:[I;{words}]}}]', expect_result=1),
+                cmd(f'/data get entity {target} UUID'),
+                cmd(f'/data get entity {target} CustomName')]
+    for name, owner, count in (('stand', '208,1,2,3', 1), ('pig', '208,11,12,13', 1),
+                               ('unknown', '208,15,16,17', 0), ('absent', None, 0)):
+        tag = f'origin_arrow_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        owner_nbt = f',Owner:[I;{owner}]' if owner else ''
+        ops += setup(f'/summon arrow 8 100 8 {{Tags:["origin_actor","{tag}"],NoGravity:1b{owner_nbt}}}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1)]
+        # Saved Owner reads are a separate command-getter regression; the
+        # input UUID is retained by arrow_from_nbt independently of Who.
+        if owner is None:
+            ops += [cmd(f'/execute unless data entity {target} Owner', expect_result=1)]
+        ops += [cmd(f'/execute as {target} on origin run data get entity @s CustomName')]
+        ops += setup('/scoreboard players set #origin origin_probe 0')
+        ops += [cmd(f'/execute as {target} on origin run scoreboard players add #origin origin_probe 1'),
+                cmd('/scoreboard players get #origin origin_probe', expect_result=count)]
+    return ops + setup('/kill @e[tag=origin_actor]', '/scoreboard objectives remove origin_probe', '/tick unfreeze')
+
+
 def levels():
     """A nether portal round trip: on the way back the Overworld's entities (the
     pig left by `entities`) are found and a summon names what it summoned. An
@@ -2415,6 +2448,7 @@ def groups():
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
         ('execute', execute()),
+        ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
