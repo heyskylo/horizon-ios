@@ -489,7 +489,7 @@ impl Launcher {
                         .absolute()
                         .top(px(TALL + 8.))
                         .left_0()
-                        .child(crate::motion::pop("play-menu-pop", menu)),
+                        .child(menu),
                 )
                 .with_priority(1),
             );
@@ -609,7 +609,7 @@ impl Launcher {
                         .absolute()
                         .top(px(TALL + 8.))
                         .left_0()
-                        .child(crate::motion::pop("version-menu-pop", menu)),
+                        .child(menu),
                 )
                 .with_priority(1),
             );
@@ -743,7 +743,7 @@ impl Launcher {
                         .absolute()
                         .top(px(TALL + 8.))
                         .left_0()
-                        .child(crate::motion::pop("folder-menu-pop", menu)),
+                        .child(menu),
                 )
                 .with_priority(1),
             );

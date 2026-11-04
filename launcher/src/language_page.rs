@@ -56,12 +56,14 @@ impl Launcher {
                 cx.notify();
             }))
             .child(rows);
+        // Anchored by its top right under the picker; it opens upwards instead when the window
+        // has no room below for it.
         gpui::deferred(
-            div()
-                .absolute()
-                .top(px(theme::CONTROL + 6.))
-                .right_0()
-                .child(crate::motion::pop("language-menu-pop", menu)),
+            div().absolute().top(px(theme::CONTROL + 6.)).right_0().child(
+                gpui::anchored()
+                    .anchor(gpui::Anchor::TopRight)
+                    .child(menu),
+            ),
         )
         .with_priority(1)
     }

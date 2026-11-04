@@ -491,7 +491,7 @@ pub fn menu_row(
 
 /// A popover (`POPOVER`): the cards' glass (the mockup's darker `hzl-float` read as a different
 /// material beside them), round at 16 with 6 px around its rows, a shadow setting it above the
-/// card under it. Place it with [`crate::motion::pop`].
+/// card under it.
 pub fn popover(width: f32) -> Div {
     crate::glass::plate(radius::POPOVER)
         .shadow_lg()

@@ -807,7 +807,7 @@ impl Launcher {
                 .absolute()
                 .top(px(52.))
                 .right_0()
-                .child(crate::motion::pop("account-menu-pop", menu)),
+                .child(menu),
         ))
     }
 
@@ -941,7 +941,7 @@ impl Launcher {
             deferred(
                 anchored()
                     .position(point(px(x), px(y)))
-                    .child(crate::motion::pop("row-menu-pop", menu)),
+                    .child(menu),
             )
             .with_priority(1)
             .into_any_element(),

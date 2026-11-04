@@ -163,7 +163,7 @@ impl Launcher {
                         .absolute()
                         .top(px(44.))
                         .right_0()
-                        .child(crate::motion::pop("world-menu-pop", self.world_menu(w, cx))),
+                        .child(self.world_menu(w, cx)),
                 )
                 .with_priority(1),
             );

@@ -289,7 +289,7 @@ impl Launcher {
                         .absolute()
                         .top(px(52.))
                         .right_0()
-                        .child(crate::motion::pop("mods-sort-pop", menu)),
+                        .child(menu),
                 )
                 .with_priority(1),
             );

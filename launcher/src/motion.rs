@@ -1,12 +1,10 @@
 //! The launcher's motion, as the website's launcher plays it (horizon-site's `launcher.css` and
 //! Tailwind's defaults): hovers ease over the design's quick curve (150 ms,
-//! `cubic-bezier(0.4, 0, 0.2, 1)`); menus, popovers, toasts and a new page arrive as `hzl-pop`
-//! does (a fade and a 6 px rise over 200 ms); a switch's knob slides for 200 ms. Under reduced
-//! motion ([`crate::sky::motion`]) nothing moves: everything is drawn where it ends.
-use gpui::{
-    div, px, Animation, AnimationExt, AnyElement, Div, ElementId, IntoElement, ParentElement,
-    Styled,
-};
+//! `cubic-bezier(0.4, 0, 0.2, 1)`); toasts and a new page arrive as `hzl-pop` does (a fade and a
+//! 6 px rise over 200 ms); a switch's knob slides for 200 ms. Under reduced motion
+//! ([`crate::sky::motion`]) nothing moves: everything is drawn where it ends. Menus open at once:
+//! an animation inside a `deferred` menu kept its first frame (invisible) under GPUI Fast.
+use gpui::{px, Animation, AnimationExt, AnyElement, Div, ElementId, IntoElement, Styled};
 use horizon_theme as tokens;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,17 +38,6 @@ pub fn eased(motion: tokens::Motion) -> Animation {
         return animation.with_easing(|_| 1.);
     }
     animation.with_easing(move |t| motion.ease(t))
-}
-
-/// `content` arriving as `hzl-pop` does. `id` names the arrival: an element shown again under the
-/// same id after a frame without it plays it again.
-pub fn pop(id: impl Into<ElementId>, content: impl IntoElement) -> AnyElement {
-    div()
-        .child(content)
-        .with_animation(id, eased(POP), |d, p| {
-            d.opacity(p).mt(px(POP_RISE * (1. - p)))
-        })
-        .into_any_element()
 }
 
 thread_local! {
