@@ -32,12 +32,16 @@ class Script:
     def add(self, *parts):
         self.lines.append(' '.join(map(str, parts)))
 
-    def play(self, name, event, source=4, volume=1.0, pitch=1.0, at=(0.0, 0.0, 0.0), looping=0, delay=0, linear=True, relative=0, seed=0, kind='simple'):
+    def play(self, name, event, source=4, volume=1.0, pitch=1.0, at=(0.0, 0.0, 0.0), looping=0, delay=0, linear=True, relative=0, seed=0, kind='simple', target=None):
         self.add('play', name, kind, event, source, h.bits(volume), h.bits(pitch), *map(lab.dbits, at), looping, delay,
                  'linear' if linear else 'none', relative, seed)
+        if target is not None:
+            self.lines[-1] += ' ' + target
 
-    def cart(self, name, at, delta, removed=0):
-        self.add('cart', name, *map(lab.dbits, at), *map(lab.dbits, delta), removed)
+    def cart(self, name, at, delta, removed=0, silent=None, new=False):
+        self.add('cartnew' if new else 'cart', name, *map(lab.dbits, at), *map(lab.dbits, delta), removed)
+        if silent is not None:
+            self.lines[-1] += ' ' + str(silent)
 
     def tick(self, n=1, paused=0):
         for _ in range(n):
@@ -48,6 +52,48 @@ class Script:
         for source in range(11):
             self.add('volume', source, h.bits(1.0))
         self.tick()
+
+
+def entity_bound_cases(s):
+    event = 'minecraft:block.stone.break'
+    for seed in [42, -1, 9223372036854775807]:
+        s.cart('bound_target', (.123456789, 64.123456789, -3.123456789), (0, 0, 0), new=True)
+        s.play('bound', event, 6, .7, 1.2, seed=seed, kind='bound', target='bound_target')
+        s.tick()
+        s.cart('bound_target', (3.248456789, 65.25, -3.623456789), (0, 0, 0))
+        s.tick(2)
+        s.add('pause')
+        s.cart('bound_target', (30000000.125, 65.3, -30000000.125), (0, 0, 0))
+        s.tick(paused=1)
+        s.add('resume')
+        s.tick()
+        s.add('freeze', 1)
+        s.cart('bound_target', (.3, 63.7, -2.8), (0, 0, 0))
+        s.tick()
+        s.add('freeze', 0)
+        s.cart('bound_target', (1, 2, 3), (0, 0, 0), silent=1)
+        s.tick()
+        s.cart('bound_target', (2, 3, 4), (0, 0, 0), silent=0)
+        s.add('replay', 'bound')
+        s.tick()
+        s.cart('bound_target', (9, 9, 9), (0, 0, 0), removed=1)
+        s.cart('bound_target', (100, 100, 100), (0, 0, 0), new=True)
+        s.tick()
+        s.play('replacement', event, 6, .7, 1.2, seed=seed, kind='bound', target='bound_target')
+        s.tick()
+        s.add('stopmatch', '-', '-')
+        s.tick(25)
+        s.add('forget', 'bound')
+        s.add('forget', 'replacement')
+    s.cart('bound_target', (1, 2, 3), (0, 0, 0), silent=1, new=True)
+    s.play('initialsilent', event, 6, kind='bound', target='bound_target')
+    s.tick()
+    s.cart('bound_target', (2, 3, 4), (0, 0, 0), silent=0)
+    s.add('replay', 'initialsilent')
+    s.tick()
+    s.add('stopmatch', '-', '-')
+    s.tick(25)
+    s.add('forget', 'initialsilent')
 
 
 def scripted(s):
@@ -262,6 +308,7 @@ def fixtures():
     rng = random.Random(0x454e47494e45)
     events = sorted(set(['minecraft:' + rng.choice(names) for _ in range(60)] + ['minecraft:ambient.cave', 'minecraft:block.stone.break']))
     s = Script(events, streams)
+    entity_bound_cases(s)
     scripted(s)
     for _ in range(40):
         s.reset()
