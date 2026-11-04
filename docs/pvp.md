@@ -76,3 +76,23 @@ box's quads. With nothing changing, a frame allocates nothing.
 `Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
 wherever the client names an enchantment (tooltips, the enchanting table's hint). A one-level enchantment still has
 none ("Mending"). Code: `horizon_items::enchant::set_numeric_levels`, set each frame from the option.
+
+## Enchantment glint colour (`glintColour`, default off)
+
+The glint's shimmer in a solid colour: each sample's brightest channel over the colour, so the pattern, speed
+and strength stay vanilla's (`entity.wgsl` `tinted_glint` for items in the world, held and worn armour,
+`hud.wgsl` for items in the GUI). The colour rides in uniforms (`colored_count.z`, the HUD's `end_portal[2].yzw`),
+so it costs nothing. Resource packs' core shaders and OptiFine CIT glints keep their own colours.
+
+## Visual tweaks (each default off)
+
+| Option | Key | What it does |
+|---|---|---|
+| Lower fire | `lowFire` (0-80%) | Moves the first-person fire overlay (`ScreenEffectRenderer.renderFire`) down by that share of its height. |
+| Shield size | `shieldSize` (50-100%) | Scales the first-person shield toward the hand holding it. |
+| Totem animation size | `totemSize` (25-100%) | Scales the totem of the item activation animation about its centre. |
+| Clear water | `clearWater` | Water fog as vanilla's after 30 seconds under water (water vision 1), from the first tick. |
+| Clear lava | `clearLava` | Lava fog as vanilla's with Fire Resistance (0 to 5 blocks), without the effect. |
+
+Both fog options stop at the clearest view vanilla itself gives, so they show nothing a vanilla player can't see.
+There is no "no hurt camera" option: vanilla's Accessibility → Damage Tilt already sets the shake from 0 to 100%.

@@ -656,5 +656,18 @@
   "horizon.pvp.hud.direction.west": "West",
   "horizon.pvp.numeric_enchants": "Enchantment levels as numbers",
   "horizon.pvp.numeric_enchants.tooltip": "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.",
-  "horizon.pvp.header.items": "Items"
+  "horizon.pvp.header.items": "Items",
+  "horizon.pvp.fire_lower": "Lower fire",
+  "horizon.pvp.fire_lower.tooltip": "Moves the flames you see while burning down, so they cover less of the screen.",
+  "horizon.pvp.shield_size": "Shield size",
+  "horizon.pvp.shield_size.tooltip": "The size of the shield in your hand, in first person.",
+  "horizon.pvp.totem_size": "Totem animation size",
+  "horizon.pvp.totem_size.tooltip": "The size of the totem that fills the screen when it saves you.",
+  "horizon.pvp.glint_colour": "Enchantment glint colour",
+  "horizon.pvp.glint_colour.tooltip": "The colour of the shimmer on enchanted items and armour. Off is vanilla's purple.",
+  "horizon.pvp.clear_water": "Clear water",
+  "horizon.pvp.clear_water.tooltip": "Under water, see as far as vanilla lets you after 30 seconds there, from the start.",
+  "horizon.pvp.clear_lava": "Clear lava",
+  "horizon.pvp.clear_lava.tooltip": "In lava, see as far as vanilla's Fire Resistance lets you, without the effect.",
+  "horizon.pvp.header.visual": "Visual tweaks"
 }

@@ -8560,6 +8560,7 @@ impl Game<'_> {
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = HudBatch::new(size);
+        batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
             + self.clock.fraction() as f32)
@@ -14333,8 +14334,13 @@ impl Game<'_> {
                 }
                 _ => ItemPose::Swing,
             };
-            let m = to_world
+            let mut m = to_world
                 * horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
+            // PvP & HUD's shield size (100% is vanilla's), toward the hand holding it.
+            let shield_size = self.settings.extras.pvp.tweaks.shield_size;
+            if shield_size != 100 && &*stack.item == "minecraft:shield" {
+                m *= glam::Mat4::from_scale(glam::Vec3::splat(f32::from(shield_size) / 100.0));
+            }
             // Seeded by the player id plus the context ordinal.
             let (context, seed) = if left {
                 (

@@ -142,7 +142,9 @@ impl Game<'_> {
                 .darken_amount(self.clock.fraction() as f32),
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
             spectator: self.spectator(),
-            fire_resistance: self.potions.effects.get("fire_resistance").is_some(),
+            fire_resistance: self.potions.effects.get("fire_resistance").is_some()
+                || self.settings.extras.pvp.tweaks.clear_lava,
+            full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
@@ -361,6 +363,7 @@ impl Game<'_> {
             on_fire: self.camera_type.first_person()
                 && !self.spectator()
                 && self.player.as_ref().is_some_and(|p| p.fire_ticks > 0),
+            fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
             gui_overlays: &gui_overlays,
         })
     }

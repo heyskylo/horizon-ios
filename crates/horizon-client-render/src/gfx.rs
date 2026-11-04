@@ -7240,7 +7240,8 @@ impl Renderer {
                 frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
                 // PvP & HUD's hit colour: entity.wgsl's hurt texel, 0 for vanilla's.
                 frame.pvp.hurt_texel,
-                0,
+                // PvP & HUD's glint colour: entity.wgsl's `tinted_glint`, 0 for vanilla's.
+                frame.pvp.glint,
                 0,
             ],
             emissive_layers: {
