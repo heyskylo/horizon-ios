@@ -2578,6 +2578,12 @@ impl Game<'_> {
     /// from the argument's tag; true when its saved data changed.
     pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
         use horizon_world::nbt::Tag;
+        if self.pot_data(pos).is_some() {
+            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+                return false;
+            };
+            return self.set_pot_data(pos, &tag).unwrap_or(false);
+        }
         let key = (pos[0], pos[1], pos[2]);
         let Some(e) = self.world.block_entities.get(&key) else {
             return false;

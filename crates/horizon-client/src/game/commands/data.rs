@@ -449,7 +449,9 @@ impl Game<'_> {
             }
             "block" => {
                 let p = self.block_pos_arg(ctx, &format!("{prefix}Pos"))?;
-                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) {
+                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
+                    && self.pot_data(p).is_none()
+                {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
                 Ok(DataRef::Block(p))
@@ -473,6 +475,9 @@ impl Game<'_> {
                 Ok(tag)
             }
             DataRef::Block(p) => {
+                if let Some(tag) = self.pot_data(*p) {
+                    return Ok(tag);
+                }
                 let key = (p[0], p[1], p[2]);
                 let name = self.data_block_name(*p);
                 let e = self
@@ -499,6 +504,9 @@ impl Game<'_> {
         match r {
             DataRef::Entity(t) => self.apply_entity_nbt(*t, tag),
             DataRef::Block(p) => {
+                if self.set_pot_data(*p, &tag).is_some() {
+                    return Ok(());
+                }
                 let key = (p[0], p[1], p[2]);
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
