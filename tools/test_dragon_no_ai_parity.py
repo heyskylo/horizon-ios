@@ -4,8 +4,10 @@
 EnderDragon.aiStep returns right after the flap and checkCrystals when isNoAi() (flapTime = 0.5): no flight
 history, phase, steering or parts, so the dragon stays where it is. A vanilla dedicated server and Horizon's each
 serve a fresh flat world; the console summons a NoAI dragon in a force-loaded chunk of the overworld, steps 100
-ticks, and reads its position and its NoAI back; then saves, restarts and reads them again. Both reads must
-match vanilla's: the dragon where it was summoned, NoAI kept through the save.
+ticks, and reads its position and its NoAI back; then saves, restarts and reads them again; then a vanilla-codec
+client (VanillaProtocolClient, entities mode) joins and records the entity data the dragon is paired with. All
+must match vanilla's: the dragon where it was summoned, NoAI kept through the save, and NoAI's bit of
+Mob.DATA_MOB_FLAGS_ID (15) sent to the client (EnderDragon.aiStep on the client stops there too).
 """
 import argparse
 import atexit
@@ -27,17 +29,19 @@ except ImportError:
     from test_dedicated_server_parity import Server, free_port, game_time
     from test_server_world_gen_parity import escape
 
+PLAYER = 'Tester'
 MESSAGE = re.compile(r'\[Server thread/INFO\]: (?:System chat: )?(.*)$')
 DATA = re.compile(r'has the following entity data: (.*)$')
 STEPS = 100
 
 
-def run_side(label, command, out):
+def run_side(label, command, client_command, out):
     directory = out / label
     if directory.exists():
         shutil.rmtree(directory)
     directory.mkdir(parents=True)
-    props = {'server-ip': '127.0.0.1', 'server-port': str(free_port()), 'online-mode': 'false',
+    port = free_port()
+    props = {'server-ip': '127.0.0.1', 'server-port': str(port), 'online-mode': 'false', 'white-list': 'false',
              'level-type': 'minecraft:flat', 'generate-structures': 'false', 'level-seed': '42',
              'view-distance': '2', 'simulation-distance': '2', 'spawn-protection': '0',
              'pause-when-empty-seconds': '-1', 'max-tick-time': '-1'}
@@ -97,6 +101,23 @@ def run_side(label, command, out):
             if time.monotonic() > deadline:
                 break
         reads['restarted'] = read(server)
+        # What a client is told: the dragon's pairing data carries Mob.DATA_MOB_FLAGS_ID (15), NoAI its first bit.
+        # The client records the entities added once it asks for them: a new dragon then.
+        reply(server, 'kill @e[tag=no_ai]')
+        transcript = out / f'{label}-packets.txt'
+        with (out / f'{label}-client.log').open('w') as log:
+            client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), PLAYER, str(transcript),
+                                       'entities'], cwd=lab.ROOT, stdout=log, stderr=subprocess.STDOUT)
+            servers.append(type('C', (), {'process': client})())
+            server.wait_for(rf'<{PLAYER}> summon the entities', timeout=180)
+            reply(server, 'summon minecraft:ender_dragon 8.5 100 8.5 {NoAI:1b,Tags:["no_ai"]}')
+            client.wait(timeout=180)
+        lines = [line for line in transcript.read_text().splitlines()
+                 if line.startswith('play-entities entity minecraft:ender_dragon ')]
+        assert len(lines) == 1, (label, lines)
+        pairing = re.search(r'[|] pairing ([^|]*)[|]', lines[0])
+        flags = [kv.split('=', 1)[1] for kv in pairing.group(1).split() if kv.startswith('15=')] if pairing else []
+        reads['client_flags'] = flags[0] if flags else None
     finally:
         server.stop()
     return reads
@@ -122,13 +143,20 @@ def main():
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
                 'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
-    results = {label: run_side(label, command, out) for label, command in commands.items()}
+    classes = out / 'classes'
+    classes.mkdir(exist_ok=True)
+    source = lab.ROOT / 'mods/horizon/src/test/java'
+    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
+                    '-sourcepath', source, '-cp', cp, '-d', classes,
+                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaProtocolClient']
+    results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     for label, result in results.items():
         print(f'{label}: {result}', flush=True)
     # The spec as read from EnderDragon.aiStep: a NoAI dragon stays where it was summoned, and keeps NoAI.
     still = {'Pos': '[8.5d, 100.0d, 8.5d]', 'NoAI': '1b'}
-    assert results['vanilla'] == {'stepped': still, 'restarted': still}, results['vanilla']
+    assert results['vanilla'] == {'stepped': still, 'restarted': still, 'client_flags': '1'}, results['vanilla']
     assert results['horizon'] == results['vanilla'], f'a NoAI dragon differs from vanilla; see {out}'
     print('dragon with NoAI: matches vanilla', flush=True)
 
