@@ -341,6 +341,7 @@ pub struct Shared {
     /// `DedicatedServer.setAcceptsTransfers`: whether a login by transfer from another server
     /// is accepted (`accepts-transfers`), live.
     accepts_transfers: AtomicBool,
+    enable_status: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -435,6 +436,13 @@ impl Shared {
     /// away from now on.
     pub fn set_accepts_transfers(&self, accept: bool) {
         self.accepts_transfers.store(accept, Ordering::Relaxed);
+    }
+    /// `DedicatedServer.setRepliesToStatus`: change whether status pings are answered.
+    pub fn enable_status(&self) -> bool {
+        self.enable_status.load(Ordering::Relaxed)
+    }
+    pub fn set_enable_status(&self, enable: bool) {
+        self.enable_status.store(enable, Ordering::Relaxed);
     }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
@@ -567,6 +575,7 @@ impl Lan {
         let (tx, events) = channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let hide_online_players = config.hide_online_players;
+        let enable_status = config.enable_status;
         let shared = Arc::new(Shared {
             sync: Mutex::new(sync),
             events: tx,
@@ -574,6 +583,7 @@ impl Lan {
             max_players: AtomicUsize::new(config.max_players),
             hide_online_players: AtomicBool::new(hide_online_players),
             accepts_transfers: AtomicBool::new(config.accepts_transfers),
+            enable_status: AtomicBool::new(enable_status),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
