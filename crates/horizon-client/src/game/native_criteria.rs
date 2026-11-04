@@ -11,10 +11,10 @@ use horizon_client::{
 use serde_json::Value;
 
 /// One open criterion of a mod's trigger, as the mod's test sees it.
-pub(crate) struct NativeCriterion<'a> {
+pub struct NativeCriterion<'a> {
     /// The criterion's `conditions`, `Null` when it has none. Its `player`
     /// predicate is the game's to test, as vanilla's `SimpleInstance.player`.
-    pub(crate) conditions: &'a Value,
+    pub conditions: &'a Value,
     world: &'a dyn adv::World,
 }
 
@@ -26,7 +26,7 @@ impl NativeCriterion<'_> {
     /// and `damage` components, and the `enchantments` and `damage`
     /// predicates; other components and predicates aren't checked. A missing
     /// key passes, as an absent `Optional<ItemPredicate>` does.
-    pub(crate) fn item(&self, key: &str, stack: &ItemStack) -> bool {
+    pub fn item(&self, key: &str, stack: &ItemStack) -> bool {
         adv::item(&self.conditions[key], &item_view(stack), self.world)
     }
 }
@@ -89,6 +89,18 @@ impl Game<'_> {
             g.trigger_mod_criteria(trigger, &test)
         })
         .is_some()
+    }
+
+    /// `native_trigger_criterion` with its test behind a reference, as a
+    /// trait mod calls it through `dyn Host`: the same players, criteria and
+    /// answer. API @API:host_bridge@.
+    pub(super) fn native_trigger_mod_criterion(
+        &mut self,
+        uuid: u128,
+        trigger: &str,
+        test: &dyn Fn(&NativeCriterion<'_>) -> bool,
+    ) -> bool {
+        self.native_trigger_criterion(uuid, trigger, test)
     }
 
     /// `trigger` for a mod's trigger, for the player in place.
