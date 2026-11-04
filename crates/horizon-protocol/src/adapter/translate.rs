@@ -18,6 +18,7 @@ use crate::{
     packets::{configuration, play},
 };
 
+pub(super) mod v1_20_2;
 pub(super) mod v1_20_3;
 mod v1_20_5;
 pub(super) mod v1_21_1;
@@ -67,6 +68,24 @@ pub fn clientbound(
         return Ok(Some((id, None)));
     };
     use packet_ids::play::clientbound as cb;
+    let normalized_text = if session.version.at_most(ServerVersion::V1_20_2) {
+        v1_20_2::text::clientbound(session, state, id, payload)?
+    } else {
+        None
+    };
+    let payload = normalized_text.as_deref().unwrap_or(payload);
+    if session.version.at_most(ServerVersion::V1_20_2) && state == State::Play {
+        match id {
+            cb::SET_SCORE => {
+                return v1_20_2::set_score(session, payload)
+                    .map(|(id, body)| Some((id, Some(body))));
+            }
+            cb::EXPLODE => {
+                return v1_20_2::explosion(session, payload).map(|body| Some((id, Some(body))));
+            }
+            _ => {}
+        }
+    }
     if session.version.at_most(ServerVersion::V1_20_3)
         && (state, id)
             == (
@@ -162,7 +181,8 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 9] = [
+    let steps: [(ServerVersion, Step); 10] = [
+        (ServerVersion::V1_20_2, v1_20_2::clientbound),
         (ServerVersion::V1_20_3, v1_20_3::clientbound),
         (ServerVersion::V1_20_5, v1_20_5::clientbound),
         (ServerVersion::V1_21_1, v1_21_1::clientbound),
@@ -342,7 +362,7 @@ pub fn clientbound(
             | cb::PLACE_GHOST_RECIPE
             | cb::COMMANDS,
         ) => redecode(ids, id, payload)?,
-        _ => return Ok(Some((id, before))),
+        _ => return Ok(Some((id, before.or(normalized_text)))),
     };
     Ok(Some((id, Some(out))))
 }
@@ -372,6 +392,21 @@ pub fn serverbound(
         return renumbered(id, payload.to_vec());
     };
     use packet_ids::play::serverbound as sb;
+    if session.version.at_most(ServerVersion::V1_20_2) {
+        if matches!(
+            (state, id),
+            (
+                State::Configuration,
+                packet_ids::configuration::serverbound::RESOURCE_PACK
+            ) | (State::Play, sb::RESOURCE_PACK)
+        ) {
+            return v1_20_2::resource_status(session, payload)?
+                .map_or(Ok(None), |body| renumbered(id, body));
+        }
+        if (state, id) == (State::Play, sb::SET_JIGSAW_BLOCK) {
+            return renumbered(id, v1_20_2::jigsaw(payload)?);
+        }
+    }
     match (state, id) {
         (State::Play, sb::CONTAINER_BUTTON_CLICK)
             if session.version.at_most(ServerVersion::V1_20_3) =>
@@ -495,7 +530,9 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_20_3) {
+            let swing = if session.version.at_most(ServerVersion::V1_20_2) {
+                50
+            } else if session.version.at_most(ServerVersion::V1_20_3) {
                 51
             } else if session.version.at_most(ServerVersion::V1_21_1) {
                 54 // Vanilla 1.21/1.21.1, before bundle selection and client tick-end.

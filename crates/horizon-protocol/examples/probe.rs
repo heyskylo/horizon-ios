@@ -7,6 +7,7 @@
 //! Append `--server-protocol 772` to exercise the experimental adapter against a vanilla 1.21.8 server.
 use horizon_protocol::{
     PROTOCOL_VERSION, State,
+    buf::{Reader, Writer},
     connection::Connection,
     ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
@@ -20,6 +21,13 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = std::env::args().collect();
+    let suggestions = args
+        .iter()
+        .position(|s| s == "--suggestions")
+        .is_some_and(|at| {
+            args.remove(at);
+            true
+        });
     let version = if let Some(at) = args.iter().position(|s| s == "--server-protocol") {
         args.remove(at);
         let protocol: i32 = args
@@ -132,6 +140,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut entity_types: BTreeMap<String, u32> = BTreeMap::new();
     let mut dimension = registries.dimension(0);
     let start = Instant::now();
+    let mut suggestion_sent = false;
+    let mut suggestion_received = false;
     c.reader
         .set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut ticks = 0;
@@ -143,6 +153,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => return Err(e.into()),
         };
+        if suggestions && !suggestion_sent && start.elapsed() >= Duration::from_secs(6) {
+            let mut w = Writer::new();
+            w.varint(ids::play::serverbound::COMMAND_SUGGESTION);
+            w.varint(764);
+            w.string("/execute as @e[");
+            c.send(&w.data)?;
+            suggestion_sent = true;
+        }
+        if suggestions && id == ids::play::clientbound::COMMAND_SUGGESTIONS {
+            let mut r = Reader::new(&payload);
+            let request = r.varint()?;
+            r.varint()?; // replacement start
+            r.varint()?; // replacement length
+            let count = r.count(65536)?;
+            let mut tooltips = 0;
+            for _ in 0..count {
+                r.string(32767)?;
+                if r.bool()? {
+                    r.nbt()?;
+                    tooltips += 1;
+                }
+            }
+            if r.remaining() != 0 {
+                return Err("trailing command suggestion bytes".into());
+            }
+            if request == 764 && count > 0 && tooltips > 0 {
+                suggestion_received = true;
+                println!("command_suggestions_validated {count} {tooltips}");
+            }
+        }
         let name =
             ids::name(State::Play, horizon_protocol::Direction::Clientbound, id).unwrap_or("?");
         let entry = counts.entry(name).or_default();
@@ -242,6 +282,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if decode_errors > 0 {
         return Err(format!("{decode_errors} packet/chunk decode failures").into());
+    }
+    if suggestions && !suggestion_received {
+        return Err("command suggestion request had no validated tooltip response".into());
     }
     Ok(())
 }

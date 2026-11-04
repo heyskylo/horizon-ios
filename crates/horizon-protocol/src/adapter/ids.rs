@@ -111,6 +111,12 @@ pub struct Quirks {
     pub wolf_variant_holder: bool,
     /// Before 1.20.5 an item stack carried a single legacy NBT tag instead of a component patch.
     pub legacy_item_nbt: bool,
+    /// Saved-item data version at the legacy wire boundary (zero when components are native).
+    pub legacy_item_data_version: i32,
+    /// Before 1.20.3, component fields inside entity data use UTF JSON rather than NBT.
+    pub components_as_json: bool,
+    /// Before 1.20.3, vibration position sources start with a resource identifier.
+    pub vibration_source_identifier: bool,
     /// Through 1.21.8 these particle types carried no options at all.
     pub simple_spell_particles: bool,
 }
@@ -128,6 +134,9 @@ impl Quirks {
         components_before_1_21: false,
         wolf_variant_holder: false,
         legacy_item_nbt: false,
+        legacy_item_data_version: 0,
+        components_as_json: false,
+        vibration_source_identifier: false,
         simple_spell_particles: false,
     };
 }

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::{
     Error, Result,
     adapter::{
+        ServerVersion,
         ids::{self, Way},
         session::Session,
     },
@@ -109,6 +110,7 @@ impl Recipes {
         serializer: i32,
         id: i32,
         trims: &HashMap<i32, i32>,
+        width_first: bool,
     ) -> Result<Recipe> {
         // RecipeSerializer's 1.21/1.21.1 registration order from the vanilla report.
         let mut recipe = Recipe {
@@ -125,14 +127,21 @@ impl Recipes {
         let mut group = String::new();
         match serializer {
             0 | 1 => {
+                let dimensions = if serializer == 0 && width_first {
+                    Some((r.varint()?, r.varint()?))
+                } else {
+                    None
+                };
                 group = r.string(32767)?;
                 recipe.category = r.varint()?;
                 if !(0..=3).contains(&recipe.category) {
                     return Err(Error::new("invalid legacy crafting category"));
                 }
                 let (width, height, count) = if serializer == 0 {
-                    let width = r.varint()?;
-                    let height = r.varint()?;
+                    let (width, height) = match dimensions {
+                        Some(size) => size,
+                        None => (r.varint()?, r.varint()?),
+                    };
                     if !(1..=3).contains(&width) || !(1..=3).contains(&height) {
                         return Err(Error::new("invalid legacy shaped recipe dimensions"));
                     }
@@ -375,8 +384,13 @@ pub(crate) fn clientbound(session: &Session, id: i32, payload: &[u8]) -> Result<
             for _ in 0..n {
                 let legacy_serializer = if ids::quirks().legacy_item_nbt {
                     let name = r.string(32767)?;
-                    Some(
+                    let names = if session.version.at_most(ServerVersion::V1_20_2) {
+                        crate::adapter::v1_20_2_ids::RECIPE_SERIALIZER_NAMES
+                    } else {
                         crate::adapter::v1_20_3_ids::RECIPE_SERIALIZER_NAMES
+                    };
+                    Some(
+                        names
                             .iter()
                             .position(|candidate| *candidate == name)
                             .ok_or_else(|| Error::new("unknown legacy recipe serializer"))?
@@ -391,7 +405,13 @@ pub(crate) fn clientbound(session: &Session, id: i32, payload: &[u8]) -> Result<
                     None => r.varint()?,
                 };
                 let display = state.id(&key)?;
-                let recipe = state.parse(&mut r, serializer, display, &trims)?;
+                let recipe = state.parse(
+                    &mut r,
+                    serializer,
+                    display,
+                    &trims,
+                    session.version.at_most(ServerVersion::V1_20_2),
+                )?;
                 if state.recipes.insert(key, recipe).is_some() {
                     return Err(Error::new("duplicate legacy recipe key"));
                 }
@@ -912,6 +932,106 @@ mod tests {
             else {
                 panic!("shaped")
             };
+            let SlotDisplay::ItemStack(stack) = result else {
+                panic!("result")
+            };
+            assert_eq!((stack.item, stack.count), (473, 2));
+            assert_eq!(
+                state.recipes["horizon_wire:shaped"].requirements,
+                [HolderSet::Items(vec![1018]), HolderSet::Items(vec![1018])]
+            );
+            let Some(RecipeDisplay::Smithing { result, .. }) =
+                &state.recipes["horizon_wire:smithing_trim"].display
+            else {
+                panic!("smithing")
+            };
+            let SlotDisplay::Composite(previews) = result else {
+                panic!("previews")
+            };
+            let SlotDisplay::SmithingTrim { pattern, .. } = &previews[0] else {
+                panic!("trim")
+            };
+            assert_eq!(*pattern, TrimPattern::Id(7));
+        }
+        recipe_book(
+            &session,
+            &old_book(
+                0,
+                &["shaped", "smelting", "crafting_special_armordye"],
+                &["shaped"],
+            ),
+        )
+        .unwrap();
+        let book = next_book(&session);
+        assert!(book.replace);
+        assert_eq!(book.entries.len(), 2);
+        assert_eq!(book.entries[0].flags, 2);
+        let id = book.entries[0].id;
+        let selected = serverbound(
+            &session,
+            sb::PLACE_RECIPE,
+            &encode(&PlaceRecipe {
+                container: 3,
+                recipe: id,
+                use_max: true,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let mut r = Reader::new(&selected);
+        assert_eq!(r.i8().unwrap(), 3);
+        assert_eq!(r.string(32767).unwrap(), "horizon_wire:shaped");
+        assert!(r.bool().unwrap());
+        assert_eq!(r.remaining(), 0);
+        let seen = serverbound(
+            &session,
+            sb::RECIPE_BOOK_SEEN_RECIPE,
+            &encode(&RecipeBookSeenRecipe { recipe: id }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            Reader::new(&seen).string(32767).unwrap(),
+            "horizon_wire:shaped"
+        );
+    }
+
+    #[test]
+    fn vanilla_1_20_2_recipe_codecs_keep_width_first_and_reuse_request_keys() {
+        // Independent official 1.20.2 UpdateRecipes output; shaped dimensions precede group/category.
+        // All 23 serializer identifiers and NBT slots pass through the full recipe bridge.
+        let old = bytes(
+            "17196d696e6563726166743a6372616674696e675f73686170656413686f72697a6f6e5f776972653a73686170656402010c686f72697a6f6e5f776972650301018206010001018206010001ce020200001c6d696e6563726166743a6372616674696e675f73686170656c65737316686f72697a6f6e5f776972653a73686170656c6573730c686f72697a6f6e5f776972650002010101010002010f01000116010001010300166d696e6563726166743a73746f6e6563757474696e6719686f72697a6f6e5f776972653a73746f6e6563757474696e670c686f72697a6f6e5f77697265010101010001f20102001c6d696e6563726166743a736d697468696e675f7472616e73666f726d1f686f72697a6f6e5f776972653a736d697468696e675f7472616e73666f726d0101c20901000101bc06010a03000644616d616765000000000001018706010001c406010a03000644616d6167650000000000176d696e6563726166743a736d697468696e675f7472696d1a686f72697a6f6e5f776972653a736d697468696e675f7472696d0101c30901000101bc06010a03000644616d6167650000000000010186060100126d696e6563726166743a736d656c74696e6715686f72697a6f6e5f776972653a736d656c74696e670c686f72697a6f6e5f7769726501010133010001820601003f40000078126d696e6563726166743a626c617374696e6715686f72697a6f6e5f776972653a626c617374696e670c686f72697a6f6e5f7769726501010133010001820601003f40000078116d696e6563726166743a736d6f6b696e6714686f72697a6f6e5f776972653a736d6f6b696e670c686f72697a6f6e5f7769726501010133010001820601003f400000781a6d696e6563726166743a63616d70666972655f636f6f6b696e671d686f72697a6f6e5f776972653a63616d70666972655f636f6f6b696e670c686f72697a6f6e5f7769726501010133010001820601003f40000078236d696e6563726166743a6372616674696e675f7370656369616c5f61726d6f7264796526686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f61726d6f7264796503266d696e6563726166743a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e6729686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e6703256d696e6563726166743a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6728686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6703276d696e6563726166743a6372616674696e675f7370656369616c5f6d6170657874656e64696e672a686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170657874656e64696e67032a6d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b65742d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b657403286d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f737461722b686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f73746172032d6d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f6661646530686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f6661646503266d696e6563726166743a6372616674696e675f7370656369616c5f7469707065646172726f7729686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7469707065646172726f77032a6d696e6563726166743a6372616674696e675f7370656369616c5f62616e6e65726475706c69636174652d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f62616e6e65726475706c6963617465032b6d696e6563726166743a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e2e686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e032d6d696e6563726166743a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e6730686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e6703296d696e6563726166743a6372616674696e675f7370656369616c5f737573706963696f7573737465772c686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f737573706963696f75737374657703256d696e6563726166743a6372616674696e675f7370656369616c5f7265706169726974656d28686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7265706169726974656d03206d696e6563726166743a6372616674696e675f6465636f72617465645f706f7423686f72697a6f6e5f776972653a6372616674696e675f6465636f72617465645f706f7403",
+        );
+        let session = Session::new(ServerVersion::V1_20_2);
+        let _names = ids::legacy_registries(session.legacy_registries.lock().unwrap().clone());
+        let _items = ids::legacy_items(session.legacy_items.clone());
+        session.trim_patterns.lock().unwrap().insert(1580, 7);
+        let properties = clientbound(&session, cb::UPDATE_RECIPES, &old)
+            .unwrap()
+            .unwrap();
+        assert!(!properties.is_empty());
+        {
+            let state = session.legacy_recipes.lock().unwrap();
+            assert_eq!(state.recipes.len(), 23);
+            assert_eq!(
+                state
+                    .recipes
+                    .values()
+                    .filter(|r| r.display.is_some())
+                    .count(),
+                9
+            );
+            let Some(RecipeDisplay::Shaped {
+                width,
+                height,
+                result,
+                ..
+            }) = &state.recipes["horizon_wire:shaped"].display
+            else {
+                panic!("shaped")
+            };
+            assert_eq!((*width, *height), (2, 1));
             let SlotDisplay::ItemStack(stack) = result else {
                 panic!("result")
             };

@@ -261,7 +261,16 @@ impl Particle {
             }
             57 => Some(ParticleData::Item(Template::read(r)?)),
             58 => {
-                let source = match r.varint()? {
+                let kind = if ids::quirks().vibration_source_identifier {
+                    match r.string(32767)?.as_str() {
+                        "minecraft:block" => 0,
+                        "minecraft:entity" => 1,
+                        _ => return Err(crate::Error::new("unknown legacy vibration source")),
+                    }
+                } else {
+                    r.varint()?
+                };
+                let source = match kind {
                     0 => PositionSource::Block(crate::buf::Pos::read(r)?),
                     1 => {
                         let id = r.varint()?;
@@ -392,8 +401,20 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         LONG => Value::Long(r.varlong()?),
         FLOAT => Value::Float(r.f32()?),
         STRING => Value::String(r.string(32767)?),
-        COMPONENT => Value::Text(r.nbt()?),
-        OPTIONAL_COMPONENT => Value::OptText(if r.bool()? { Some(r.nbt()?) } else { None }),
+        COMPONENT => Value::Text(if ids::quirks().components_as_json {
+            crate::adapter::read_legacy_component(r)?
+        } else {
+            r.nbt()?
+        }),
+        OPTIONAL_COMPONENT => Value::OptText(if r.bool()? {
+            Some(if ids::quirks().components_as_json {
+                crate::adapter::read_legacy_component(r)?
+            } else {
+                r.nbt()?
+            })
+        } else {
+            None
+        }),
         ITEM_STACK => Value::Item(Slot::read(r)?),
         BOOLEAN => Value::Bool(r.bool()?),
         ROTATIONS | VECTOR3 => Value::Floats(vec![r.f32()?, r.f32()?, r.f32()?]),
@@ -546,6 +567,53 @@ pub const ITEM_ENTITY_ITEM: u8 = 8;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vanilla_vibration_sources_cross_the_identifier_boundary() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        // Actual ParticleOptions writers in the official 1.20.2 and 1.20.3 jars.
+        for (version, block, entity) in [
+            (
+                ServerVersion::V1_20_2,
+                "290f6d696e6563726166743a626c6f636b0000007fffffd04007",
+                "29106d696e6563726166743a656e74697479ac023f40000009",
+            ),
+            (
+                ServerVersion::V1_20_3,
+                "2b000000007fffffd04007",
+                "2b01ac023f40000009",
+            ),
+        ] {
+            for (wire, source, ticks) in [
+                (block, PositionSource::Block([1, 64, -3]), 7),
+                (
+                    entity,
+                    PositionSource::Entity {
+                        id: 300,
+                        y_offset: 0.75,
+                    },
+                    9,
+                ),
+            ] {
+                let mut bytes: Vec<u8> = (0..wire.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&wire[i..i + 2], 16).unwrap())
+                    .collect();
+                bytes.push(99);
+                let mut r = Reader::new(&bytes);
+                let p = {
+                    let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+                    Particle::read(&mut r).unwrap()
+                };
+                assert_eq!(p.id, 58);
+                assert_eq!(p.data, Some(ParticleData::Vibration { source, ticks }));
+                assert_eq!(r.u8().unwrap(), 99);
+                let mut w = Writer::new();
+                p.write(&mut w);
+                assert_eq!(Particle::read(&mut Reader::new(&w.data)).unwrap(), p);
+            }
+        }
+    }
 
     #[test]
     fn vanilla_variant_wire_ids_survive_the_holder_boundaries() {

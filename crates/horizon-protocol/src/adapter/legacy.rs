@@ -1,5 +1,5 @@
 //! Connection-local registry names used by the pre-component NBT item format.
-use super::{ServerVersion, ids, v1_20_3_ids as old};
+use super::{ServerVersion, ids, v1_20_2_ids as before, v1_20_3_ids as old};
 use crate::{Error, Result, packets::configuration, registry};
 use horizon_world::nbt::Tag;
 use std::sync::Arc;
@@ -12,20 +12,46 @@ pub(super) fn registries(version: ServerVersion) -> ids::LegacyRegistries {
         return Default::default();
     }
     let mut out = ids::LegacyRegistries::new();
-    for (registry, names) in [
-        ("minecraft:item", old::OLD_ITEM_NAMES),
-        ("minecraft:block", old::BLOCK_NAMES),
-        ("minecraft:entity_type", old::ENTITY_TYPE_NAMES),
-        ("minecraft:block_entity_type", old::BLOCK_ENTITY_TYPE_NAMES),
-        ("minecraft:attribute", old::ATTRIBUTE_NAMES),
-        ("minecraft:sound_event", old::SOUND_EVENT_NAMES),
-        ("minecraft:mob_effect", old::MOB_EFFECT_NAMES),
-        ("minecraft:potion", old::POTION_NAMES),
-        ("minecraft:enchantment", old::ENCHANTMENT_NAMES),
-        ("minecraft:painting_variant", old::PAINTING_VARIANT_NAMES),
-        ("minecraft:banner_pattern", old::BANNER_PATTERN_NAMES),
-        ("minecraft:instrument", old::INSTRUMENT_NAMES),
-    ] {
+    let tables = if version.at_most(ServerVersion::V1_20_2) {
+        [
+            ("minecraft:item", before::OLD_ITEM_NAMES),
+            ("minecraft:block", before::BLOCK_NAMES),
+            ("minecraft:entity_type", before::ENTITY_TYPE_NAMES),
+            (
+                "minecraft:block_entity_type",
+                before::BLOCK_ENTITY_TYPE_NAMES,
+            ),
+            ("minecraft:attribute", before::ATTRIBUTE_NAMES),
+            ("minecraft:sound_event", before::SOUND_EVENT_NAMES),
+            ("minecraft:mob_effect", before::MOB_EFFECT_NAMES),
+            ("minecraft:potion", before::POTION_NAMES),
+            ("minecraft:enchantment", before::ENCHANTMENT_NAMES),
+            ("minecraft:painting_variant", before::PAINTING_VARIANT_NAMES),
+            ("minecraft:banner_pattern", before::BANNER_PATTERN_NAMES),
+            ("minecraft:instrument", before::INSTRUMENT_NAMES),
+        ]
+    } else {
+        [
+            ("minecraft:item", old::OLD_ITEM_NAMES),
+            ("minecraft:block", old::BLOCK_NAMES),
+            ("minecraft:entity_type", old::ENTITY_TYPE_NAMES),
+            ("minecraft:block_entity_type", old::BLOCK_ENTITY_TYPE_NAMES),
+            ("minecraft:attribute", old::ATTRIBUTE_NAMES),
+            ("minecraft:sound_event", old::SOUND_EVENT_NAMES),
+            ("minecraft:mob_effect", old::MOB_EFFECT_NAMES),
+            ("minecraft:potion", old::POTION_NAMES),
+            ("minecraft:enchantment", old::ENCHANTMENT_NAMES),
+            ("minecraft:painting_variant", old::PAINTING_VARIANT_NAMES),
+            ("minecraft:banner_pattern", old::BANNER_PATTERN_NAMES),
+            ("minecraft:instrument", old::INSTRUMENT_NAMES),
+        ]
+    };
+    let aliases = if version.at_most(ServerVersion::V1_20_2) {
+        before::NAME_ALIASES
+    } else {
+        old::NAME_ALIASES
+    };
+    for (registry, names) in tables {
         let remap = ids.by_registry(registry);
         let mut table = registry::Ids::default();
         for (raw, name) in names.iter().enumerate() {
@@ -44,7 +70,7 @@ pub(super) fn registries(version: ServerVersion) -> ids::LegacyRegistries {
             table.names[pinned] = (*name).into();
             table.ids.insert((*name).into(), pinned as i32);
         }
-        for &(kind, before, current) in old::NAME_ALIASES {
+        for &(kind, before, current) in aliases {
             if kind == registry
                 && let Some(id) = table.id(before)
             {

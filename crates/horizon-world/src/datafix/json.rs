@@ -47,6 +47,7 @@ impl Json {
 enum Mode {
     Strict,
     Lenient,
+    GsonPrefix,
 }
 
 struct Reader<'a> {
@@ -283,6 +284,13 @@ impl Reader<'_> {
         if lit.is_empty() {
             return Err(());
         }
+        // Gson's strict isLiteral check rejects these delimiters while scanning a primitive.
+        // After a quoted string or container, GsonHelper does not inspect trailing input at all.
+        if self.mode == Mode::GsonPrefix
+            && matches!(self.peek_char(), Some(0x2F | 0x5C | 0x3B | 0x23 | 0x3D))
+        {
+            return Err(());
+        }
         let text = String::from_utf16_lossy(&lit);
         for (word, value) in [
             ("true", Json::Bool(true)),
@@ -290,10 +298,11 @@ impl Reader<'_> {
             ("null", Json::Null),
         ] {
             if text.len() == word.len()
-                && text
-                    .chars()
-                    .zip(word.chars())
-                    .all(|(a, b)| a == b || self.lenient() && a == b.to_ascii_uppercase())
+                && text.chars().zip(word.chars()).all(|(a, b)| {
+                    a == b
+                        || (self.lenient() || self.mode == Mode::GsonPrefix)
+                            && a == b.to_ascii_uppercase()
+                })
             {
                 return Ok(value);
             }
@@ -373,6 +382,18 @@ pub fn parse_lenient(s: &[u16]) -> Option<Json> {
 /// `StrictJsonParser.parse`.
 pub fn parse_strict(s: &[u16]) -> Option<Json> {
     parse_mode(s, Mode::Strict)
+}
+
+/// `GsonHelper.fromJson`: read one value without requiring the end of the document.
+/// Container and string syntax is strict; Gson's legacy case-insensitive keywords remain accepted.
+pub fn parse_prefix_strict(s: &[u16]) -> Option<Json> {
+    Reader {
+        s,
+        pos: 0,
+        mode: Mode::GsonPrefix,
+    }
+    .value(0)
+    .ok()
 }
 
 /// `GsonHelper.toStableString`: keys in natural (UTF-16) order, Gson escaping.
@@ -601,6 +622,39 @@ mod tests {
     use super::*;
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+    #[test]
+    fn gson_helper_reads_one_value_but_retains_strict_token_boundaries() {
+        // Independent 1.20.2 FriendlyByteBuf.readComponent/GsonHelper oracle results.
+        for input in [r#""x" junk"#, r#""x"/*ignored suffix*/"#] {
+            assert_eq!(parse_prefix_strict(&w(input)), Some(Json::string("x")));
+            assert!(parse_strict(&w(input)).is_none());
+        }
+        assert_eq!(parse_prefix_strict(&w("1 2")), Some(Json::Num("1".into())));
+        for input in ["true:", "true]", "TRUE"] {
+            assert_eq!(parse_prefix_strict(&w(input)), Some(Json::Bool(true)));
+        }
+        assert_eq!(parse_prefix_strict(&w("NULL")), Some(Json::Null));
+        assert_eq!(
+            parse_prefix_strict(&w(r#"{"text":"x"}junk"#)),
+            Some(Json::object(vec![("text", Json::string("x"))]))
+        );
+        for input in [
+            "truejunk",
+            "falsex",
+            "nullx",
+            "12junk",
+            "1.2x",
+            "true/comment",
+            "1#x",
+            "{text:x}",
+            "{'text':'x'}",
+            r#"{"text":"x",}"#,
+            "[1,]",
+            "/*comment*/1",
+        ] {
+            assert!(parse_prefix_strict(&w(input)).is_none(), "{input}");
+        }
     }
     #[test]
     fn numbers_become_the_smallest_tag() {
