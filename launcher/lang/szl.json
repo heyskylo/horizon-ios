@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Trwŏ natywne budowanie abo czyszczynie cache. Sprōbuj zaś, jak sie skōńczy.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Wyczyszczōno {bytes} bajtōw cache natywnego budowanio. Nastympne zmiyniōne budowanie skōmpiluje sie ôd nowa.",
+  "Could not access the native build cache: {error}": "Niy idzie dostać sie do cache natywnego budowanio: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Wkludź limit cache we GiB; 0 zastŏwiŏ autōmatyczne czyszczynie.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Ôdmŏwiōno czyszczynio natywnego cache przi niyôczekiwanym zbiorze abo linku: {path}",
   "Building {name}'s post-build step": "Krok po budowaniu {name}",
   "In use": "W użyciu",
   "Prepare": "Przigotować sie",

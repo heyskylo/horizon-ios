@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "ساخت کد بومی یا پاک‌سازی حافظهٔ نهان در حال انجام است. پس از پایان دوباره تلاش کنید.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} بایت از حافظهٔ نهان ساخت کد بومی پاک شد. ساخت بعدی که تغییراتی داشته باشد از ابتدا انجام می‌شود.",
+  "Could not access the native build cache: {error}": "دسترسی به حافظهٔ نهان ساخت کد بومی ممکن نشد: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "سقف حافظهٔ نهان را بر حسب GiB وارد کنید؛ 0 پاک‌سازی خودکار را غیرفعال می‌کند.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "پاک‌سازی حافظهٔ نهان کد بومی به دلیل فایل یا پیوند غیرمنتظره رد شد: {path}",
   "Building {name}'s post-build step": "ساختن مرحله پس از ساخت {name}",
   "In use": "در حال استفاده",
   "Prepare": "آماده کنید",

@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "En nativen Build oder eng Cache-Botzung leeft. Probéier nach eng Kéier, wann et fäerdeg ass.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} Bytes vum nativen Build-Cache goufe geläscht. Den nächste geännerte Build gëtt vun Ufank un kompiléiert.",
+  "Could not access the native build cache: {error}": "Konnt net op den nativen Build-Cache zougräifen: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Gëff eng Cache-Limit a GiB an; 0 schalt d'automatesch Botzung aus.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "D'Botze vum nativen Cache gëtt bei engem onerwaarte Fichier oder Link refuséiert: {path}",
   "Building {name}'s post-build step": "Bauen {name}'s Post-Build Schrëtt",
   "In use": "Am Gebrauch",
   "Prepare": "Preparéieren",

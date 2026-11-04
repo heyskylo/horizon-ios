@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Εκτελείται μεταγλώττιση εγγενούς κώδικα ή εκκαθάριση της προσωρινής μνήμης. Δοκιμάστε ξανά όταν ολοκληρωθεί.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Εκκαθαρίστηκαν {bytes} byte από την προσωρινή μνήμη μεταγλώττισης εγγενούς κώδικα. Η επόμενη μεταγλώττιση με αλλαγές θα ξεκινήσει από την αρχή.",
+  "Could not access the native build cache: {error}": "Δεν ήταν δυνατή η πρόσβαση στην προσωρινή μνήμη μεταγλώττισης εγγενούς κώδικα: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Εισαγάγετε όριο προσωρινής μνήμης σε GiB· το 0 απενεργοποιεί την αυτόματη εκκαθάριση.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Η εκκαθάριση της προσωρινής μνήμης εγγενούς κώδικα απορρίφθηκε λόγω μη αναμενόμενου αρχείου ή συνδέσμου: {path}",
   "Building {name}'s post-build step": "Κατασκευή του βήματος μετά την κατασκευή του {name}",
   "In use": "Σε χρήση",
   "Prepare": "Προετοιμαστείτε",

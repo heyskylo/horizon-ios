@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Uma compilação nativa ou limpeza do cache está em andamento. Tente novamente quando terminar.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Liberados {bytes} bytes do cache de compilação nativa. A próxima compilação com alterações será feita do zero.",
+  "Could not access the native build cache: {error}": "Não foi possível acessar o cache de compilação nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Informe um limite de cache em GiB; 0 desativa a limpeza automática.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Limpeza do cache nativo recusada devido a um arquivo ou link inesperado: {path}",
   "Home": "Início",
   "Mods": "Mods",
   "Servers": "Servidores",

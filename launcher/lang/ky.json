@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Жергиликтүү түзүү же кэшти тазалоо жүрүп жатат. Бүткөндө кайра аракет кылыңыз.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Жергиликтүү түзүү кэшинен {bytes} байт тазаланды. Кийинки өзгөргөн түзүү башынан компиляцияланат.",
+  "Could not access the native build cache: {error}": "Жергиликтүү түзүү кэшине кирүү мүмкүн болбоду: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Кэштин чегин GiB менен киргизиңиз; 0 автоматтык тазалоону өчүрөт.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Күтүлбөгөн файлда же шилтемеде жергиликтүү кэшти тазалоодон баш тартылды: {path}",
   "Building {name}'s post-build step": "{name} куруунун кийинки кадамы",
   "In use": "Колдонууда",
   "Prepare": "Даярда",

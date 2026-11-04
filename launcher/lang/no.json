@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "En kompilering av plattformspesifikk kode eller tømming av hurtigbufferen pågår. Prøv igjen når den er ferdig.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Fjernet {bytes} byte fra hurtigbufferen for kompilering av plattformspesifikk kode. Neste kompilering med endringer starter fra bunnen av.",
+  "Could not access the native build cache: {error}": "Kunne ikke få tilgang til hurtigbufferen for kompilering av plattformspesifikk kode: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Angi en hurtigbuffergrense i GiB; 0 deaktiverer automatisk tømming.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Avviser tømming av hurtigbufferen ved en uventet fil eller lenke: {path}",
   "Building {name}'s post-build step": "Bygg {name}s trinn etter bygging",
   "In use": "I bruk",
   "Prepare": "Forbered deg",

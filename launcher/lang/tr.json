@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Yerel derleme veya önbellek temizliği sürüyor. Bittikten sonra tekrar deneyin.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Yerel derleme önbelleğinden {bytes} bayt temizlendi. Değişiklik içeren sonraki derleme sıfırdan derlenecek.",
+  "Could not access the native build cache: {error}": "Yerel derleme önbelleğine erişilemedi: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Önbellek sınırını GiB olarak girin; 0 otomatik temizliği kapatır.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Beklenmeyen dosya veya bağlantı nedeniyle yerel önbellek temizliği reddedildi: {path}",
   "Home": "Ana Sayfa",
   "Mods": "Modlar",
   "Servers": "Sunucular",

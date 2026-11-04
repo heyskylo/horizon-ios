@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Tá tógáil dhúchasach nó glanadh taisce ar siúl. Bain triail eile as nuair a bheidh sé críochnaithe.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Glanadh {bytes} beart den taisce tógála dúchasaí. Tiomsófar an chéad tógáil athraithe eile ón tús.",
+  "Could not access the native build cache: {error}": "Níorbh fhéidir rochtain a fháil ar an taisce tógála dúchasaí: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Cuir isteach teorainn taisce i GiB; múchann 0 an glanadh uathoibríoch.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Diúltaítear glanadh na taisce dúchasaí ag comhad nó nasc gan choinne: {path}",
   "Building {name}'s post-build step": "Céim iar-thógála {name} a thógáil",
   "In use": "In úsáid",
   "Prepare": "Ullmhaigh",

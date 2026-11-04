@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "בנייה מקומית או ניקוי מטמון מתבצעים כעת. יש לנסות שוב לאחר סיומם.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "נוקו {bytes} בתים ממטמון הבנייה המקומית. הבנייה הבאה עם שינויים תתחיל מאפס.",
+  "Could not access the native build cache: {error}": "לא ניתן לגשת למטמון הבנייה המקומית: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "יש להזין מגבלת מטמון ב־GiB; הערך 0 משבית ניקוי אוטומטי.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "ניקוי המטמון המקומי סורב עקב קובץ או קישור בלתי צפוי: {path}",
   "Building {name}'s post-build step": "בניית השלב שלאחר הבנייה של {name}",
   "In use": "בשימוש",
   "Prepare": "הכן",

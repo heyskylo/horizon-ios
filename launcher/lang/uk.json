@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Триває нативна збірка або очищення кешу. Повторіть спробу після завершення.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Звільнено {bytes} байтів кешу нативної збірки. Наступну збірку зі змінами буде виконано з нуля.",
+  "Could not access the native build cache: {error}": "Не вдалося отримати доступ до кешу нативної збірки: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Введіть обмеження кешу в ГіБ; 0 вимикає автоматичне очищення.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Очищення нативного кешу відхилено через неочікуваний файл або посилання: {path}",
   "Building {name}'s post-build step": "Збирання кроку після збирання мода {name}",
   "In use": "Використовується",
   "Prepare": "Підготувати",

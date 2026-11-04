@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Jatorrizko konpilazio bat edo cachearen garbiketa bat abian da. Saiatu berriro amaitzen denean.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Jatorrizko konpilazioaren cachetik {bytes} byte garbitu dira. Hurrengo konpilazio aldatua hutsetik konpilatuko da.",
+  "Could not access the native build cache: {error}": "Ezin izan da jatorrizko konpilazioaren cachea atzitu: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Sartu cachearen muga GiB-tan; 0k garbiketa automatikoa desgaitzen du.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Ukatu egin da jatorrizko cachearen garbiketa ustekabeko fitxategi edo esteka batean: {path}",
   "Building {name}'s post-build step": "{name}-ren eraikuntza osteko urratsa eraikitzea",
   "In use": "Erabiltzen",
   "Prepare": "Prestatu",

@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "กำลังคอมไพล์โค้ดเนทีฟหรือล้างแคช โปรดลองอีกครั้งเมื่อเสร็จสิ้น",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ล้างแคชการคอมไพล์โค้ดเนทีฟแล้ว {bytes} ไบต์ การคอมไพล์ครั้งถัดไปที่มีการเปลี่ยนแปลงจะเริ่มใหม่ทั้งหมด",
+  "Could not access the native build cache: {error}": "ไม่สามารถเข้าถึงแคชการคอมไพล์โค้ดเนทีฟได้: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "ป้อนขีดจำกัดแคชเป็น GiB; 0 จะปิดการล้างอัตโนมัติ",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "ปฏิเสธการล้างแคชโค้ดเนทีฟเนื่องจากพบไฟล์หรือลิงก์ที่ไม่คาดหมาย: {path}",
   "Building {name}'s post-build step": "การสร้างขั้นตอนหลังการสร้างของ {name}",
   "In use": "ในการใช้งาน",
   "Prepare": "เตรียมตัว",

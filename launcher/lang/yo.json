@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ìkọ́lé abínibí tàbí ìmọ́tótó cache ń lọ lọ́wọ́. Gbìyànjú lẹ́ẹ̀kan sí i nígbà tí ó bá parí.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "A ti pa {bytes} bytes rẹ́ kúrò nínú cache ìkọ́lé abínibí. Ìkọ́lé tí a yí padà tó kàn yóò kó jọ láti ìbẹ̀rẹ̀.",
+  "Could not access the native build cache: {error}": "Kò ṣeé ṣe láti wọlé sí cache ìkọ́lé abínibí: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Tẹ ààlà cache sínú GiB; 0 ń pa ìmọ́tótó aládàáṣe.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "A kọ ìmọ́tótó cache abínibí ní fáìlì tàbí ìjápọ̀ tí a kò retí: {path}",
   "Building {name}'s post-build step": "Igbesẹ ikọle {name}",
   "In use": "Ni lilo",
   "Prepare": "Murasilẹ",
