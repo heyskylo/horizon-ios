@@ -23,7 +23,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
@@ -48,6 +48,8 @@ pub enum Event {
     ModNet,
     /// The server samples far terrain for this client (`lod_net`).
     FarTerrain(crate::lod_net::Offer),
+    /// ClientConfigurationPacketListenerImpl.handleEnabledFeatures.
+    Features(Vec<String>),
     /// Configuration finished: the play state begins with these registries.
     Joined {
         registries: Arc<Dynamic>,
@@ -513,6 +515,23 @@ impl Reason {
     }
 }
 
+/// `ConnectScreen.connect`'s log line, as vanilla writes it from its "Server Connector #N" thread:
+/// the address as the player gave it, and the port (25565 when none was given), before any SRV
+/// lookup. Other launchers read the last one from `latest.log` to offer the server again.
+fn connecting_line(host: &str, port: u16) -> String {
+    format!("Connecting to {host}, {port}")
+}
+fn log_connecting(host: &str, port: u16) {
+    // ConnectScreen.UNIQUE_THREAD_ID: the first connector is #1.
+    static CONNECTORS: AtomicU32 = AtomicU32::new(0);
+    let n = CONNECTORS.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::logging::write_as(
+        &format!("Server Connector #{n}"),
+        log::Level::Info,
+        &connecting_line(host, port),
+    );
+}
+
 /// `Connection$1.initChannel`: a client socket's pipeline starts with
 /// `ReadTimeoutHandler(30)`. A server sends a keep-alive every 15 s, so one
 /// that sends nothing for 30 s has frozen or dropped off the network.
@@ -538,6 +557,24 @@ fn connect_tcp(
         .set_read_timeout(Some(read_timeout))
         .map_err(|e| e.to_string())?;
     Ok((c, host, port))
+}
+
+/// Whether joining servers of older releases is on (roadmap `older-servers`): off by default while the
+/// adapter is incomplete; `HORIZON_OLDER_SERVERS=1` turns it on.
+pub fn older_servers_enabled() -> bool {
+    std::env::var_os("HORIZON_OLDER_SERVERS").is_some_and(|v| v == "1")
+}
+
+/// The older release a server speaks, by its status ping, when Horizon can translate it; `None` for the
+/// pinned version, an unknown one, a failed ping, or with the feature off.
+fn older_server(address: &str) -> Option<horizon_protocol::adapter::ServerVersion> {
+    use horizon_protocol::adapter::ServerVersion;
+    if !older_servers_enabled() {
+        return None;
+    }
+    let (json, _) = ping(address, Duration::from_secs(5)).ok()?;
+    let protocol = i32::try_from(json["version"]["protocol"].as_i64()?).ok()?;
+    ServerVersion::from_protocol(protocol).filter(|v| *v != ServerVersion::Current)
 }
 
 /// `Connection.exceptionCaught`: a read that timed out ends with
@@ -596,11 +633,19 @@ fn run(
                     ));
                 };
                 status(send, &tr(lang, "connect.connecting"));
+                log_connecting(&target.0, target.1);
                 target
             }
         };
-        let (c, host, port) = connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
-            .map_err(Reason::plain)?;
+        let (mut c, host, port) =
+            connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
+                .map_err(Reason::plain)?;
+        if !address.starts_with(FRIEND)
+            && let Some(version) = older_server(address)
+        {
+            log::info!("Joining {address} as a {} server", version.name());
+            c.adapt(version);
+        }
         (host, port, c)
     };
     *shared_counters.lock().unwrap() = Some(c.reader.counters.clone());
@@ -890,13 +935,45 @@ fn configure(
                     data: hash.to_vec(),
                 }))?;
             }
-            cfg::Clientbound::CustomPayload(p) => receive_brand(&p, send),
+            // The server names its mods; the answer is ours, and the server judges.
+            cfg::Clientbound::CustomPayload(p)
+                if p.channel == horizon_protocol::mod_list::CHANNEL =>
+            {
+                reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                    channel: horizon_protocol::mod_list::CHANNEL.into(),
+                    data: horizon_protocol::mod_list::encode(&horizon_protocol::mod_list::shared(
+                        &horizon_protocol::mod_list::local(),
+                    )),
+                }))?;
+            }
+            cfg::Clientbound::CustomPayload(p) => {
+                // Horizon servers use the client brand to negotiate their extensions.
+                // Announce those only after the server identifies itself as Horizon.
+                if p.channel == "minecraft:brand"
+                    && horizon_protocol::buf::Reader::new(&p.data)
+                        .string(32767)
+                        .ok()
+                        .as_deref()
+                        == Some("horizon")
+                {
+                    let mut w = horizon_protocol::buf::Writer::new();
+                    w.string("horizon");
+                    reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                        channel: "minecraft:brand".into(),
+                        data: w.data,
+                    }))?;
+                }
+                receive_brand(&p, send);
+            }
             cfg::Clientbound::Ping(p) => reply(cfg::Serverbound::Pong(p))?,
             // Know no packs: the server then sends every registry entry in full.
             cfg::Clientbound::SelectKnownPacks(_) => {
                 reply(cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks {
                     packs: vec![],
                 }))?
+            }
+            cfg::Clientbound::UpdateEnabledFeatures(p) => {
+                let _ = send.send(Event::Features(p.features));
             }
             cfg::Clientbound::RegistryData(r) => registries.add(r),
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
@@ -968,10 +1045,10 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
     }
 }
 
-/// The minecraft:brand payload: a string naming the client.
+/// `ClientBrandRetriever.getClientModName`: vanilla's default client brand.
 fn brand() -> Vec<u8> {
     let mut w = horizon_protocol::buf::Writer::new();
-    w.string("horizon");
+    w.string("vanilla");
     w.data
 }
 
@@ -1159,33 +1236,122 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 mod tests {
     use super::*;
 
+    /// Launchers find the last server joined in `latest.log` by vanilla's line.
     #[test]
-    fn direct_login_keeps_the_hostname_in_the_handshake() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let session = Session::connect(
-            &format!("localhost:{port}"),
-            "Probe",
-            None,
-            cfg::ClientInformation::new(8),
-            Arc::new(Language::new()),
-            PathBuf::new(),
-        );
-        let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut server = Connection::from_stream(stream).unwrap();
-        let (id, body) = server.recv().unwrap();
-        let handshake::Serverbound::Intention(packet) =
-            handshake::Serverbound::decode(id, &body).unwrap()
-        else {
-            panic!("expected login handshake")
+    fn the_connecting_line_is_vanillas() {
+        let line = |address: &str| {
+            let (host, port) = parse_address(address).unwrap();
+            connecting_line(&host, port)
         };
-        assert_eq!((packet.host.as_str(), packet.port), ("localhost", port));
-        assert_eq!(packet.intent, handshake::LOGIN);
-        drop(server);
-        drop(session);
+        assert_eq!(
+            line("play.example.net"),
+            "Connecting to play.example.net, 25565"
+        );
+        assert_eq!(
+            line("play.example.net:25577"),
+            "Connecting to play.example.net, 25577"
+        );
+        assert_eq!(line("[::1]:25566"), "Connecting to ::1, 25566");
+    }
+
+    #[test]
+    fn direct_login_preserves_hostname_and_negotiates_brand() {
+        for server_brand in [
+            b"\x07vanilla".as_slice(),
+            b"\x07horizon",
+            b"\x05Paper",
+            b"\xff",
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let session = Session::connect(
+                &format!("localhost:{port}"),
+                "Probe",
+                None,
+                cfg::ClientInformation::new(8),
+                Arc::new(Language::new()),
+                PathBuf::new(),
+            );
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut server = Connection::from_stream(stream).unwrap();
+            let (id, body) = server.recv().unwrap();
+            let handshake::Serverbound::Intention(packet) =
+                handshake::Serverbound::decode(id, &body).unwrap()
+            else {
+                panic!("expected login handshake")
+            };
+            assert_eq!((packet.host.as_str(), packet.port), ("localhost", port));
+            assert_eq!(packet.intent, handshake::LOGIN);
+            server.recv().unwrap(); // login profile
+            server
+                .send(
+                    &login::Clientbound::LoginFinished(login::LoginFinished {
+                        profile: login::GameProfile {
+                            uuid: 1,
+                            name: "Probe".into(),
+                            properties: vec![],
+                        },
+                        session: 1,
+                    })
+                    .encode(),
+                )
+                .unwrap();
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                login::Serverbound::decode(id, &body).unwrap(),
+                login::Serverbound::LoginAcknowledged(_)
+            ));
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::ClientInformation(_)
+            ));
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                    channel: "minecraft:brand".into(),
+                    data: b"\x07vanilla".to_vec(),
+                })
+            );
+            server
+                .send(
+                    &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                        channel: "minecraft:brand".into(),
+                        data: server_brand.to_vec(),
+                    })
+                    .encode(),
+                )
+                .unwrap();
+            server
+                .send(
+                    &cfg::Clientbound::SelectKnownPacks(cfg::SelectKnownPacks { packs: vec![] })
+                        .encode(),
+                )
+                .unwrap();
+            if server_brand == b"\x07horizon" {
+                let (id, body) = server.recv().unwrap();
+                assert_eq!(
+                    cfg::Serverbound::decode(id, &body).unwrap(),
+                    cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                        channel: "minecraft:brand".into(),
+                        data: b"\x07horizon".to_vec(),
+                    })
+                );
+            }
+            // The response to the pack query proves any brand reply precedes it.
+            // Non-Horizon servers must receive no additional brand announcement.
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks { packs: vec![] })
+            );
+            drop(server);
+            drop(session);
+        }
     }
 
     #[test]

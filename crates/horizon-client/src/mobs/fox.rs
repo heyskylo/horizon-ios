@@ -241,7 +241,9 @@ fn fully_crouched(m: &Mob) -> bool {
     m.anim.v[CROUCH_AMOUNT] == MAX_CROUCH_AMOUNT
 }
 
-/// `Fox.tick` and the eating part of `Fox.aiStep`.
+/// `Fox.tick` and `Fox.aiStep`: eating, and `SoundEvents.FOX_AGGRO`
+/// (`Entity.playSound` at its feet) while the fox is defending. Only the
+/// server broadcasts that sound.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     client_tick(m);
     if !m.alive() {
@@ -286,6 +288,12 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     if in_water || flag(m, SLEEPING) {
         set_flag(m, SITTING, false);
+    }
+    // `Fox.aiStep`, after the living step: one tick in twenty a defending fox
+    // growls. `Entity.playSound` is positional and a silent fox stays quiet.
+    if flag(m, DEFENDING) && m.random.next_float() < 0.05 && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        events.push(MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0));
     }
     // Faceplanted: crumbs of the snow now and then (level event 2001).
     if flag(m, FACEPLANTED) && m.random.next_float() < 0.2 {
@@ -958,6 +966,7 @@ impl EatBerries {
             }
             if count > 0 {
                 cx.events.push(MobEvent::DropItem {
+                    mob: m.id,
                     item: "minecraft:sweet_berries".into(),
                     count: count as u32,
                     at,
@@ -975,6 +984,7 @@ impl EatBerries {
         } else {
             // CaveVines.use: one glow berry, the vine goes back to bare.
             cx.events.push(MobEvent::DropItem {
+                mob: m.id,
                 item: "minecraft:glow_berries".into(),
                 count: 1,
                 at,

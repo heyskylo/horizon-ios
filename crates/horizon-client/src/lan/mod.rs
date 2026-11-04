@@ -1,9 +1,10 @@
 //! Hosting a world on the local network. The network side lives here: the
-//! listener, the per-connection handshake/login/configuration threads and the
-//! writer threads (`conn`), plus the data the configuration phase sends
-//! (`data`). The play state is driven by the game thread (`hub`), which only
-//! ever exchanges decoded packets with these threads through channels, so a
-//! world that is not open to the network pays nothing.
+//! listener, the per-connection handshake/login/configuration threads
+//! (`conn`), the network threads every player in the play state is served on
+//! (`io_pool`), plus the data the configuration phase sends (`data`). The play
+//! state is driven by the game thread (`hub`), which only ever exchanges
+//! decoded packets with these threads, so a world that is not open to the
+//! network pays nothing.
 mod advancements;
 pub mod anticheat;
 pub mod attributes;
@@ -21,7 +22,9 @@ pub mod entity;
 pub mod far;
 pub mod forwarding;
 pub mod guest;
+pub mod handoff;
 pub mod hub;
+mod io_pool;
 pub mod menu;
 pub mod playerdata;
 pub mod prediction;
@@ -37,7 +40,7 @@ use horizon_protocol::{
     text::translatable,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{
@@ -77,7 +80,7 @@ pub struct Joined {
     pub latency: Arc<AtomicI32>,
     pub address: SocketAddr,
 }
-/// Queued for a connection's writer thread.
+/// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
     /// A packet body: VarInt id and payload.
     Packet(Vec<u8>),
@@ -85,7 +88,6 @@ pub enum Out {
     Packets(Vec<Vec<u8>>),
     /// Send a play disconnect with this component, then close.
     Disconnect(horizon_world::nbt::Tag),
-    Close,
 }
 
 /// PlayerList.canPlayerLogin for a dedicated server: the disconnect reason
@@ -335,10 +337,10 @@ pub struct Shared {
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
+    hide_online_players: AtomicBool,
+    enable_status: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
-    /// Profiles held by the host (the LAN host's own name).
-    reserved: Mutex<HashSet<u128>>,
     next: AtomicU32,
     stop: AtomicBool,
     random: Mutex<u64>,
@@ -380,13 +382,10 @@ impl Shared {
         {
             return Some(reason);
         }
-        if self.reserved.lock().unwrap().contains(&uuid) {
-            return Some(translatable("multiplayer.disconnect.duplicate_login", &[]));
-        }
         {
             let online = self.online.lock().unwrap();
             let bypass = self.config.bypasses_limit.as_ref().is_some_and(|b| b(uuid));
-            let taken = online.len() + self.reserved.lock().unwrap().len();
+            let taken = online.len();
             if taken >= self.max_players() && !bypass {
                 return Some(translatable("multiplayer.disconnect.server_full", &[]));
             }
@@ -416,11 +415,29 @@ impl Shared {
     pub fn max_players(&self) -> usize {
         self.max_players.load(Ordering::Relaxed)
     }
+    /// `PlayerList.setMaxPlayers`: change the limit used by new logins and status responses.
+    pub fn set_max_players(&self, max_players: usize) {
+        self.max_players.store(max_players, Ordering::Relaxed);
+    }
+    /// `DedicatedServer.setHidesOnlinePlayers`: change whether status responses include player names.
+    pub fn hide_online_players(&self) -> bool {
+        self.hide_online_players.load(Ordering::Relaxed)
+    }
+    pub fn set_hide_online_players(&self, hide: bool) {
+        self.hide_online_players.store(hide, Ordering::Relaxed);
+    }
+    /// `DedicatedServer.setRepliesToStatus`: change whether status pings are answered.
+    pub fn enable_status(&self) -> bool {
+        self.enable_status.load(Ordering::Relaxed)
+    }
+    pub fn set_enable_status(&self, enable: bool) {
+        self.enable_status.store(enable, Ordering::Relaxed);
+    }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
     }
     pub fn online(&self) -> usize {
-        self.online.lock().unwrap().len() + self.reserved.lock().unwrap().len()
+        self.online.lock().unwrap().len()
     }
     fn next_random(&self, bound: usize) -> usize {
         let mut r = self.random.lock().unwrap();
@@ -444,7 +461,7 @@ impl Shared {
             ),
             ("online".to_owned(), Json::Number(count.to_string())),
         ];
-        if !self.config.hide_online_players && !online.is_empty() {
+        if !self.hide_online_players() && !online.is_empty() {
             let size = online.len().min(12);
             let offset = self.next_random(online.len() - size + 1);
             let mut sample: Vec<(u128, String)> = online[offset..offset + size].to_vec();
@@ -546,13 +563,16 @@ impl Lan {
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
         let (tx, events) = channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
+        let hide_online_players = config.hide_online_players;
+        let enable_status = config.enable_status;
         let shared = Arc::new(Shared {
             sync: Mutex::new(sync),
             events: tx,
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
+            hide_online_players: AtomicBool::new(hide_online_players),
+            enable_status: AtomicBool::new(enable_status),
             online: Mutex::new(Vec::new()),
-            reserved: Mutex::new(HashSet::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
@@ -655,10 +675,6 @@ impl Lan {
     /// Everything the connection threads reported since the last call.
     pub fn poll(&self) -> Vec<NetEvent> {
         self.events.try_iter().collect()
-    }
-    /// Reserve a uuid for the host so a guest cannot take the name.
-    pub fn reserve(&self, uuid: u128) {
-        self.shared.reserved.lock().unwrap().insert(uuid);
     }
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
@@ -871,7 +887,7 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                     .name("horizon-lan-conn".into())
                     .spawn(move || {
                         WAITING.set(Some(counted.2));
-                        handle(stream, addr, counted.0.clone());
+                        handle(stream, addr, counted);
                     });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -881,9 +897,10 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
         }
     }
 }
-fn handle(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>) {
+fn handle(stream: TcpStream, addr: SocketAddr, counted: Counted) {
     let _ = stream.set_nonblocking(false);
-    if let Err(e) = conn::serve(stream, addr, shared)
+    let shared = counted.0.clone();
+    if let Err(e) = conn::serve(stream, addr, shared, counted)
         && std::env::var_os("HORIZON_NET_DEBUG").is_some()
     {
         log::warn!("[lan] {addr}: {e}");
@@ -899,6 +916,7 @@ pub fn available_port() -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
 
@@ -947,6 +965,22 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn hide_online_players_updates_status_response() {
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::lan(0, "Status".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
+        assert!(lan.shared.status_json().contains("\"sample\""));
+        lan.shared.set_hide_online_players(true);
+        let hidden = lan.shared.status_json();
+        assert!(!hidden.contains("\"sample\""));
+        assert!(!hidden.contains("Player"));
     }
 
     /// One public address takes at most [`PER_ADDRESS`] places, its own coming back as they end;

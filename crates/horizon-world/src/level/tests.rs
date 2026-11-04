@@ -63,6 +63,11 @@ pub(crate) struct TestLevel {
     pub fire_odds: HashMap<BlockStateId, (i32, i32)>,
     /// What `before_smoke_source` answers for a state.
     pub smoke_sources: HashMap<BlockStateId, bool>,
+    /// What `recheck_container_openers` answers at a position: the opener
+    /// count before and after the recount.
+    pub openers: HashMap<BlockPos, (i32, i32)>,
+    /// Every position whose container openers were recounted, in order.
+    pub opener_rechecks: Vec<BlockPos>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -81,10 +86,16 @@ impl TestLevel {
             guarded: HashSet::new(),
             fire_odds: HashMap::new(),
             smoke_sources: HashMap::new(),
+            openers: HashMap::new(),
+            opener_rechecks: Vec::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
+        self.opener_rechecks.push(pos);
+        self.openers.get(&pos).copied()
+    }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
         vanilla || self.analog_states.contains(&state)
     }
@@ -722,6 +733,97 @@ fn fences_connect_and_disconnect() {
 }
 
 #[test]
+fn a_barrel_recounts_its_openers_on_its_scheduled_tick() {
+    use horizon_core::ticks::TickPriority;
+    let mut w = world!();
+    let barrel = w.id("barrel", &[("facing", "north"), ("open", "true")]);
+    let pos = BlockPos::new(0, 1, 0);
+    w.put(pos, barrel);
+    let block = w.b().block(barrel);
+    // One scheduled tick of the barrel falls due.
+    let due = |w: &mut World| {
+        w.ticks
+            .schedule_block(w.level.time, pos, block, 1, TickPriority::Normal);
+        w.tick();
+    };
+    let sounds = |w: &World, name: &str| {
+        w.level
+            .events
+            .iter()
+            .filter(|e| matches!(e, LevelEvent::Sound { sound, .. } if &**sound == name))
+            .count()
+    };
+    let game_events = |w: &World, name: &str| {
+        w.level
+            .events
+            .iter()
+            .filter(|e| matches!(e, LevelEvent::GameEvent { event, .. } if *event == name))
+            .count()
+    };
+    // A player walked away while the menu was still counted open.
+    w.level.openers.insert(pos, (1, 0));
+    due(&mut w);
+    assert_eq!(
+        w.level.opener_rechecks,
+        [pos],
+        "BarrelBlock.tick asks its block entity to recheck the openers"
+    );
+    assert_eq!(
+        w.prop(pos, "open"),
+        "false",
+        "updateBlockState closes the barrel"
+    );
+    assert_eq!(sounds(&w, "minecraft:block.barrel.close"), 1);
+    let pitch = w
+        .level
+        .events
+        .iter()
+        .find_map(|e| match e {
+            LevelEvent::Sound {
+                sound,
+                volume,
+                pitch,
+                ..
+            } if &**sound == "minecraft:block.barrel.close" => Some((*volume, *pitch)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(pitch.0, 0.5);
+    assert!((0.9..1.0).contains(&pitch.1), "pitch {}", pitch.1);
+    assert_eq!(game_events(&w, "minecraft:container_close"), 1);
+    // A barrel's openerCountChanged is empty: no lid block event (a chest
+    // queues one here).
+    assert!(
+        w.ticks.block_events.is_empty(),
+        "a barrel broadcasts no block event"
+    );
+    // Someone opens it again: the recount finds them and the lid opens.
+    w.level.openers.insert(pos, (0, 1));
+    due(&mut w);
+    assert_eq!(w.prop(pos, "open"), "true");
+    assert_eq!(sounds(&w, "minecraft:block.barrel.open"), 1);
+    assert_eq!(game_events(&w, "minecraft:container_open"), 1);
+    // ContainerOpenersCounter.scheduleRecheck: the recheck repeats while the
+    // barrel is open, five ticks later.
+    let rechecks = w.level.opener_rechecks.len();
+    for _ in 0..5 {
+        w.tick();
+    }
+    assert_eq!(w.level.opener_rechecks.len(), rechecks + 1);
+    // Nobody has it open on the next recount: the chain stops there.
+    w.level.openers.insert(pos, (1, 0));
+    for _ in 0..5 {
+        w.tick();
+    }
+    let rechecks = w.level.opener_rechecks.len();
+    for _ in 0..10 {
+        w.tick();
+    }
+    assert_eq!(w.level.opener_rechecks.len(), rechecks);
+    assert_eq!(w.prop(pos, "open"), "false");
+}
+
+#[test]
 fn walls_and_panes_connect() {
     let mut w = world!();
     let wall = w.id("cobblestone_wall", &[]);
@@ -880,15 +982,20 @@ fn bucket_source_removal_drains_spread_water() {
     let mut w = world!();
     w.floor(0, 10, "stone");
     let at = BlockPos::new(0, 1, 0);
-    assert!(w.b().bucket_empty(
-        &mut w.level,
-        &mut w.ticks,
-        at,
-        BucketContent::Fluid(crate::fluid::FluidKind::Water),
-        "minecraft:item.bucket.empty",
-        false,
-        false
-    ));
+    assert!(
+        w.b()
+            .bucket_empty(
+                &mut w.level,
+                &mut w.ticks,
+                at,
+                None,
+                BucketContent::Fluid(crate::fluid::FluidKind::Water),
+                "minecraft:item.bucket.empty",
+                false,
+                false
+            )
+            .is_some()
+    );
     for _ in 0..60 {
         w.tick();
     }
@@ -1940,6 +2047,115 @@ fn a_broken_moving_piston_drops_the_block_it_carries() {
     );
 }
 
+/// `MovingPistonBlock.useWithoutItem`: a moving piston with no block entity (its
+/// move is not in flight) is removed by the click, and one that is still moving
+/// keeps its block and passes the click on.
+#[test]
+fn a_moving_piston_without_a_block_entity_is_removed_by_a_click() {
+    let mut w = world!();
+    let moving = w.id("moving_piston", &[("facing", "east"), ("type", "normal")]);
+    let orphan = BlockPos::new(0, 1, 0);
+    let in_flight = BlockPos::new(4, 1, 4);
+    let air = w.id("air", &[]);
+    for pos in [orphan, in_flight] {
+        w.put(pos, moving);
+    }
+    w.ticks.moving_pistons.push((
+        in_flight,
+        MovingPiston {
+            moved_state: w.id("sand", &[]),
+            direction: Direction::East,
+            extending: true,
+            source: false,
+            progress: 0.5,
+            progress_o: 0.4,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 0,
+        },
+    ));
+    assert_eq!(w.use_block(orphan), InteractionResult::Consume);
+    assert_eq!(w.get(orphan), air, "the orphan moving piston is removed");
+    assert_eq!(w.use_block(in_flight), InteractionResult::Pass);
+    assert_eq!(
+        w.get(in_flight),
+        moving,
+        "a moving piston in flight keeps its block"
+    );
+}
+
+/// `MovingPistonBlock.destroy`: a moving piston a player breaks takes the
+/// extended piston base behind it with it; an unextended base stays.
+#[test]
+fn breaking_a_moving_piston_removes_its_extended_base() {
+    let mut w = world!();
+    let moving = w.id("moving_piston", &[("facing", "east"), ("type", "normal")]);
+    let extended = w.id("piston", &[("facing", "east"), ("extended", "true")]);
+    let retracted = w.id("piston", &[("facing", "east"), ("extended", "false")]);
+    let air = w.id("air", &[]);
+    // The head at (1, 1, 0) faces east, so its base is at (0, 1, 0).
+    w.put(BlockPos::new(0, 1, 0), extended);
+    w.put(BlockPos::new(1, 1, 0), moving);
+    w.f.behaviours.player_destroy_block(
+        &mut w.level,
+        &mut w.ticks,
+        BlockPos::new(1, 1, 0),
+        false,
+        true,
+    );
+    assert_eq!(
+        w.get(BlockPos::new(0, 1, 0)),
+        air,
+        "the extended base goes with the moving piston"
+    );
+    w.put(BlockPos::new(5, 1, 0), retracted);
+    w.put(BlockPos::new(6, 1, 0), moving);
+    w.f.behaviours.player_destroy_block(
+        &mut w.level,
+        &mut w.ticks,
+        BlockPos::new(6, 1, 0),
+        false,
+        true,
+    );
+    assert_eq!(
+        w.get(BlockPos::new(5, 1, 0)),
+        retracted,
+        "an unextended base is left alone"
+    );
+}
+
+/// `LevelChunk.setBlockState` over a moving piston only runs the block
+/// entity's `finalTick`: `MovingPistonBlock.destroy`, which removes the
+/// extended base, is `ServerPlayerGameMode.destroyBlock`'s alone. `/setblock`,
+/// `/fill` and `Level.destroyBlock` over the head leave a headless piston.
+#[test]
+fn replacing_a_moving_piston_leaves_its_extended_base() {
+    let mut w = world!();
+    let moving = w.id("moving_piston", &[("facing", "east"), ("type", "normal")]);
+    let extended = w.id("piston", &[("facing", "east"), ("extended", "true")]);
+    let air = w.id("air", &[]);
+    // /setblock ~ ~ ~ air on the head: the extended base stays.
+    w.put(BlockPos::new(0, 1, 0), extended);
+    w.put(BlockPos::new(1, 1, 0), moving);
+    w.set(BlockPos::new(1, 1, 0), air);
+    assert_eq!(w.get(BlockPos::new(1, 1, 0)), air);
+    assert_eq!(
+        w.get(BlockPos::new(0, 1, 0)),
+        extended,
+        "a setBlock over the head leaves a headless extended piston"
+    );
+    // Level.destroyBlock (explosions, decay) is not a player break either.
+    w.put(BlockPos::new(4, 1, 0), extended);
+    w.put(BlockPos::new(5, 1, 0), moving);
+    w.b()
+        .destroy_block(&mut w.level, &mut w.ticks, BlockPos::new(5, 1, 0), false);
+    assert_eq!(
+        w.get(BlockPos::new(4, 1, 0)),
+        extended,
+        "destroyBlock over the head leaves a headless extended piston"
+    );
+}
+
 #[test]
 fn dripstone_fills_cauldrons() {
     let mut w = world!();
@@ -2214,6 +2430,21 @@ fn placing_and_breaking_report_the_affected_state() {
 fn dispenser_buckets_pick_up_and_empty() {
     let mut w = world!();
     let at = BlockPos::new(0, 10, 0);
+    // A dispenser has no hit result: nothing beside to try.
+    let empty = |w: &mut World, content, sound: &str, creative| {
+        w.f.behaviours
+            .bucket_empty(
+                &mut w.level,
+                &mut w.ticks,
+                at,
+                None,
+                content,
+                sound,
+                false,
+                creative,
+            )
+            .is_some()
+    };
     let water = w.id("water", &[("level", "0")]);
     w.put(at, water);
     let picked = w.b().bucket_pickup(&mut w.level, &mut w.ticks, at, false);
@@ -2246,15 +2477,9 @@ fn dispenser_buckets_pick_up_and_empty() {
     w.put(at, barrier);
     let sound = "minecraft:item.bucket.empty";
     let content = BucketContent::Fluid(crate::fluid::FluidKind::Water);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(!empty(&mut w, content, sound, false));
     assert_eq!(w.prop(at, "waterlogged"), "false");
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, true)
-    );
+    assert!(empty(&mut w, content, sound, true));
     assert_eq!(w.prop(at, "waterlogged"), "true");
     assert_eq!(
         w.b().bucket_pickup(&mut w.level, &mut w.ticks, at, false),
@@ -2268,46 +2493,67 @@ fn dispenser_buckets_pick_up_and_empty() {
     // Emptying water into air makes a source; stone refuses.
     let air = w.b().air();
     w.put(at, air);
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(empty(&mut w, content, sound, false));
     assert_eq!(w.name(at), "water[level=0]");
     let stone = w.id("stone", &[]);
     w.put(at, stone);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(!empty(&mut w, content, sound, false));
     // Water fills a waterloggable slab instead of replacing it.
     let dry = w.id("oak_slab", &[]);
     w.put(at, dry);
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(empty(&mut w, content, sound, false));
     assert_eq!(w.prop(at, "waterlogged"), "true");
-    // Sneak-clicking the slab refuses: only air takes a fluid under Shift.
-    let dry = w.id("oak_slab", &[]);
-    w.put(at, dry);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, true, false)
-    );
-    assert_eq!(w.prop(at, "waterlogged"), "false");
     // Powder snow only goes into empty space.
     let air = w.b().air();
     w.put(at, air);
-    assert!(w.b().bucket_empty(
-        &mut w.level,
-        &mut w.ticks,
-        at,
+    assert!(empty(
+        &mut w,
         BucketContent::Powder,
         "minecraft:item.bucket.empty_powder_snow",
-        false,
         false
     ));
     assert_eq!(w.name(at), "powder_snow[]");
+}
+
+#[test]
+fn clicked_bucket_pours_beside_a_refusing_block() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    let above = BlockPos::new(0, 11, 0);
+    let sound = "minecraft:item.bucket.empty";
+    let content = BucketContent::Fluid(crate::fluid::FluidKind::Water);
+    let air = w.b().air();
+    let click = |w: &mut World, sneaking: bool| {
+        w.f.behaviours.bucket_empty(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            Some(above),
+            content,
+            sound,
+            sneaking,
+            false,
+        )
+    };
+    // Sneak-clicking a slab pours beside it, where Shift no longer counts.
+    let slab = w.id("oak_slab", &[]);
+    w.put(at, slab);
+    assert_eq!(click(&mut w, true), Some(above));
+    assert_eq!(w.prop(at, "waterlogged"), "false");
+    assert_eq!(w.name(above), "water[level=0]");
+    // A double slab holds no water: the click fills the block beside it.
+    w.put(above, air);
+    let double = w.id("oak_slab", &[("type", "double")]);
+    w.put(at, double);
+    assert_eq!(click(&mut w, false), Some(above));
+    assert_eq!(w.prop(at, "type"), "double");
+    assert_eq!(w.name(above), "water[level=0]");
+    // Both refusing empties nothing.
+    let stone = w.id("stone", &[]);
+    w.put(above, stone);
+    assert_eq!(click(&mut w, false), None);
+    assert_eq!(w.prop(at, "type"), "double");
+    assert_eq!(w.get(above), stone);
 }
 
 #[test]
@@ -3410,4 +3656,69 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
     assert_eq!(w.prop(campfire, "signal_fire"), "true");
     w.set(ground, hay);
     assert_eq!(w.prop(campfire, "signal_fire"), "false");
+}
+
+#[test]
+fn a_rail_on_a_block_a_piston_pushes_pops_off() {
+    // PistonBaseBlock.moveBlocks writes the arriving blocks as `moving_piston`
+    // and then updates the neighbours of every source cell. The rail on the
+    // second stone asks whether that cell supports it: vanilla reads the moving
+    // block's shape offset by `progress - 1`, a whole block back at progress 0,
+    // so nothing holds the rail and it pops, though another stone arrives under
+    // it (dynamic_support pins the moving shape's support against vanilla).
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("piston", &[("facing", "east")]);
+    let stone = w.id("stone", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let rail_pos = BlockPos::new(2, 2, 0);
+    w.set(piston_pos, piston);
+    w.set(BlockPos::new(1, 1, 0), stone);
+    w.set(BlockPos::new(2, 1, 0), stone);
+    w.set(rail_pos, rail);
+    w.set(BlockPos::new(-1, 1, 0), power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "stone[]");
+    assert_eq!(w.name(BlockPos::new(3, 1, 0)), "stone[]");
+    assert_eq!(w.name(rail_pos), "air[]");
+}
+
+#[test]
+fn a_rail_riding_on_slime_stays_on_it() {
+    // #8111: the slime block carries the rail on top of it. The rail's block
+    // entity can finish while the slime's still holds `moving_piston` at
+    // progress 1, whose shape is the slime block in its cell, so the rail is
+    // supported both ways.
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("sticky_piston", &[("facing", "east")]);
+    let slime = w.id("slime_block", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let air = w.b().air();
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let power_pos = BlockPos::new(-1, 1, 0);
+    w.set(piston_pos, piston);
+    w.set(BlockPos::new(1, 1, 0), slime);
+    w.set(BlockPos::new(1, 2, 0), rail);
+    w.set(power_pos, power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "slime_block[]");
+    let pushed = w.name(BlockPos::new(2, 2, 0));
+    assert!(pushed.starts_with("rail"), "pushed: got {pushed}");
+    w.set(power_pos, air);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "false");
+    let pulled = w.name(BlockPos::new(1, 2, 0));
+    assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
 }

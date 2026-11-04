@@ -88,6 +88,33 @@ pub struct BlockProperties {
     pub sounds: Option<String>,
     /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
     pub random_ticks: Option<RandomTicks>,
+    /// How the block is drawn, whatever the template does (`BlockBehaviour.getRenderShape`).
+    pub render_shape: Option<RenderShape>,
+    /// `false`: the block occludes nothing, so its neighbours' faces are drawn and light passes
+    /// it (`BlockBehaviour.Properties.noOcclusion`); unset or `true`: as its template.
+    pub occludes: Option<bool>,
+}
+
+/// Vanilla's `RenderShape`, by its constant's name: `MODEL` puts the block model in the chunk
+/// mesh, `ENTITYBLOCK_ANIMATED` leaves it out for a block whose parts are drawn every frame
+/// (its block entity's drawing), and `INVISIBLE` draws nothing.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RenderShape {
+    Model,
+    EntityblockAnimated,
+    Invisible,
+}
+
+impl RenderShape {
+    /// The constant's name, as the block tables write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            RenderShape::Model => "MODEL",
+            RenderShape::EntityblockAnimated => "ENTITYBLOCK_ANIMATED",
+            RenderShape::Invisible => "INVISIBLE",
+        }
+    }
 }
 
 /// Which of a block's states get random ticks (`BlockBehaviour.isRandomlyTicking(state)`), so a
@@ -117,12 +144,56 @@ impl RandomTicks {
     }
 }
 
-/// Per-state outline and collision boxes, selected by one state property.
+/// Boxes selected by one property (legacy) or an ordered tuple of properties.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BlockShapes {
+    #[serde(default)]
     pub property: String,
+    #[serde(default)]
+    pub properties: Vec<String>,
+    #[serde(default)]
     pub values: BTreeMap<String, Vec<[f64; 6]>>,
+    pub default: Option<Vec<[f64; 6]>>,
+}
+
+impl BlockShapes {
+    pub fn property_names(&self) -> Vec<&str> {
+        if self.property.is_empty() {
+            self.properties.iter().map(String::as_str).collect()
+        } else {
+            vec![self.property.as_str()]
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let names = self.property_names();
+        if (!self.property.is_empty() && !self.properties.is_empty())
+            || names.iter().any(|name| !state_name(name))
+            || names.iter().collect::<BTreeSet<_>>().len() != names.len()
+            || (names.is_empty() && !self.values.is_empty())
+            || (self.values.is_empty() && self.default.is_none())
+        {
+            return Err("shapes needs distinct properties and values, or a default".into());
+        }
+        for key in self.values.keys() {
+            let values: Vec<_> = key.split(',').collect();
+            if values.len() != names.len() || values.iter().any(|value| !state_name(value)) {
+                return Err(format!("invalid shape key {key:?}: one value per property"));
+            }
+        }
+        for boxes in self.values.values().chain(self.default.iter()) {
+            if boxes.len() > 16
+                || boxes.iter().any(|bounds| {
+                    bounds.iter().any(|value| !value.is_finite())
+                        || (0..3).any(|axis| bounds[axis] > bounds[axis + 3])
+                })
+            {
+                return Err("shape needs at most 16 finite boxes with ordered bounds".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A state property a block declares on its own, beside its template's.
@@ -163,6 +234,7 @@ struct BlockFile {
     #[serde(default)]
     properties: BlockProperties,
     shapes: Option<BlockShapes>,
+    collision_shapes: Option<BlockShapes>,
     #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
@@ -171,6 +243,10 @@ struct BlockFile {
     connects_to: Option<String>,
     #[serde(default)]
     thickness: Option<f32>,
+    #[serde(default)]
+    wood_type: Option<String>,
+    #[serde(default)]
+    wall_block: Option<String>,
     #[serde(default = "yes")]
     item: bool,
     #[serde(default)]
@@ -192,6 +268,7 @@ pub struct Block {
     pub template: String,
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
+    pub collision_shapes: Option<BlockShapes>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
@@ -207,6 +284,15 @@ pub struct Block {
     /// A connecting block's width in pixels (2 to 14): its shapes, the
     /// chorus plant's (10) when unset.
     pub thickness: Option<f32>,
+    /// A sign's `WoodType` (template a vanilla sign), which names its editor's
+    /// background: `<namespace>:<path>` a mod's texture, a bare name vanilla's.
+    /// The template's when unset.
+    pub wood_type: Option<String>,
+    /// The block a standing or ceiling sign's item places on a wall
+    /// (`StandingAndWallBlockItem.wallBlock`): one of this mod's blocks, whose
+    /// template is the matching wall sign and which has no item. The
+    /// template's when unset.
+    pub wall_block: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,6 +602,8 @@ impl Content {
                 item_ids.insert(id);
             }
         }
+        let all: Vec<&Block> = self.blocks.iter().chain(blocks).collect();
+        check_sign_walls(&all)?;
         for item in items {
             let id = item.id.as_str();
             if !in_own(id) {
@@ -596,12 +684,13 @@ impl Content {
             let own = namespace == id;
             let owned = own || manifest.namespaces.iter().any(|n| n == namespace);
             // Vanilla's own files stay vanilla's; a mod may only add to its
-            // tags, and to the convention tags mods share.
+            // tags and atlases, and to the convention tags mods share.
             let shared = matches!(namespace, "minecraft" | "c");
-            let allowed = owned || (top == "data" && shared && rest.starts_with("tags/"));
+            let atlas = top == "assets" && namespace == "minecraft" && rest.starts_with("atlases/");
+            let allowed = owned || (top == "data" && shared && rest.starts_with("tags/")) || atlas;
             if !allowed {
                 return Err(format!(
-                    "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces) or to vanilla and convention (c) tags"
+                    "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, or to vanilla's atlases"
                 ));
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
@@ -658,6 +747,7 @@ impl Content {
                 template: file.template,
                 properties: file.properties,
                 shapes: file.shapes,
+                collision_shapes: file.collision_shapes,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
@@ -666,6 +756,8 @@ impl Content {
                     .connects_to
                     .map(|t| t.trim_start_matches('#').to_owned()),
                 thickness: file.thickness,
+                wood_type: file.wood_type,
+                wall_block: file.wall_block,
             };
             check_block(&block).map_err(|e| format!("{name}: {e}"))?;
             if block.item {
@@ -673,6 +765,8 @@ impl Content {
             }
             self.blocks.push(block);
         }
+        // After every block, so a wall form may be declared in a later file.
+        check_sign_walls(&self.blocks.iter().collect::<Vec<_>>())?;
         let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
@@ -837,19 +931,8 @@ fn check_block(file: &Block) -> Result<(), String> {
             file.template
         ));
     }
-    if let Some(shapes) = &file.shapes {
-        if shapes.property.is_empty() || shapes.values.is_empty() {
-            return Err("shapes needs a property and values".into());
-        }
-        for boxes in shapes.values.values() {
-            if boxes.len() > 16
-                || boxes
-                    .iter()
-                    .any(|b| b.iter().any(|n| !n.is_finite()) || (0..3).any(|i| b[i] > b[i + 3]))
-            {
-                return Err("shape needs at most 16 finite boxes with ordered bounds".into());
-            }
-        }
+    for shapes in file.shapes.iter().chain(file.collision_shapes.iter()) {
+        shapes.check()?;
     }
     for (name, property) in &file.state_properties {
         if !state_name(name) {
@@ -958,6 +1041,69 @@ fn check_block(file: &Block) -> Result<(), String> {
         }
         _ => {}
     }
+    // Every vanilla `SignBlock`'s id ends in `_sign`, and no other block's does.
+    let sign = file.template.ends_with("_sign");
+    if let Some(wood) = &file.wood_type {
+        if !sign {
+            return Err("wood_type needs a vanilla sign template".into());
+        }
+        let (namespace, path) = wood.split_once(':').unwrap_or(("minecraft", wood));
+        if !namespaced_id(&format!("{namespace}:{path}"))
+            || check_path(&format!("assets/{namespace}/{path}")).is_err()
+        {
+            return Err("wood_type is a name, or namespace:path, in lower case".into());
+        }
+    }
+    if let Some(wall) = &file.wall_block {
+        if !sign || file.template.contains("_wall_") {
+            return Err("wall_block needs a standing or ceiling sign template".into());
+        }
+        if !file.item {
+            return Err("wall_block is where the item places the block, and item is false".into());
+        }
+        if !namespaced_id(wall) {
+            return Err("wall_block is a block id, namespace:path".into());
+        }
+    }
+    Ok(())
+}
+
+/// A sign's `wall_block` is one of the mod's own blocks: the wall form of its
+/// kind, with no item of its own and no other sign. Checked here, a pair that
+/// doesn't fit leaves out its mod alone.
+fn check_sign_walls(blocks: &[&Block]) -> Result<(), String> {
+    let mut paired = BTreeMap::new();
+    for sign in blocks {
+        let Some(wall) = &sign.wall_block else {
+            continue;
+        };
+        let id = &sign.id;
+        let form = if sign.template.ends_with("_hanging_sign") {
+            "_wall_hanging_sign"
+        } else {
+            "_wall_sign"
+        };
+        let Some(block) = blocks.iter().find(|b| b.id == *wall) else {
+            return Err(format!(
+                "{id}: wall_block {wall} is not one of this mod's blocks"
+            ));
+        };
+        if !block.template.ends_with(form) {
+            return Err(format!(
+                "{id}: wall_block {wall} needs a template ending in {form}"
+            ));
+        }
+        if block.item {
+            return Err(format!(
+                "{id}: wall_block {wall} has this sign's item, so its own \"item\" is false"
+            ));
+        }
+        if let Some(other) = paired.insert(wall, id) {
+            return Err(format!(
+                "{id}: wall_block {wall} is already paired with {other}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1014,6 +1160,56 @@ capabilities = ["registries"]
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
+    #[test]
+    fn shape_tables_validate_tuples_defaults_and_collision() {
+        let content = hmod("shape-tuples", MANIFEST_TEXT, &[(
+            "data/ruby/horizon/block/a.json",
+            br#"{"template":"minecraft:stone","shapes":{"properties":["facing","count"],"values":{"north,2":[[0,0,0,1,0.5,1]]},"default":[[0,0,0,1,1,1]]},"collision_shapes":{"default":[]}}"#,
+        )]).unwrap();
+        let block = &content.blocks[0];
+        assert_eq!(
+            block.shapes.as_ref().unwrap().property_names(),
+            ["facing", "count"]
+        );
+        assert_eq!(
+            block.collision_shapes.as_ref().unwrap().default,
+            Some(vec![])
+        );
+        for value in [
+            r#"{"property":"axis","properties":["count"],"default":[]}"#,
+            r#"{"properties":["axis","axis"],"default":[]}"#,
+            r#"{"properties":["Axis"],"default":[]}"#,
+            r#"{"properties":["axis","count"],"values":{"x":[]}}"#,
+            r#"{"properties":["axis"],"values":{"":[]}}"#,
+            r#"{"values":{"x":[]},"default":[]}"#,
+            r#"{"default":[[1,0,0,0,1,1]]}"#,
+        ] {
+            let shapes: BlockShapes = serde_json::from_str(value).unwrap();
+            assert!(shapes.check().is_err(), "{value}");
+            let declaration =
+                format!(r#"{{"template":"minecraft:stone","collision_shapes":{value}}}"#);
+            assert!(
+                hmod(
+                    "bad-collision",
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/block/a.json", declaration.as_bytes(),)]
+                )
+                .is_err(),
+                "{value}"
+            );
+        }
+        let oversized = BlockShapes {
+            property: String::new(),
+            properties: vec![],
+            values: BTreeMap::new(),
+            default: Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]; 17]),
+        };
+        assert!(oversized.check().is_err());
+        let mut nonfinite = oversized;
+        nonfinite.default = Some(vec![[f64::NAN; 6]]);
+        assert!(nonfinite.check().is_err());
+    }
+
     fn hmod(name: &str, manifest: &str, files: &[(&str, &[u8])]) -> Result<Content, String> {
         let dir = scratch(name);
         let path = dir.join("m.hmod");
@@ -1110,15 +1306,17 @@ capabilities = ["registries"]
             ("data/minecraft/tags/block/mineable/pickaxe.json", b"{}"),
             ("data/c/tags/item/gems/ruby.json", b"{}"),
             ("assets/ruby/textures/block/ruby_block.png", b"png"),
+            ("assets/minecraft/atlases/blocks.json", b"{}"),
         ];
         let content = hmod("ok", MANIFEST_TEXT, files).unwrap();
-        assert_eq!(content.files.len(), 6);
+        assert_eq!(content.files.len(), 7);
         assert_eq!(
             content.blocks,
             [Block {
                 id: "ruby:ruby_block".into(),
                 template: "minecraft:iron_block".into(),
                 shapes: None,
+                collision_shapes: None,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
@@ -1131,6 +1329,8 @@ capabilities = ["registries"]
                 components: BTreeMap::new(),
                 connects_to: None,
                 thickness: None,
+                wood_type: None,
+                wall_block: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
@@ -1384,6 +1584,44 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn a_block_may_occlude_nothing() {
+        let block = |occludes: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:barrel", "properties": {{"occludes": {occludes}}}}}"#
+            );
+            let files: &[(&str, &[u8])] =
+                &[("data/ruby/horizon/block/panel.json", text.as_bytes())];
+            hmod("occludes", MANIFEST_TEXT, files)
+        };
+        let occludes = |c: Result<Content, String>| c.unwrap().blocks[0].properties.occludes;
+        assert_eq!(occludes(block("false")), Some(false));
+        assert_eq!(occludes(block("true")), Some(true));
+        assert!(block(r#""no""#).is_err());
+    }
+
+    #[test]
+    fn blocks_choose_their_render_shape() {
+        let block = |shape: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:stone", "properties": {{"render_shape": {shape}}}}}"#
+            );
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/gear.json", text.as_bytes())];
+            hmod("render-shape", MANIFEST_TEXT, files)
+        };
+        let shape = |c: Result<Content, String>| c.unwrap().blocks[0].properties.render_shape;
+        assert_eq!(shape(block(r#""MODEL""#)), Some(RenderShape::Model));
+        assert_eq!(
+            shape(block(r#""ENTITYBLOCK_ANIMATED""#)),
+            Some(RenderShape::EntityblockAnimated)
+        );
+        assert_eq!(shape(block(r#""INVISIBLE""#)), Some(RenderShape::Invisible));
+        // Only vanilla's constants, as written there.
+        for bad in [r#""animated""#, r#""model""#, "1"] {
+            assert!(block(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn blocks_pick_the_states_that_tick_randomly() {
         let own = r#""state_properties": {"grown": {"type": "boolean"}}"#;
         let block = |ticks: &str| {
@@ -1481,6 +1719,124 @@ capabilities = ["registries"]
             let e = block(&json).unwrap_err();
             assert!(e.contains("block tag"), "{tag}: {e}");
         }
+    }
+
+    /// A sign names its wood; a standing or ceiling sign names the wall form
+    /// its item places. Neither means anything on another template.
+    #[test]
+    fn signs_name_their_wood_and_wall_form() {
+        let block = |json: &str| {
+            let files: &[(&str, &[u8])] =
+                &[("data/ruby/horizon/block/notice.json", json.as_bytes())];
+            hmod("sign", MANIFEST_TEXT, files)
+        };
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/block/notice.json",
+                br#"{"template": "minecraft:oak_sign", "wood_type": "ruby:elm", "wall_block": "ruby:notice_wall"}"#,
+            ),
+            (
+                "data/ruby/horizon/block/notice_wall.json",
+                br#"{"template": "minecraft:oak_wall_sign", "item": false}"#,
+            ),
+        ];
+        let content = hmod("sign-pair", MANIFEST_TEXT, files).unwrap();
+        assert_eq!(content.blocks[0].wood_type.as_deref(), Some("ruby:elm"));
+        assert_eq!(
+            content.blocks[0].wall_block.as_deref(),
+            Some("ruby:notice_wall")
+        );
+        // Vanilla's woods go by their bare names, as `WoodType.name` does.
+        let cherry = r#"{"template": "minecraft:cherry_wall_hanging_sign", "wood_type": "cherry", "item": false}"#;
+        assert_eq!(
+            block(cherry).unwrap().blocks[0].wood_type.as_deref(),
+            Some("cherry")
+        );
+        assert_eq!(
+            block(r#"{"template": "minecraft:oak_sign", "wood_type": "ruby-wood:old/elm"}"#)
+                .unwrap()
+                .blocks[0]
+                .wood_type
+                .as_deref(),
+            Some("ruby-wood:old/elm")
+        );
+        for bad in [
+            r#"{"template": "minecraft:stone", "wood_type": "ruby:elm"}"#,
+            r#"{"template": "minecraft:oak_sign", "wood_type": "Ruby:Elm"}"#,
+            r#"{"template": "minecraft:oak_sign", "wood_type": "a:b:c"}"#,
+            r#"{"template": "minecraft:oak_sign", "wood_type": "../elm"}"#,
+        ] {
+            assert!(block(bad).unwrap_err().contains("wood_type"), "{bad}");
+        }
+        for bad in [
+            r#"{"template": "minecraft:stone", "wall_block": "ruby:notice_wall"}"#,
+            r#"{"template": "minecraft:oak_wall_sign", "wall_block": "ruby:notice_wall", "item": false}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": "notice_wall"}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": ":wall"}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": "ruby:"}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": "Ruby:wall"}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": "ruby:wall:other"}"#,
+            r#"{"template": "minecraft:oak_sign", "wall_block": "ruby:notice_wall", "item": false}"#,
+        ] {
+            assert!(block(bad).unwrap_err().contains("wall_block"), "{bad}");
+        }
+    }
+
+    /// A sign's wall form is one of the mod's blocks, of the matching wall
+    /// template, with no item and no other sign. Anything else refuses this
+    /// mod when it is read, and leaves the other mods alone.
+    #[test]
+    fn a_signs_wall_block_is_its_own_mods_wall_form() {
+        let refused = |template: &str, wall_block: &str, wall: &str, wanted: &str| {
+            let sign =
+                format!(r#"{{"template": "minecraft:{template}", "wall_block": "{wall_block}"}}"#);
+            let second =
+                format!(r#"{{"template": "minecraft:{template}", "wall_block": "ruby:wall"}}"#);
+            let mut files: Vec<(&str, &[u8])> = vec![
+                ("data/ruby/horizon/block/sign.json", sign.as_bytes()),
+                ("data/ruby/horizon/block/wall.json", wall.as_bytes()),
+            ];
+            if wanted == "already paired" {
+                files.push(("data/ruby/horizon/block/second.json", second.as_bytes()));
+            }
+            let e = hmod("sign-wall", MANIFEST_TEXT, &files).unwrap_err();
+            assert!(e.contains(wanted), "{wanted}: {e}");
+        };
+        let wall = r#"{"template": "minecraft:oak_wall_sign", "item": false}"#;
+        for (template, wall_template) in [
+            ("oak_sign", "stone"),
+            ("oak_sign", "oak_wall_hanging_sign"),
+            ("oak_hanging_sign", "oak_wall_sign"),
+        ] {
+            let other = format!(r#"{{"template": "minecraft:{wall_template}", "item": false}}"#);
+            refused(template, "ruby:wall", &other, "needs a template");
+        }
+        refused(
+            "oak_sign",
+            "ruby:wall",
+            r#"{"template": "minecraft:oak_wall_sign"}"#,
+            "\"item\" is false",
+        );
+        refused("oak_sign", "ruby:wall", wall, "already paired");
+        for absent in ["ruby:elsewhere", "other:wall", "minecraft:oak_wall_sign"] {
+            refused("oak_sign", absent, wall, "not one of this mod's blocks");
+        }
+
+        // Declared in code, the same; nothing is added.
+        let block = |id: &str, template: &str, item, wall_block: Option<&str>| Block {
+            id: id.into(),
+            template: template.into(),
+            item,
+            wall_block: wall_block.map(str::to_owned),
+            ..Block::default()
+        };
+        let mut content = Content::declared("ruby");
+        let sign = block("ruby:sign", "minecraft:oak_sign", true, Some("ruby:wall"));
+        assert!(content.declare(std::slice::from_ref(&sign), &[]).is_err());
+        assert!(content.blocks.is_empty());
+        let wall = block("ruby:wall", "minecraft:oak_wall_sign", false, None);
+        content.declare(&[sign, wall], &[]).unwrap();
+        assert_eq!(content.blocks.len(), 2);
     }
 
     /// A creative tab: a title, an icon and its items, all item ids.

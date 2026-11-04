@@ -11,6 +11,9 @@ use horizon_client::{
 use serde_json::{Value, json};
 use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
 
+/// `CommonLinks.ACCESSIBILITY_HELP`, the Accessibility page's footer link.
+pub(super) const ACCESSIBILITY_HELP_LINK: &str = "https://aka.ms/MinecraftJavaAccessibility";
+
 pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",
     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
@@ -121,8 +124,10 @@ impl Game<'_> {
         self.screen = Screen::Options;
         self.options_from_title = from_title;
         self.options_to_game = false;
+        let minecart_improvements = self.minecart_improvements();
         let ui = &mut self.ui.options;
         ui.open_at(!from_title && self.title.is_none(), page);
+        ui.minecart_improvements = minecart_improvements;
         let root = self.options.resources.clone();
         ui.languages = lang::available(&[&root]);
         self.refresh_pack_lists();
@@ -331,6 +336,12 @@ impl Game<'_> {
                     let text = self.agent_details();
                     self.clipboard.set(&text);
                 }
+                // The AI Agent page's repro buttons (game/repro.rs).
+                Event::ToggleRecording => self.toggle_recording_key(),
+                Event::ExportRepro => self.export_repro_key(),
+                // The Music page: the situations' tracks, and playing one now.
+                Event::ListMusicTracks => self.ui.options.music_groups = self.music_groups(),
+                Event::PlayMusicTrack(event, track) => self.play_music_track(&event, &track),
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
                     self.settings.save(&Self::options_path());
@@ -360,6 +371,16 @@ impl Game<'_> {
                     let dir = super::packs::packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
+                }
+                // Horizon's own Add button: the screen picked a hit, the game
+                // owns the folder it lands in.
+                Event::DownloadPack(i) => {
+                    let dir = super::packs::packs_dir();
+                    if let Some(screen) = &mut self.ui.options.pack_screen
+                        && let Some(browser) = &mut screen.browser
+                    {
+                        browser.download(i, &dir, horizon_core::VANILLA_VERSION);
+                    }
                 }
                 Event::DataPacks(ids) => {
                     let resources = self.vanilla_root();
@@ -397,6 +418,11 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                // AccessibilityOptionsScreen's link button: ConfirmLinkScreen
+                // back to the options screen.
+                Event::AccessibilityHelp => {
+                    self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
+                }
                 Event::Narrator => self.narrator_status_changed(),
             }
         }
@@ -478,7 +504,7 @@ impl Game<'_> {
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,
                 s.horizon.peak_nits() as f32,
-                s.horizon.hdr_black_level as f32 / 100.0,
+                s.horizon.black_level_nits(),
                 s.horizon.hdr_ui_brightness as f32 / 100.0,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
@@ -505,6 +531,13 @@ impl Game<'_> {
             font.japanese = s.japanese_glyphs;
             font.reset_cache();
             self.ui.chat.rescale(&self.gui.atlas);
+        }
+        // 3D skin layers: a skin's slabs are built when it is resolved, so a
+        // change here rebuilds the players already on screen (the Options
+        // screen keeps resolving them every frame; this covers the console
+        // and a setting restored from options.txt at start).
+        if self.title.is_none() {
+            self.update_remote_skins();
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
@@ -574,9 +607,23 @@ impl Game<'_> {
             has_overlay: false,
         };
         let limit = framerate_limit(self.settings.max_fps as i32, context);
-        self.settings
+        let limit = self
+            .settings
             .horizon
-            .battery_limit(limit, self.title.is_none(), self.focused)
+            .battery_limit(limit, self.title.is_none(), self.focused);
+        // A native mod may only lower it (`native_framerate_limit`).
+        let mut hooked = limit;
+        self.native_framerate_limit(
+            self.focused,
+            context.iconified,
+            self.title.is_none(),
+            &mut hooked,
+        );
+        if hooked >= 1 {
+            hooked.min(limit)
+        } else {
+            limit
+        }
     }
     /// `Minecraft.runTick`'s frame limiter: `FramerateLimiter.limitDisplayFPS`
     /// below 260 frames per second, sleeping then spin-waiting until the
@@ -592,7 +639,7 @@ impl Game<'_> {
             }
             horizon_client::graphics::Pacing::Efficient => {
                 let mut clock = horizon_client::window::SleepingClock(self.frame_clock);
-                horizon_client::window::end_frame(&mut self.limiter, limit, &mut clock);
+                horizon_client::window::end_frame_on_grid(&mut self.limiter, limit, &mut clock);
             }
         }
     }

@@ -7,8 +7,8 @@ use horizon_launcher::launch;
 pub(super) struct LaunchPanel {
     /// The instance it is for: picking another closes it.
     instance: String,
-    /// What Save did, or why not.
-    saved: Option<Result<String, String>>,
+    /// What Save did: Ok with the summary of what runs (None when nothing runs), or Err with reason.
+    saved: Option<Result<Option<String>, String>>,
     /// What this computer has for the Linux switches, looked at when the panel opens.
     found: launch::Found,
 }
@@ -67,12 +67,8 @@ impl Launcher {
             })
         });
         let saved = saved.map(|i| {
-            let said = match i.launch.summary() {
-                Some(what) => trf("Saved: the next Play {what}.", &[("what", &what)]),
-                None => tr("Saved: nothing runs around the game.").to_string(),
-            };
             self.reload_instances();
-            said
+            i.launch.summary()
         });
         if let Some(p) = &mut self.launch {
             p.saved = Some(saved);
@@ -92,10 +88,7 @@ impl Launcher {
             };
             *on = !*on;
         });
-        panel.saved = Some(saved.map(|i| match i.launch.summary() {
-            Some(what) => trf("Saved: the next Play {what}.", &[("what", &what)]),
-            None => tr("Saved: nothing runs around the game.").to_string(),
-        }));
+        panel.saved = Some(saved.map(|i| i.launch.summary()));
         self.reload_instances();
     }
 
@@ -227,7 +220,12 @@ impl Launcher {
             },
         ));
         let result = saved.map(|s| match s {
-            Ok(said) => text(theme::CAPTION).text_color(t.muted).child(said),
+            Ok(Some(what)) => text(theme::CAPTION)
+                .text_color(t.muted)
+                .child(trf("Saved: the next Play {what}.", &[("what", &what)])),
+            Ok(None) => text(theme::CAPTION)
+                .text_color(t.muted)
+                .child(tr("Saved: nothing runs around the game.")),
             Err(e) => text(theme::CAPTION).text_color(t.danger).child(e),
         });
         Some(

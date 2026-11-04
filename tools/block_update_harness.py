@@ -101,7 +101,7 @@ def argument_parser(description):
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--only', help='substring of the block name under test')
     parser.add_argument('--show', type=int, default=1, help='examples printed per block')
-    parser.add_argument('--events', action='store_true', help='compare side-effect logs too (default: states, ticks, rng and events)')
+    parser.add_argument('--events', action='store_true', help='deprecated; side-effect logs are always compared')
     parser.add_argument('--ignore', default='', help='comma separated line prefixes to ignore when comparing (e.g. S,G)')
     return parser
 
@@ -118,8 +118,12 @@ def run(command, **kwargs):
     return done
 
 
+# The oracle's failure when a sapling's TreeGrower.growTree looks up Registries.FEATURE.
+TREE_LOOKUP_ERROR = 'error IllegalStateException net.minecraft.core.RegistryAccess.lambda$lookupOrThrow$0('
+
+
 def execute(name, cases, args, facts, origin_of=None):
-    """Run `cases` on both sides; print a report and return the number of differing cases."""
+    """Run both sides; return failing cases, counting mismatches and oracle errors."""
     lock, jars, libraries = base.verify_artifacts()
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / name
@@ -141,8 +145,15 @@ def execute(name, cases, args, facts, origin_of=None):
     assert len(native) == len(rust) == len(cases), (len(native), len(rust), len(cases))
     groups = {}
     errors = {}
+    trees = 0
     for case, a, b in zip(cases, native, rust):
         if a and a[0].startswith('error'):
+            # TreeGrower.growTree looks its feature up in the level's registries; the oracle's level has no
+            # feature registry, and the probe no feature table (it reports X grow_tree). Neither side can grow
+            # the tree, so the pair is not compared. Any other oracle error still fails.
+            if a[0].startswith(TREE_LOOKUP_ERROR) and 'X grow_tree' in b:
+                trees += 1
+                continue
             errors.setdefault(a[0], []).append(case)
             continue
         if a != b:
@@ -157,9 +168,12 @@ def execute(name, cases, args, facts, origin_of=None):
             print('   native ' + ' | '.join(a))
             print('   rust   ' + ' | '.join(b))
     skipped = sum(len(v) for v in errors.values())
-    print(f'{len(cases) - total - skipped}/{len(cases) - skipped} cases match ({skipped} oracle errors)')
+    if trees:
+        print(f'{trees} saplings reached TreeGrower.growTree, which neither side runs here: not compared')
+    compared = len(cases) - trees
+    print(f'{compared - total - skipped}/{compared - skipped} cases match ({skipped} oracle errors)')
     (work / 'differences.json').write_text(json.dumps({k: [[c, a, b] for c, a, b in v[:5]] for k, v in groups.items()}))
-    return total
+    return total + skipped
 
 
 def split_cases(text, ignore):

@@ -31,6 +31,9 @@ struct Globals {
     // HDR output's tier windows (hdr.rs `Hdr::windows`): x..w low to very bright,
     // [0] where the lift starts, [1] where it is full.
     hdr_windows: array<vec4<f32>, 2>,
+    // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
+    // y what the sky and fog get: the same, but none under water.
+    hdr_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -47,8 +50,9 @@ struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) spherical: f32,
-    @location(3) cylindrical: f32,
+    // The distances fog reads: .x spherical, .y cylindrical. One vec2 rather than two floats, so that
+    // the fragment stage stays within 14 user-defined inputs plus front_facing (GL's limit of 15, #8195).
+    @location(2) fog_distance: vec2<f32>,
     // entity.vsh's overlayColor: the OverlayTexture texel (see overlay_texel).
     @location(5) overlay_color: vec4<f32>,
     @location(4) @interpolate(flat) overlay: u32,
@@ -69,6 +73,8 @@ struct Out {
     // HDR tier of a light-giving particle (mesher::hdr_tier), from the overlay's
     // high bits (particles.rs): fs_hdr_mark marks the frame with it.
     @location(13) @interpolate(flat) tier: u32,
+    // HDR lighting (`hdr_scene`), 0 for what isn't lit.
+    @location(14) scene: f32,
 }
 // Shipped light.glsl; normals are already transformed and RGBA8_SNORM packed.
 fn entity_light(normal: vec3<f32>, nether: bool) -> f32 {
@@ -107,6 +113,16 @@ fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
     }
     return min(rgb, vec3(1.0));
 }
+// HDR lighting: how far an entity's light carries it above paper white, 0 to 1, as terrain's.
+fn hdr_scene(block: f32, sky: f32) -> f32 {
+    let b = smoothstep(11.0, 15.0, block);
+    let s = smoothstep(11.0, 15.0, sky) * globals.hdr_light.x;
+    return max(b, s);
+}
+// The frame's alpha for it, between 1 (none) and the light sources' marks below 0.75.
+fn hdr_scene_alpha(scene: f32) -> f32 {
+    return 1.0 - 0.24 * scene;
+}
 fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     overlay: u32, color: vec4<f32>, light: vec4<u32>, normal: vec4<f32>) -> Out {
     var out: Out;
@@ -120,6 +136,7 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     let unlit = overlay == 2u || overlay == 4u || overlay == 6u || overlay == 9u || overlay == 10u
         || overlay == 11u || overlay == 12u;
     out.light_color = select(lm, vec4(1.0), unlit);
+    out.scene = select(hdr_scene(l.x / 16.0, l.y / 16.0), 0.0, unlit);
     if globals.colored_count.x > 0u && !unlit {
         out.light_color = vec4(min(out.light_color.rgb + native_colored_light(position), vec3(1.0)), out.light_color.a);
     }
@@ -131,7 +148,8 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     var back = c;
     // Normal w: 0 keeps the baked colour, +-127 shades by the normal, and a small positive 1
     // keeps the baked colour but culls back faces (entitySolid models such as the decorated pot).
-    out.cull = select(0u, 1u, normal.w > 0.0 && normal.w < 0.5);
+    // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat).
+    out.cull = select(0u, 1u, (normal.w > 0.0 && normal.w < 0.5) || (normal.w < 0.0 && normal.w > -0.996));
     if abs(normal.w) >= 0.5 {
         c = vec4(c.rgb * entity_light(normal.xyz, globals.time.y != 0.0), c.a);
         back = select(c, vec4(back.rgb * entity_light(-normal.xyz, globals.time.y != 0.0), back.a), normal.w < 0.0);
@@ -140,11 +158,11 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     out.back_color = back;
     out.overlay_color = overlay_texel(overlay);
     // Sky geometry (clouds, celestial bodies) is exempt from render-distance fog.
-    out.spherical = select(length(position), 0.0, overlay >= 2u && overlay <= 4u);
-    out.cylindrical = select(max(length(position.xz), abs(position.y)), 0.0, overlay >= 2u && overlay <= 4u);
+    out.fog_distance.x = select(length(position), 0.0, overlay >= 2u && overlay <= 4u);
+    out.fog_distance.y = select(max(length(position.xz), abs(position.y)), 0.0, overlay >= 2u && overlay <= 4u);
     out.overlay = overlay;
     out.glint_uv = vec2(0.0);
-    if overlay == 4u { out.spherical = length(position); }
+    if overlay == 4u { out.fog_distance.x = length(position); }
     return out;
 }
 @vertex fn vs_entity(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
@@ -276,7 +294,7 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
         color = vec4(c, 1.0);
     } else if in.overlay == 4u {
         // clouds.fsh: alpha fades out towards the cloud fog end.
-        return vec4(color.rgb, color.a * (1.0 - linear_fog(in.spherical, 0.0, globals.fog_ends.y)));
+        return vec4(color.rgb, color.a * (1.0 - linear_fog(in.fog_distance.x, 0.0, globals.fog_ends.y)));
     }
     if color.a < 0.1 || (in.cull != 0u && !front) { discard; }
     // entity.fsh calculateFinalColor: the overlay (hurt red, TNT white) over the
@@ -295,8 +313,8 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
             textureSample(glint_armor_tex, glint_sampler, armor_glint_uv(in.glint_uv)),
         );
     }
-    let f = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-                linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }
 
@@ -310,8 +328,8 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
 fn shadow_color(in: Out) -> vec4<f32> {
     var color = textureSample(atlas, atlas_sampler, in.uv) * in.color;
     color *= in.light_color;
-    let f = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-                linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }
 
@@ -328,8 +346,16 @@ fn shadow_color(in: Out) -> vec4<f32> {
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
     let texel = textureSample(atlas, atlas_sampler, uv);
-    if in.tier == 0u || texel.a < 0.1 { discard; }
-    return vec4(0.0, 0.0, 0.0, hdr_mark(in.tier, brightness(texel.rgb * in.color.rgb)));
+    if texel.a < 0.1 { discard; }
+    // Fog hides a light source and the light on a surface as it hides everything else.
+    let fogged = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+        linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+    if in.tier == 0u {
+        return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(mix(in.scene, globals.hdr_light.y, fogged)));
+    }
+    // A layer that fades (the warden's) shines by what's left of it.
+    let y = brightness(texel.rgb * in.color.rgb) * in.color.a * (1.0 - fogged);
+    return vec4(0.0, 0.0, 0.0, hdr_mark(in.tier, y));
 }
 fn brightness(c: vec3<f32>) -> f32 {
     let l = pow(max(c, vec3(0.0)), vec3(2.2));
@@ -348,15 +374,23 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 // no longer shines; fs_hdr_mark then marks the light sources it holds.
 @fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
     if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
-    return vec4(0.0, 0.0, 0.0, 1.0);
+    return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(in.scene));
+}
+
+// HDR lighting on clouds, drawn again after them with only alpha written: they're lit by the
+// sky, so they take its value, which their blending would otherwise cover.
+@fragment fn fs_hdr_cloud_mark(in: Out) -> @location(0) vec4<f32> {
+    let a = in.color.a * (1.0 - linear_fog(in.fog_distance.x, 0.0, globals.fog_ends.y));
+    if a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(globals.hdr_light.y));
 }
 
 fn celestial_color(in: Out) -> vec4<f32> {
     // RenderPipelines.DRAGON_RAYS / rendertype_lightning.fsh: untextured
     // vertex colour, with fog fading both RGB and alpha before additive blending.
     if in.overlay == 37u {
-        let fog = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-                      linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+        let fog = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                      linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
         return in.color * (1.0 - fog);
     }
     return textureSample(atlas, atlas_sampler, in.uv) * in.color * in.light_color;
@@ -375,8 +409,12 @@ fn celestial_color(in: Out) -> vec4<f32> {
     let added = color.rgb * color.a;
     // The sun at the brightest tier, the moon at its own (in.tier); geometry that sets
     // none (the End sky, the End flash) stays brightest.
-    let keep = 1.0 - hdr_mark(select(in.tier, 4u, in.tier == 0u), brightness(added));
-    return vec4(added, keep * smoothstep(0.1, 0.3, max(added.r, max(added.g, added.b))));
+    let tier = select(in.tier, 4u, in.tier == 0u);
+    let y = brightness(added);
+    // Only what's past the tier's window takes the mark: a soft edge keeps the sky's light,
+    // or it would come out darker than the sky around it.
+    if y < globals.hdr_windows[1][clamp(tier, 1u, 4u) - 1u] { return vec4(added, 0.0); }
+    return vec4(added, 1.0 - hdr_mark(tier, y));
 }
 
 // RenderPipelines.ENERGY_SWIRL (entity.fsh with EMISSIVE and NO_OVERLAY): the sprite, scrolled by
@@ -391,8 +429,8 @@ fn energy_swirl_base(in: Out) -> vec4<f32> {
     return vec4(color.rgb * (128.0 / 255.0), color.a);
 }
 fn energy_swirl_fog(in: Out) -> f32 {
-    let f = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-                linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
     return f * globals.fog_color.a;
 }
 @fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
@@ -535,7 +573,7 @@ fn weather_color(in: Out) -> vec4<f32> {
     var color = textureLoad(atlas, texel, 0) * in.color;
     if color.a < 0.1 { discard; }
     color *= in.light_color;
-    let f = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-                linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }

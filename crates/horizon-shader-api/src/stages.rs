@@ -3,7 +3,8 @@
 //! pack's files to build a stage: the prelude before (the inputs and the
 //! resources), the entry points after.
 use crate::inputs::{
-    Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct, VERTEX_INPUT, WEATHER_INPUT,
+    DISPLACEMENT_INPUT, Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct,
+    VERTEX_INPUT, WEATHER_INPUT,
 };
 use crate::package::Pack;
 
@@ -423,7 +424,7 @@ struct HorizonMaterialIn {
     let normal = horizon_material_normal(in.world);
     let tangent = horizon_material_tangent(in.world, in.uv, normal);
     let input = MaterialInput(in.albedo, in.tint, in.light, in.lightmap, in.world, in.uv, in.translucent != 0u, in.tags, in.material,
-        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent);
+        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent, vec3<f32>(0.0), 0.0);
     return material(input).color;
 }
 ",
@@ -451,6 +452,21 @@ const VERTEX_ENTRIES: &str = "\
 ) -> @builtin(position) vec4<f32> {
     let input = VertexInput(position, uv, material, light, tint, flags & 7u, flags >> 31u);
     return frame.projection * frame.view * vec4<f32>(vertex(input), 1.0);
+}
+";
+
+/// `fn displacement(input: DisplacementInput) -> f32`, the material stage's function
+/// under `[displacement]`.
+pub const DISPLACEMENT_SIGNATURE: &str = "fn displacement(input: DisplacementInput) -> f32";
+
+/// An entry point calling the material stage's `displacement`, after its entries under
+/// `[displacement]`: the renderer calls it from its own terrain vertex shader in the same way.
+const DISPLACEMENT_ENTRIES: &str = "@vertex fn horizon_vs_displacement(
+    @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>,
+    @location(3) material: u32, @location(4) height: f32,
+) -> @builtin(position) vec4<f32> {
+    let depth = displacement(DisplacementInput(position, normal, uv, material, height));
+    return frame.projection * frame.view * vec4<f32>(position - normal * depth, 1.0);
 }
 ";
 
@@ -539,6 +555,7 @@ impl StageKind {
             out += &SURFACE.wgsl();
             // The vertex stage's file joins the material's module (`compose`).
             out += &VERTEX_INPUT.wgsl();
+            out += &DISPLACEMENT_INPUT.wgsl();
         }
         for r in self.resources() {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
@@ -685,7 +702,14 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             }
         }
     }
-    push("<entries>", kind.entries());
+    if kind == StageKind::Material && m.displacement.is_some() {
+        push(
+            "<entries>",
+            &(kind.entries().to_owned() + DISPLACEMENT_ENTRIES),
+        );
+    } else {
+        push("<entries>", kind.entries());
+    }
     composed
 }
 

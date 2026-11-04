@@ -676,9 +676,12 @@ impl Mob {
     }
     /// `canAttack` for the player: a golem a player built never attacks
     /// players (`IronGolem.canAttack`), and a pet never attacks its owner
-    /// (`TamableAnimal.canAttack`: `isOwnedBy`).
+    /// (`TamableAnimal.canAttack`: `isOwnedBy`). In Peaceful nothing attacks a
+    /// player (`LivingEntity.canAttack`, `TargetingConditions.test`: combat
+    /// conditions fail when the difficulty is PEACEFUL).
     pub fn spares_players(&self, w: &MobWorld) -> bool {
-        self.built_by_player()
+        (w.difficulty.base == 0 && w.player.is_some())
+            || self.built_by_player()
             || (self.is_tamable_animal()
                 && self.extra.tame
                 && w.player
@@ -689,6 +692,11 @@ impl Mob {
     /// `IronGolem.canAttack`'s refusal of creepers. The callers check that
     /// the target is alive and can be seen as an enemy.
     pub fn spares_target(&self, w: &MobWorld, who: Who) -> bool {
+        // Dolphin.canAttack: a baby dolphin attacks nobody, so whatever hurt it
+        // is never taken as its target.
+        if self.species() == Species::Dolphin && self.is_baby() {
+            return true;
+        }
         match who {
             Who::Player => self.spares_players(w),
             Who::Mob(id) => {
@@ -1935,6 +1943,48 @@ impl AvoidEntity {
         self.seen_when = Some(f);
         self
     }
+    /// The target the goal flees from, before the random retreat position and
+    /// the path. `AvoidEntityGoal` finds it with `TargetingConditions.forCombat()`:
+    /// for the player that is `canAttack` (`LivingEntity.canAttack` refuses a
+    /// player in Peaceful), the range scaled by `getVisibilityPercent` with a
+    /// floor of 2 and line of sight required; the species arm needs the line of
+    /// sight too, because `checkLineOfSight` defaults to true. Without them an
+    /// animal fled a player behind a wall, a sneaking or invisible one from the
+    /// full range, and in Peaceful where vanilla animals ignore the player.
+    fn avoid_target(&mut self, m: &mut Mob, cx: &mut Cx) -> Option<Vec3> {
+        let max = f64::from(self.max_dist);
+        if matches!(self.what, Avoid::Player) {
+            let wanted = cx.w.player.as_ref().is_none_or(|p| {
+                self.player_when.is_none_or(|f| f(m, p))
+                    && (p.position.y - m.position.y).abs() <= max + 3.0
+            });
+            // `can_target_player` refuses a player in Peaceful (`spares_players`).
+            if !wanted || !m.can_target_player(cx.w, max, true) {
+                return None;
+            }
+            return cx.w.player.as_ref().map(|p| p.position);
+        }
+        let Avoid::Species(list) = &self.what else {
+            return None;
+        };
+        let id = m.id;
+        let y = m.position.y;
+        let seen_when = self.seen_when;
+        let mut hit = None;
+        for s in cx.w.nearby(m.position, max, move |s| {
+            s.id != id
+                && list.contains(&s.species)
+                && seen_when.is_none_or(|f| f(s))
+                && (s.position.y - y).abs() <= 3.0 + max
+        }) {
+            if m.sees(cx.w, Who::Mob(s.id)) {
+                hit = Some((s.id, s.position));
+                break;
+            }
+        }
+        self.found = hit.map(|h| h.0);
+        hit.map(|h| h.1)
+    }
 }
 impl Goal for AvoidEntity {
     goal_clone!();
@@ -1948,38 +1998,12 @@ impl Goal for AvoidEntity {
             return false;
         }
         let max = f64::from(self.max_dist);
-        let found = match &self.what {
-            Avoid::Player => {
-                cx.w.player
-                    .as_ref()
-                    .filter(|p| {
-                        p.alive
-                            && !p.creative
-                            && self.player_when.is_none_or(|f| f(m, p))
-                            && m.distance_sqr(p.position) <= max * max
-                            && (p.position.y - m.position.y).abs() <= max + 3.0
-                    })
-                    .map(|p| p.position)
-            }
-            Avoid::Species(list) => {
-                let id = m.id;
-                let y = m.position.y;
-                let seen_when = self.seen_when;
-                let hit =
-                    cx.w.nearby(m.position, max, move |s| {
-                        s.id != id
-                            && list.contains(&s.species)
-                            && seen_when.is_none_or(|f| f(s))
-                            && (s.position.y - y).abs() <= 3.0 + max
-                    })
-                    .map(|s| (s.id, s.position))
-                    .next();
-                self.found = hit.map(|h| h.0);
-                hit.map(|h| h.1)
-            }
+        let Some(from) = self.avoid_target(m, cx) else {
+            return false;
         };
-        let Some(from) = found else { return false };
-        if m.distance_sqr(from) > max * max {
+        // The player arm already applied the visibility-scaled range (floor 2);
+        // the species arm only got a box test from `nearby`.
+        if !matches!(self.what, Avoid::Player) && m.distance_sqr(from) > max * max {
             return false;
         }
         let Some(pos) = m.default_random_pos_away(cx.w, 16, 7, [from.x, from.y, from.z]) else {
@@ -2150,9 +2174,11 @@ impl Goal for Breed {
             return false;
         }
         let species = m.species();
-        // Wolf.canMate: both tame and standing.
+        // Wolf.canMate and Cat.canMate: both tame. The sitting pose sits on the
+        // partner side only, and only for a wolf (`wolf.isInSittingPose()`), so
+        // a tamed mob ordered to sit still walks off to breed.
         let tamable = matches!(species, Species::Wolf | Species::Cat);
-        if tamable && (!m.extra.tame || m.extra.sitting) {
+        if tamable && !m.extra.tame {
             return false;
         }
         // AbstractHorse.canMate is false and Mule keeps it: mules never breed.
@@ -2605,6 +2631,7 @@ impl Goal for EatBlock {
                 // The particles and the dirt `setBlock` are the same gate.
                 if cx.w.mob_griefing {
                     cx.events.push(MobEvent::SetBlockName {
+                        mob: Some(m.id),
                         pos: [x, y - 1, z],
                         name: "minecraft:dirt",
                         effect: true,
@@ -2713,6 +2740,14 @@ impl Goal for TryFindWater {
         m.nav_move_to(cx.w, self.wanted, 1.0);
     }
 }
+/// The block a mob stands in (`blockPosition`).
+fn block_of(m: &Mob) -> [i32; 3] {
+    [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ]
+}
 /// `MoveToBlockGoal`'s shared state: search, walk to and stay at a block.
 #[derive(Clone, Debug, Default)]
 pub struct MoveToBlock {
@@ -2757,11 +2792,16 @@ impl MoveToBlock {
         w: &MobWorld,
         valid: impl Fn(&MobWorld, [i32; 3]) -> bool,
     ) -> bool {
-        let base = [
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
-        ];
+        match self.walk(block_of(m), |p| valid(w, p)) {
+            Some(p) => {
+                self.block = p;
+                true
+            }
+            None => false,
+        }
+    }
+    /// `findNearestBlock`'s walk out from `base`: the first cell `valid` takes.
+    fn walk(&self, base: [i32; 3], mut valid: impl FnMut([i32; 3]) -> bool) -> Option<[i32; 3]> {
         let next = |v: i32| if v > 0 { -v } else { 1 - v };
         let mut y = self.vertical_start;
         while y <= self.vertical_range {
@@ -2771,9 +2811,8 @@ impl MoveToBlock {
                     let mut z = if x < r && x > -r { r } else { 0 };
                     while z <= r {
                         let p = [base[0] + x, base[1] + y - 1, base[2] + z];
-                        if valid(w, p) {
-                            self.block = p;
-                            return true;
+                        if valid(p) {
+                            return Some(p);
                         }
                         z = next(z);
                     }
@@ -2782,7 +2821,46 @@ impl MoveToBlock {
             }
             y = next(y);
         }
-        false
+        None
+    }
+    /// The cells [`Self::walk`] can reach from `base`, as a box (inclusive), or
+    /// `None` when it walks none.
+    fn walk_bounds(&self, base: [i32; 3]) -> Option<([i32; 3], [i32; 3])> {
+        if self.range <= 0 || self.vertical_start > self.vertical_range {
+            return None;
+        }
+        // The heights go out from `vertical_start` both ways, past neither it
+        // nor `vertical_range` by more than one, a block below.
+        let reach = self.range - 1;
+        let height = self
+            .vertical_start
+            .saturating_abs()
+            .max(self.vertical_range.saturating_abs())
+            .saturating_add(1);
+        Some((
+            [
+                base[0].saturating_sub(reach),
+                base[1].saturating_sub(height).saturating_sub(1),
+                base[2].saturating_sub(reach),
+            ],
+            [
+                base[0].saturating_add(reach),
+                base[1].saturating_add(height),
+                base[2].saturating_add(reach),
+            ],
+        ))
+    }
+    /// Whether [`Self::find_nearest`] may find a block whose state `matches`
+    /// (its `valid` needs one): false when no section of the cells it walks
+    /// holds such a state in its palette, so the walk would find nothing.
+    pub fn may_find(
+        &self,
+        m: &Mob,
+        w: &MobWorld,
+        matches: impl FnMut(horizon_world::registry::BlockStateId) -> bool,
+    ) -> bool {
+        self.walk_bounds(block_of(m))
+            .is_some_and(|(lo, hi)| w.world.may_hold(lo, hi, matches))
     }
     pub fn can_continue(&self, w: &MobWorld, valid: impl Fn(&MobWorld, [i32; 3]) -> bool) -> bool {
         self.try_ticks >= -self.max_stay && self.try_ticks <= 1200 && valid(w, self.block)
@@ -2845,8 +2923,8 @@ mod eat_block_tests {
                      registry: &horizon_world::registry::BlockRegistry| {
             let grass = registry.default_state("minecraft:grass_block").unwrap();
             let tuft = registry.default_state("minecraft:short_grass").unwrap();
-            for cx in -1..1 {
-                for cz in -1..1 {
+            for cx in -3..3 {
+                for cz in -3..3 {
                     world
                         .chunks
                         .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
@@ -2960,5 +3038,187 @@ mod built_by_player_tests {
         let mut zombie = mob(Species::Zombie);
         zombie.extra.player_created = true;
         assert!(!zombie.built_by_player());
+    }
+}
+
+#[cfg(test)]
+mod avoid_entity_targeting_tests {
+    use super::*;
+    use crate::mobs::world::test_player;
+    use crate::mobs::world::with_built_test_world;
+    use std::sync::Arc;
+
+    /// `(the player is inside the plain distance range, the goal picks them)`.
+    /// The wall stands at z 5..6, between the rabbit at z 0.5 and the player at
+    /// z 10.5, so sight is the only thing that changes between the two.
+    fn target(difficulty: u8, wall: bool) -> Option<(bool, bool)> {
+        let build = move |world: &mut crate::world::World,
+                          registry: &horizon_world::registry::BlockRegistry| {
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world.chunks.insert(
+                        (cx, cz),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                    );
+                }
+            }
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in -4..5 {
+                for z in -4..15 {
+                    world.set(x, 64, z, stone).unwrap();
+                }
+            }
+            if wall {
+                for x in -4..5 {
+                    for y in 65..68 {
+                        for z in 5..7 {
+                            world.set(x, y, z, stone).unwrap();
+                        }
+                    }
+                }
+            }
+        };
+        let mut out = None;
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let mut world = w.clone();
+            world.difficulty = super::super::spawning::LocalDifficulty::new(difficulty, 0, 0, 0.0);
+            let player = test_player(Vec3::new(0.5, 65.0, 10.5));
+            world.player = Some(player.clone());
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:rabbit"].clone()),
+                Vec3::new(0.5, 65.0, 0.5),
+                0.0,
+            );
+            let mut goal = AvoidEntity::new(Avoid::Player, 20.0, 1.0, 1.0);
+            let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+            let mut cx = Cx {
+                w: &world,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let in_range = m.distance_sqr(player.position) <= 20.0 * 20.0;
+            out = Some((in_range, goal.avoid_target(&mut m, &mut cx).is_some()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Sensing.hasLineOfSight`: the player is ten blocks away, well inside the
+    /// 20 block range, but the wall is between them, so the goal must not pick
+    /// them (it did before: only the distance was checked).
+    #[test]
+    fn a_rabbit_does_not_flee_a_player_behind_a_wall() {
+        if let Some((in_range, picked)) = target(2, true) {
+            assert!(in_range, "the player is inside the plain distance range");
+            assert!(!picked, "the rabbit picked a player it cannot see");
+        }
+    }
+
+    /// `LivingEntity.canAttack`: in Peaceful no player is a target at all, so
+    /// the goal does not pick them even in plain sight.
+    #[test]
+    fn a_rabbit_does_not_flee_in_peaceful() {
+        if let Some((in_range, picked)) = target(0, false) {
+            assert!(in_range, "the player is inside the plain distance range");
+            assert!(!picked, "the rabbit picked a player in Peaceful");
+        }
+    }
+
+    /// The control: the same world on normal difficulty with nothing in the way
+    /// still picks the player.
+    #[test]
+    fn a_rabbit_flees_a_player_it_can_see() {
+        if let Some((in_range, picked)) = target(2, false) {
+            assert!(in_range, "the player is inside the plain distance range");
+            assert!(picked, "the rabbit ignored a player in the open");
+        }
+    }
+}
+
+#[cfg(test)]
+mod peaceful_targets_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+
+    /// `LivingEntity.canAttack` / `TargetingConditions.test`: in Peaceful a
+    /// hurt wolf neither takes its attacker (a player) as target nor picks one
+    /// by sight, while at Normal it does.
+    #[test]
+    fn peaceful_mobs_never_target_the_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+            let kind = Arc::new(types.types["minecraft:wolf"].clone());
+            let mut wolf = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            wolf.ai.last_hurt_by = Some(Who::Player);
+            wolf.ai.last_hurt_by_time = 5;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &w,
+                lr: &mut random,
+                events: &mut events,
+            };
+            assert!(
+                HurtByTarget::default().can_use(&mut wolf, &mut cx),
+                "normal"
+            );
+            assert!(wolf.can_target_player(&w, 16.0, false), "normal");
+
+            let mut peaceful = w.clone();
+            peaceful.difficulty = crate::mobs::spawning::LocalDifficulty::new(0, 18000, 0, 0.0);
+            let mut cx = Cx {
+                w: &peaceful,
+                lr: &mut random,
+                events: &mut events,
+            };
+            assert!(
+                !HurtByTarget::default().can_use(&mut wolf, &mut cx),
+                "peaceful"
+            );
+            assert!(!wolf.can_target_player(&peaceful, 16.0, false), "peaceful");
+            assert!(!wolf.can_keep_target_player(&peaceful, 16.0), "peaceful");
+        });
+    }
+}
+#[cfg(test)]
+mod move_to_block_tests {
+    use super::MoveToBlock;
+
+    /// Every cell the walk tries lies in the box `may_find` asks the
+    /// palettes about, for the ranges the goals use and odd ones; and the
+    /// walk stops at the first cell it is given.
+    #[test]
+    fn the_walk_stays_in_its_bounds() {
+        for range in [-1, 0, 1, 2, 8, 24] {
+            for vertical_range in [-2, 0, 1, 2, 3, 6] {
+                for vertical_start in [-3, -1, 0, 1, 2] {
+                    let goal = MoveToBlock {
+                        range,
+                        vertical_range,
+                        vertical_start,
+                        ..Default::default()
+                    };
+                    for base in [[0, 64, 0], [-17, -60, 31], [100, 319, -100]] {
+                        let bounds = goal.walk_bounds(base);
+                        let mut walked = 0;
+                        let found = goal.walk(base, |p| {
+                            walked += 1;
+                            let (lo, hi) = bounds.expect("a walk with no bounds");
+                            assert!((0..3).all(|a| lo[a] <= p[a] && p[a] <= hi[a]), "{p:?}");
+                            false
+                        });
+                        assert_eq!(found, None);
+                        assert_eq!(
+                            walked > 0,
+                            bounds.is_some(),
+                            "{range} {vertical_range} {vertical_start}"
+                        );
+                    }
+                }
+            }
+        }
+        let goal = MoveToBlock::new(1.0, 24, 2);
+        assert_eq!(goal.walk([5, 64, 5], |_| true), Some([5, 63, 5]));
     }
 }

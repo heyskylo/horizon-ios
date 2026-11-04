@@ -258,6 +258,9 @@ pub enum Alert {
     Incompatible,
     /// `selectWorld.recreate.error.title`.
     Recreate,
+    /// `symlink_warning.title.world`
+    /// (`NoticeWithLinkScreen.createWorldSymlinkWarningScreen`).
+    Symlink,
 }
 #[derive(Clone, Debug)]
 pub enum Mode {
@@ -470,7 +473,8 @@ pub(crate) struct Button {
     enabled: bool,
     id: u8,
     icon: Option<(&'static str, f32)>,
-    /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text centred.
+    /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text
+    /// centred in the room left of it.
     trailing: Option<(&'static str, f32)>,
 }
 impl Button {
@@ -479,17 +483,36 @@ impl Button {
     /// (`AbstractWidget.extractScrollingStringOverContents`), instead of being
     /// drawn past it over the buttons beside it (so_so's 590 px World Type
     /// label on Create World, hi_in's Join Server in the Multiplayer footer).
+    /// A button with a `trailing` icon is `SpriteIconButton.TextAndIcon`, whose
+    /// label keeps clear of the icon: see [`Button::draw_label_at`].
     fn draw_label(&self, batch: &mut HudBatch, atlas: &HudAtlas, color: u32) {
-        let label = Text::literal(&self.label);
-        crate::ui::scrolling_text(
+        self.draw_label_at(batch, atlas, color, crate::hud_overlays::now_ms());
+    }
+
+    /// [`Button::draw_label`] at `now_ms`. `SpriteIconButton.TextAndIcon`
+    /// (`extractContents`) hands the label to `acceptScrolling` with `left`
+    /// at the button's x plus 2, `right` at its x plus width minus the
+    /// sprite's width minus 4, and `centerX` at its x plus half its width: the
+    /// label slides inside that box when wider, and one that fits is moved
+    /// left until it ends where the icon's room begins. A button without an
+    /// icon has `right` 2 short of its edge, where `centerX` is the middle of
+    /// the box and nothing moves.
+    fn draw_label_at(&self, batch: &mut HudBatch, atlas: &HudAtlas, color: u32, now_ms: i64) {
+        let right = match self.trailing {
+            Some((_, size)) => self.x + self.w - size - 4.0,
+            None => self.x + self.w - 2.0,
+        };
+        crate::ui::scrolling_text_around_at(
             batch,
             atlas,
-            &label,
+            &Text::literal(&self.label),
+            self.x + (self.w / 2.0).floor(),
             self.x + 2.0,
-            self.x + self.w - 2.0,
+            right,
             self.y,
             self.y + 20.0,
             self.y + 6.0,
+            now_ms,
             color,
         );
     }
@@ -677,6 +700,35 @@ fn rolls_user_splash(text: &str, seed: u64, date: (u32, u32)) -> bool {
         .count();
     i32::try_from(size)
         .is_ok_and(|size| size > 0 && LegacyRandom::new(seed as i64).next_int_bound(size) == Ok(42))
+}
+
+impl Mode {
+    /// The id native mods see for this screen (`NativeScreenView.id`, the
+    /// screen hooks): one per variant, a hook's contract, so it stays the
+    /// same from release to release. A new variant must add one.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Main => "title",
+            Self::Select { .. } => "world_select",
+            Self::Create { .. } => "world_create",
+            Self::CreateFlat { .. } => "world_create_flat",
+            Self::CreateBuffet { .. } => "world_create_buffet",
+            Self::Edit { .. } => "world_edit",
+            Self::Backup { .. } => "world_backup",
+            Self::BackupBeforeUpgrade { .. } => "world_backup_confirm",
+            Self::OptimizeConfirm { .. } => "world_optimize_confirm",
+            Self::Optimize { .. } => "world_optimize",
+            Self::LowDiskSpace { .. } => "low_disk_space",
+            Self::Delete { .. } => "world_delete",
+            Self::Recover { .. } => "world_recover",
+            Self::Recovered { .. } => "world_recovered",
+            Self::Error { .. } => "error",
+            Self::Multiplayer(screen) => screen.id(),
+            Self::MultiplayerWarning { .. } => "multiplayer_warning",
+            Self::Onboarding(_) => "onboarding",
+            Self::BanNotice(_) => "ban_notice",
+        }
+    }
 }
 
 impl Title {
@@ -1255,6 +1307,23 @@ impl Title {
     fn play(&mut self, world: WorldEntry) -> Action {
         // LevelSummary.primaryActionActive: a world another copy has open cannot be joined.
         if world.locked {
+            return Action::None;
+        }
+        // `LevelStorageSource.validateAndCreateAccess`: a world folder holding
+        // a symbolic link is refused before an access is made over it, and
+        // `WorldOpenFlows.createWorldAccess` puts the symlink warning where
+        // the world would have gone.
+        if world_management::symlinks(&self.saves, &world.folder)
+            .is_ok_and(|links| !links.is_empty())
+        {
+            self.mode = Mode::Error {
+                message: lang::get_or(
+                    "symlink_warning.message.world",
+                    "You are trying to open a world whose folder holds links to other files. That can be a risk to the rest of your files, so the world stays closed.",
+                ),
+                return_to: Box::new(self.mode.clone()),
+                alert: Some(Alert::Symlink),
+            };
             return Action::None;
         }
         if crate::save::SessionLock::acquire(&self.saves.join(&world.folder)).is_err() {
@@ -2262,6 +2331,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Some(Alert::Recreate) => {
                         get("selectWorld.recreate.error.title", "An error occurred!")
                     }
+                    Some(Alert::Symlink) => get(
+                        "symlink_warning.title.world",
+                        "The world folder contains links",
+                    ),
                     None => get("selectWorld.access_failure", "Failed to access world"),
                 };
                 ScreenInfo::new("world_error", join(&[&title, message]))
@@ -2333,7 +2406,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
-        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash, false);
     }
     /// [`Title::draw`] with the item models, which draw the item icons of the
     /// Superflat screens the way `GuiGraphics.renderItem` does.
@@ -2344,6 +2417,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         batch: &mut HudBatch,
         cursor: (f32, f32),
         hide_splash: bool,
+        hide_server_address: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
@@ -2915,6 +2989,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             "An error occurred!",
                             u32::MAX,
                         ),
+                        Alert::Symlink => (
+                            "symlink_warning.title.world",
+                            "The world folder contains links",
+                            u32::MAX,
+                        ),
                     };
                     (70.0, 90.0, key, fallback, color)
                 } else {
@@ -3038,6 +3117,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 &mut self.caret.borrow_mut(),
                 self.started,
                 cursor,
+                hide_server_address,
             ),
         }
         for b in self.buttons(w, h) {
@@ -3187,6 +3267,69 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
         crate::ui::tooltip(batch, atlas, &lines, cursor);
     }
+    /// `TabManager.setCurrentTab`: the screen shows `tab`, whose own fields
+    /// take no focus, and whether the open tab changed (the click sound).
+    fn select_create_tab(&mut self, tab: usize) -> bool {
+        let Mode::Create { focus, options, .. } = &mut self.mode else {
+            return false;
+        };
+        let changed = options.tab != tab;
+        if changed {
+            options.tab = tab;
+            *focus = 2;
+        }
+        changed
+    }
+    /// `TabNavigationBar.keyPressed`: with Ctrl held, a digit picks a tab and
+    /// Tab steps to the next one, or to the previous with Shift. `None` for a
+    /// key the bar leaves alone, so a digit still reaches the field; otherwise
+    /// whether to play the click sound, as a tab that changed does.
+    pub fn tab_bar_key(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        ctrl: bool,
+        shift: bool,
+    ) -> Option<bool> {
+        // The rules and the experiments take the keys, and so does the read
+        // that prepares the world.
+        if !ctrl
+            || self.preparing
+            || self.rules.get_mut().is_some()
+            || self.experiments.get_mut().is_some()
+            || self.confirm_experiments.get_mut().is_some()
+        {
+            return None;
+        }
+        let Mode::Create { options, .. } = &self.mode else {
+            return None;
+        };
+        let next = create_world::next_tab_index(options.tab, key, shift)?;
+        Some(self.select_create_tab(next.min(create_world::tab_count() - 1)))
+    }
+    /// `AbstractSelectionList.mouseClicked`: the row under the pointer takes
+    /// a click of any button (`ObjectSelectionList.Entry.mouseClicked` accepts
+    /// them all), so a middle click selects a world and its Play, Edit and
+    /// Delete buttons hear of it (`WorldSelectionList.setSelected`), without
+    /// opening it. Only the left button joins, through [`Self::click`].
+    pub fn select_world_at(&mut self, x: f32, y: f32, size: (f32, f32)) -> bool {
+        let index = {
+            let Mode::Select { worlds, .. } = &self.mode else {
+                return false;
+            };
+            let Some((row, _)) = self.world_row_at(worlds, (x, y), size) else {
+                return false;
+            };
+            let Some((index, _)) = self.visible_worlds(worlds).nth(row) else {
+                return false;
+            };
+            index
+        };
+        if let Mode::Select { selected, .. } = &mut self.mode {
+            *selected = Some(index);
+        }
+        true
+    }
+
     /// The action and whether to play `AbstractWidget.playButtonClickSound`.
     /// Navigation buttons can return `Action::None` while still sounding.
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
@@ -3201,15 +3344,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         let (w, h) = (size.0.ceil(), size.1.ceil());
         // MenuTabBar: a new tab clears the focus and clicks.
-        if let Mode::Create { focus, options, .. } = &mut self.mode
-            && let Some(tab) = create_world::tab_at(w, (x, y))
+        if let Some(tab) = create_world::tab_at(w, (x, y))
+            && matches!(self.mode, Mode::Create { .. })
         {
-            let changed = options.tab != tab;
-            if changed {
-                options.tab = tab;
-                *focus = 2;
-            }
-            return (Action::None, changed);
+            return (Action::None, self.select_create_tab(tab));
         }
         // The SafetyScreen's box toggles where it was last drawn.
         if let Mode::MultiplayerWarning { check } = &mut self.mode {
@@ -3239,19 +3377,38 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             .map(|b| b.id);
         if hit.is_some() {
             self.focused_button = hit;
+        } else if matches!(
+            self.mode,
+            Mode::Multiplayer(
+                crate::multiplayer::Screen::Edit { .. } | crate::multiplayer::Screen::Friend { .. }
+            )
+        ) {
+            // A press on a text field takes the focus from the button.
+            self.focused_button = None;
         }
         if matches!(self.mode, Mode::CreateBuffet { .. }) {
             self.buffet_click(x, y, (w, h), hit);
+            self.drop_button_focus_for_field(hit);
             return (Action::None, hit.is_some());
         }
         if matches!(self.mode, Mode::CreateFlat { .. }) {
             self.flat_click(x, y, (w, h), hit);
+            self.drop_button_focus_for_field(hit);
             return (Action::None, hit.is_some());
         }
         let action = self.click_action(x, y, (w, h), hit);
+        self.drop_button_focus_for_field(hit);
         // World list selection is silent; launching its selected entry sounds.
         let sound = hit.is_some() || matches!(action, Action::Play { .. });
         (action, sound)
+    }
+    /// A click that misses every button and leaves an edit box focused moves the focus
+    /// to that box (`Screen.setFocused`): a focused button must not keep reacting to
+    /// Space, which the box now types.
+    fn drop_button_focus_for_field(&mut self, hit: Option<u8>) {
+        if hit.is_none() && self.has_caret_field() {
+            self.focused_button = None;
+        }
     }
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
         match (&mut self.mode, hit) {
@@ -3418,11 +3575,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             return Action::None;
                         };
                         self.create_return_to_main = false;
-                        let options = WorldOptions::of_world(
+                        let mut options = WorldOptions::of_world(
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
                         );
+                        options.restore_feature_packs(&self.resources, &level);
                         self.mode = Mode::Create {
                             name: level.name,
                             seed: level.seed.to_string(),
@@ -3547,7 +3705,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             // CreateWorldScreen.openGameRulesScreen over a copy of the rules.
             (Mode::Create { options, .. }, Some(29)) => {
-                *self.rules.get_mut() = Some(RulesScreen::for_creation(&options.rules));
+                let rules = options
+                    .rules
+                    .copy_with_features(&options.enabled_features(&self.resources));
+                *self.rules.get_mut() = Some(RulesScreen::for_creation(&rules));
                 Action::None
             }
             // CreateBuffetWorldScreen for the single-biome preset.
@@ -3857,8 +4018,17 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         if self.rules.get_mut().is_some() {
             return;
         }
-        if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.tab();
+        if matches!(self.mode, Mode::Multiplayer(_)) {
+            let (w, h) = size;
+            let enabled: Vec<u8> = self
+                .buttons(w, h)
+                .iter()
+                .filter(|b| b.enabled)
+                .map(|b| b.id)
+                .collect();
+            if let Mode::Multiplayer(screen) = &mut self.mode {
+                screen.tab_dir(reverse, &enabled, &mut self.focused_button);
+            }
             return;
         }
         let (w, h) = size;
@@ -3991,12 +4161,19 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
     }
     /// 2D spatial arrow key navigation across enabled buttons.
-    pub fn arrow_key(&mut self, key: winit::keyboard::KeyCode, size: (f32, f32)) {
+    pub fn arrow_key(&mut self, key: winit::keyboard::KeyCode, size: (f32, f32), shift: bool) {
         use winit::keyboard::KeyCode;
         if self.rules.get_mut().is_some() {
             return;
         }
         if self.has_caret_field() {
+            return;
+        }
+        if self.focused_button.is_none()
+            && let Mode::Multiplayer(screen) = &mut self.mode
+            && matches!(key, KeyCode::ArrowUp | KeyCode::ArrowDown)
+            && screen.arrow(key == KeyCode::ArrowUp, shift, size, &self.saves)
+        {
             return;
         }
         if self.list_focused()
@@ -4259,6 +4436,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     fn close_rules(&mut self, exit: Exit) {
         *self.rules.get_mut() = None;
         if let (Exit::Apply(changes), Mode::Create { options, .. }) = (exit, &mut self.mode) {
+            options.rules = options
+                .rules
+                .copy_with_features(&options.enabled_features(&self.resources));
             for (name, value) in changes {
                 options.rules.set(name, value);
             }
@@ -4473,6 +4653,35 @@ mod classic_tests {
             title.focused_button.is_some(),
             "the next Tab reaches the buttons"
         );
+    }
+
+    /// Vanilla: clicking an EditBox focuses it, so a button focused earlier stops
+    /// reacting to Space (which the box types).
+    #[test]
+    fn clicking_a_text_field_drops_the_focused_button() {
+        let mut title = Title::new(
+            PathBuf::new(),
+            Path::new("/nonexistent/horizon-test-resources"),
+        );
+        title.mode = Mode::Create {
+            name: String::new(),
+            seed: String::new(),
+            creative: false,
+            focus: 0,
+            options: WorldOptions::default(),
+        };
+        title.focused_button = Some(1);
+        // A click inside the name field hits no button and focuses the field.
+        let (_, [fx, fy, fw, fh]) = create_world::field_rect(854.0, 480.0, 0).unwrap();
+        let (action, _) = title.click(fx + fw / 2.0, fy + fh / 2.0, (854.0, 480.0));
+        assert!(matches!(action, Action::None));
+        assert!(title.focused_button.is_none());
+        assert!(title.has_caret_field());
+        title.type_text(" ");
+        match &title.mode {
+            Mode::Create { name, .. } => assert_eq!(name, " "),
+            _ => unreachable!(),
+        }
     }
 
     #[test]

@@ -46,8 +46,7 @@ fn projectile_type(p: &Projectile) -> &'static str {
 
 impl Game<'_> {
     /// Whether this game is a server that flies projectiles for the mods (the
-    /// server thread or a dedicated server, never the deprecated in-frame path
-    /// nor a client) and a mod asked to hear their impacts
+    /// server thread or a dedicated server, never a client) and a mod asked to hear their impacts
     /// (`native_hears_projectile_impacts`). Without one, the tick keeps no copy
     /// of its projectiles: it costs nothing.
     pub(super) fn native_hears_impacts(&self) -> bool {
@@ -77,7 +76,7 @@ impl Game<'_> {
                 .into_iter()
                 .find(|&(c, _)| c == conn)
                 .map_or(0, |(_, id)| id),
-            None => self.lan.as_ref().map_or(0, |host| host.host_entity as u32),
+            None => 0,
         }
     }
 
@@ -166,15 +165,12 @@ impl Game<'_> {
                     let (entity, kind) = self.native_impact_entity(id);
                     (Some(entity), kind, [0; 3], [0; 3], at)
                 }
+                // A server's players are hit as their entities, never as `Player`.
                 Hit::Entity {
-                    who: Who::Player,
-                    at,
+                    who: Who::Player, ..
                 } => {
-                    let Some(host) = self.lan.as_ref().map(|h| h.host_entity as u32) else {
-                        canceled.push(false);
-                        continue;
-                    };
-                    (Some(host), "minecraft:player".into(), [0; 3], [0; 3], at)
+                    canceled.push(false);
+                    continue;
                 }
                 Hit::None => {
                     canceled.push(false);
@@ -215,9 +211,9 @@ impl Game<'_> {
         arrow_events: &mut Vec<(Vec3, ArrowEvent)>,
     ) {
         // The mods see the projectiles where they will be, as `projectile_hit` does.
-        self.creatures.projectiles = std::mem::take(projectiles);
+        self.creatures.projectiles = std::mem::take(projectiles).into();
         let canceled = self.native_projectile_impacts(&impacts);
-        *projectiles = std::mem::take(&mut self.creatures.projectiles);
+        *projectiles = std::mem::take(&mut self.creatures.projectiles).into();
         if !canceled.contains(&true) {
             return;
         }
@@ -231,7 +227,11 @@ impl Game<'_> {
             if present.is_none() && listed[impact.index] {
                 continue;
             }
-            let (p, keep, events) = self.native_projectile_through(impact.before);
+            let mut before = impact.before;
+            // Replaying a canceled impact must not repeat the first-tick event
+            // already queued by the original tick.
+            before.has_been_shot = hits[impact.hit_slot].0.has_been_shot;
+            let (p, keep, events) = self.native_projectile_through(before);
             flown.extend(events);
             match (present, keep) {
                 (Some(i), true) => projectiles[i] = p,
@@ -274,9 +274,6 @@ impl Game<'_> {
             p.owner = shooter;
         }
         let mut targets = self.projectile_targets();
-        if p.arrow.is_some() {
-            targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        }
         if mob_shot || pvp {
             targets.extend(self.lan_projectile_targets());
         }
@@ -286,7 +283,11 @@ impl Game<'_> {
             horizon_client::arrows::tick_through(&mut p, &scene, &targets)
         } else {
             let w = self.mob_world_base(&[]);
-            p.tick_through(&ProjWorld { w: &w, targets })
+            p.tick_through(&ProjWorld {
+                w: &w,
+                targets,
+                border: Some(self.border.bounds()),
+            })
         };
         if shooter.is_some() {
             p.owner = Some(Who::Player);
