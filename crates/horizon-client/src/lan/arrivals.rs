@@ -1091,6 +1091,14 @@ mod hub_tests {
         let (mut hub, i) = exported_guest();
         super::export_record(&mut hub, i, true, Default::default()).unwrap();
         let g = &mut hub.guests[i];
+        // One message sent to the player: the window's 21st entry. The ack that
+        // comes first drops the oldest, so the message is at index 19 when the
+        // chat names it; taken the other way round, index 19 is still empty and
+        // the chat fails validation (a kick).
+        g.last_seen
+            .add_pending(&[7; horizon_protocol::secure_chat::SIGNATURE_BYTES]);
+        g.inbox
+            .push_back((Serverbound::ChatAck(ChatAck { offset: 1 }), 2));
         g.inbox.push_back((
             Serverbound::Chat(Chat {
                 message: "hello".into(),
@@ -1099,19 +1107,18 @@ mod hub_tests {
                 signature: None,
                 last_seen: LastSeenUpdate {
                     offset: 0,
-                    acknowledged: [0; 3],
+                    acknowledged: [0, 0, 0b1000],
                     checksum: 0,
                 },
             }),
             10,
         ));
-        g.inbox
-            .push_back((Serverbound::ChatAck(ChatAck { offset: 0 }), 2));
         g.inbox_bytes = 12;
         hub.keep_acknowledgements(i, &mut Vec::new());
         // Both were handled here, in the order they came; nothing is left for the inbox.
         assert!(hub.guests[i].inbox.is_empty());
         assert_eq!(hub.guests[i].inbox_bytes, 0);
         assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
+        assert_eq!(hub.guests[i].last_seen.tracked_count(), 20);
     }
 }
