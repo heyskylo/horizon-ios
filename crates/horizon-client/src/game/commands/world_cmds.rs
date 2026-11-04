@@ -33,9 +33,14 @@ fn java_double_text(v: f64) -> Text {
 impl Game<'_> {
     // ---- /recipe -----------------------------------------------------------
 
-    /// Every recipe id of the recipe manager (what `/recipe` resolves and suggests).
+    /// Non-special recipes, as resolved by `ResourceKeyArgument.getRecipe` and `/recipe *`.
     pub(super) fn learnable_recipes(&self) -> Vec<String> {
-        self.stations().recipe_index.ids().cloned().collect()
+        let index = &self.stations().recipe_index;
+        index
+            .ids()
+            .filter(|id| !index.special(id))
+            .cloned()
+            .collect()
     }
     pub(super) fn cmd_recipe(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = self.entities(ctx, "targets", true)?;
