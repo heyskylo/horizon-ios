@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "네이티브 빌드 또는 캐시 정리가 진행 중입니다. 완료된 후 다시 시도하세요.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "네이티브 빌드 캐시에서 {bytes}바이트를 정리했습니다. 다음 변경된 빌드는 처음부터 컴파일됩니다.",
+  "Could not access the native build cache: {error}": "네이티브 빌드 캐시에 접근할 수 없습니다: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "캐시 한도를 GiB 단위로 입력하세요. 0은 자동 정리를 비활성화합니다.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "예상하지 못한 파일 또는 링크로 인해 네이티브 캐시 정리를 거부했습니다: {path}",
   "Building {name}'s post-build step": "{name}의 빌드 후 단계 빌드 중",
   "In use": "사용 중",
   "Prepare": "준비",

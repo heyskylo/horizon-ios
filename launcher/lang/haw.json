@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ke holo nei kekahi kūkulu maoli a i ʻole ka hoʻomaʻemaʻe ʻana i ka waihona. E hoʻāʻo hou ke pau.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Ua hoʻomaʻemaʻe ʻia nā paita {bytes} o ka waihona kūkulu maoli. E hōʻuluʻulu hou ʻia ke kūkulu hoʻololi aʻe mai ka hoʻomaka.",
+  "Could not access the native build cache: {error}": "ʻAʻole hiki ke komo i ka waihona kūkulu maoli: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "E hoʻokomo i ka palena waihona ma GiB; hoʻopau ka 0 i ka hoʻomaʻemaʻe ʻakomi.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Hōʻole ʻia ka hoʻomaʻemaʻe ʻana i ka waihona maoli ma kekahi faila a loulou i manaʻo ʻole ʻia: {path}",
   "Building {name}'s post-build step": "Ke kaʻina hana o {name} ma hope o ke kūkulu ʻana",
   "In use": "Ke hoʻohana nei",
   "Prepare": "Hoʻomākaukau",

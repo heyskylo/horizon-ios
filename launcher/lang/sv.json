@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "En kompilering av plattformsspecifik kod eller rensning av cachen pågår. Försök igen när den är klar.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Rensade {bytes} byte ur cachen för kompilering av plattformsspecifik kod. Nästa kompilering med ändringar börjar om från början.",
+  "Could not access the native build cache: {error}": "Det gick inte att komma åt cachen för kompilering av plattformsspecifik kod: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Ange en cachegräns i GiB; 0 inaktiverar automatisk rensning.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rensning av cachen för plattformsspecifik kod nekades vid en oväntad fil eller länk: {path}",
   "Building {name}'s post-build step": "Bygga {name}s efterbyggnadssteg",
   "In use": "I bruk",
   "Prepare": "Förbered",

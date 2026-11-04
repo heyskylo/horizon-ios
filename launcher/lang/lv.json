@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Notiek vietējā būvēšana vai kešatmiņas tīrīšana. Mēģiniet vēlreiz, kad tā beigsies.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Notīrīti {bytes} baiti vietējās būvēšanas kešatmiņas. Nākamā mainītā būvēšana tiks kompilēta no sākuma.",
+  "Could not access the native build cache: {error}": "Neizdevās piekļūt vietējās būvēšanas kešatmiņai: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Ievadiet kešatmiņas ierobežojumu GiB; 0 izslēdz automātisko tīrīšanu.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Atteikta vietējās kešatmiņas tīrīšana pie negaidīta faila vai saites: {path}",
   "Building {name}'s post-build step": "{name} ēkas darbība pēc izveides",
   "In use": "Lietošanā",
   "Prepare": "Sagatavot",

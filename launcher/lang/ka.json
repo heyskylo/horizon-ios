@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "მიმდინარეობს ნატიური აწყობა ან ქეშის გასუფთავება. სცადეთ ხელახლა, როცა დასრულდება.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ნატიური აწყობის ქეშიდან წაიშალა {bytes} ბაიტი. შემდეგი შეცვლილი აწყობა თავიდან დაკომპილირდება.",
+  "Could not access the native build cache: {error}": "ნატიური აწყობის ქეშზე წვდომა ვერ მოხერხდა: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "შეიყვანეთ ქეშის ლიმიტი GiB-ში; 0 თიშავს ავტომატურ გასუფთავებას.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "უარი ნატიური ქეშის გასუფთავებაზე მოულოდნელი ფაილის ან ბმულის გამო: {path}",
   "Building {name}'s post-build step": "{name}-ის აშენების შემდგომი ნაბიჯი",
   "In use": "გამოყენებაში",
   "Prepare": "მოამზადე",

@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ihe owuwu nke obodo ma ọ bụ nhicha cache na-aga n'ihu. Nwaa ọzọ mgbe o mechara.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Ehichapụla {bytes} bytes nke cache owuwu nke obodo. Owuwu ọzọ gbanwere ga-achịkọta site na mmalite.",
+  "Could not access the native build cache: {error}": "Enweghị ike ịbanye na cache owuwu nke obodo: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Tinye oke cache na GiB; 0 na-agbanyụ nhicha akpaaka.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "A na-ajụ nhicha cache nke obodo na faịlụ ma ọ bụ njikọ a na-atụghị anya ya: {path}",
   "Building {name}'s post-build step": "Ịrụ ụlọ {name}'s post-wuri nzọụkwụ",
   "In use": "A na-eji",
   "Prepare": "Kwadebe",

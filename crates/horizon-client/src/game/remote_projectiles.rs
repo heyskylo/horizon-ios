@@ -665,17 +665,18 @@ impl Game<'_> {
         // fuse down (the swell and flash follow it) between the server's
         // updates (every 10 ticks), and a client discards it when the fuse
         // runs out; only the server explodes it.
-        let (world, collision, assets, facts, fluids, border) = (
+        let (world, collision, assets, facts, fluids, border, blocks) = (
             &self.world,
             self.collision,
             &self.pack.assets,
             self.res.facts(),
             &self.res.motion().fluids,
             Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
         );
         self.tnts.retain_mut(|t| {
             // A fluid lookup that fails leaves it where its move put it.
-            let _ = t.tick(world, collision, assets, facts, fluids, border);
+            let _ = t.tick(world, collision, assets, facts, fluids, border, blocks);
             t.fuse > 0
         });
         // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE

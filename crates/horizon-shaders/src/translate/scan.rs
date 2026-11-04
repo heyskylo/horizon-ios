@@ -532,11 +532,15 @@ impl<'p> Stage<'p> {
     /// Authored non-uniform globals (or uniforms of another type) keep their own meaning.
     /// `normalMatrix` is the core profile's only (ShaderDoc's `gl_NormalMatrix`, as #9136 quotes
     /// it): in a compatibility-profile stage it stays a uniform of the frame, read as zero.
+    /// `textureMatrix` is `gl_TextureMatrix[0]` in the vertex stage only: our probes read the
+    /// identity in Iris 1.11.7's terrain and shadow vertex stages, and zero in the terrain
+    /// fragment stage (#9080).
     pub(super) fn core_matrix(&self, name: &str) -> Option<&'static str> {
         let (matrix, ty) = match name {
             "projectionMatrix" => ("hz_ProjectionMatrix", "mat4"),
             "modelViewMatrix" => ("hz_ModelViewMatrix", "mat4"),
             "normalMatrix" if self.core_profile() => ("hz_NormalMatrix", "mat3"),
+            "textureMatrix" if self.kind == ShaderStage::Vertex => ("hz_TextureMatrix[0]", "mat4"),
             _ => return None,
         };
         if !self.gbuffers

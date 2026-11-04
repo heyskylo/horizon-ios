@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Está em curso uma compilação nativa ou limpeza da cache. Tente novamente quando terminar.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Libertados {bytes} bytes da cache de compilação nativa. A próxima compilação com alterações será feita de raiz.",
+  "Could not access the native build cache: {error}": "Não foi possível aceder à cache de compilação nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Introduza um limite de cache em GiB; 0 desativa a limpeza automática.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Limpeza da cache nativa recusada devido a um ficheiro ou ligação inesperados: {path}",
   "Building {name}'s post-build step": "A construir o passo de pós-construção de {name}",
   "In use": "Em uso",
   "Prepare": "Preparar",

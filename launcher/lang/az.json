@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Yerli quruluş və ya keş təmizləməsi gedir. Bitəndə yenidən cəhd edin.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Yerli quruluş keşindən {bytes} bayt təmizləndi. Növbəti dəyişmiş quruluş sıfırdan kompilyasiya olunacaq.",
+  "Could not access the native build cache: {error}": "Yerli quruluş keşinə daxil olmaq mümkün olmadı: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Keş limitini GiB ilə daxil edin; 0 avtomatik təmizləməni söndürür.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Gözlənilməz fayl və ya keçiddə yerli keş təmizləməsindən imtina edilir: {path}",
   "Building {name}'s post-build step": "{name}-nin tikintidən sonrakı addımının qurulması",
   "In use": "İstifadədədir",
   "Prepare": "Hazırlayın",

@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "நேட்டிவ் உருவாக்கம் அல்லது தற்காலிக சேமிப்பு சுத்தம் நடைபெறுகிறது. அது முடிந்ததும் மீண்டும் முயலவும்.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "நேட்டிவ் உருவாக்க தற்காலிக சேமிப்பிலிருந்து {bytes} பைட்டுகள் அழிக்கப்பட்டன. அடுத்த மாற்றப்பட்ட உருவாக்கம் தொடக்கத்திலிருந்து தொகுக்கப்படும்.",
+  "Could not access the native build cache: {error}": "நேட்டிவ் உருவாக்க தற்காலிக சேமிப்பை அணுக முடியவில்லை: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "தற்காலிக சேமிப்பு வரம்பை GiB-இல் உள்ளிடவும்; 0 தானியங்கு சுத்தத்தை முடக்கும்.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "எதிர்பாராத கோப்பு அல்லது இணைப்பில் நேட்டிவ் தற்காலிக சேமிப்பு சுத்தம் மறுக்கப்படுகிறது: {path}",
   "Building {name}'s post-build step": "கட்டிடம் {name} இன் பிந்தைய கட்ட படி",
   "In use": "பயன்பாட்டில் உள்ளது",
   "Prepare": "தயார் செய்",

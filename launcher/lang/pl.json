@@ -1,6 +1,11 @@
 {
   "Performance mode": "Tryb wydajności",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Płynniej na starszych komputerach: niebo w niższej rozdzielczości, tańsze rozmycie, zmiana rozmiaru okna liczona w tle i brak klatki na każdy ruch myszy.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Trwa kompilacja natywna lub czyszczenie pamięci podręcznej. Spróbuj ponownie po zakończeniu.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Zwolniono {bytes} bajtów pamięci podręcznej kompilacji natywnej. Następna kompilacja ze zmianami zostanie wykonana od zera.",
+  "Could not access the native build cache: {error}": "Nie można uzyskać dostępu do pamięci podręcznej kompilacji natywnej: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Podaj limit pamięci podręcznej w GiB; 0 wyłącza automatyczne czyszczenie.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Odmowa czyszczenia natywnej pamięci podręcznej z powodu nieoczekiwanego pliku lub dowiązania: {path}",
   "Building {name}'s post-build step": "Budowanie kroku po kompilacji moda {name}",
   "In use": "W użyciu",
   "Prepare": "Przygotuj",

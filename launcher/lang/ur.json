@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "مقامی کوڈ کی تعمیر یا کیش کی صفائی جاری ہے۔ مکمل ہونے کے بعد دوبارہ کوشش کریں۔",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "مقامی کوڈ کی تعمیر کے کیش سے {bytes} بائٹس صاف کر دی گئیں۔ تبدیلیوں کے ساتھ اگلی تعمیر شروع سے ہوگی۔",
+  "Could not access the native build cache: {error}": "مقامی کوڈ کی تعمیر کے کیش تک رسائی نہیں ہو سکی: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "کیش کی حد GiB میں درج کریں؛ 0 خودکار صفائی کو غیر فعال کرتا ہے۔",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "غیر متوقع فائل یا لنک کی وجہ سے مقامی کوڈ کے کیش کی صفائی سے انکار کیا گیا: {path}",
   "Building {name}'s post-build step": "بلڈنگ {name} کے بعد کی تعمیر کا مرحلہ",
   "In use": "استعمال میں",
   "Prepare": "تیار کریں۔",

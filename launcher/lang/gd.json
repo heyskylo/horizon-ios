@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Tha togail dhùthchasach no glanadh an tasgadain a' dol. Feuch ris a-rithist nuair a bhios e deiseil.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Chaidh {bytes} baidht dhen tasgadan togail dhùthchasaich fhalamhachadh. Thèid an ath-thogail atharraichte a chur ri chèile on toiseach.",
+  "Could not access the native build cache: {error}": "Cha b' urrainn dhuinn an tasgadan togail dùthchasach a ruigsinn: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Cuir a-steach crìoch tasgadain ann an GiB; cuiridh 0 an glanadh fèin-obrachail dheth.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "A' diùltadh glanadh an tasgadain dhùthchasaich aig faidhle no ceangal ris nach robh dùil: {path}",
   "Building {name}'s post-build step": "Togalach {name} ceum an dèidh togail",
   "In use": "Ann an cleachdadh",
   "Prepare": "Ullaich",

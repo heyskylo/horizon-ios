@@ -524,7 +524,8 @@ impl SectionGpu {
         }
     }
     /// GPU culling's record of it at `key`, its quads within `bounds`
-    /// (`SectionMesh::bounds`), `FADING` while it fades (`gpu_fading`).
+    /// (`SectionMesh::bounds`) and in their buckets by facing side (`sides`),
+    /// `FADING` while it fades (`gpu_fading`).
     fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
         let boxed = gpu_culling::rounded_box(bounds);
         gpu_culling::Record::new(
@@ -534,6 +535,7 @@ impl SectionGpu {
             self.solid,
             boxed,
         )
+        .facing(&self.sides)
         .fading(self.gpu_fading)
     }
     /// Whether GPU frames' walk lists it within the render distance
@@ -6781,12 +6783,18 @@ impl Renderer {
             if let Some(atlases) = &self.pack_material_atlases {
                 for kind in 0..2 {
                     let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
-                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                    atlases[kind].copy(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.animations.changed().iter().copied(),
+                    );
                 }
             }
         }
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
+                &self.device,
                 encoder,
                 &self.sprite_textures,
                 self.animations.changed().iter().copied(),
@@ -7425,6 +7433,7 @@ impl Renderer {
                 radius,
                 frustum: &view,
                 reach: self.occlusion.reach().filter(|_| culling),
+                eye,
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -7436,7 +7445,7 @@ impl Renderer {
                 )
             });
             // A frame whose planes leave the test's integers (the camera millions of blocks
-            // above or below the level) is the CPU's.
+            // above or below the level), or whose eye is not a number, is the CPU's.
             gpu_frame = prepared == gpu_culling::Prepared::Gpu;
             if prepared == gpu_culling::Prepared::OutOfMemory {
                 log::warn!("Horizon renderer: GPU culling off: its buffers do not fit");

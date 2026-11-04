@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ein uppruna bygging ella reinsan av goymsluni er í gongd. Royn aftur, tá ið hon er liðug.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} být av goymsluni til upprunabygging eru strikað. Næsta broytta bygging verður samansett frá byrjan.",
+  "Could not access the native build cache: {error}": "Kundi ikki fáa atgongd til goymsluna til upprunabygging: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Skriva eitt goymslumark í GiB; 0 sløkkir sjálvvirka reinsan.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Noktar at reinsa upprunagoymsluna við eini óvæntaðari fílu ella leinki: {path}",
   "Building {name}'s post-build step": "Bygging {name}'s eftirbyggingarstigið",
   "In use": "Í nýtslu",
   "Prepare": "Fyrireika",

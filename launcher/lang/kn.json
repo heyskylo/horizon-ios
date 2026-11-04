@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "ಸ್ಥಳೀಯ ಬಿಲ್ಡ್ ಅಥವಾ ಕ್ಯಾಶ್ ಸ್ವಚ್ಛಗೊಳಿಸುವಿಕೆ ನಡೆಯುತ್ತಿದೆ. ಅದು ಮುಗಿದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ಸ್ಥಳೀಯ ಬಿಲ್ಡ್ ಕ್ಯಾಶ್‌ನಿಂದ {bytes} ಬೈಟ್‌ಗಳನ್ನು ತೆರವುಗೊಳಿಸಲಾಗಿದೆ. ಮುಂದಿನ ಬದಲಾದ ಬಿಲ್ಡ್ ಮೊದಲಿನಿಂದ ಕಂಪೈಲ್ ಆಗುತ್ತದೆ.",
+  "Could not access the native build cache: {error}": "ಸ್ಥಳೀಯ ಬಿಲ್ಡ್ ಕ್ಯಾಶ್ ಪ್ರವೇಶಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "GiB ನಲ್ಲಿ ಕ್ಯಾಶ್ ಮಿತಿಯನ್ನು ನಮೂದಿಸಿ; 0 ಸ್ವಯಂಚಾಲಿತ ಸ್ವಚ್ಛಗೊಳಿಸುವಿಕೆಯನ್ನು ನಿಲ್ಲಿಸುತ್ತದೆ.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "ಅನಿರೀಕ್ಷಿತ ಫೈಲ್ ಅಥವಾ ಲಿಂಕ್‌ನಲ್ಲಿ ಸ್ಥಳೀಯ ಕ್ಯಾಶ್ ಸ್ವಚ್ಛಗೊಳಿಸುವಿಕೆಯನ್ನು ನಿರಾಕರಿಸಲಾಗಿದೆ: {path}",
   "Building {name}'s post-build step": "ಬಿಲ್ಡಿಂಗ್ {name} ನ ನಿರ್ಮಾಣದ ನಂತರದ ಹಂತ",
   "In use": "ಬಳಕೆಯಲ್ಲಿದೆ",
   "Prepare": "ತಯಾರು",

@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Во тек е нативна изградба или чистење на кешот. Обидете се повторно кога ќе заврши.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Исчистени се {bytes} бајти од кешот за нативна изградба. Следната изменета изградба ќе се компајлира од почеток.",
+  "Could not access the native build cache: {error}": "Не може да се пристапи до кешот за нативна изградба: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Внесете ограничување на кешот во GiB; 0 го исклучува автоматското чистење.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Се одбива чистење на нативниот кеш кај неочекувана датотека или врска: {path}",
   "Building {name}'s post-build step": "Градење на чекор по изградбата на {name}",
   "In use": "Во употреба",
   "Prepare": "Подгответе се",

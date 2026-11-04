@@ -1,6 +1,11 @@
 {
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Mahalliy yig'ish yoki kesh tozalash bajarilmoqda. Tugagach qayta urinib ko'ring.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Mahalliy yig'ish keshidan {bytes} bayt tozalandi. Keyingi o'zgargan yig'ish boshidan kompilyatsiya qilinadi.",
+  "Could not access the native build cache: {error}": "Mahalliy yig'ish keshiga kirib bo'lmadi: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Kesh chegarasini GiB da kiriting; 0 avtomatik tozalashni o'chiradi.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Kutilmagan fayl yoki havolada mahalliy keshni tozalash rad etildi: {path}",
   "Building {name}'s post-build step": "{name}-ning qurilishdan keyingi bosqichini qurish",
   "In use": "Foydalanishda",
   "Prepare": "Tayyorlang",
