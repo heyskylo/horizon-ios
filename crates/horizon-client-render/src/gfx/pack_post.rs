@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS, Val};
+use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS};
 
 use super::pack_draw::DrawUniforms;
 use super::pack_entities::{PROGRAMS, PackEntities};
@@ -1913,7 +1913,7 @@ impl PackPost {
         let mut custom = post.custom;
         let custom_names: Vec<String> = custom.uniforms().map(|u| u.0.to_owned()).collect();
         // A first run finds the names neither the frame nor the pack defines.
-        custom.eval(0.0, &|n| pack_uniforms::index(n).map(|_| Val::scalar(0.0)));
+        custom.eval(0.0, &pack_uniforms::zero);
         // Its zeros are no start for `smooth`: the first frame's values are, as in Iris.
         custom.restart_smoothing();
         if !custom.notes.is_empty() {
