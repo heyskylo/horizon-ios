@@ -8,7 +8,7 @@ use super::{
         jigsaw::PoolPiece,
         start::{
             Piece, Rings, StartContext, StructureRegistry, StructureStart, beardifier,
-            create_starts, try_generate,
+            create_starts, may_start, try_generate,
         },
         stronghold::RingSearch,
     },
@@ -379,6 +379,39 @@ impl StructureState {
             .any(|(_, search)| search.may_land_near(chunk.x, chunk.z, self.zone_reach));
         if near { self.rings(context) } else { &NONE }
     }
+    /// The structures of the random-spread sets whose start chunk is `chunk`, each with
+    /// [`may_start`]'s answer, for tests.
+    #[cfg(test)]
+    pub(super) fn may_start_answers(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+    ) -> Vec<(String, bool)> {
+        let seed = context.seed();
+        let rings = self.rings_for(context, chunk).clone();
+        let mut checks = Vec::new();
+        for &si in &self.possible_sets {
+            let set = &self.registry.sets[si];
+            if set.spacing().is_none()
+                || StructureRegistry::potential_chunk(set, seed, chunk.x, chunk.z) != Some(chunk)
+                || !(self.registry).is_structure_chunk(set, seed, chunk.x, chunk.z, &rings)
+            {
+                continue;
+            }
+            for &(s, _) in &set.structures {
+                let may = may_start(
+                    &self.registry,
+                    &self.resources,
+                    &self.bindings,
+                    context,
+                    s,
+                    chunk,
+                );
+                checks.push((self.registry.structures[s].name.clone(), may));
+            }
+        }
+        checks
+    }
     /// `StructureRegistry::needs_dimension_origin`: whether any set is placed
     /// by the dimension's origin chunk alone.
     pub(super) fn needs_dimension_origin(&self) -> bool {
@@ -602,9 +635,9 @@ impl StructureState {
     /// its locate position (the start chunk's corner at y 0). `skip` says a
     /// start (structure name, its chunk) can't be referenced again
     /// (`StructureStart.canBeReferenced`): the search goes on past it.
-    pub(super) fn locate(
+    pub(super) fn locate<C: super::structure::start::StartContext>(
         &self,
-        context: &mut impl super::structure::start::StartContext,
+        context: &mut C,
         names: &[String],
         from: [i32; 3],
         radius: i32,
@@ -618,7 +651,30 @@ impl StructureState {
             dx * dx + dz * dz
         };
         let mut best: Option<(f64, String, [i32; 3])> = None;
-        let found_at = |this: &Self, context: &mut _, chunk: ChunkPos| -> Option<String> {
+        let wanted_structures: Vec<usize> = (0..self.registry.structures.len())
+            .filter(|&s| wanted(s))
+            .collect();
+        let found_at = |this: &Self, context: &mut C, chunk: ChunkPos| -> Option<String> {
+            // StructureCheck.checkStart: a chunk with no starts built or saved yet is first
+            // asked whether a wanted structure could start there (canCreateStructure, a
+            // jigsaw's start piece and its biome), and only then are all its starts built,
+            // layouts included. A map's search for a camp of a rarer biome built thousands of
+            // chunks' starts on the server thread, seconds of it (#8669).
+            if this.starts.get((chunk.x, chunk.z)).is_none()
+                && !context.is_old_chunk(chunk)
+                && !wanted_structures.iter().any(|&s| {
+                    may_start(
+                        &this.registry,
+                        &this.resources,
+                        &this.bindings,
+                        context,
+                        s,
+                        chunk,
+                    )
+                })
+            {
+                return None;
+            }
             this.starts_at(context, chunk)
                 .iter()
                 .find(|s| wanted(s.structure) && !skip(&s.name, chunk))

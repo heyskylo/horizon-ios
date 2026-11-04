@@ -57,7 +57,7 @@ pub(super) struct PackStack {
 impl PackStack {
     /// The enabled packs in `enabled` (the selected) order, later overriding
     /// earlier: `PackRepository.openAllSelected` keeps the selected order.
-    fn enabled_packs(&self) -> impl Iterator<Item = &DataPack> {
+    pub(super) fn enabled_packs(&self) -> impl Iterator<Item = &DataPack> {
         self.enabled
             .iter()
             .filter_map(|id| self.packs.iter().find(|p| &p.id == id))
@@ -497,6 +497,7 @@ impl Game<'_> {
 
     // ---- commands ------------------------------------------------------------------
 
+    /// `FunctionCommand.decorateOutputIfNeeded`: report returned values even for failure.
     pub(super) fn cmd_function(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Resource(name)) = ctx.get("name").cloned() else {
             return Ok(0);
@@ -569,6 +570,10 @@ impl Game<'_> {
                 Outcome::Fail => {
                     any = true;
                     failed = true;
+                    self.feedback(Text::translate(
+                        "commands.function.result",
+                        &[Text::literal(f.id.clone()), Text::literal("0")],
+                    ));
                 }
             }
         }
