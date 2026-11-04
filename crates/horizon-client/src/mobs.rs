@@ -2989,6 +2989,14 @@ impl Mob {
     pub fn species(&self) -> Species {
         self.kind.species
     }
+    /// Entity.getMaxAirSupply and the aquatic species' overrides.
+    pub fn max_air_supply(&self) -> i32 {
+        match self.species() {
+            Species::Axolotl => axolotl::MAX_AIR,
+            Species::Dolphin => 4800,
+            _ => 300,
+        }
+    }
     /// `Mob.getMainArm`: the left arm when the mob is left-handed, a player's
     /// `mainHand` option for a player mob.
     pub fn main_arm_left(&self) -> bool {
