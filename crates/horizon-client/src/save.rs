@@ -3987,10 +3987,19 @@ impl Level {
                 .filter_map(|e| {
                     let id = text(e.get("id"))?;
                     let get = |k: &str| number(e.get(k));
+                    // `MobEffectInstance.Details` stores `amplifier` as
+                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
+                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
+                    // sign-extend turns 255 (byte -1) into -1, which
+                    // `EffectInstance::new` then clamps to the lowest level.
+                    let amplifier = match e.get("amplifier") {
+                        Some(Tag::Byte(v)) => i32::from(*v as u8),
+                        other => number(other).unwrap_or(0) as i32,
+                    };
                     Some((
                         id,
                         get("duration").unwrap_or(0) as i32,
-                        get("amplifier").unwrap_or(0) as i32,
+                        amplifier,
                         get("ambient").unwrap_or(0) != 0,
                         get("show_particles").is_none_or(|v| v != 0),
                     ))
@@ -4109,7 +4118,12 @@ impl Level {
                             Tag::compound([
                                 ("id", string(id)),
                                 ("duration", Tag::Int(*duration)),
-                                ("amplifier", Tag::Byte(*amplifier as i8)),
+                                // Same unsigned byte the codec writes:
+                                // `Mth.clamp` to 0..=255, then `byteValue`.
+                                (
+                                    "amplifier",
+                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
+                                ),
                                 ("ambient", Tag::Byte(i8::from(*ambient))),
                                 ("show_particles", Tag::Byte(i8::from(*particles))),
                                 ("show_icon", Tag::Byte(i8::from(*particles))),
@@ -6822,6 +6836,40 @@ mod tests {
         level.player_extra = Some(loaded);
         level.active_effects.clear();
         assert!(level.player_tag().get("active_effects").is_none());
+    }
+
+    #[test]
+    fn effect_amplifier_255_reloads_as_an_unsigned_byte() {
+        // `MobEffectInstance.MAX_AMPLIFIER` is 255. `Details.MAP_CODEC` writes
+        // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
+        // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
+        let effects = vec![
+            ("minecraft:strength".into(), -1, 255, false, true),
+            ("minecraft:regeneration".into(), -1, 128, false, true),
+            ("minecraft:speed".into(), 40, 1, false, true),
+        ];
+        let level = Level {
+            active_effects: effects.clone(),
+            ..Level::default()
+        };
+        let tag = level.player_tag();
+        let Tag::List(saved) = tag.get("active_effects").expect("active_effects") else {
+            panic!("active_effects list");
+        };
+        assert_eq!(
+            saved
+                .iter()
+                .map(|e| e.get("amplifier").cloned())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(Tag::Byte(-1)),
+                Some(Tag::Byte(-128)),
+                Some(Tag::Byte(1)),
+            ]
+        );
+        let mut loaded = Level::default();
+        loaded.read_player(&tag);
+        assert_eq!(loaded.active_effects, effects);
     }
 
     #[test]

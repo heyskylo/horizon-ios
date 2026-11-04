@@ -34,6 +34,18 @@ use horizon_core::{
 };
 use std::sync::Arc;
 
+/// `AbstractArrow.onHitEntity` when `hurtOrSimulate` returned false.
+/// An enderman that teleported (`projectileReceivesSideEffectsOnHit` is
+/// false) leaves the arrow in flight. Every other refusal, including
+/// `Shulker.hurtServer` while `isClosed()`, is
+/// `deflect(ProjectileDeflection.REVERSE, entity, owner, false, 0.2)`.
+fn arrow_miss(dodged: bool) -> EntityHit {
+    if dodged {
+        EntityHit::Dodged
+    } else {
+        EntityHit::Refused
+    }
+}
 /// The world impact sound after successful arrow damage, including self-shots.
 /// `AbstractArrow.onHitEntity`'s damage: the crit bonus comes from the
 /// arrow's own random.
@@ -4719,6 +4731,13 @@ impl Game<'_> {
                 let mut arrow = p.clone();
                 let amount = arrow_damage(&mut arrow, &mut self.world.random) + p.bonus.damage;
                 let player_fire = self.player.as_ref().map(|pl| pl.fire_ticks);
+                // AbstractArrow.onHitEntity saves the fire, ignites, then puts
+                // it back when hurtOrSimulate fails and the target still takes
+                // a projectile's side effects.
+                let mob_fire = match who {
+                    Who::Mob(id) => self.mobs.iter().find(|m| m.id == id).map(|m| m.fire_ticks),
+                    Who::Player => None,
+                };
                 let mut dodged = false;
                 // AbstractArrow.onHitEntity: a burning arrow sets its target alight.
                 if p.arrow.as_ref().is_some_and(|a| a.on_fire()) {
@@ -4873,10 +4892,22 @@ impl Game<'_> {
                     }
                     // EnderMan.hurtServer teleported away: the arrow flies on.
                     (false, Who::Mob(_)) if dodged => {
-                        self.finish_arrow_hit(arrow, EntityHit::Dodged);
+                        self.finish_arrow_hit(arrow, arrow_miss(true));
                     }
-                    // Mobs' other refusals don't follow hurtServer yet: the arrow is gone.
-                    (false, Who::Mob(_)) => {}
+                    // hurtOrSimulate returned false and
+                    // projectileReceivesSideEffectsOnHit(false) is the default
+                    // (Shulker.hurtServer on a closed shell, invulnerability).
+                    // The fire the arrow just set goes back, then
+                    // deflect(REVERSE, entity, owner, false, 0.2). The hit
+                    // sound plays only when the hurt lands.
+                    (false, Who::Mob(id)) => {
+                        if let (Some(m), Some(ticks)) =
+                            (self.mobs.iter_mut().find(|m| m.id == id), mob_fire)
+                        {
+                            m.fire_ticks = ticks;
+                        }
+                        self.finish_arrow_hit(arrow, arrow_miss(false));
+                    }
                 }
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
@@ -7783,6 +7814,53 @@ fn breeding_credit(
     let from_parent = love_cause.remove(&parent);
     let from_partner = love_cause.remove(&partner);
     from_parent.or(from_partner)
+}
+
+#[cfg(test)]
+mod shulker_arrow_tests {
+    use super::*;
+    use horizon_client::arrows::{ArrowEvent, deflect_reverse};
+    use horizon_core::random::LegacyRandom;
+
+    /// `AbstractArrow.onHitEntity` after `hurtOrSimulate` fails and the target
+    /// still takes a projectile's side effects: `deflect(REVERSE, …, 0.2)`,
+    /// and no hit sound. A closed shulker's refusal is that miss
+    /// (`shulker::tests`). An enderman's teleport is `Dodged`, not this.
+    #[test]
+    fn a_refused_arrow_reverses_without_a_hit_sound() {
+        assert_eq!(arrow_miss(false), EntityHit::Refused);
+        assert_eq!(arrow_miss(true), EntityHit::Dodged);
+
+        let mut arrow = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 1.0, 0.0),
+            Some(Who::Player),
+        )
+        .with_arrow_random(LegacyRandom::new(7));
+        arrow.velocity = Vec3::new(3.0, -1.0, 2.0);
+        arrow.yaw = 15.0;
+        let mut oracle = LegacyRandom::new(7);
+        let expect_yaw = 15.0 + 170.0 + oracle.next_float() * 20.0;
+        let mut state = arrow.arrow.take().expect("an arrow");
+        deflect_reverse(&mut arrow.velocity, &mut arrow.yaw, &mut state);
+        // power 0.2, and REVERSE multiplies by -power * 0.5.
+        assert!((arrow.velocity.x - -0.3).abs() < 1e-6);
+        assert!((arrow.velocity.y - 0.1).abs() < 1e-6);
+        assert!((arrow.velocity.z - -0.2).abs() < 1e-6);
+        assert!((arrow.yaw - expect_yaw).abs() < 1e-4);
+        assert!(!state.removed, "the reversed arrow stays in the world");
+        assert!(
+            state
+                .events
+                .iter()
+                .all(|e| !matches!(e, ArrowEvent::Sound { .. })),
+            "the deflect branch plays no hit sound"
+        );
+    }
 }
 
 #[cfg(test)]
