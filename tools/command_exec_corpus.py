@@ -128,6 +128,76 @@ def allay_pocket_inventory():
     return ops
 
 
+def named_weather_predicates():
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/gamerule minecraft:advance_weather', 0)
+    check('/execute if dimension minecraft:overworld')
+    out.extend(setup('/forceload remove 0 0'))
+    check('/forceload add 0 0')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 8 200 8')
+    check('/weather clear 100t', 100)
+    check('/scoreboard objectives add weather_cmd dummy')
+    out.extend(setup('/execute store result score #start weather_cmd run time query gametime'))
+
+    def clock(ticks):
+        out.extend(setup('/execute store result score #clock weather_cmd run time query gametime'))
+        check('/scoreboard players operation #clock weather_cmd -= #start weather_cmd', ticks)
+
+    def snapshot(name, ticks, rain, thunder, saved):
+        out.append({'op': 'weather_state', 'label': name, 'expect_state': saved})
+        clock(ticks)
+        expected = [(name, (r is None or r == rain) and (t is None or t == thunder))
+                    for name, r, t in weather_predicate_cases()]
+        for predicate, passes in expected + [('always', True), ('never', False)]:
+            out.extend(setup('/scoreboard players set #r weather_cmd 31',
+                             '/scoreboard players set #s weather_cmd 17'))
+            check('/scoreboard players get #r weather_cmd', 31)
+            check('/scoreboard players get #s weather_cmd', 17)
+            out.append(cmd('/execute store result score #r weather_cmd store success score #s weather_cmd '
+                           'run execute if predicate command_weather:' + predicate))
+            check('/scoreboard players get #r weather_cmd', int(passes))
+            check('/scoreboard players get #s weather_cmd', int(passes))
+
+    dry = [0, 0, 100, 0, 0]
+    storm = [1, 1, 0, 100, 100]
+    snapshot('clear_initial', 0, False, False, dry)
+    out.append(cmd('/execute if predicate command_weather:missing'))
+    check('/weather thunder 100t', 100)
+    snapshot('storm_0', 0, False, False, storm)
+    # Fresh Java 26.3 measurements: both levels rise from zero. Thunder
+    # uses their product, rather than the saved flags or raw thunder level.
+    elapsed = 0
+    for at, rain, thunder in [(19, False, False), (20, True, False), (21, True, False),
+                              (90, True, False), (91, True, False), (94, True, False),
+                              (95, True, True), (100, True, True)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'storm_{at}', at, rain, thunder, storm)
+        elapsed = at
+    check('/weather clear 100t', 100)
+    snapshot('fade_0', 100, True, True, dry)
+    elapsed = 0
+    for at, rain, thunder in [(1, True, True), (5, True, True), (6, True, False),
+                              (79, True, False), (80, True, False), (81, False, False),
+                              (100, False, False)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'fade_{at}', 100 + at, rain, thunder, dry)
+        elapsed = at
+    clock(200)
+    out.extend(setup('/scoreboard objectives remove weather_cmd', '/forceload remove 0 0',
+                     '/tick unfreeze'))
+    return out
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -4323,76 +4393,6 @@ def mining_efficiency_9021():
             operation['cmd'] = '#destroy_progress'
     return operations
 
-
-
-def named_weather_predicates():
-    out = []
-
-    def check(command, result=1):
-        out.append(cmd(command, expect_result=result))
-
-    check('/tick freeze')
-    check('/gamerule minecraft:advance_weather', 0)
-    check('/execute if dimension minecraft:overworld')
-    out.extend(setup('/forceload remove 0 0'))
-    check('/forceload add 0 0')
-    out.append({'op': 'settle'})
-    check('/execute if loaded 8 200 8')
-    check('/weather clear 100t', 100)
-    check('/scoreboard objectives add weather_cmd dummy')
-    out.extend(setup('/execute store result score #start weather_cmd run time query gametime'))
-
-    def clock(ticks):
-        out.extend(setup('/execute store result score #clock weather_cmd run time query gametime'))
-        check('/scoreboard players operation #clock weather_cmd -= #start weather_cmd', ticks)
-
-    def snapshot(name, ticks, rain, thunder, saved):
-        out.append({'op': 'weather_state', 'label': name, 'expect_state': saved})
-        clock(ticks)
-        expected = [(name, (r is None or r == rain) and (t is None or t == thunder))
-                    for name, r, t in weather_predicate_cases()]
-        for predicate, passes in expected + [('always', True), ('never', False)]:
-            out.extend(setup('/scoreboard players set #r weather_cmd 31',
-                             '/scoreboard players set #s weather_cmd 17'))
-            check('/scoreboard players get #r weather_cmd', 31)
-            check('/scoreboard players get #s weather_cmd', 17)
-            out.append(cmd('/execute store result score #r weather_cmd store success score #s weather_cmd '
-                           'run execute if predicate command_weather:' + predicate))
-            check('/scoreboard players get #r weather_cmd', int(passes))
-            check('/scoreboard players get #s weather_cmd', int(passes))
-
-    dry = [0, 0, 100, 0, 0]
-    storm = [1, 1, 0, 100, 100]
-    snapshot('clear_initial', 0, False, False, dry)
-    out.append(cmd('/execute if predicate command_weather:missing'))
-    check('/weather thunder 100t', 100)
-    snapshot('storm_0', 0, False, False, storm)
-    # Fresh Java 26.3 measurements: both levels rise from zero. Thunder
-    # uses their product, rather than the saved flags or raw thunder level.
-    elapsed = 0
-    for at, rain, thunder in [(19, False, False), (20, True, False), (21, True, False),
-                              (90, True, False), (91, True, False), (94, True, False),
-                              (95, True, True), (100, True, True)]:
-        n = at - elapsed
-        check(f'/tick step {n}')
-        out.append({'op': 'tick', 'n': n})
-        snapshot(f'storm_{at}', at, rain, thunder, storm)
-        elapsed = at
-    check('/weather clear 100t', 100)
-    snapshot('fade_0', 100, True, True, dry)
-    elapsed = 0
-    for at, rain, thunder in [(1, True, True), (5, True, True), (6, True, False),
-                              (79, True, False), (80, True, False), (81, False, False),
-                              (100, False, False)]:
-        n = at - elapsed
-        check(f'/tick step {n}')
-        out.append({'op': 'tick', 'n': n})
-        snapshot(f'fade_{at}', 100 + at, rain, thunder, dry)
-        elapsed = at
-    clock(200)
-    out.extend(setup('/scoreboard objectives remove weather_cmd', '/forceload remove 0 0',
-                     '/tick unfreeze'))
-    return out
 
 
 def groups():

@@ -455,7 +455,7 @@ impl Progress {
 /// What predicates may ask about the world.
 pub trait World {
     fn dimension(&self) -> &str;
-    /// Effective `Level.isRaining` and `Level.isThundering`, not saved flags.
+    /// Effective rain/thunder booleans, including the level's dimension rules.
     fn weather(&self) -> (bool, bool);
     fn biome(&self, pos: [i32; 3]) -> String;
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
