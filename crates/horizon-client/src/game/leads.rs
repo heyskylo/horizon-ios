@@ -197,6 +197,38 @@ impl Game<'_> {
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
         self.drop_leash(id, drop, sound, false);
     }
+    /// `Entity.dropAllLeashConnections`: every mob and boat leashed to the
+    /// acting player, inside the 32-block box around the player's centre,
+    /// drops its lead. Then `GameEvent.SHEAR`. Whether anything dropped.
+    /// The player is not `Leashable`, so there is no lead of their own.
+    pub(super) fn drop_all_leash_connections(&mut self) -> bool {
+        let center = self.player_center();
+        let mobs: Vec<u32> = self
+            .player_leashed(center)
+            .into_iter()
+            .map(|i| self.mobs[i].id)
+            .collect();
+        let boats = self.player_led_boats(center);
+        if mobs.is_empty() && boats.is_empty() {
+            return false;
+        }
+        for id in mobs {
+            // One snap is played by the caller (`SoundEvents.LEAD_BREAK`),
+            // not a break sound on each leashed entity.
+            self.break_leash(id, true, false);
+        }
+        self.drop_boat_leashes(&boats);
+        let at = self
+            .player
+            .as_ref()
+            .map_or([center.x, center.y, center.z], |p| {
+                [p.position.x, p.position.y, p.position.z]
+            });
+        // `gameEvent(GameEvent.SHEAR, null)`: the player is the position, not the source.
+        let ctx = self.who_context(None, None);
+        self.post_game_event("minecraft:shear", at, ctx);
+        true
+    }
     /// `break_leash` by the acting player's use (untying it, shears).
     fn break_leash_used(&mut self, id: u32, drop: bool) {
         self.drop_leash(id, drop, false, true);
