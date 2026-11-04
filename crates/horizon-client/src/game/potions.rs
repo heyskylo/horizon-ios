@@ -140,6 +140,9 @@ pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
 /// `WitherSkeleton` shrug off wither, `Spider` and `AbstractNautilus` poison,
 /// `Parched` weakness): the immune-to-infested and immune-to-oozing tags
 /// decide first, then the tag of mobs that ignore poison and regeneration.
+/// `WitherBoss.addEffect` refusing everything is `Mob::add_effect`'s: a cloud
+/// still takes the wither as a victim (`AreaEffectCloud` asks `canBeAffected`),
+/// so its instant effects land and it shrinks.
 pub(super) fn mob_can_be_affected(
     tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     kind: &str,
@@ -1906,6 +1909,21 @@ mod tests {
     use super::super::sculk::darkness_blend_added;
     use super::*;
     use horizon_client::screen_effects::nausea_blend_added;
+
+    /// `WitherBoss.canBeAffected` refuses only the wither effect: its `addEffect`
+    /// refuses the rest, but a cloud of strength or healing still counts the boss
+    /// as a victim (`AreaEffectCloud.serverTick` asks `canBeAffected`).
+    #[test]
+    fn a_cloud_still_counts_the_wither_as_a_victim() {
+        let tags = std::collections::HashMap::new();
+        for effect in ["strength", "instant_health"] {
+            assert!(
+                mob_can_be_affected(&tags, "minecraft:wither", effect),
+                "{effect}"
+            );
+        }
+        assert!(!mob_can_be_affected(&tags, "minecraft:wither", "wither"));
+    }
 
     /// #5876: a potion thrown straight up from inside its thrower's box does
     /// not hit them while it climbs out, then hits them on the way down;
