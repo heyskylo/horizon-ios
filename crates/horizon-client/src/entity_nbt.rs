@@ -534,6 +534,9 @@ pub fn mob_to_nbt(
         if species != crate::mobs::Species::Tadpole {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
+    } else if species == crate::mobs::Species::Parrot {
+        // Parrot.canBeABaby is false: a raw input Age must not leak into the save.
+        map.remove(&"Age".into());
     }
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
@@ -893,15 +896,10 @@ pub fn mob_to_nbt(
         }
         "minecraft:allay" => {
             // InventoryCarrier: the fetched stack; the liked player memory.
-            let mut inv = Vec::new();
-            if let (Some(item), n) = (&m.extra.main_hand, m.extra.ints[1])
-                && n > 0
-            {
-                inv.push(Tag::compound([
-                    ("id", Tag::String(item.as_ref().into())),
-                    ("count", Tag::Int(n)),
-                ]));
-            }
+            let inv = crate::mobs::allay::inventory(m)
+                .map(item_to_nbt)
+                .into_iter()
+                .collect();
             map.insert("Inventory".into(), Tag::List(inv));
             if let Some(st) = &m.extra.allay {
                 map.insert("listener".into(), st.vibration.to_nbt());
@@ -1880,10 +1878,13 @@ pub fn mob_from_nbt(
     m.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
     m.air = number(tag.get("Air")).unwrap_or(300) as i32;
     if m.species() == crate::mobs::Species::Allay {
-        if let Some(Tag::List(inv)) = tag.get("Inventory")
-            && let Some(first) = inv.first()
-        {
-            m.extra.ints[1] = number(first.get("count")).unwrap_or(1) as i32;
+        if let Some(Tag::List(inv)) = tag.get("Inventory") {
+            for stack in inv.iter().filter_map(item_from_nbt) {
+                let max = m.kind.inventory_stack_limit(&stack);
+                if let Some(st) = m.extra.allay.as_mut() {
+                    st.add(stack, max);
+                }
+            }
         }
         m.extra.egg_time = number(tag.get("DuplicationCooldown")).unwrap_or(0) as i32;
         if let (Some(st), Some(listener)) = (m.extra.allay.as_mut(), tag.get("listener")) {
@@ -4220,14 +4221,28 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
         return;
     };
     let mm = m.extra.animal_brain.as_deref().map(|b| &b.mem);
-    let hunting = crate::mobs::animal_brain::hunting_cooldown(m)
-        .map(|ttl| Tag::compound([("value", Tag::Byte(1)), ("ttl", Tag::Long(ttl))]));
-    let play_dead = mm
-        .and_then(|m| m.play_dead_ticks.value())
-        .map(|v| Tag::compound([("value", Tag::Int(v))]));
-    let temptation = mm
-        .and_then(|m| m.temptation_cooldown_ticks.value())
-        .map(|v| Tag::compound([("value", Tag::Int(v))]));
+    let hunting = mm.and_then(|mem| {
+        let slot = &mem.hunting_cooldown;
+        slot.value().map(|value| {
+            let mut entry = Tag::compound([("value", Tag::Byte(i8::from(value)))]);
+            if slot.ttl() != i64::MAX {
+                put(&mut entry, "ttl", Tag::Long(slot.ttl()));
+            }
+            entry
+        })
+    });
+    // ExpirableValue.codec: integer value and optional finite long TTL.
+    let integer_memory = |slot: &crate::mobs::animal_brain::Slot<i32>| {
+        slot.value().map(|v| {
+            let mut entry = Tag::compound([("value", Tag::Int(v))]);
+            if slot.ttl() != i64::MAX {
+                put(&mut entry, "ttl", Tag::Long(slot.ttl()));
+            }
+            entry
+        })
+    };
+    let play_dead = mm.and_then(|m| integer_memory(&m.play_dead_ticks));
+    let temptation = mm.and_then(|m| integer_memory(&m.temptation_cooldown_ticks));
     for (key, value) in [
         ("minecraft:has_hunting_cooldown", hunting),
         ("minecraft:play_dead_ticks", play_dead),
@@ -4284,23 +4299,29 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
 }
 fn restore_axolotl_memories(m: &mut Mob, tag: &Tag) {
     let memories = tag.get("Brain").and_then(|b| b.get("memories"));
-    let ttl = memories
-        .and_then(|b| b.get("minecraft:has_hunting_cooldown"))
-        .and_then(|v| number(v.get("ttl")))
-        .unwrap_or(0);
-    crate::mobs::animal_brain::set_hunting_cooldown(m, ttl);
+    // Initialize/clear the slot without applying the runtime setter's positive-TTL rule to saved data.
+    crate::mobs::animal_brain::set_hunting_cooldown(m, 0);
     if let Some(b) = m.extra.animal_brain.as_mut() {
-        if let Some(v) = memories
-            .and_then(|b| b.get("minecraft:play_dead_ticks"))
-            .and_then(|v| number(v.get("value")))
+        if let Some(entry) = memories.and_then(|v| v.get("minecraft:has_hunting_cooldown"))
+            && let Some(value) = float(entry.get("value"))
         {
-            b.mem.play_dead_ticks.set(v as i32);
+            // NbtOps boolean numbers use doubleValue()!=0; ExpirableValue's optional TTL is lenient.
+            let ttl = number(entry.get("ttl")).unwrap_or(i64::MAX);
+            b.mem.hunting_cooldown.set_ttl(value != 0.0, ttl);
         }
-        if let Some(v) = memories
-            .and_then(|b| b.get("minecraft:temptation_cooldown_ticks"))
-            .and_then(|v| number(v.get("value")))
-        {
-            b.mem.temptation_cooldown_ticks.set(v as i32);
+        for (key, slot) in [
+            ("minecraft:play_dead_ticks", &mut b.mem.play_dead_ticks),
+            (
+                "minecraft:temptation_cooldown_ticks",
+                &mut b.mem.temptation_cooldown_ticks,
+            ),
+        ] {
+            if let Some(entry) = memories.and_then(|b| b.get(key))
+                && let Some(value) = number(entry.get("value"))
+            {
+                // ExpirableValue.codec's lenient optional TTL defaults to permanent.
+                slot.set_ttl(value as i32, number(entry.get("ttl")).unwrap_or(i64::MAX));
+            }
         }
     }
 }
@@ -4544,6 +4565,54 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
 #[cfg(test)]
 mod axolotl_nbt_tests {
     use super::*;
+    #[test]
+    fn axolotl_boolean_memory_preserves_values_and_saved_lifetimes() {
+        let key = "minecraft:has_hunting_cooldown";
+        for (value, expected) in [
+            (Some(Tag::Byte(0)), Some(false)),
+            (Some(Tag::Byte(1)), Some(true)),
+            (Some(Tag::Int(256)), Some(true)),
+            (Some(Tag::Float(0.5f32.to_bits())), Some(true)),
+            (Some(Tag::Double((-0.5f64).to_bits())), Some(true)),
+            (Some(string("true")), None),
+            (Some(Tag::Compound(Compound::new())), None),
+            (None, None),
+        ] {
+            for ttl in [None, Some(3), Some(0), Some(-1), Some(i64::MAX)] {
+                let mut entry = Tag::Compound(Compound::new());
+                if let Some(value) = &value {
+                    put(&mut entry, "value", value.clone());
+                }
+                if let Some(ttl) = ttl {
+                    put(&mut entry, "ttl", Tag::Long(ttl));
+                }
+                let raw = Tag::compound([(
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([(key, entry)]))]),
+                )]);
+                let mut kind = crate::mobs::sensor_scan_tests::kind();
+                let ty = Arc::make_mut(&mut kind);
+                ty.id = "minecraft:axolotl".into();
+                ty.species = crate::mobs::Species::Axolotl;
+                let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                restore_axolotl_memories(&mut mob, &raw);
+                let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None);
+                let entry = saved
+                    .get("Brain")
+                    .and_then(|b| b.get("memories"))
+                    .and_then(|m| m.get(key));
+                match expected {
+                    Some(value) => {
+                        let entry = entry.expect("false and nonpositive lifetimes remain present");
+                        assert_eq!(entry.get("value"), Some(&Tag::Byte(i8::from(value))));
+                        let expected_ttl = ttl.filter(|v| *v != i64::MAX).map(Tag::Long);
+                        assert_eq!(entry.get("ttl"), expected_ttl.as_ref());
+                    }
+                    None => assert!(entry.is_none(), "invalid/missing boolean must be dropped"),
+                }
+            }
+        }
+    }
     #[test]
     fn aquatic_from_bucket_saves_defaults_and_tadpole_constant() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -5084,6 +5153,43 @@ mod sheep_nbt_tests {
                 registry.names,
                 "{species:?}"
             );
+        }
+    }
+
+    #[test]
+    fn parrots_omit_raw_age_and_pigs_keep_modeled_age() {
+        use crate::mobs::Species;
+        for species in [Species::Parrot, Species::Pig] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.species = species;
+            ty.id = if species == Species::Parrot {
+                "minecraft:parrot"
+            } else {
+                "minecraft:pig"
+            }
+            .into();
+            let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            let expected = if species == Species::Pig {
+                mob.extra.age = -37;
+                Some(Tag::Int(-37))
+            } else {
+                None
+            };
+            for raw in [
+                None,
+                Some(Tag::Compound(Default::default())),
+                Some(Tag::compound([("Age", Tag::Int(0))])),
+                Some(Tag::compound([("Age", Tag::Int(-100))])),
+                Some(Tag::compound([("Age", Tag::Int(100))])),
+            ] {
+                let saved = mob_to_nbt(&mob, [0; 4], raw.as_ref(), None);
+                assert_eq!(
+                    saved.get("Age"),
+                    expected.as_ref(),
+                    "{species:?}, raw={raw:?}"
+                );
+            }
         }
     }
 
@@ -6223,5 +6329,56 @@ mod mod_thrown_nbt_tests {
         assert!(back.no_gravity);
         orb.no_gravity = false;
         assert!(orb_to_nbt(&orb, [1; 4]).get("NoGravity").is_none());
+    }
+}
+
+#[cfg(test)]
+mod axolotl_memory_ttl_tests {
+    use super::*;
+
+    fn memory<'a>(tag: &'a Tag, key: &str) -> Option<&'a Tag> {
+        tag.get("Brain")?.get("memories")?.get(key)
+    }
+
+    #[test]
+    fn integer_memory_saves_keep_finite_ttl_and_drop_it_after_a_permanent_write() {
+        for key in [
+            "minecraft:play_dead_ticks",
+            "minecraft:temptation_cooldown_ticks",
+        ] {
+            for ttl in [None, Some(0), Some(1), Some(5), Some(-1), Some(i64::MAX)] {
+                let mut entry = Tag::compound([("value", Tag::Int(100))]);
+                if let Some(ttl) = ttl {
+                    put(&mut entry, "ttl", Tag::Long(ttl));
+                }
+                let raw = Tag::compound([(
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([(key, entry)]))]),
+                )]);
+                let mut kind = crate::mobs::sensor_scan_tests::kind();
+                let ty = Arc::make_mut(&mut kind);
+                ty.id = "minecraft:axolotl".into();
+                ty.species = crate::mobs::Species::Axolotl;
+                let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                restore_axolotl_memories(&mut mob, &raw);
+                let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None);
+                let entry = memory(&saved, key).expect("loaded value must be present");
+                assert_eq!(entry.get("value"), Some(&Tag::Int(100)));
+                let expected = ttl.filter(|v| *v != i64::MAX).map(Tag::Long);
+                assert_eq!(entry.get("ttl"), expected.as_ref(), "{key}: {ttl:?}");
+
+                // CountDownCooldownTicks/ValidatePlayDead write ordinary permanent memories.
+                let brain = mob.extra.animal_brain.as_mut().unwrap();
+                if key == "minecraft:play_dead_ticks" {
+                    brain.mem.play_dead_ticks.set(99);
+                } else {
+                    brain.mem.temptation_cooldown_ticks.set(99);
+                }
+                let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None);
+                let entry = memory(&saved, key).unwrap();
+                assert_eq!(entry.get("value"), Some(&Tag::Int(99)));
+                assert!(entry.get("ttl").is_none(), "stale raw TTL must not return");
+            }
+        }
     }
 }
