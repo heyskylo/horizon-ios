@@ -338,7 +338,7 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
-        if !self.native_may_board(id) {
+        if !self.may_board() || !self.native_may_board(id) {
             return true;
         }
         self.stop_riding();

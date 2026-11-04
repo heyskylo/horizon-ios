@@ -48,7 +48,7 @@ jobs:
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.when.outputs.run == 'true'
         with:
           fetch-depth: 0
@@ -82,7 +82,7 @@ jobs:
         run: python3 tools/ci/parity_issues.py --since "${{ steps.audit.outputs.since }}" ${{ inputs.dry_run && '--dry-run' || '' }} | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Logs of the failed harnesses
         if: steps.when.outputs.run == 'true' && steps.audit.outputs.exit != '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-parity-logs
           path: .local/parity-runner/logs/

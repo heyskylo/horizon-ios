@@ -35,6 +35,8 @@ pub(super) enum Status {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Boat {
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     pub id: u32,
@@ -52,7 +54,7 @@ pub(super) struct Boat {
     status_known: bool,
     water_level: f64,
     land_friction: f32,
-    out_of_control: f32,
+    pub(super) out_of_control: f32,
     /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
     /// left before a bubble column lifts or drags the boat; 0 when it is not
     /// over one.
@@ -82,6 +84,9 @@ pub(super) struct Boat {
     /// left, right, up, down
     pub input: [bool; 4],
     pub on_ground: bool,
+    /// `Entity.stuckSpeedMultiplier`: set where the boat sits in powder snow
+    /// (`PowderSnowBlock.entityInside`), spent by the next move.
+    stuck: Vec3,
     /// `ChestBoat`: a chest with 27 slots in the back seat.
     pub chest: bool,
     pub items: Vec<Option<ItemStack>>,
@@ -105,6 +110,39 @@ const BUBBLE_TIME: i32 = 60;
 /// for a down and an up column.
 pub(super) const BUBBLE_DOWN_EVENT: i8 = 71;
 pub(super) const BUBBLE_UP_EVENT: i8 = 72;
+/// What `PowderSnowBlock.entityInside` passes to `makeStuckInBlock`.
+fn powder_snow_stuck() -> Vec3 {
+    Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))
+}
+/// The powder snow cells a box reaches into (deflated by 1e-5, as `Entity.checkInsideBlocks`
+/// does), in x, y, z order.
+fn powder_snow_cells(bounds: Aabb, is_snow: impl Fn([i32; 3]) -> bool) -> Vec<[i32; 3]> {
+    let e = f64::from(1.0e-5_f32);
+    let bounds = bounds.deflate(Vec3::new(e, e, e));
+    let (lo, hi) = (bounds.min_position(), bounds.max_position());
+    let mut cells = Vec::new();
+    for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+        for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+            for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                if is_snow([x, y, z]) {
+                    cells.push([x, y, z]);
+                }
+            }
+        }
+    }
+    cells
+}
+/// The snowflake `PowderSnowBlock.entityInside` sends for an entity whose known movement is
+/// `known`: none unless it moved horizontally and a coin falls so, then `Mth.randomBetween(-1, 1)`
+/// over 12 sideways and 0.05 up.
+fn snowflake_velocity(known: Vec3, random: &mut impl RandomSource) -> Option<[f64; 3]> {
+    if (known.x == 0.0 && known.z == 0.0) || !random.next_boolean() {
+        return None;
+    }
+    let xa = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+    let za = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+    Some([f64::from(xa), f64::from(0.05_f32), f64::from(za)])
+}
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
@@ -121,6 +159,7 @@ impl Boat {
 
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
+            pitch: 0.0,
             join: Default::default(),
             id,
             wood,
@@ -152,6 +191,7 @@ impl Boat {
             paddling: [false; 2],
             input: [false; 4],
             on_ground: false,
+            stuck: Vec3::ZERO,
             chest: false,
             items: Vec::new(),
             leash: None,
@@ -168,11 +208,26 @@ impl Boat {
         self
     }
     pub fn bounds(&self) -> Aabb {
-        let (w, p) = (WIDTH / 2.0, self.position);
+        Self::bounds_at(self.position)
+    }
+    /// The box of a boat whose position is `p`.
+    fn bounds_at(p: Vec3) -> Aabb {
+        let w = WIDTH / 2.0;
         Aabb::new(
             Vec3::new(p.x - w, p.y, p.z - w),
             Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
         )
+    }
+    /// The start of `Entity.move`: a boat made stuck since its last move goes its
+    /// velocity times the multiplier, and its velocity and the multiplier are spent.
+    fn take_movement(&mut self) -> Vec3 {
+        if self.stuck.length_squared() <= 1.0e-7 {
+            return self.velocity;
+        }
+        let movement = self.velocity.multiply(self.stuck);
+        self.stuck = Vec3::ZERO;
+        self.velocity = Vec3::ZERO;
+        movement
     }
     /// `isUnderWater`; it stands in for `canAddPassenger`'s
     /// `isEyeInFluid(WATER)` too.
@@ -687,22 +742,28 @@ impl Game<'_> {
             entities: &obstacles,
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
-        if let Ok(moved) = scene.resolve(b.bounds(), b.velocity, 0.0, b.on_ground) {
+        let movement = b.take_movement();
+        if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.on_ground) {
             b.position = Vec3::new(
                 b.position.x + moved.x,
                 b.position.y + moved.y,
                 b.position.z + moved.z,
             );
-            b.on_ground = b.velocity.y < 0.0 && moved.y > b.velocity.y;
-            if (moved.x - b.velocity.x).abs() > 1.0e-7 {
+            b.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
             }
-            if (moved.z - b.velocity.z).abs() > 1.0e-7 {
+            if (moved.z - movement.z).abs() > 1.0e-7 {
                 b.velocity.z = 0.0;
             }
-            if (moved.y - b.velocity.y).abs() > 1.0e-7 {
+            if (moved.y - movement.y).abs() > 1.0e-7 {
                 b.velocity.y = 0.0;
             }
+        }
+        // AbstractBoat.tick's applyEffectsFromBlocks: powder snow makes the boat stuck,
+        // which slows its next move (`PowderSnowBlock.entityInside`).
+        if !self.boat_powder_snow_cells(&b).is_empty() {
+            b.stuck = powder_snow_stuck();
         }
         // Entity.move's last step: soul sand and honey slow the boat too.
         let factor = crate::motion::block_speed_factor_at(
@@ -824,6 +885,9 @@ impl Game<'_> {
         }
         if Some(id) != self.riding && self.boat_lava_tick(i) {
             return;
+        }
+        if self.remote.is_none() {
+            self.boat_powder_snow_snowflakes(i);
         }
         // `AbstractBoat.tick` counts submersion on the server even when
         // its controlling client owns the boat's movement.
@@ -1017,6 +1081,38 @@ impl Game<'_> {
         self.tick_boat_bubble_column(i);
         if self.options.execution_role.is_client() {
             self.boats[i].tick_bubble_wobble();
+        }
+    }
+    /// `PowderSnowBlock.entityInside` for a boat: the powder snow cells its box, and the box it
+    /// had before its move, reach into (`Entity.checkInsideBlocks` along the move).
+    fn boat_powder_snow_cells(&self, b: &Boat) -> Vec<[i32; 3]> {
+        let mut cells = powder_snow_cells(b.bounds(), |p| self.is_powder_snow(p));
+        if b.previous != b.position {
+            for p in powder_snow_cells(Boat::bounds_at(b.previous), |p| self.is_powder_snow(p)) {
+                if !cells.contains(&p) {
+                    cells.push(p);
+                }
+            }
+        }
+        cells
+    }
+    /// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles`: a boat that moved
+    /// horizontally in powder snow throws snowflakes the players around see. `AbstractBoat.tick`
+    /// calls `applyEffectsFromBlocks` twice.
+    fn boat_powder_snow_snowflakes(&mut self, i: usize) {
+        let b = &self.boats[i];
+        let cells = self.boat_powder_snow_cells(b);
+        if cells.is_empty() {
+            return;
+        }
+        let known = b.position.subtract(b.previous);
+        let (x, z) = (b.position.x, b.position.z);
+        for _ in 0..2 {
+            for cell in &cells {
+                if let Some(velocity) = snowflake_velocity(known, &mut self.world.random) {
+                    self.lan_snowflake([x, f64::from(cell[1] + 1), z], velocity);
+                }
+            }
         }
     }
     /// `LavaFluid.entityInside` (`lavaHurt`) from the two
@@ -1282,6 +1378,7 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
+            || !self.may_board()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {
@@ -1645,6 +1742,83 @@ mod tests {
         }
         assert_eq!(b.bubble_angle, 0.0);
         assert_eq!(b.bubble_angle(0.5), 0.0);
+    }
+
+    /// #8156: the powder snow cells a boat's box reaches into, its box deflated by 1e-5.
+    #[test]
+    fn a_boat_reaches_the_powder_snow_cells_its_box_touches() {
+        let b = Boat::new(1, "oak".into(), Vec3::new(10.5, 64.0, 10.5), 0.0);
+        let snow = |cells: &'static [[i32; 3]]| move |p: [i32; 3]| cells.contains(&p);
+        // Inside, a corner cell, and a cell the box only ends against.
+        assert_eq!(
+            powder_snow_cells(b.bounds(), snow(&[[10, 64, 10]])),
+            vec![[10, 64, 10]]
+        );
+        assert_eq!(
+            powder_snow_cells(b.bounds(), snow(&[[9, 64, 11], [12, 64, 10], [10, 65, 10]])),
+            vec![[9, 64, 11]],
+            "the cell beyond the edge and the one above the box are not reached"
+        );
+        let edge = Boat::new(1, "oak".into(), Vec3::new(11.3125, 64.0, 10.5), 0.0);
+        assert!(powder_snow_cells(edge.bounds(), snow(&[[12, 64, 10]])).is_empty());
+        // x, y, z order.
+        let all = powder_snow_cells(b.bounds(), |_| true);
+        assert_eq!(all.len(), 9);
+        assert_eq!((all[0], all[8]), ([9, 64, 9], [11, 64, 11]));
+    }
+
+    /// `Entity.move`: a boat made stuck goes its velocity times the multiplier once, and
+    /// loses its velocity; one that is not goes as it did.
+    #[test]
+    fn a_stuck_boat_moves_a_part_of_its_velocity_once() {
+        let mut b = Boat::new(1, "oak".into(), Vec3::ZERO, 0.0);
+        b.velocity = Vec3::new(1.0, 0.5, 2.0);
+        assert_eq!(b.take_movement(), Vec3::new(1.0, 0.5, 2.0));
+        assert_eq!(b.velocity, Vec3::new(1.0, 0.5, 2.0));
+        b.stuck = powder_snow_stuck();
+        let moved = b.take_movement();
+        let slow = f64::from(0.9_f32);
+        assert_eq!(moved, Vec3::new(slow, 0.75, 2.0 * slow));
+        assert_eq!((b.velocity, b.stuck), (Vec3::ZERO, Vec3::ZERO));
+        b.velocity = Vec3::new(0.0, 0.1, 1.0);
+        assert_eq!(b.take_movement(), Vec3::new(0.0, 0.1, 1.0), "spent");
+    }
+
+    /// `PowderSnowBlock.entityInside`'s snowflake: only for an entity that moved sideways, and
+    /// then only when a coin falls so.
+    #[test]
+    fn a_boat_moving_sideways_in_powder_snow_throws_snowflakes_now_and_then() {
+        use horizon_core::random::LegacyRandom;
+        // Still or only rising: no coin is drawn.
+        let mut random = LegacyRandom::new(7);
+        let mut untouched = LegacyRandom::new(7);
+        assert_eq!(
+            snowflake_velocity(Vec3::new(0.0, 0.4, 0.0), &mut random),
+            None
+        );
+        assert_eq!(random.next_int(), untouched.next_int());
+        let known = Vec3::new(0.1, 0.0, 0.0);
+        // One stream, as the server's: about half the calls draw a snowflake. (Seeds a step
+        // apart would not do, their first coin is nearly always the same.)
+        let mut stream = LegacyRandom::new(42);
+        let flakes: Vec<[f64; 3]> = (0..200)
+            .filter_map(|_| snowflake_velocity(known, &mut stream))
+            .collect();
+        assert!(
+            (60..=140).contains(&flakes.len()),
+            "about half the seeds: {}",
+            flakes.len()
+        );
+        let limit = f64::from(0.083_333_336_f32);
+        for [x, y, z] in flakes {
+            assert!(x.abs() <= limit && z.abs() <= limit);
+            assert_eq!(y, f64::from(0.05_f32));
+        }
+        // Either horizontal axis is enough.
+        assert!(
+            (0..64)
+                .any(|_| { snowflake_velocity(Vec3::new(0.0, 0.0, -0.1), &mut stream).is_some() })
+        );
     }
 }
 horizon_client::impl_joined!(Boat);

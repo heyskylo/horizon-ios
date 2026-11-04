@@ -101,6 +101,7 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
+    HdrLighting,
     BatteryMode,
     ShadowCache,
     GraphicsApi,
@@ -538,6 +539,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "How bright the HUD and menus are, against paper white.",
                         ),
+                        h(
+                            H::HdrLighting,
+                            None,
+                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                        ),
                     ],
                 ),
                 (
@@ -840,6 +846,7 @@ impl H {
                 n => labelled("Black Level", format!("{:.2}", n as f32 / 100.0)),
             },
             H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
+            H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::HdrKey => {
                 Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
@@ -965,6 +972,7 @@ impl H {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
+            H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
@@ -1015,6 +1023,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrLighting
                 | H::HdrSmoothGradients,
             ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
@@ -1030,6 +1039,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrLighting
                 | H::HdrSmoothGradients,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
@@ -1070,9 +1080,12 @@ impl Item {
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
+            Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
-            Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
+            Item::Horizon(H::TranslucentBatching) => {
+                g.translucent_batching && crate::graphics::translucent_batching_offered()
+            }
             Item::Horizon(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
             }
@@ -3264,13 +3277,13 @@ mod tests {
         assert_eq!(page, Some(Page::Advanced));
         let mut s = Settings::default();
         s.horizon.preset = Preset::Balanced;
-        assert_eq!(item.switch(&s), Some(true));
         let mut ui = GraphicsUi::default();
         // Where the device can't, the saved On reads Off, and neither a click nor Enter
         // after it does anything: no sound, no change, no save.
         crate::graphics::offer_translucent_batching(false);
         assert!(item.blocked(&s).is_some());
         assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(item.switch(&s), Some(false));
         let r = row(&mut ui, &s, item);
         let point = (r[0] + 4.0, r[1] + 4.0);
         assert!(press(&mut ui, &mut s, point).is_empty());
@@ -3281,6 +3294,7 @@ mod tests {
         // Where it can, a click switches it and keeps the preset.
         crate::graphics::offer_translucent_batching(true);
         assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
+        assert_eq!(item.switch(&s), Some(true));
         assert_eq!(
             press(&mut ui, &mut s, point),
             [Action::ButtonClick, Action::Changed]
