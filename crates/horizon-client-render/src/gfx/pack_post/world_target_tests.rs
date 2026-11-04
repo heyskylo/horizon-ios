@@ -226,7 +226,8 @@ fn pack(
             weather: false,
             hand: false,
         },
-    );
+    )
+    .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     post
 }

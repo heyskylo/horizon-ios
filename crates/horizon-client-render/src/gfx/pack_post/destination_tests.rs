@@ -199,8 +199,19 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
+        let post = self.try_build(post).expect("the pack runs");
+        assert!(
+            post.notes.iter().all(|n| n.starts_with("shadow map ")),
+            "{:?}",
+            post.notes
+        );
+        post
+    }
+
+    /// [`Self::build`] for a pack that may be refused.
+    pub(super) fn try_build(&self, post: Post) -> Result<PackPost, Refused> {
         let lightmap = self.texture([1, 1], T::Rgba8Unorm);
-        let post = PackPost::new(
+        PackPost::new(
             &self.device,
             &self.queue,
             &self.adapter,
@@ -219,13 +230,7 @@ impl Fixture {
                 weather: false,
                 hand: false,
             },
-        );
-        assert!(
-            post.notes.iter().all(|n| n.starts_with("shadow map ")),
-            "{:?}",
-            post.notes
-        );
-        post
+        )
     }
 
     pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {

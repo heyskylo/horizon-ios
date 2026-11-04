@@ -83,7 +83,8 @@ impl Gpu {
             post,
             T::Rgba8Unorm,
             world,
-        );
+        )
+        .expect("the pack runs");
         assert!(
             built.passes.iter().any(|p| p.group == Group::Final),
             "{:?}",

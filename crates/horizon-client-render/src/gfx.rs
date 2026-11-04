@@ -6237,13 +6237,14 @@ impl Renderer {
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
     /// (its block's light), three values a layer.
-    /// Returns the programs that run and the notes of loading them.
+    /// Returns the programs that run and the notes of loading them, or why the pack can't run:
+    /// the dimension then runs without a pack.
     pub fn set_shader_pack(
         &mut self,
         dimension: i32,
         pack: Option<horizon_shaders::Post>,
         block_ids: &[i32],
-    ) -> Option<(Vec<String>, Vec<String>)> {
+    ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
         if pack.is_none() {
             self.pack_atlas = None;
             self.pack_material_atlases = None;
@@ -6307,6 +6308,15 @@ impl Renderer {
                 world,
             )
         });
+        let post = match post.transpose() {
+            Ok(post) => post,
+            Err(e) => {
+                self.pack_post = Some((dimension, None));
+                self.pack_atlas = None;
+                self.pack_material_atlases = None;
+                return Err(e);
+            }
+        };
         let report = post.as_ref().map(|p| {
             let programs = p.programs().into_iter().map(str::to_owned).collect();
             (programs, p.notes.clone())
@@ -6315,7 +6325,7 @@ impl Renderer {
         if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
             self.native = None;
         }
-        report
+        Ok(report)
     }
     /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
