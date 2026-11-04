@@ -2,7 +2,7 @@
 
 API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client each tick for the local player's FOV scale, after vanilla effects and before zoom and camera easing. `player` contains the calculation inputs and `base` is the original scale. Non-finite modifiers or values outside 0.01..=10 fall back to `base`. It does not affect a spectator camera on a mob. Bundles need "hooks": 362.
 
-The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": @API:client_packet@.
+The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": 408.
 
 The client hook `native_render_name_tag(entity_id, kind, vanilla_visible, visible, text)` runs at player and mob, armor stand, and item frame name decisions before shared geometry. Set `visible` to override vanilla and `text` to `Some` literal replacement text (NeoForge `RenderNameTagEvent`). Distance and entity availability still apply; the local player's tag is considered only when its own camera and settings gates allow it. Bundles need "hooks": 372.
 
@@ -1497,7 +1497,7 @@ API 309 adds a shift-click in a mod container's menu routed by the mod, `Abstrac
 
 API 310 adds a server player's trade with a villager or a wandering trader, as NeoForge's `TradeWithVillagerEvent`: `native_trade_with_villager(merchant, kind, offer)` is heard once per trade made, after its statistic and `villager_trade` trigger, with the trader's entity id and type and the `MerchantOffer` as it is after the trade. Listen only; the player's state is swapped in. Bundles need "hooks": 310.
 
-API @API:merchant_offer_traded@ adds `native_merchant_offer_traded(merchant, kind, offer)`, asked once per trade made with the live `MerchantOffer` in the state the trade left it in. A mod may change `uses`, `max_uses`, `demand`, `special_price_diff`, `price_multiplier` and `xp` (Bukkit's `PlayerTradeEvent#getTrade`, `Merchant` recipes): the next click and the offers sent to the player see the change, so a mod can keep a trade from running out or from getting dearer. The unchanged `trade_with_villager` still hears the offer as the trade left it. A shift-click's trades are asked for after the click. Bundles need "hooks": @API:merchant_offer_traded@.
+API 406 adds `native_merchant_offer_traded(merchant, kind, offer)`, asked once per trade made with the live `MerchantOffer` in the state the trade left it in. A mod may change `uses`, `max_uses`, `demand`, `special_price_diff`, `price_multiplier` and `xp` (Bukkit's `PlayerTradeEvent#getTrade`, `Merchant` recipes): the next click and the offers sent to the player see the change, so a mod can keep a trade from running out or from getting dearer. The unchanged `trade_with_villager` still hears the offer as the trade left it. A shift-click's trades are asked for after the click. Bundles need "hooks": 406.
 
 API 311 adds a server player's `teleport_randomly` consume effect (chorus fruit) is about to try a spot: `native_chorus_fruit_teleport(player, name, from, target, cancel)`, once per attempt (up to 16). A mod may move `target`; the game still looks down from it for ground to land on. `cancel` ends the effect with no teleport and no more attempts. Foxes are not heard. Bundles need "hooks": 311.
 
@@ -1680,6 +1680,26 @@ API 397 adds mod config files, loaded and reloaded (`ModConfigEvent`). `native_r
 API 398 adds `NativeServerPlayer.entity_id` is the network entity id the player has this session (0 when not known), so hooks that only give entity ids (`living_incoming_damage`, `living_knockback`) can be matched to a player. Bundles need "hooks": 398.
 
 API 399 adds A player's chat message is about to be sent to everyone: `native_player_chat(player, name, message, replies, cancel)` is heard once for each message a player sends, after the secure-chat chain and the chat filter took it and before anyone sees it. Set `cancel` to drop it for everybody; push lines to `replies` and they go to the sender as system chat (the sender is not told otherwise). The text cannot be changed, a signed message would no longer verify. Bundles need "hooks": 399.
+
+API 400 adds a mod's own data folders (`AddServerReloadListenersEvent`). `native_add_server_reload_listeners` lists a mod's listeners: `NativeReloadListener::json(id, folder)`, the `.json` files of `data/<namespace>/<folder>/` in every namespace, as vanilla's `SimpleJsonResourceReloadListener` reads its folder. On every data load of a server (a world opening, `/reload`), before `native_server_data_loaded`, `native_server_reload_listener_apply` hands over each listener's files: `<namespace>:<path>` (without `.json`) and the parsed JSON, sorted by id, from the resource root (vanilla's and content mods' data) and the world's enabled data packs, the top pack's file for each id. A file that isn't JSON is logged and left out; a folder that leaves `data/<namespace>/` is skipped. Every mod hears every listener, so check `listener.id`. Bundles need "hooks": 400.
+
+API 401 adds a mod menu type opened with extra data (NeoForge's `openMenu` with an extra-data writer). When a mod block opens its content mod's menu type for a player, `native_menu_extra_data(player, menu, block, pos, data)` asks on the server for bytes of the mod's own (up to 32 KiB; the first mod to set `data` wins). A Horizon client gets them with the block's position just before the menu opens; while the mod's screen is open, `native_screen_pos()` gives the block the server named (not the last clicked one) and `native_screen_extra_data()` the bytes, empty when the mod wrote none. Bundles need "hooks": 401.
+
+API 402 adds `native_camera_pose(partial, position, yaw, pitch)` (client) runs every world frame after vanilla placed the camera (first or third person, a spectated mob, a minecart), with its position and its yaw and pitch in degrees. Set them to draw the world from anywhere: a cinematic, replay or film camera. The picture, culling, the sound's listener and what faces the camera (particles, item sprites, block entity text) follow it; the player, where they aim, the first-person hand (cancel it with `native_render_hand`) and which chunks load stay the player's. Values that aren't finite keep vanilla's. The field of view is `native_compute_fov`'s. Not called on the title screen's panorama. Bundles need "hooks": 402.
+
+API 403 adds A chat line from the server is about to show, once Chat Delay lets it through: `native_client_chat_received(system, overlay, sender, chat_type, message, cancel)`, NeoForge's `ClientChatReceivedEvent`, for system messages (`overlay` for the action bar), player chat and disguised chat. `sender` is 0 for system and disguised messages; `chat_type` is the chat type's registry name. Replace `message` to show another line, or set `cancel` to hide it. Bundles need "hooks": 403.
+
+API 404 adds `native_send_chat(message)` sends chat, or a command with a leading `/`, as the chat screen would, to any server; an error when not in a server's play state, for an empty message, or when the Chat option blocks it. Bundles need "hooks": 404.
+
+API 405 adds a dying player's inventory to `native_loot_drops`: after vanishing-curse items are gone and before the rest is thrown, naming the player (`entity` the player's id and `minecraft:player`, no table). A mod that takes every stack out of `drops` keeps the inventory. Not heard with `keep_inventory`. Bundles that rely on it need `"hooks": 405`.
+
+API 406 adds a trade's live offer, for the mods to change: `native_merchant_offer_traded(merchant, kind, offer)` is asked once per trade made with the live `MerchantOffer` as the trade left it (`uses` counted). A mod may change `uses`, `max_uses`, `demand`, `special_price_diff`, `price_multiplier` and `xp`; the next click and the offers sent to the player see it. Bundles need "hooks": 406.
+
+API 407 adds `NativeServerPlayer.address` is the IP address the player connects from, without the port (behind a Velocity proxy, the address the proxy forwards; empty when not known), for per-IP limits and sessions. Bundles need "hooks": 407.
+
+API 408 adds reading the server's play packets on the client (`native_client_packet`). Bundles need "hooks": 408.
+
+API 409 adds `native_send_packet(packet)` sends any serverbound play packet (`ServerboundPlayPacket`), a plugin channel's custom payload included, to any server, unchecked; an error when not in a server's play state. Bundles need "hooks": 409.
 
 ## What the launcher does
 
@@ -2843,18 +2863,18 @@ one custom payload channel `horizon:mod_net`. A vanilla client never gets them, 
 
 ### Chat and commands a client mod sends
 
-API @API:send_chat@, `crates/horizon-client/src/game/native_net.rs`: `native_send_chat(message)` sends what the player
+API 404, `crates/horizon-client/src/game/native_net.rs`: `native_send_chat(message)` sends what the player
 could type in chat, to any server, a vanilla one included: `ClientPacketListener.sendChat` and `sendCommand`. A leading
 `/` sends the rest as a command, signed where its arguments are messages; anything else goes as signed chat. The message
 is trimmed first, as the chat screen trims it. It isn't added to the chat history, and no client chat event fires
 (vanilla's `ClientChatEvent` comes only from the chat screen). It is an error when the player isn't in a server's play
 state (not connected, not joined yet or being reconfigured), when the trimmed message is empty, and when the Chat option
 blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
-typed chat. Bundles need `"hooks": @API:send_chat@`.
+typed chat. Bundles need `"hooks": 404`.
 
 ### Packets a client mod sends
 
-API @API:send_packet@, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
+API 409, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
 serverbound play packet (`mod_api::ServerboundPlayPacket`, Horizon's `play::Serverbound`) to any server, a vanilla one
 included. The usual one is a plugin channel's `ServerboundPlayPacket::CustomPayload`, for a server plugin or a Java mod
 that listens on that channel; its data is at most 32767 bytes (`ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`), past
@@ -2862,7 +2882,7 @@ which a server disconnects. The packet goes out as it is: nothing counts it, and
 so a packet that needs a sequence number, a signature or the client's own state (a block placed, a slot clicked, signed
 chat) is the mod's to get right. It is an error when the player isn't in a server's play state (not connected, not
 joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
-Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": @API:send_packet@`.
+Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": 409`.
 
 ### Server menus
 
@@ -2958,7 +2978,7 @@ block and `native_screen_extra_data()` the bytes (empty when the mod wrote none)
 open, and inside `native_screen` itself, whose slot layout the server asks for too and so can't depend on them. The
 data slots still carry what changes while the menu is open; the extra data is sent once, when it opens. Works the same
 on single player's server thread, for LAN guests and on a dedicated server. Bundles need "hooks":
-@API:menu_extra_data@.
+401.
 
 ### Menu slot rules
 
