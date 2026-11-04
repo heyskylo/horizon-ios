@@ -160,6 +160,12 @@ impl Goal for BabyFollowAdult {
 pub fn scared(m: &Mob) -> bool {
     m.extra.armadillo.state != IDLE
 }
+/// `Armadillo.mobInteract` on a client: a rolled-up armadillo returns FAIL
+/// before `Animal.mobInteract`, so its food does not consume the click. A
+/// brush still goes on to `brushOffScute`.
+pub fn client_rejects_food(m: &Mob, item: &str) -> bool {
+    scared(m) && item != "minecraft:brush"
+}
 /// `ArmadilloState.shouldHideInShell`: the model shows its shell.
 pub fn hiding_in_shell(m: &Mob) -> bool {
     let a = &m.extra.armadillo;
@@ -581,6 +587,18 @@ mod tests {
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
         m.on_ground = true;
         m
+    }
+
+    /// Spider eyes are armadillo food. Rolled up, the click fails; a brush
+    /// does not. Idle, food is left to `Animal.mobInteract`.
+    #[test]
+    fn a_rolled_up_armadillo_refuses_food() {
+        let mut m = armadillo();
+        set_state(&mut m, SCARED);
+        assert!(client_rejects_food(&m, "minecraft:spider_eye"));
+        assert!(!client_rejects_food(&m, "minecraft:brush"));
+        set_state(&mut m, IDLE);
+        assert!(!client_rejects_food(&m, "minecraft:spider_eye"));
     }
 
     #[test]

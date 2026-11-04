@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Species, equine, llama},
+    mobs::{Species, armadillo, equine, llama},
 };
 
 impl Game<'_> {
@@ -29,6 +29,12 @@ impl Game<'_> {
             || item.strip_suffix("_spawn_egg") == Some(m.kind.id.as_str())
         {
             return true;
+        }
+        // Armadillo.mobInteract: a rolled-up armadillo fails before
+        // AgeableMob/Animal.mobInteract, so food and age lock are not taken.
+        // A brush still reaches brushOffScute below.
+        if m.species() == Species::Armadillo && armadillo::client_rejects_food(m, item) {
+            return false;
         }
         // AgeableMob.mobInteract: a golden dandelion on a baby that can be age
         // locked is SUCCESS on a client too (the server sets the lock).
