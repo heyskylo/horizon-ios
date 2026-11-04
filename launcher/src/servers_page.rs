@@ -309,6 +309,11 @@ impl Servers {
         self.texts.get(&f).map_or("", LineEdit::text)
     }
 
+    /// Whether this field has the keyboard, as of this frame.
+    pub(super) fn has_focus(&self, f: Field) -> bool {
+        self.focused == Some(f)
+    }
+
     /// Which field has the keyboard, read every frame.
     pub(super) fn note_focus(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(h) = self.focus_soon.take().and_then(|f| self.focus.get(&f)) {
