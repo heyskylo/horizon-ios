@@ -26,6 +26,12 @@ def setup(*commands):
     return [cmd(c, False) for c in commands]
 
 
+def weather_predicate_cases():
+    return [('any', None, None), ('rain', True, None), ('dry', False, None),
+            ('thunder', None, True), ('quiet', None, False),
+            ('rain_thunder', True, True), ('rain_quiet', True, False),
+            ('dry_thunder', False, True), ('dry_quiet', False, False)]
+
 def inline_predicate_constants():
     always = {'type': 'minecraft:all_of', 'terms': []}
     never = {'type': 'minecraft:inverted', 'term': always}
@@ -47,6 +53,18 @@ def predicate_selector_fixtures(group_names):
         sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
                  'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
         fixtures.update({'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep})
+    if 'named weather predicates' in group_names:
+        for name, rain, thunder in weather_predicate_cases():
+            condition = {'type': 'minecraft:weather_check'}
+            if rain is not None:
+                condition['raining'] = rain
+            if thunder is not None:
+                condition['thundering'] = thunder
+            fixtures['command_weather:' + name] = condition
+        always = {'type': 'minecraft:all_of', 'terms': []}
+        fixtures['command_weather:always'] = always
+        fixtures['command_weather:never'] = {'type': 'minecraft:inverted', 'term': always}
+
     if 'inline execute predicates' in group_names:
         fixtures.update({f'h286_inline:{name}': value
                          for name, value, _ in inline_predicate_constants()})
@@ -126,6 +144,76 @@ def allay_pocket_inventory():
             else:
                 ops.append(cmd(f'/execute unless data entity {target} equipment.mainhand', expect_result=1))
     return ops
+
+
+def named_weather_predicates():
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/gamerule minecraft:advance_weather', 0)
+    check('/execute if dimension minecraft:overworld')
+    out.extend(setup('/forceload remove 0 0'))
+    check('/forceload add 0 0')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 8 200 8')
+    check('/weather clear 100t', 100)
+    check('/scoreboard objectives add weather_cmd dummy')
+    out.extend(setup('/execute store result score #start weather_cmd run time query gametime'))
+
+    def clock(ticks):
+        out.extend(setup('/execute store result score #clock weather_cmd run time query gametime'))
+        check('/scoreboard players operation #clock weather_cmd -= #start weather_cmd', ticks)
+
+    def snapshot(name, ticks, rain, thunder, saved):
+        out.append({'op': 'weather_state', 'label': name, 'expect_state': saved})
+        clock(ticks)
+        expected = [(name, (r is None or r == rain) and (t is None or t == thunder))
+                    for name, r, t in weather_predicate_cases()]
+        for predicate, passes in expected + [('always', True), ('never', False)]:
+            out.extend(setup('/scoreboard players set #r weather_cmd 31',
+                             '/scoreboard players set #s weather_cmd 17'))
+            check('/scoreboard players get #r weather_cmd', 31)
+            check('/scoreboard players get #s weather_cmd', 17)
+            out.append(cmd('/execute store result score #r weather_cmd store success score #s weather_cmd '
+                           'run execute if predicate command_weather:' + predicate))
+            check('/scoreboard players get #r weather_cmd', int(passes))
+            check('/scoreboard players get #s weather_cmd', int(passes))
+
+    dry = [0, 0, 100, 0, 0]
+    storm = [1, 1, 0, 100, 100]
+    snapshot('clear_initial', 0, False, False, dry)
+    out.append(cmd('/execute if predicate command_weather:missing'))
+    check('/weather thunder 100t', 100)
+    snapshot('storm_0', 0, False, False, storm)
+    # Fresh Java 26.3 measurements: both levels rise from zero. Thunder
+    # uses their product, rather than the saved flags or raw thunder level.
+    elapsed = 0
+    for at, rain, thunder in [(19, False, False), (20, True, False), (21, True, False),
+                              (90, True, False), (91, True, False), (94, True, False),
+                              (95, True, True), (100, True, True)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'storm_{at}', at, rain, thunder, storm)
+        elapsed = at
+    check('/weather clear 100t', 100)
+    snapshot('fade_0', 100, True, True, dry)
+    elapsed = 0
+    for at, rain, thunder in [(1, True, True), (5, True, True), (6, True, False),
+                              (79, True, False), (80, True, False), (81, False, False),
+                              (100, False, False)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'fade_{at}', 100 + at, rain, thunder, dry)
+        elapsed = at
+    clock(200)
+    out.extend(setup('/scoreboard objectives remove weather_cmd', '/forceload remove 0 0',
+                     '/tick unfreeze'))
+    return out
 
 
 def client_commands():
@@ -4679,6 +4767,7 @@ def groups():
         ('command reinforcement admission', command_reinforcement_admission()),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
+        ('named weather predicates', named_weather_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
