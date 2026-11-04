@@ -14,6 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
+    random::RandomSource,
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
