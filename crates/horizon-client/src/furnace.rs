@@ -30,6 +30,7 @@ pub trait FurnaceCooking {
         providers: &Providers,
         drops: &mut Vec<ItemStack>,
     ) -> Option<bool>;
+    fn idle(&self) -> bool;
 }
 impl FurnaceCooking for Furnace {
     fn set_input(&mut self, recipes: &Recipes, stack: Option<ItemStack>) {
@@ -171,6 +172,11 @@ impl FurnaceCooking for Furnace {
         }
         (was_lit != lit).then_some(lit)
     }
+    fn idle(&self) -> bool {
+        self.lit_remaining <= 0
+            && self.cooking_timer <= 0
+            && !(self.items[0].is_some() && self.items[1].is_some())
+    }
 }
 fn total_time(time: u32, speed: f32) -> i32 {
     if speed > 0.0 {
@@ -186,6 +192,27 @@ mod tests {
     use crate::{containers::FurnaceKind, items::Items};
     use horizon_world::loot::PackOverlay;
     use std::{collections::HashMap, fs};
+
+    #[test]
+    fn a_furnace_is_idle_only_while_its_tick_changes_nothing() {
+        let stack = |id: &str| Some(ItemStack::new(id, 1));
+        let furnace = |input, fuel, lit_remaining, cooking_timer| Furnace {
+            kind: FurnaceKind::Furnace,
+            items: [input, fuel, stack("minecraft:iron_ingot")],
+            lit_remaining,
+            lit_total: 0,
+            cooking_timer,
+            cooking_total: 200,
+            speed: 1.0,
+            recipes_used: HashMap::new(),
+        };
+        assert!(furnace(None, None, 0, 0).idle());
+        assert!(furnace(stack("minecraft:iron_ore"), None, 0, 0).idle());
+        assert!(furnace(None, stack("minecraft:coal"), 0, 0).idle());
+        assert!(!furnace(stack("minecraft:iron_ore"), stack("minecraft:coal"), 0, 0).idle());
+        assert!(!furnace(None, None, 1, 0).idle());
+        assert!(!furnace(stack("minecraft:iron_ore"), None, 0, 5).idle());
+    }
 
     /// A furnace with `fuel` x `count` burning `test:ore` into `test:ingot`, over a
     /// data root holding that one recipe and an item table with two fuels: `test:coal`

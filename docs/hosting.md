@@ -46,13 +46,14 @@ Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64), in PowerShell:
+Windows (x64 or ARM64), in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+the current Horizon Nightly from GitHub (the only build Horizon ships;
 `--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
@@ -180,6 +181,9 @@ low_memory = false           # true: less memory, slightly slower ticks (see bel
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
 keep = 12                    # automatic backups kept; backups made by hand are never deleted
 
+[updates]
+keep = 1                     # other releases kept by updates, besides the one in use and the one rollback goes to
+
 [panel]
 bind = "127.0.0.1:8130"      # this computer only, or a tailnet address (100.x); "" turns it off
 allow_public = false
@@ -282,14 +286,19 @@ horizon-server ban-ip ADDRESS|NAME [REASON]
 horizon-server pardon-ip ADDRESS
 horizon-server backup [NAME]             back up now
 horizon-server backups [--json]          list the backups
-horizon-server restore BACKUP [--yes]
+horizon-server restore BACKUP [--dimension ID] [--yes]
 horizon-server service install|uninstall|print [--system]
 horizon-server panel                     a one-time login link for the web panel
 horizon-server import FILE               server.toml from a vanilla server.properties
+horizon-server import-resources DIR      copy prepared game files into place (step 2)
 horizon-server config [--json]           the settings in server.toml
-horizon-server config set KEY=VALUE...   change settings, checked first (below)
-horizon-server update [--check]          install the newest release and restart on it (below)
-horizon-server rollback                  back to the release before
+horizon-server config set KEY=VALUE... [--json]
+                                         change settings, checked first (below)
+horizon-server update [--check [--json]] [--version TAG] [--timeout SECONDS]
+                                         install the newest release and restart on it (below);
+                                         --archive FILE --version NAME installs an archive you have
+horizon-server rollback [--timeout SECONDS]
+                                         back to the release used before
 ```
 
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
@@ -352,7 +361,7 @@ minutes. It keeps the crash report and gives up after 5 crashes in 10 minutes, a
 
 **Updates** (a server installed with the install script). The server checks for a newer release a minute
 after it starts and every 6 hours after, and says so in its log, in `status` and in the panel; it never
-updates by itself. `horizon-server update --check` asks once. `horizon-server update`:
+updates by itself. `horizon-server update --check` (add `--json` for machine output) asks once. `horizon-server update`:
 
 1. downloads the current Nightly and checks it against its signed SHA-256;
 2. stops the game, backs up the world (`backups/<time>-before-<release>.zip`) and switches to the new
@@ -527,7 +536,8 @@ and the oldest automatic ones beyond `keep` are deleted. Backups you make by han
 
 `restore` takes a backup's file name, a unique start of it, or the name you gave it. It moves the current
 world aside to `backups/replaced-<time>/` (never deleted), puts the backup in place, and restarts the server if
-it was running. The panel does the same with one click.
+it was running. Add `--dimension ID` (like `minecraft:the_nether`) to bring back only that dimension and leave
+the rest of the world as it is. The panel does the same with one click.
 
 ## 8. Start it with the computer
 

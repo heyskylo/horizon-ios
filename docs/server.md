@@ -417,8 +417,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Stopped game.** A `stop` that reaches the game in game, over RCON or through `horizon-server cmd` leaves the
   supervisor, control API and panel alive with no engine process; `stop` on the supervisor's own stdin (`run`, a
   hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
-  `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` still shuts down
-  both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
+  `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` and the management
+  protocol's `server/stop` (as vanilla's, the process exits) still shut down both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the

@@ -90,7 +90,7 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | Content mods (`registries`: data-driven blocks, items, mob effects, thrown entity types and menu types) | preview | manifest `api = "0.2"` |
 | Native mods (horizon-mixins bundles, [native-mods.md](../native-mods.md)) | experimental | the pinned revisions |
 | `cargo horizon-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
-| Shader API | not started | |
+| Shader API | experimental | 0.1 |
 | `horizon-ctl` commands and MCP tools | preview | none yet (unversioned) |
 | The game's own control-socket commands outside `horizon-ctl`'s table (test hooks) | experimental | |
 | `horizon-server` commands, `server.toml` | stable | `horizon-server --version` |

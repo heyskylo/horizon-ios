@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A dedicated server saves connected players on save-all/stop and keeps safe data after a panic.
+"""A dedicated server saves connected players on save-all/stop/SIGTERM and keeps safe data after a panic.
 
 `MinecraftServer.runServer` catches what the tick throws and still stops the server. Horizon's
 `stop_after_crash` does the same, but a panic can interrupt a guest's turn (the game holds that
@@ -17,6 +17,7 @@ checks, from the files the server leaves:
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -157,6 +158,49 @@ def connected_saves(build):
     print('connected player save-all and stop: ok', flush=True)
 
 
+def signal_saves(build):
+    """SIGTERM stops the server as `stop` does (vanilla's shutdown hook): a connected player's
+    inventory and ender chest changed since the last save are in their file afterwards."""
+    try:
+        from . import anvil_dump, lan_e2e
+    except ImportError:
+        import anvil_dump
+        import lan_e2e
+    directory = build / 'signal-server'
+    port = free_port()
+    write_server_dir(directory, port)
+    server = start(directory)
+    client = lan_e2e.Game('sigterm', binary().with_name('horizon-ctl'), lab.RESOURCES)
+    file = directory / 'world' / 'players' / 'data' / f'{offline_uuid(PLAYER)}.dat'
+    try:
+        client.raw('launch', '--headless', '--game', binary())
+        client.raw('connect', f'127.0.0.1:{port}', PLAYER)
+        client.raw('wait-for', 'loaded', '--timeout', 300)
+        server.wait_for(rf'{PLAYER} joined the game')
+        server.console(f'give {PLAYER} minecraft:diamond 9')
+        server.console(f'item replace entity {PLAYER} enderchest.0 with minecraft:emerald 5')
+        server.console('say GIVEN-BEFORE-SIGTERM')
+        server.wait_for(r'\[Server\] GIVEN-BEFORE-SIGTERM')
+        assert not file.exists(), 'the player was saved before the signal'
+        server.process.send_signal(signal.SIGTERM)
+        try:
+            server.process.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            raise AssertionError('the server did not stop within 120 s of SIGTERM')
+        server.reader.join(timeout=10)
+        assert any('Saving players' in line for line in server.lines), \
+            'SIGTERM ended the server without saving:\n' + '\n'.join(server.lines[-10:])
+        assert file.exists(), 'SIGTERM ended the server without writing the player file'
+        player = anvil_dump.plain(anvil_dump.read_dat(file), full=True)
+        diamonds = sum(i['count'] for i in player['Inventory'] if i['id'] == 'minecraft:diamond')
+        emeralds = sum(i['count'] for i in player.get('EnderItems', []) if i['id'] == 'minecraft:emerald')
+        assert (diamonds, emeralds) == (9, 5), f'saved {diamonds} diamonds and {emeralds} ender chest emeralds, not 9 and 5'
+    finally:
+        client.close()
+        server.stop()
+    print('connected player saved on SIGTERM: ok', flush=True)
+
+
 def main():
     subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bin', 'horizon-client', '--bin', 'horizon-ctl'], cwd=lab.ROOT, check=True)
     build = lab.LOCAL / 'dedicated-crash-save'
@@ -169,6 +213,7 @@ def main():
     out.mkdir()
     problems = []
     connected_saves(build)
+    signal_saves(build)
 
     # A clean stop writes the player's file.
     server = start(directory)

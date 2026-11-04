@@ -18,7 +18,7 @@ ClientboundStoreCookiePacket.write	port	crates/horizon-protocol/src/buf.rs::writ
 ClientboundTransferPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! Transfer {host Str, port VarInt}
 ServerboundResourcePackPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! ResourcePackResponse {id Uuid, action VarInt}
 CustomPacketPayload.codec	skip:java		StreamCodec factory; packet! macro and Codec trait cover it
-DiscardedPayload.codec	missing		minor: no 32767-byte cap on unknown custom payloads; Unknown keeps the raw bytes
+DiscardedPayload.codec	port	crates/horizon-client/src/lan/conn.rs::checked_play	a play or configuration payload over 32767 bytes is refused; an accepted unknown payload stays raw
 ServerboundCookieResponsePacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! CookieResponse {key Ident, payload Option<Bytes>}
 ClientboundAddEntityPacket.<init>	port	crates/horizon-client/src/lan/entity.rs::ServerEntity::pairing	builds the spawn packet from the entity state
 ClientboundAddEntityPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! AddEntity (play.rs) in the vanilla field order

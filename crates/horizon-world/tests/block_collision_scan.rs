@@ -147,8 +147,8 @@ impl BlockCollisionWorld for Recording {
 }
 
 /// The cells the scan reads for `bounds` (Cursor3D order: x fastest, then
-/// y, then z, without the 8 corners), less the outer cells of `contained`.
-fn expected_cells(bounds: Aabb, contained: &[i32]) -> Vec<BlockPos> {
+/// y, then z, without the 8 corners), less the outer cells `contained` holds.
+fn expected_cells(bounds: Aabb, contained: impl Fn(BlockPos) -> bool) -> Vec<BlockPos> {
     let (min, max) = (bounds.min_position(), bounds.max_position());
     let start = BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
         .offset(-1, -1, -1);
@@ -170,7 +170,7 @@ fn expected_cells(bounds: Aabb, contained: &[i32]) -> Vec<BlockPos> {
             .filter(|&a| r[a] == 0 || r[a] == sizes[a] - 1)
             .count();
         let p = start.offset(r[0], r[1], r[2]);
-        if edges < 3 && (edges == 0 || !contained.contains(&(p.y >> 4))) {
+        if edges < 3 && (edges == 0 || !contained(p)) {
             expected.push(p);
         }
     }
@@ -200,7 +200,7 @@ fn cells_follow_the_cursor_order_without_corners() {
         .unwrap()
         .count();
         assert_eq!(hits, 0);
-        assert_eq!(world.cells, expected_cells(bounds, &[]));
+        assert_eq!(world.cells, expected_cells(bounds, |_| false));
     }
 }
 
@@ -243,8 +243,89 @@ fn outer_cells_of_contained_sections_are_not_read() {
         .unwrap()
         .count();
         assert_eq!(hits, 0);
-        assert_eq!(world.cells, expected_cells(bounds, &contained));
-        assert!(world.cells.len() < expected_cells(bounds, &[]).len());
+        assert_eq!(
+            world.cells,
+            expected_cells(bounds, |p| contained.contains(&(p.y >> 4)))
+        );
+        assert!(world.cells.len() < expected_cells(bounds, |_| false).len());
+    }
+}
+
+/// Sections whose blocks never reach out, here those of even columns:
+/// records the cells read and every section asked about.
+struct ByColumn {
+    cells: Vec<BlockPos>,
+    asked: Vec<(ChunkPos, i32)>,
+}
+impl BlockCollisionWorld for ByColumn {
+    type Error = io::Error;
+    type Chunk = ChunkPos;
+    fn collision_chunk(&mut self, p: ChunkPos) -> io::Result<Option<ChunkPos>> {
+        Ok(Some(p))
+    }
+    fn collision_block(&mut self, _: ChunkPos, p: BlockPos) -> io::Result<CollisionBlock> {
+        self.cells.push(p);
+        Ok(CollisionBlock {
+            state: BlockStateId(0),
+            large_collision_shape: true,
+            moving_piston: true,
+            empty_shape: true,
+        })
+    }
+    fn is_suffocating(&mut self, _: ChunkPos, _: CollisionBlock, _: BlockPos) -> io::Result<bool> {
+        unreachable!()
+    }
+    fn context_shape(
+        &mut self,
+        _: CollisionBlock,
+        _: BlockPos,
+        _: &CollisionContext<'_>,
+    ) -> io::Result<VoxelShape> {
+        unreachable!()
+    }
+    fn may_reach_out(&mut self, chunk: ChunkPos, section_y: i32) -> io::Result<bool> {
+        self.asked.push((chunk, section_y));
+        Ok(chunk.x & 1 != 0)
+    }
+}
+
+/// A box across a chunk border and a section border goes back and forth
+/// between columns on every row: each section is asked about once, and
+/// each column's answer applies to its own cells only.
+#[test]
+fn each_section_is_asked_once_and_answers_for_its_column() {
+    let boxes = [
+        // Two columns, sections 3 and 4.
+        Aabb::new(Vec3::new(14.6, 63.5, 3.2), Vec3::new(16.4, 65.3, 4.1)),
+        // Four columns, one section.
+        Aabb::new(Vec3::new(-1.3, 20.0, 15.2), Vec3::new(0.3, 21.8, 16.4)),
+        // Four columns, two sections.
+        Aabb::new(Vec3::new(-0.7, -0.5, -0.7), Vec3::new(0.7, 1.2, 0.7)),
+    ];
+    for bounds in boxes {
+        let mut world = ByColumn {
+            cells: Vec::new(),
+            asked: Vec::new(),
+        };
+        let hits = BlockCollisionScan::new(
+            &mut world,
+            CollisionContext::empty(false),
+            bounds,
+            false,
+            1_000_000,
+        )
+        .unwrap()
+        .count();
+        assert_eq!(hits, 0);
+        assert_eq!(
+            world.cells,
+            expected_cells(bounds, |p| p.chunk().x & 1 == 0)
+        );
+        let mut distinct = world.asked.clone();
+        distinct.sort_by_key(|&(c, y)| (c.x, c.z, y));
+        distinct.dedup();
+        assert_eq!(world.asked.len(), distinct.len(), "{:?}", world.asked);
+        assert!(distinct.len() > 1);
     }
 }
 

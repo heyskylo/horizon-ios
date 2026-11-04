@@ -2,7 +2,8 @@
 //! `item.properties`, `entity.properties` (4.1). `key=value` lines, `#` comments, a trailing `\`
 //! continuing a value on the next line, and conditional directives evaluated with the
 //! standard and option macros (1.5 item 2). `#define` and `#undef` work in every one of them:
-//! a public pack defines a macro in its `shaders.properties` and tests it further down.
+//! a public pack defines a macro in its `shaders.properties` and tests it further down. The
+//! lines of custom uniforms and variables (`uniform.*`, `variable.*`) have those macros expanded.
 //! No other escape is read: values are names, numbers and expressions. A later duplicate key
 //! replaces the earlier one, with a note.
 
@@ -71,11 +72,21 @@ impl Properties {
                 continue;
             }
             match logical.split_once('=') {
-                Some((key, value)) if !key.trim().is_empty() => out.insert(Entry {
-                    key: key.trim().to_owned(),
-                    value: value.trim().to_owned(),
-                    line: number,
-                }),
+                Some((key, value)) if !key.trim().is_empty() => {
+                    let (mut key, mut value) = (key.trim().to_owned(), value.trim().to_owned());
+                    // A custom uniform's or variable's line is read with the macros expanded, as
+                    // Iris 1.11.7 reads it (probe pack): options, standard macros and this
+                    // file's own `#define`s, in the name too.
+                    if key.starts_with("uniform.") || key.starts_with("variable.") {
+                        key = macros.expand(&key).trim().to_owned();
+                        value = macros.expand(&value).trim().to_owned();
+                    }
+                    out.insert(Entry {
+                        key,
+                        value,
+                        line: number,
+                    })
+                }
                 _ => out.note(number, "not a key=value line"),
             }
         }
@@ -129,8 +140,9 @@ impl Properties {
             Ok(true) => {}
             Ok(false) if conditionals.active() => match word {
                 "define" => {
-                    let (name, value) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                    macros.define(name, value.trim());
+                    if let Err(e) = macros.define_line(rest) {
+                        self.note(number, &e);
+                    }
                 }
                 "undef" => macros.undef(rest),
                 _ => {}

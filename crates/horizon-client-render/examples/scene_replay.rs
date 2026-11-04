@@ -190,8 +190,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     }
     let one = [255u8; 4];
     let zero = [0u8; 4];
+    let pixels = render.pixels.get();
     let prepared = PreparedTextures::new(
-        &render.pixels,
+        &pixels,
         render.sprite_size,
         render.texture_layers,
         &render.sprite_mips,
@@ -206,7 +207,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         true,
-        &render.pixels,
+        &pixels,
         render.sprite_size,
         render.sprite_minimum_size,
         render.texture_layers,
@@ -222,7 +223,10 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.graphics_api(),
         settings.translucent_batching,
         false,
+        false,
     ))?;
+    drop(pixels);
+    render.pixels.pack();
     let state = &scene.renderer;
     let [width, height] = o.size.unwrap_or(state.size);
     renderer.resize(width, height);

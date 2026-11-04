@@ -138,7 +138,7 @@ Salmon.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::final
 Salmon.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::awake_dims_in	the variant's bounding box scale (small 0.5, medium 1.0, large 1.5) over the whole box, through aquatic::salmon_scale
 TropicalFish.packVariant	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	packed pattern, base colour and pattern colour; lan.rs::mob_meta packs it for sync
 TropicalFish.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	packed variant entry
-TropicalFish.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	an unknown pattern is a kob
+TropicalFish.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	an unknown pattern is a kob; full color bytes use DyeColor.byId zero fallback
 TropicalFish.setPattern	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's pattern component
 TropicalFish.setBaseColor	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's base colour component
 TropicalFish.setPatternColor	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's pattern colour component

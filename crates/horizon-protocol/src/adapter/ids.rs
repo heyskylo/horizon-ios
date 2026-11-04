@@ -76,6 +76,8 @@ pub struct Ids {
     pub position_source_type: Remap,
     pub consume_effect_type: Remap,
     pub enchantment_effect_component_type: Remap,
+    /// The data components the older version has and the pinned one lacks: their older ids and names.
+    pub dropped_components: &'static [(u16, &'static str)],
     /// EntityDataSerializers' registration order (not a registry).
     pub entity_data_serializer: Remap,
 }
@@ -85,11 +87,34 @@ pub struct Ids {
 pub struct Quirks {
     /// `SlotDisplay` type 6 holds a bare tag id (TagSlotDisplay) instead of a HolderSet (26.2).
     pub tag_slot_display_is_id: bool,
+    /// `pot_decorations` is a list of up to four item ids, a brick for an undecorated side, instead of four
+    /// optional item stack templates (26.2).
+    pub pot_decorations_are_items: bool,
+    /// `jukebox_playable` is an EitherHolder (a flag, then a song's key or holder) instead of a holder, and
+    /// `damage_resistant` a bare damage type tag instead of a HolderSet (1.21.11).
+    pub either_holder_song_and_tag_resistance: bool,
+    /// `use_remainder` holds an ItemStack and `container` a list of optional ones (a count first, 0 for
+    /// none) instead of item stack templates (1.21.11).
+    pub stacks_in_components: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
+        pot_decorations_are_items: false,
+        either_holder_song_and_tag_resistance: false,
+        stacks_in_components: false,
     };
+}
+
+/// Whether an older server's packet is being read on this thread.
+pub fn reading_older() -> bool {
+    matches!(ACTIVE.get(), Some((_, Way::Up)))
+}
+
+/// Reads and writes the pinned numbering on this thread until the guard drops: for values already
+/// renumbered while an older server's packet is read.
+pub fn pinned() -> Guard {
+    Guard(ACTIVE.replace(None))
 }
 
 /// The older version's quirks while its packets are decoded on this thread; none otherwise.
@@ -152,6 +177,19 @@ pub fn item(id: i32) -> i32 {
 /// A data component type id as read or about to be written on this thread.
 pub fn component(id: i32) -> i32 {
     apply(id, |ids| ids.data_component_type)
+}
+/// The name of the data component an older server sent as `id` (its own number) that the pinned version
+/// no longer has, while such a server's packet is read on this thread. The readers read its value past and
+/// drop it.
+pub fn dropped_component(id: i32) -> Option<&'static str> {
+    match ACTIVE.get() {
+        Some((ids, Way::Up)) => ids
+            .dropped_components
+            .iter()
+            .find(|(old, _)| i32::from(*old) == id)
+            .map(|(_, name)| *name),
+        _ => None,
+    }
 }
 /// A particle type id as read or about to be written on this thread.
 pub fn particle(id: i32) -> i32 {
@@ -228,6 +266,116 @@ mod tests {
         assert_eq!(ids.block_state.up(3987), Some(5543)); // chest, first state
         assert_eq!(ids.block_state.up(8), Some(8)); // grass_block
         assert_eq!(ids.state_bits(), (15, 16));
+    }
+
+    #[test]
+    fn components_the_pinned_version_dropped_are_read_past() {
+        use crate::buf::{Codec, Reader, Writer};
+        use crate::item::{Component, Slot};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        // A filled map (1104 in 1.21.11, 1238 in 26.3) as a 1.21.11 server sends it. Its patch adds
+        // map_color (43, gone in 26.3), swing_animation (40, gone too), damage 5 (3 in both) and a
+        // tooltip_display (18 in both) hiding dyed_color (42, 47 in 26.3) and swing_animation; it removes
+        // map_color and potion_contents (49, 53 in 26.3). Ids read off both versions' registries reports.
+        let sent = [
+            1, 0xd0, 0x08, // count, item
+            4, 2, // added, removed
+            43, 0x00, 0xff, 0x00, 0x00, // map_color: a big-endian int
+            40, 1, 6, // swing_animation: its type and duration
+            3, 5, // damage
+            18, 0, 2, 42, 40, // tooltip_display: shown, two hidden components
+            43, 49, // removed
+        ];
+        let stack = {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+        };
+        assert_eq!((stack.item, stack.count), (1238, 1));
+        assert_eq!(
+            stack.added,
+            [
+                (3, Component::Int(5)),
+                (
+                    18,
+                    Component::TooltipDisplay {
+                        hide: false,
+                        hidden: vec![47],
+                    },
+                ),
+            ]
+        );
+        assert_eq!(stack.removed, [53]);
+        // Written back to that server, the kept components take its numbers again.
+        let mut w = Writer::new();
+        {
+            let _down = renumbering(ids, Way::Down);
+            Slot::write(&Some(stack), &mut w);
+        }
+        assert_eq!(w.data, [1, 0xd0, 0x08, 2, 1, 3, 5, 18, 0, 1, 42, 49]);
+    }
+
+    #[test]
+    fn components_whose_layout_changed_are_read_in_the_servers() {
+        use crate::buf::{Codec, Reader};
+        use crate::item::{Component, Slot};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        let read = |sent: &[u8]| {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(sent)).unwrap().unwrap()
+        };
+        // A decorated pot (319 in 1.21.11, 392 in 26.3) as a 1.21.11 server sends it: pot_decorations (72)
+        // lists a brick (1025) and an angler sherd (1445, 1598 in 26.3); damage_resistant (27) a tag id;
+        // jukebox_playable (62) a song by holder: the flag set, then the song's id plus one.
+        let mut sent = vec![1, 0xbf, 0x02, 3, 0];
+        sent.extend([72, 2, 0x81, 0x08, 0xa5, 0x0b]);
+        sent.extend([27, 17]);
+        sent.extend(b"minecraft:is_fire");
+        sent.extend([62, 1, 3]);
+        let stack = read(&sent);
+        assert_eq!(stack.item, 392);
+        let mut resistant = vec![0, 17];
+        resistant.extend(b"minecraft:is_fire");
+        assert_eq!(
+            stack.added,
+            [
+                // Only the left side holds an item: one sherd by its pinned id, no components.
+                (76, Component::Raw(vec![0, 1, 0xbe, 0x0c, 1, 0, 0, 0, 0])),
+                (27, Component::Raw(resistant)),
+                (66, Component::Raw(vec![3])),
+            ]
+        );
+        // A song named by its key has no pinned holder: the component goes.
+        let mut sent = vec![1, 0xbf, 0x02, 1, 0, 62, 0, 13];
+        sent.extend(b"minecraft:cat");
+        assert_eq!(read(&sent).added, []);
+    }
+
+    #[test]
+    fn items_inside_components_take_the_pinned_ids_and_layout() {
+        use crate::buf::{Codec, Reader};
+        use crate::item::{Component, Slot};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        // A shulker box (581 in 1.21.11, 656 in 26.3) as a 1.21.11 server sends it. Its container (73, 77
+        // in 26.3) lists ItemStacks, a count first: two diamonds (898, 1012 in 26.3) with a map_color (43,
+        // gone in 26.3), then an empty slot. Its use_remainder (25 in both) is a bowl (892, 1006).
+        let sent = [
+            1, 0xc5, 0x04, 2, 0, // the box, two added components
+            73, 2, 2, 0x82, 0x07, 1, 0, 43, 0, 0, 0, 5, 0, // container
+            25, 1, 0xfc, 0x06, 0, 0, // use_remainder
+        ];
+        let stack = {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+        };
+        assert_eq!(stack.item, 656);
+        // Templates, the item first: the diamonds without the color, then no item.
+        assert_eq!(
+            stack.added,
+            [
+                (77, Component::Raw(vec![2, 1, 0xf4, 0x07, 2, 0, 0, 0])),
+                (25, Component::Raw(vec![0xee, 0x07, 1, 0, 0])),
+            ]
+        );
     }
 
     #[test]

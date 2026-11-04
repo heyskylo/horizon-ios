@@ -402,6 +402,32 @@ pub fn prometheus(shared: &Shared) -> Response {
         "Chunks loaded",
         &[("", f(&game["chunks"]))],
     );
+    // By dimension, from the game's `levels`; a level the game does not count is left out, not
+    // reported as 0.
+    let by_dimension = |key: &str| -> Vec<(String, Option<f64>)> {
+        game["levels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|level| {
+                let dimension = level["dimension"].as_str()?;
+                Some((format!("{{dimension=\"{dimension}\"}}"), f(&level[key])))
+            })
+            .collect()
+    };
+    for (name, help, key) in [
+        ("loaded_chunks", "Chunks loaded, by dimension", "chunks"),
+        (
+            "entities",
+            "Entities (players and block entities apart), by dimension",
+            "entities",
+        ),
+    ] {
+        let values = by_dimension(key);
+        let values: Vec<(&str, Option<f64>)> =
+            values.iter().map(|(l, v)| (l.as_str(), *v)).collect();
+        gauge(name, help, &values);
+    }
     gauge(
         "memory_rss_bytes",
         "The game process's resident memory",
@@ -577,6 +603,45 @@ mod tests {
         ] {
             assert!(text.contains(line), "{line} in {text}");
         }
+        assert!(
+            !text.contains("horizon_entities"),
+            "no levels, no counts: {text}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn chunks_and_entities_are_reported_by_dimension() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-levels-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.state.lock().unwrap().sample = json!({
+            "game": { "tps": 20.0, "chunks": 441, "levels": [
+                { "dimension": "minecraft:overworld", "chunks": 441, "entities": 37 },
+                { "dimension": "minecraft:the_nether", "chunks": 25, "entities": 0 },
+                { "dimension": "minecraft:the_end" },
+            ] },
+        });
+        let text = prometheus(&shared).body;
+        for line in [
+            "# TYPE horizon_loaded_chunks gauge
+",
+            "horizon_loaded_chunks{dimension=\"minecraft:overworld\"} 441
+",
+            "horizon_loaded_chunks{dimension=\"minecraft:the_nether\"} 25
+",
+            "# TYPE horizon_entities gauge
+",
+            "horizon_entities{dimension=\"minecraft:overworld\"} 37
+",
+            "horizon_entities{dimension=\"minecraft:the_nether\"} 0
+",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        // A level the game gave no count for has no line, rather than a 0.
+        assert!(!text.contains("the_end"), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

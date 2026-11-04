@@ -291,6 +291,8 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 effect: "minecraft:breath_of_the_nautilus",
                 ticks: 60,
                 amplifier: 0,
+                // AbstractNautilus.applyEffects: ambient, visible, showIcon.
+                ambient: true,
             });
         }
     } else {
@@ -580,8 +582,8 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
         p.visible("corals", false);
     }
 }
-/// Saved fields: `TamableAnimal`'s owner, the saddle, the zombie's variant
-/// and the brain's attack cooldown.
+/// `TamableAnimal.addAdditionalSaveData`: owner and ordered Sitting, plus
+/// the saddle, the zombie's variant and the brain's attack cooldown.
 pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     use horizon_world::nbt::Tag;
     if let Some(owner) = m.extra.owner {
@@ -589,7 +591,7 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     } else {
         map.remove(&"Owner".into());
     }
-    map.insert("Sitting".into(), Tag::Byte(0));
+    map.insert("Sitting".into(), Tag::Byte(i8::from(m.extra.sitting)));
     if zombie(m) {
         let v = VARIANTS[usize::from(m.extra.variant).min(1)];
         map.insert(
@@ -621,10 +623,12 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
         )]),
     );
 }
+/// `TamableAnimal.readAdditionalSaveData`: Sitting is independent of Owner.
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     use horizon_world::nbt::Tag;
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
+    m.extra.sitting = crate::entity_nbt::flag(tag, "Sitting");
     if let Some(Tag::String(v)) = tag.get("variant") {
         let v = v.to_string().unwrap_or_default();
         m.extra.variant = u8::from(v.trim_start_matches("minecraft:") == "warm");
@@ -649,6 +653,44 @@ mod tests {
     use super::*;
     use crate::mobs::world::with_test_world;
     use std::sync::Arc;
+
+    #[test]
+    fn saved_sitting_is_independent_of_owner_and_raw_nbt_for_both_species() {
+        use horizon_world::nbt::Tag;
+        for (id, species) in [
+            ("minecraft:nautilus", Species::Nautilus),
+            ("minecraft:zombie_nautilus", Species::ZombieNautilus),
+        ] {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = id.into();
+            kind.species = species;
+            let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+            for owner in [None, Some([1, 2, 3, 4])] {
+                for sitting in [None, Some(false), Some(true)] {
+                    let mut entries = Vec::new();
+                    if let Some(owner) = owner {
+                        entries.push(("Owner", Tag::IntArray(owner.to_vec())));
+                    }
+                    if let Some(sitting) = sitting {
+                        entries.push(("Sitting", Tag::Byte(i8::from(sitting))));
+                    }
+                    let raw = Tag::compound(entries);
+                    let expected = sitting.unwrap_or(false);
+                    m.extra.sitting = !expected;
+                    from_nbt(&mut m, &raw);
+                    assert_eq!(m.extra.owner, owner);
+                    assert_eq!(m.extra.sitting, expected, "{id} {owner:?} {sitting:?}");
+                    // No raw compound: this must come from the modeled flag.
+                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None);
+                    assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(expected))));
+                    // A stale raw flag must not override a later model change.
+                    m.extra.sitting = !expected;
+                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None);
+                    assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(!expected))));
+                }
+            }
+        }
+    }
 
     /// `ChargeAttack.dealKnockBack` is `causeExtraKnockback`: `LivingEntity.knockback`
     /// on the target, away from (sin(yaw), -cos(yaw)), not a raw push of its motion.

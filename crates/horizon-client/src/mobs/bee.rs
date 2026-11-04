@@ -338,29 +338,39 @@ pub fn hurt(m: &mut Mob) {
 pub fn sting(m: &mut Mob, who: Who, cx: &mut Cx) {
     let from = [m.position.x, m.position.y, m.position.z];
     let amount = (m.attrs.attack_damage as i32) as f32;
+    // `Bee.doHurtTarget`: any living target is poisoned when the hit lands,
+    // 10 s on normal and 18 s on hard. Easy adds none.
+    let seconds = match cx.w.difficulty.id {
+        2 => 10,
+        3 => 18,
+        _ => 0,
+    };
+    let source = Damage {
+        kind: DamageKind::Sting,
+        attacker: Some(Who::Mob(m.id)),
+        from: Some(from),
+        attacker_species: Some(Species::Bee),
+    };
     match who {
         Who::Player => {
-            // Bee.doHurtTarget: the poison only when the sting hurt, and
-            // only on normal (10 s) and hard (18 s).
-            let seconds = match cx.w.difficulty.id {
-                2 => 10,
-                3 => 18,
-                _ => 0,
-            };
             cx.events.push(MobEvent::StingPlayer {
                 amount,
                 from,
                 poison_ticks: seconds * 20,
             });
         }
+        Who::Mob(id) if seconds > 0 => cx.events.push(MobEvent::AttackMobWithEffect {
+            target: id,
+            amount,
+            source,
+            effect: "minecraft:poison",
+            ticks: seconds * 20,
+            amplifier: 0,
+        }),
         Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
             target: id,
             amount,
-            source: Damage {
-                kind: DamageKind::Sting,
-                attacker: Some(Who::Mob(m.id)),
-                from: Some(from),
-            },
+            source,
         }),
     }
     set_has_stung(m, true);
@@ -1241,4 +1251,49 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     b.hive = pos("hive_pos");
     b.flower = pos("flower_pos");
     b.anger_end = anger_end;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sting;
+    use crate::mobs::goals::Cx;
+    use crate::mobs::world::with_test_world;
+    use crate::mobs::{Mob, MobEvent, Species, Who, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
+
+    fn bee() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:bee".into();
+        k.species = Species::Bee;
+        k.attack_damage = 2.0;
+        Mob::new(3, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Bee.doHurtTarget` on Normal: a mob is poisoned for 10 seconds (200 ticks).
+    #[test]
+    fn a_bee_sting_poisons_a_mob_for_ten_seconds_on_normal() {
+        with_test_world(&[], |w, _| {
+            let mut m = bee();
+            let mut events = Vec::new();
+            let mut random = LegacyRandom::new(1);
+            let mut cx = Cx {
+                w,
+                lr: &mut random,
+                events: &mut events,
+            };
+            sting(&mut m, Who::Mob(9), &mut cx);
+            assert!(events.iter().any(|e| matches!(
+                e,
+                MobEvent::AttackMobWithEffect {
+                    target: 9,
+                    effect: "minecraft:poison",
+                    ticks: 200,
+                    amplifier: 0,
+                    ..
+                }
+            )));
+        });
+    }
 }

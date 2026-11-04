@@ -71,6 +71,24 @@ fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement)
         .child(div().mt(px(16.)).flex().items_start().child(action))
 }
 
+/// The scroll spy: which section is being read, given each section's top from the pane's top
+/// (`tops`, in order), the pane's `height`, how far it is `scrolled` and how far it can be (`max`).
+/// The last section whose top passed a reading line, which sits at 30 % of the pane (the mockup's)
+/// and slides down to the pane's bottom over the last 70 % of a pane of scroll: the short last
+/// sections, which never reach 30 %, each come in turn as the end nears, instead of the mockup's
+/// jump from wherever it was to the last one at the very end.
+fn spy(tops: &[f32], height: f32, scrolled: f32, max: f32) -> usize {
+    let rest = height * 0.3;
+    let travel = height - rest;
+    let tail = travel.min(max);
+    let line = if tail > 0. {
+        rest + travel * ((scrolled - (max - tail)) / tail).clamp(0., 1.)
+    } else {
+        rest
+    };
+    tops.iter().rposition(|&top| top <= line + 0.5).unwrap_or(0)
+}
+
 fn note(s: &str) -> Option<AnyElement> {
     Some(div().child(tr(s).to_string()).into_any_element())
 }
@@ -80,6 +98,7 @@ impl Launcher {
         let t = self.theme;
         let sections = ui::flat_rows(|| self.glass_settings_sections(b, cx));
         let active = self.settings_section(sections.len());
+        self.settings_marked = active;
         let nav =
             card()
                 .flex_none()
@@ -134,6 +153,16 @@ impl Launcher {
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.settings_pane)
+            // A scroll redraws the pane from its layer without rendering the page again, so the
+            // list follows it here: on the next frame, once the offset has moved, and only when
+            // the section changed.
+            .on_scroll(cx.listener(|_, _: &gpui::ScrollEvent, window, cx| {
+                cx.on_next_frame(window, |this, _, cx| {
+                    if this.settings_section(SECTIONS.len()) != this.settings_marked {
+                        cx.notify();
+                    }
+                });
+            }))
             .rounded(px(radius::PANEL))
             .flex()
             .flex_col()
@@ -161,22 +190,23 @@ impl Launcher {
             )
     }
 
-    /// The section the list marks: the last one whose top is in the pane's upper 30 %, the
-    /// last of all once the pane is at its end (as the mockup's scroll spy).
+    /// The section the list marks, from where the pane's sections are now ([`spy`]). A section's
+    /// bounds are where layout put it, before the scroll (`ScrollHandle` keeps the offset apart):
+    /// the scroll is taken off them here. Reading them as they were left the list on the first
+    /// section until the pane hit its end.
     fn settings_section(&self, count: usize) -> usize {
         let pane = self.settings_pane.bounds();
-        let max = self.settings_pane.max_offset().y;
-        if max > px(0.) && -self.settings_pane.offset().y >= max - px(2.) {
-            return count - 1;
-        }
-        let mut current = 0;
-        for i in 0..count {
-            match self.settings_pane.bounds_for_item(i) {
-                Some(b) if b.top() - pane.top() <= pane.size.height * 0.3 => current = i,
-                _ => break,
-            }
-        }
-        current
+        let scrolled = -self.settings_pane.offset().y;
+        let tops: Vec<f32> = (0..count)
+            .map_while(|i| self.settings_pane.bounds_for_item(i))
+            .map(|b| f32::from(b.top() - pane.top() - scrolled))
+            .collect();
+        spy(
+            &tops,
+            f32::from(pane.size.height),
+            f32::from(scrolled),
+            f32::from(self.settings_pane.max_offset().y),
+        )
     }
 
     /// The Game card's Native mods row. The mockup has an on/off switch; native mods are always
@@ -290,7 +320,7 @@ impl Launcher {
             .flex()
             .gap(px(8.))
             .child(about_tile(
-                ui::mark_tile(42., ui::look().accent_soft).into_any_element(),
+                self.horizon_mark(42.),
                 "Horizon".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
                 div()
@@ -351,9 +381,11 @@ impl Launcher {
                 Some(b.appearance),
                 &t,
             ))
+            .child(self.launcher_theme_row(cx))
             .child(self.glass_accent_row(cx))
             .child(self.look_slider_row(themes_page::LookKnob::Glass, cx))
             .child(self.look_slider_row(themes_page::LookKnob::Blur, cx))
+            .child(self.performance_row(cx))
             .child(self.home_background_row(cx))
             .child(self.language_row(cx))
             .child(self.while_playing_row(n, cx))
@@ -416,5 +448,60 @@ impl Launcher {
             .children(self.dev_options_section(cx));
         let data = card().child(self.collection_section(cx));
         vec![account, updates, launcher, network, game, ai, about, data]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spy;
+
+    /// A 600 px pane over the mockup's eight cards: tall ones, then About and Data collection,
+    /// too short for their tops ever to reach 30 % of the pane.
+    const TOPS: [f32; 8] = [0., 420., 700., 1000., 1300., 1600., 1900., 2100.];
+    const HEIGHT: f32 = 600.;
+    const MAX: f32 = 2300. - HEIGHT;
+
+    fn at(scrolled: f32) -> usize {
+        let tops: Vec<f32> = TOPS.iter().map(|t| t - scrolled).collect();
+        spy(&tops, HEIGHT, scrolled, MAX)
+    }
+
+    #[test]
+    fn the_list_follows_the_section_read_at_30_percent() {
+        assert_eq!(at(0.), 0);
+        assert_eq!(
+            at(300.),
+            1,
+            "Updates' top is 120 px down: in the upper 30 %"
+        );
+        assert_eq!(at(600.), 2);
+        assert_eq!(
+            at(1000.),
+            3,
+            "Network's top at the pane's top, Game's 300 px down"
+        );
+        assert_eq!(at(1150.), 4, "Game's top 150 px down: in the upper 30 %");
+    }
+
+    #[test]
+    fn near_the_end_each_short_section_comes_in_turn() {
+        let seen: Vec<usize> = (0..=MAX as usize)
+            .step_by(10)
+            .map(|s| at(s as f32))
+            .collect();
+        // Every section is marked on the way down, in order, never skipped.
+        let mut order = seen.clone();
+        order.dedup();
+        assert_eq!(order, (0..8).collect::<Vec<_>>());
+        // About is marked for a stretch of scroll before the end, not for one step.
+        let about = seen.iter().filter(|&&s| s == 6).count();
+        assert!(about >= 8, "About marked for {about} steps of 10 px");
+        assert_eq!(at(MAX), 7);
+    }
+
+    #[test]
+    fn a_pane_that_does_not_scroll_marks_the_first() {
+        assert_eq!(spy(&[0., 200.], 600., 0., 0.), 0);
+        assert_eq!(spy(&[], 600., 0., 0.), 0);
     }
 }
