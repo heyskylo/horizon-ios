@@ -6,6 +6,28 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 409 adds a client mod's play packet to the server, as it is (`native_send_packet`).
+//!
+//! API 408 adds reading the server's play packets on the client (`native_client_packet`).
+//!
+//! API 407 adds the player's IP address on `NativeServerPlayer` (`address`).
+//!
+//! API 406 adds a trade's live offer, for the mods to change (`native_merchant_offer_traded`).
+//!
+//! API 405 adds a dying player's inventory to `native_loot_drops` (`entity` the player, `minecraft:player`).
+//!
+//! API 404 adds a client mod's chat line or command to the server (`native_send_chat`).
+//!
+//! API 403 adds a chat line from the server about to show, replaceable or cancellable (`native_client_chat_received`).
+//!
+//! API 402 adds a camera a mod draws the world from (`native_camera_pose`).
+//!
+//! API 401 adds a mod menu type's extra data (`native_menu_extra_data`), and the client helpers `native_screen_pos`,
+//! `native_screen_extra_data`.
+//!
+//! API 400 adds a mod's own data folders, read on each data load of a server (`native_add_server_reload_listeners`,
+//! `native_server_reload_listener_apply`; `native_reload_listeners.rs`).
+//!
 //! API 399 adds a player's chat message before it is sent (`native_player_chat`).
 //!
 //! API 398 adds the player's network entity id on `NativeServerPlayer` (`entity_id`).
@@ -1134,7 +1156,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 399;
+pub(crate) const NATIVE_HOOKS_API: u32 = 409;
 
 impl GameLevel<'_> {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
@@ -2316,7 +2338,7 @@ impl Game<'_> {
     /// (`AddServerReloadListenersEvent`): push yours, each a listener id and a
     /// folder under `data/<namespace>/`. Asked at the start of every data load
     /// of a server: a world opening, `/reload`. A folder that leaves
-    /// `data/<namespace>/` is skipped. API @API:server_reload_listeners@.
+    /// `data/<namespace>/` is skipped. API 400.
     pub(super) fn native_add_server_reload_listeners(
         &mut self,
         listeners: &mut Vec<NativeReloadListener>,
@@ -2330,7 +2352,7 @@ impl Game<'_> {
     /// data packs; for each id the top pack's file, and a file that isn't JSON
     /// is logged and left out. Every mod hears every listener, so check
     /// `listener.id`. Fired on each data load before `native_server_data_loaded`.
-    /// Server-side. API @API:server_reload_listeners@.
+    /// Server-side. API 400.
     pub(super) fn native_server_reload_listener_apply(
         &mut self,
         listener: &NativeReloadListener,
@@ -2809,7 +2831,7 @@ impl Game<'_> {
     /// draw the world from anywhere: a cinematic or replay camera. Only the picture, the sound's
     /// listener and the billboards facing the camera follow it; the player, where they aim, the
     /// first-person hand and which chunks load stay the player's. Values that aren't finite keep
-    /// vanilla's. Not called on the title screen's panorama. API @API:camera_pose@.
+    /// vanilla's. Not called on the title screen's panorama. API 402.
     pub(super) fn native_camera_pose(
         &self,
         partial: f32,
@@ -4803,7 +4825,7 @@ impl Game<'_> {
     /// client reads with `native_screen_extra_data` while the screen is open
     /// (NeoForge's `openMenu` with an extra-data writer). The first mod to
     /// set it wins, so answer only for your blocks. The player's state is not
-    /// swapped in. @API:menu_extra_data@.
+    /// swapped in. 401.
     pub(super) fn native_menu_extra_data(
         &mut self,
         player: u128,
@@ -5139,7 +5161,7 @@ impl Game<'_> {
     /// `trade_with_villager`, which hear the offer as the trade left it.
     /// `merchant` is the trader's entity id, `kind` its type. Not asked for a
     /// trade window without a trader. Server-side. API
-    /// @API:merchant_offer_traded@.
+    /// 406.
     pub(super) fn native_merchant_offer_traded(
         &mut self,
         merchant: u32,
@@ -5923,7 +5945,7 @@ impl Game<'_> {
     /// one, while the narrator still says the original. Set `cancel` and it
     /// doesn't show: a delayed message lets the next one through. Lines the
     /// client adds itself and validation errors are not told. Client-side.
-    /// API @API:client_chat_received@.
+    /// API 403.
     pub(super) fn native_client_chat_received(
         &mut self,
         system: bool,
@@ -6830,7 +6852,7 @@ impl Game<'_> {
     /// and far terrain tiles; neither is the configuration phase.
     /// Read-only: the game handles the packet as it would without the mod.
     /// Client-side, on any server, single player's own included.
-    /// API @API:client_packet@.
+    /// API 408.
     pub(super) fn native_client_packet(&mut self, packet: &ClientboundPlayPacket) {
         mod_api::dispatch_client_packet(self, mod_api::mods(), packet);
     }
@@ -8965,13 +8987,13 @@ impl Game<'_> {
     }
     /// The block of the mod screen that is open (`native_screen`), as the
     /// server named it when the block opened its menu type; None when no mod
-    /// screen is open. @API:menu_extra_data@.
+    /// screen is open. 401.
     pub(super) fn native_screen_pos(&self) -> Option<[i32; 3]> {
         self.shown_native_screen()?.pos()
     }
     /// What the block's mod wrote for the mod screen that is open
     /// (`native_menu_extra_data` on the server), empty when it wrote nothing;
-    /// None when no mod screen is open. @API:menu_extra_data@.
+    /// None when no mod screen is open. 401.
     pub(super) fn native_screen_extra_data(&self) -> Option<&[u8]> {
         let screen = self.shown_native_screen()?;
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
@@ -10993,6 +11015,7 @@ mod tests {
                 kind,
                 attacker,
                 from: None,
+                attacker_species: None,
             });
             (s.damage_type, s.causing, s.direct)
         };

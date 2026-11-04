@@ -174,6 +174,17 @@ pub(super) struct Create {
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
 /// a server answers.
 impl Servers {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+            || self.creating
+            || self.applying
+            || !self.queued.is_empty()
+            || self
+                .statuses
+                .values()
+                .any(|s| matches!(s.phase.as_str(), "running" | "starting" | "stopping"))
+    }
+
     /// A stopped server's line in the list: "Survival · stopped", as the mockup's. The open
     /// server's mode is the one its settings show now, once read; the others' (and the open one's
     /// until then) come from their files.
@@ -311,6 +322,15 @@ impl Servers {
 
     pub(super) fn value(&self, f: Field) -> &str {
         self.texts.get(&f).map_or("", LineEdit::text)
+    }
+
+    /// Mark a field invalid without an explanatory message, or clear its previous error.
+    pub(super) fn set_field_invalid(&mut self, field: Field, invalid: bool) {
+        if invalid {
+            self.invalid = Some((field, ""));
+        } else if self.invalid.is_some_and(|(current, _)| current == field) {
+            self.invalid = None;
+        }
     }
 
     /// Whether this field has the keyboard, as of this frame.

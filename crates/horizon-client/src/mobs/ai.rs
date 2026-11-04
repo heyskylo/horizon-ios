@@ -1872,7 +1872,7 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::ElderGuardian => super::guardian::elder_server_ai_step(m, cx),
         Species::Wither if m.alive() => super::wither::custom_server_ai_step(m, cx.w, cx.events),
         // SpellcasterIllager.customServerAiStep.
-        Species::Evoker if m.extra.counter > 0 => m.extra.counter -= 1,
+        Species::Evoker | Species::Illusioner if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Bee => super::bee::server_ai_step(m, cx),
         Species::Frog => super::frog::server_ai_step(m, cx.w),
@@ -2436,6 +2436,7 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
+        Species::Breeze => super::breeze::accepts_damage(m, source),
         // Allay.hurtServer: its liked player cannot hurt it.
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
@@ -2526,7 +2527,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     }
     let mut amount = super::gear::attack_damage(m, cx.w.items);
     let from = [m.position.x, m.position.y, m.position.z];
-    let source = Damage::mob(m.id, from);
+    let source = Damage::mob(m.id, from).with_species(m.species());
     let first_event = cx.events.len();
     // `CaveSpider`, `Husk` and `WitherSkeleton.doHurtTarget` all test
     // `target instanceof LivingEntity`, so the effect reaches a mob the hit

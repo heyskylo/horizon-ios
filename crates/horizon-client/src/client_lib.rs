@@ -110,7 +110,6 @@ pub mod pose;
 pub mod pregen;
 pub mod projectiles;
 pub mod raid;
-pub mod ram_limit;
 pub mod random_tick_sections;
 pub mod recipe_book;
 pub mod recipe_book_screen;

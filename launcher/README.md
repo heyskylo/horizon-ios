@@ -19,6 +19,19 @@ The opening, then Play ([clip](docs/opening.webm)):
   built on your fork's Actions, or the zip holding it) and installs it as `imported-<date>-<sha>`:
   a copy of the selected release or Nightly's folder, game files included, with that program as the
   game. Imported builds are listed apart as unsigned, and no update replaces them.
+- **Move data to another drive**: Settings → Data folder → Move… copies the launcher's
+  installations, downloads and account files, the game's worlds and instances, and managed native
+  build data to an empty folder. Close games and servers and wait for active jobs first. The launcher
+  exits while the copy is verified, switches its location only after success, then reopens. Old folders
+  remain as recovery copies and still use disk space; verify your worlds and instances before removing
+  them yourself. External Minecraft/server folders and paths embedded in custom launch commands stay
+  unchanged. Links/junctions and overlapping roots are refused; Windows build destinations need ASCII
+  characters without spaces. Copy or commit failure leaves the original location selected.
+  The location pointer is independent of the moved folders, at the platform config directory's
+  `horizon-launcher-location/location.json`. `HORIZON_LAUNCHER_LOCATION_FILE` selects an alternative
+  absolute pointer file for portable installations. Nonempty `HORIZON_LAUNCHER_HOME` and `HORIZON_HOME`
+  still override their respective roots; remove these overrides before using Move. A missing destination
+  fails explicitly instead of silently creating empty data in the default location.
 - **Play**: prepares resources as `PLAY.txt` describes (your launcher's 26.3 install, the
   26.3 server jar from that version's own json, and Java 25) and copies its sounds from your
   launcher's asset store (`horizon-prepare sounds`; a launcher install without them only
@@ -120,9 +133,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
-- **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
-  for no limit (the default), saved at once. For Horizon it goes to the game as
-  `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
+- **Maximum memory** (Java instances): set the Java heap limit (`-Xmx`) with the slider or
+  a value such as `4096` or `4gb`. Leave the box empty to restore the default (4096 MB).
+  Find it on Home in the classic layout, or in the instance’s Edit dialog in the glass layout.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in

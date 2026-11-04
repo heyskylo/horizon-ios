@@ -544,6 +544,11 @@ pub fn data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_LAUNCHER_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+        return roots.launcher;
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon-launcher")
@@ -577,6 +582,13 @@ fn tool_safe(path: &Path) -> bool {
 /// link (horizon-mixins refuses one, and macOS's /tmp is one). On Windows, when the resolved
 /// path isn't [`tool_safe`], [`windows_build_dir`] names the same folder a way MinGW-w64 can open.
 pub fn build_dir() -> PathBuf {
+    if std::env::var_os("HORIZON_LAUNCHER_HOME").is_none_or(|p| p.is_empty()) {
+        // A location that does not open stands in as the default folders, as
+        // `data_location::startup` makes it for the window: never a panic here.
+        if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+            return roots.build;
+        }
+    }
     let data = data_dir();
     let _ = fs::create_dir_all(&data);
     let real = data.canonicalize().map(plain).unwrap_or(data);
@@ -2038,6 +2050,11 @@ pub fn game_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+        return roots.game;
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon")
@@ -2286,8 +2303,11 @@ pub fn client_command(tag: &str) -> Command {
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
     strip_launcher_render_env(&mut cmd);
-    cmd.current_dir(home).arg("--resources").arg(resources(tag));
-    cmd.env_remove("HORIZON_ACCOUNT_SESSIONS");
+    cmd.current_dir(&home)
+        .env("HORIZON_HOME", &home)
+        .env_remove("HORIZON_ACCOUNT_SESSIONS")
+        .arg("--resources")
+        .arg(resources(tag));
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -3385,6 +3405,10 @@ pub struct Settings {
     /// Horizon's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The cheaper scene for older computers (a lower-resolution sky, a box blur, the scene
+    /// following the mouse less often and resizes baked in the background). Unset is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance: Option<bool>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3484,6 +3508,10 @@ impl Settings {
         self.blur
             .filter(|v| v.is_finite())
             .map_or(horizon_theme::glass::BLUR, |v| v.clamp(0., 48.))
+    }
+    /// Whether the cheaper scene is on ([`performance`](Self::performance)).
+    pub fn performance(&self) -> bool {
+        self.performance.unwrap_or(false)
     }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {

@@ -1522,6 +1522,17 @@ impl Hub {
         self.teleport_relative(i, Some(position), relatives);
     }
 
+    /// A rider's own teleport when its vehicle is teleported
+    /// (`Entity.teleportSameDimension`'s passenger transition): the position,
+    /// the rotation the vehicle turned it by (absolute, as
+    /// `ServerPlayer.teleport` sends it), and its motion kept
+    /// (`Relative.DELTA`).
+    pub fn teleport_rider(&mut self, i: usize, position: [f64; 3]) {
+        self.guests[i].above_ground_ticks = 0;
+        use play::relative::{DELTA_X, DELTA_Y, DELTA_Z};
+        self.teleport_relative(i, Some(position), DELTA_X | DELTA_Y | DELTA_Z);
+    }
+
     /// ServerGamePacketListenerImpl.teleport with `relatives`: the rotation
     /// and motion they name are sent as zero changes.
     fn teleport_relative(&mut self, i: usize, position: Option<[f64; 3]>, relatives: i32) {
