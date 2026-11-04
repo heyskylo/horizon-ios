@@ -52,7 +52,7 @@ Which settings each page shows, their descriptions and costs are in `crates/hori
 
 ## Player skins
 
-**3D Skin Layers** (Options → Skin Customization, `threeDSkinLayers` in `options.txt`, off by
+**3D Skin Layers** (Options → Skin Customization, `threeDSkinLayers` in `horizon-extras.txt`, off by
 default) draws the outer skin layer as its own geometry instead of one box inflated by 0.25 px:
 every texel the skin paints becomes a slab one texel deep, with its sides filled in where the next
 texel is transparent. Hats, hoods, hair, jackets, sleeves and cuffs then have a silhouette of their

@@ -1025,28 +1025,29 @@ impl<'a, 'w> Finder<'a, 'w> {
         let malus =
             |s: &Self, n: Option<u32>| n.is_some_and(|n| s.nodes[n as usize].cost_malus >= 0.0);
         // Direction.values(): down, up, north, south, west, east.
-        let mut by_dir: FxHashMap<(i32, i32, i32), Option<u32>> = FxHashMap::default();
-        for (dx, dy, dz) in [
+        let dirs = [
             (0, -1, 0),
             (0, 1, 0),
             (0, 0, -1),
             (0, 0, 1),
             (-1, 0, 0),
             (1, 0, 0),
-        ] {
+        ];
+        let mut by_dir: [Option<u32>; 6] = [None; 6];
+        for (slot, (dx, dy, dz)) in by_dir.iter_mut().zip(dirs) {
             let n = self.swim_accepted(px + dx, py + dy, pz + dz);
-            by_dir.insert((dx, dy, dz), n);
+            *slot = n;
             if open(self, n) {
                 out.push(n.unwrap_or_default());
             }
         }
-        for ((dx, dz), (cx, cz)) in [
-            ((0, -1), (1, 0)),
-            ((1, 0), (0, 1)),
-            ((0, 1), (-1, 0)),
-            ((-1, 0), (0, -1)),
+        for (a, b, dx, dz, cx, cz) in [
+            (2usize, 5usize, 0i32, -1i32, 1i32, 0i32),
+            (5usize, 3usize, 1i32, 0i32, 0i32, 1i32),
+            (3usize, 4usize, 0i32, 1i32, -1i32, 0i32),
+            (4usize, 2usize, -1i32, 0i32, 0i32, -1i32),
         ] {
-            if malus(self, by_dir[&(dx, 0, dz)]) && malus(self, by_dir[&(cx, 0, cz)]) {
+            if malus(self, by_dir[a]) && malus(self, by_dir[b]) {
                 let d = self.swim_accepted(px + dx + cx, py, pz + dz + cz);
                 if open(self, d) {
                     out.push(d.unwrap_or_default());

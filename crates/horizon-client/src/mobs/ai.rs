@@ -662,8 +662,16 @@ pub fn tick(
         if m.species() == Species::Chicken {
             farm::chicken_egg_step(m, events);
         }
+        if m.species() == Species::Allay {
+            super::allay::update_duplication_cooldown(m);
+        }
         if horse {
             super::equine::ai_step(m, w, events);
+        }
+        // Ravager.aiStep runs outside serverAiStep: NoAI still advances
+        // attack/stun/roar, including the stun-to-roar transition.
+        if m.species() == Species::Ravager {
+            super::ravager::ai_step(m, w, events);
         }
     } else {
         ai_step(m, w, level_random, events);
@@ -2485,6 +2493,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                 effect: "minecraft:poison",
                 ticks: if cx.w.difficulty.base == 2 { 7 } else { 15 } * 20,
                 amplifier: 0,
+                ambient: false,
             })
         }
         // Husk.doHurtTarget: hunger for 140 ticks per whole point of the
@@ -2496,6 +2505,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                     effect: "minecraft:hunger",
                     ticks,
                     amplifier: 0,
+                    ambient: false,
                 })
             }
         }
@@ -2503,6 +2513,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             effect: "minecraft:wither",
             ticks: 200,
             amplifier: 0,
+            ambient: false,
         }),
         _ => {}
     }
@@ -2558,6 +2569,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                 effect,
                 ticks,
                 amplifier,
+                ..
             } => Some((effect, ticks, amplifier)),
             _ => None,
         });
@@ -4385,5 +4397,54 @@ mod iron_golem_push_tests {
         for ((kind, hand, modifier), (base, hit)) in cases.iter().zip(got) {
             assert_eq!(hit, Some(base + modifier), "{kind} holding {hand:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod ravager_noai_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn ravager_counters_tick_without_ai_and_stun_starts_a_full_roar() {
+        crate::mobs::world::with_test_world(&[], |w, types| {
+            for no_ai in [false, true] {
+                for initial in [(20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)] {
+                    let kind = Arc::new(types.types["minecraft:ravager"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(10.5, 200.0, 10.5), 0.0);
+                    mob.no_ai = no_ai;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.extra.counter = initial.0;
+                    mob.extra.counter2 = initial.1;
+                    mob.extra.anim_ticks = initial.2;
+                    let mut random = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    for elapsed in 1..=22 {
+                        tick(&mut mob, w, &mut random, &mut events);
+                        let attack = if initial.0 > 0 {
+                            (initial.0 - elapsed).max(0)
+                        } else {
+                            initial.0
+                        };
+                        let stun = if initial.1 > 0 {
+                            (initial.1 - elapsed).max(0)
+                        } else {
+                            initial.1
+                        };
+                        let roar = match initial {
+                            (20, 30, 5) => (5 - elapsed).max(0),
+                            (2, 2, 0) if elapsed >= 2 => (22 - elapsed).max(0),
+                            _ => initial.2,
+                        };
+                        assert_eq!(
+                            (mob.extra.counter, mob.extra.counter2, mob.extra.anim_ticks),
+                            (attack, stun, roar),
+                            "NoAI={no_ai}, initial={initial:?}, tick={elapsed}"
+                        );
+                    }
+                }
+            }
+        });
     }
 }
