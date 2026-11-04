@@ -18,10 +18,11 @@ sent the same things over TLS, and every answer is compared exactly:
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), operator
   permission level read and changed (including saved properties and restart), autosave read and changed
-  (including its reset after restart), allow-flight read and changed (including invalid input, saved properties
-  and restart), hidden online players read and changed (including invalid input, saved properties
-  and restart), status replies read and changed (including invalid input, saved properties and restart),
-  allowlist use and enforcement read and changed
+  (including its reset after restart), spawn-protection radius read and changed (including invalid input,
+  saved properties and restart), allow-flight read and changed (including invalid input, saved properties and
+  restart), hidden online players read and changed (including invalid input, saved properties and restart),
+  status replies read and changed (including invalid input, saved properties and restart), allowlist use and
+  enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -165,6 +166,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":61,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":62,"method":"minecraft:serversettings/force_game_mode/set","params":["yes"]}',
     '{"jsonrpc":"2.0","id":63,"method":"minecraft:serversettings/force_game_mode"}',
+    '{"jsonrpc":"2.0","id":150,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":151,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[4]}',
+    '{"jsonrpc":"2.0","id":152,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":153,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[-1]}',
+    '{"jsonrpc":"2.0","id":154,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":155,"method":"minecraft:serversettings/spawn_protection_radius/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":156,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":157,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":158,"method":"minecraft:serversettings/spawn_protection_radius"}',
     '{"jsonrpc":"2.0","id":140,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":141,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":142,"method":"minecraft:serversettings/allow_flight"}',
@@ -518,6 +528,9 @@ def main():
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
+                sides[side]['saved_spawn_protection'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('spawn-protection=')), None)
                 sides[side]['saved_operator_user_permission_level'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('op-permission-level=')), None)
@@ -545,6 +558,8 @@ def main():
                     sides[side]['saved_config_max_players'] = 'max_players = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_spawn_protection'] = 'spawn-protection = 8' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
                         folder / 'server.toml').read_text()
@@ -609,6 +624,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":159,"method":"minecraft:serversettings/spawn_protection_radius"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_spawn_protection'] = reply
                     ws.send('{"jsonrpc":"2.0","id":199,"method":"minecraft:serversettings/hide_online_players"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -698,6 +719,13 @@ def main():
         if vanilla['restarted_player_idle_timeout'] != horizon['restarted_player_idle_timeout'] or \
                 vanilla['restarted_player_idle_timeout'] != {'jsonrpc': '2.0', 'id': 133, 'result': 30}:
             failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Horizon {horizon['restarted_player_idle_timeout']!r}")
+        if vanilla['saved_spawn_protection'] != horizon['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
+            failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Horizon {horizon['saved_spawn_protection']!r}")
+        if not horizon['saved_config_spawn_protection']:
+            failures.append('Horizon did not save spawn protection in server.toml')
+        if vanilla['restarted_spawn_protection'] != horizon['restarted_spawn_protection'] or \
+                vanilla['restarted_spawn_protection'] != {'jsonrpc': '2.0', 'id': 159, 'result': 8}:
+            failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Horizon {horizon['restarted_spawn_protection']!r}")
         if vanilla['saved_operator_user_permission_level'] != horizon['saved_operator_user_permission_level'] or \
                 vanilla['saved_operator_user_permission_level'] != '2':
             failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Horizon {horizon['saved_operator_user_permission_level']!r}")
