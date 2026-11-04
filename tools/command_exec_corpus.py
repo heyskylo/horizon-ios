@@ -2617,6 +2617,8 @@ def marker_data_mutation():
     ops += stored('execute if entity @e[nbt={UUID:[I;0,0,0,99]}]', 0, False)
     ops += stored(f'data modify entity {marker} id set value "minecraft:pig"', 1)
     ops += [cmd('/execute if entity @e[type=marker,nbt={UUID:[I;0,0,0,1]}]', expect_result=1)]
+    # Earlier groups can leave pigs loaded; the count below is about this group's pig only.
+    ops += setup('/kill @e[type=minecraft:pig]')
     ops += [cmd('/summon pig 10.5 200 10.5 {UUID:[I;0,0,0,2],NoAI:1b,NoGravity:1b}', expect_result=1)]
     ops += names(pig)
     ops += stored(f'data modify entity {pig} Pos set value [10.25d,201d,11.75d]', 1)
