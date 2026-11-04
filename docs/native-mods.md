@@ -2697,6 +2697,17 @@ one custom payload channel `horizon:mod_net`. A vanilla client never gets them, 
 - A player's message reaches the server's hook in the tick after it arrives, when the helpers can reach every player;
   a message to a player leaves at the end of the tick, from any server hook.
 
+### Chat and commands a client mod sends
+
+API @API:send_chat@, `crates/horizon-client/src/game/native_net.rs`: `native_send_chat(message)` sends what the player
+could type in chat, to any server, a vanilla one included: `ClientPacketListener.sendChat` and `sendCommand`. A leading
+`/` sends the rest as a command, signed where its arguments are messages; anything else goes as signed chat. The message
+is trimmed first, as the chat screen trims it. It isn't added to the chat history, and no client chat event fires
+(vanilla's `ClientChatEvent` comes only from the chat screen). It is an error when the player isn't in a server's play
+state (not connected, not joined yet or being reconfigured), when the trimmed message is empty, and when the Chat option
+blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
+typed chat. Bundles need `"hooks": @API:send_chat@`.
+
 ### Server menus
 
 API 10, `crates/horizon-client/src/game/native_menus.rs`: menus a server mod builds from ordinary items, which a
