@@ -246,7 +246,7 @@ pub fn clientbound(
             *session.dimension.lock().unwrap() = dimension;
             body
         }
-        (State::Play, cb::LEVEL_CHUNK_WITH_LIGHT) => chunk(ids, payload)?,
+        (State::Play, cb::LEVEL_CHUNK_WITH_LIGHT) => chunk(session, ids, payload)?,
         (State::Play, cb::LIGHT_UPDATE) => light_update(payload)?,
         (State::Play, cb::UPDATE_ADVANCEMENTS) => advancements(ids, payload)?,
         (State::Play, cb::LEVEL_PARTICLES) => particles(ids, payload)?,
@@ -281,7 +281,11 @@ pub fn clientbound(
         (State::Play, cb::BLOCK_ENTITY_DATA) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::BlockEntityData(b) = &mut p {
-                b.kind = ids.block_entity_type.up(b.kind).unwrap_or(b.kind);
+                let Some(kind) = ids.block_entity_type.up(b.kind) else {
+                    return Ok(None);
+                };
+                v1_20_3::upgrade_block_entity(session, b.kind, &mut b.tag);
+                b.kind = kind;
             }
             strip_id(p.encode())
         }
@@ -726,7 +730,7 @@ fn respawn(payload: &[u8], version: ServerVersion) -> Result<Vec<u8>> {
 /// The column's sections with their block states renumbered and packed for the pinned palette width (a
 /// section on the older global palette uses fewer bits per entry), and its light masks as 26.3 sends them.
 /// Biomes are the server's own registry and stay as they are.
-fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+fn chunk(session: &Session, ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let x = r.i32()?;
     let z = r.i32()?;
@@ -736,6 +740,7 @@ fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     // A block entity type the pinned version dropped (26.1's bed) goes; the block still draws.
     block_entities.retain_mut(|b| match ids.block_entity_type.up(b.kind) {
         Some(kind) => {
+            v1_20_3::upgrade_block_entity(session, b.kind, &mut b.tag);
             b.kind = kind;
             true
         }

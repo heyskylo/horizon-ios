@@ -165,7 +165,10 @@ NBT item stacks through Horizon's datafixes. A connection-local cache retains or
 tags for unchanged stacks, bounded to 1,024 entries and 8 MiB of serialized values;
 ambiguous normalized keys, evicted entries and entries over 256 KiB use semantic
 reconstruction. Modified entity/block-entity data has no general reverse datafix,
-and newer components without an old field cannot be represented. Static banners,
+and newer components without an old field cannot be represented. Incoming block-entity
+updates and chunk entries use forward datafixes for banner patterns, skull profiles,
+text and nested inventory stacks, retaining opaque fields and the original tag identity.
+Independent vanilla fixtures cover these conversions; they do not establish full rendered parity. Static banners,
 enchantments, paintings, instruments and the original wolf coat use vanilla names.
 Old recipes, trades, horse equipment, attribute/effect metadata and particles are
 translated; legacy commands retain the chat tracker's acknowledgement even without

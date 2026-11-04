@@ -69,9 +69,14 @@ pub(super) fn clientbound(
             w.varint(r.varint()?);
             let count = r.count(65536)?;
             w.varint(count as i32);
+            let names = if session.version.at_most(ServerVersion::V1_20_2) {
+                crate::adapter::v1_20_2_ids::ATTRIBUTE_NAMES
+            } else {
+                crate::adapter::v1_20_3_ids::ATTRIBUTE_NAMES
+            };
             for _ in 0..count {
                 let name = r.string(32767)?;
-                let attribute = crate::adapter::v1_20_3_ids::ATTRIBUTE_NAMES
+                let attribute = names
                     .iter()
                     .position(|old| *old == name)
                     .ok_or_else(|| crate::Error::new("unknown legacy attribute"))?;
@@ -125,6 +130,62 @@ pub(super) fn clientbound(
     }
     finish(&r)?;
     Ok(Some(w.data))
+}
+
+/// Network block entities carry their type outside NBT and need the same forward
+/// data fixes as saved block entities. Only the pre-component releases use this
+/// path; the dedicated 1.8 bridge and current server tags are left alone.
+pub(super) fn upgrade_block_entity(
+    session: &Session,
+    old_kind: i32,
+    tag: &mut horizon_world::nbt::Tag,
+) {
+    use horizon_world::{
+        datafix::{self, dynamic as d, schema::Ty},
+        nbt::Tag,
+    };
+    if !matches!(tag, Tag::Compound(_)) {
+        return;
+    }
+    let names = match session.version {
+        ServerVersion::V1_20_2 => crate::adapter::v1_20_2_ids::BLOCK_ENTITY_TYPE_NAMES,
+        ServerVersion::V1_20_3 => crate::adapter::v1_20_3_ids::BLOCK_ENTITY_TYPE_NAMES,
+        _ => return,
+    };
+    let Some(name) = usize::try_from(old_kind)
+        .ok()
+        .and_then(|kind| names.get(kind))
+    else {
+        return;
+    };
+    let inserted_id = tag.get("id").is_none();
+    if inserted_id {
+        d::set(tag, "id", d::string(name));
+    }
+    // Vanilla's typed write merges these dropped fields back from the original
+    // record remainder. Retain the exact values while reusing the saved-data DFU.
+    let remainder = match d::as_str(tag.get("id")).as_deref() {
+        Some("minecraft:banner") => tag.get("Patterns").cloned().map(|v| ("Patterns", v)),
+        Some("minecraft:skull") => tag.get("SkullOwner").cloned().map(|v| ("SkullOwner", v)),
+        _ => None,
+    };
+    datafix::update(
+        Ty::BlockEntity,
+        tag,
+        session
+            .version
+            .ids()
+            .unwrap()
+            .quirks
+            .legacy_item_data_version,
+        datafix::CURRENT,
+    );
+    if let Some((field, value)) = remainder {
+        d::set(tag, field, value);
+    }
+    if inserted_id {
+        d::remove(tag, "id");
+    }
 }
 
 fn finish(r: &Reader) -> Result<()> {
@@ -381,12 +442,33 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
                 None
             } else {
                 let color = if color < 16 { color } else { 0 };
-                session
-                    .version
-                    .ids()
-                    .unwrap()
-                    .item
-                    .up(445 + color)
+                let name = [
+                    "minecraft:white_carpet",
+                    "minecraft:orange_carpet",
+                    "minecraft:magenta_carpet",
+                    "minecraft:light_blue_carpet",
+                    "minecraft:yellow_carpet",
+                    "minecraft:lime_carpet",
+                    "minecraft:pink_carpet",
+                    "minecraft:gray_carpet",
+                    "minecraft:light_gray_carpet",
+                    "minecraft:cyan_carpet",
+                    "minecraft:purple_carpet",
+                    "minecraft:blue_carpet",
+                    "minecraft:brown_carpet",
+                    "minecraft:green_carpet",
+                    "minecraft:red_carpet",
+                    "minecraft:black_carpet",
+                ][color as usize];
+                let names = if session.version.at_most(ServerVersion::V1_20_2) {
+                    crate::adapter::v1_20_2_ids::ITEM_NAMES
+                } else {
+                    crate::adapter::v1_20_3_ids::ITEM_NAMES
+                };
+                names
+                    .iter()
+                    .position(|old| *old == name)
+                    .and_then(|old| session.version.ids().unwrap().item.up(old as i32))
                     .map(|item| crate::item::Stack::new(item, 1))
             };
             let packet = play::Clientbound::SetEquipment(play::SetEquipment {
@@ -410,6 +492,298 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    // Original synthetic tags run through vanilla 26.3 DataFixers.update(BLOCK_ENTITY),
+    // DataVersion5023, from3463/3465/3578/3698/3700. All five source versions gave
+    // these exact decoded tags, including typed-field remainders and opaque data.
+    // Type IDs were checked independently in the old and pinned registry reports.
+    fn block_entity_oracles() -> Vec<(i32, i32, horizon_world::nbt::Tag, horizon_world::nbt::Tag)> {
+        [
+            // banner
+            (19, 20, "0a08000a437573746f6d4e616d6500147b2274657874223a2251412042616e6e6572227d0a00064f70617175650100066e756d6265720700030001780000000103000179000000400300017a00000002080002696400106d696e6563726166743a62616e6e65720900085061747465726e730a000000020800075061747465726e00026273030005436f6c6f720000000e000800075061747465726e0003637265030005436f6c6f720000000b0000", "0a0a000a437573746f6d4e616d6508000474657874000951412042616e6e6572000a00064f70617175650100066e756d62657207000900087061747465726e730a000000020800077061747465726e00176d696e6563726166743a7374726970655f626f74746f6d080005636f6c6f720003726564000800077061747465726e00116d696e6563726166743a63726565706572080005636f6c6f720004626c756500030001780000000103000179000000400300017a00000002080002696400106d696e6563726166743a62616e6e65720900085061747465726e730a000000020800075061747465726e00026273030005436f6c6f720000000e000800075061747465726e0003637265030005436f6c6f720000000b0000"),
+            // skull
+            (15, 16, "0a0a000a536b756c6c4f776e65720b0002496400000004000000010000000200000003000000040a000a50726f7065727469657309000874657874757265730a000000010800095369676e6174757265001373796e7468657469632d7369676e617475726508000556616c7565000c63336c756447686c64476c6a00000800044e616d650008483437536b756c6c000a00064f70617175650100066e756d6265720700030001780000000303000179000000400300017a000000020800026964000f6d696e6563726166743a736b756c6c00", "0a0a000a536b756c6c4f776e65720b0002496400000004000000010000000200000003000000040a000a50726f7065727469657309000874657874757265730a000000010800095369676e6174757265001373796e7468657469632d7369676e617475726508000556616c7565000c63336c756447686c64476c6a00000800044e616d650008483437536b756c6c000a00064f70617175650100066e756d62657207000a000770726f66696c650800046e616d650008483437536b756c6c09000a70726f706572746965730a000000010800046e616d650008746578747572657308000576616c7565000c63336c756447686c64476c6a0800097369676e6174757265001373796e7468657469632d7369676e6174757265000b00026964000000040000000100000002000000030000000400030001780000000303000179000000400300017a000000020800026964000f6d696e6563726166743a736b756c6c00"),
+            // sign
+            (7, 7, "0a0a00096261636b5f746578740100106861735f676c6f77696e675f7465787401080005636f6c6f7200037265640900086d6573736167657308000000040006224261636b220002222200022222000222220001000869735f7761786564000a00064f70617175650100066e756d6265720700030001780000000503000179000000400300017a000000020800026964000e6d696e6563726166743a7369676e0a000a66726f6e745f746578740100106861735f676c6f77696e675f7465787400080005636f6c6f720005626c61636b0900086d65737361676573080000000400107b2274657874223a2246726f6e74227d0002222200022222000222220000", "0a0a00096261636b5f74657874080005636f6c6f7200037265640900086d65737361676573080000000400044261636b0000000000000100106861735f676c6f77696e675f746578740100010011616c6c6f775f6f705f66656174757265730101000869735f7761786564000a00064f70617175650100066e756d6265720700030001780000000503000179000000400300017a000000020800026964000e6d696e6563726166743a7369676e0a000a66726f6e745f74657874080005636f6c6f720005626c61636b0900086d657373616765730a0000000408000474657874000546726f6e74000800000000000800000000000800000000000100106861735f676c6f77696e675f74657874000000"),
+            // chest
+            (1, 1, "0a08000a437573746f6d4e616d6500137b2274657874223a225141204368657374227d0a00064f70617175650100066e756d6265720700030001780000000703000179000000400300017a000000020900054974656d730a00000001010004536c6f74000800026964000f6d696e6563726166743a73746f6e65010005436f756e7403000800026964000f6d696e6563726166743a636865737400", "0a0a000a437573746f6d4e616d650800047465787400085141204368657374000a00064f70617175650100066e756d6265720700030001780000000703000179000000400300017a000000020900054974656d730a00000001030005636f756e7400000003010004536c6f74000800026964000f6d696e6563726166743a73746f6e65000800026964000f6d696e6563726166743a636865737400"),
+        ]
+        .into_iter()
+        .map(|(old, new, before, after)| {
+            (old, new, Reader::new(&bytes(before)).nbt().unwrap(), Reader::new(&bytes(after)).nbt().unwrap())
+        })
+        .collect()
+    }
+
+    fn block_entity_versions() -> &'static [ServerVersion] {
+        &[ServerVersion::V1_20_2, ServerVersion::V1_20_3]
+    }
+
+    fn old_block_entity_tag(version: ServerVersion, tag: &horizon_world::nbt::Tag, w: &mut Writer) {
+        let _ = version;
+        w.nbt(tag);
+    }
+
+    #[test]
+    fn legacy_block_entity_updates_match_vanilla_forward_datafixes() {
+        use horizon_world::datafix::dynamic as d;
+        for &version in block_entity_versions() {
+            for (old_kind, new_kind, before, after) in block_entity_oracles() {
+                for with_id in [true, false] {
+                    let mut before = before.clone();
+                    let mut expected = after.clone();
+                    if !with_id {
+                        d::remove(&mut before, "id");
+                        d::remove(&mut expected, "id");
+                    }
+                    let mut old = Writer::new();
+                    <crate::buf::Pos>::write(&[1, 64, 2], &mut old);
+                    old.varint(old_kind);
+                    old_block_entity_tag(version, &before, &mut old);
+                    let session = Session::new(version);
+                    let (id, body) = super::super::clientbound(
+                        &session,
+                        State::Play,
+                        packet_ids::play::clientbound::BLOCK_ENTITY_DATA,
+                        &old.data,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let play::Clientbound::BlockEntityData(actual) =
+                        play::Clientbound::decode(id, body.as_deref().unwrap_or(&old.data))
+                            .unwrap()
+                    else {
+                        panic!("block entity update")
+                    };
+                    assert_eq!(actual.pos, [1, 64, 2]);
+                    assert_eq!(actual.kind, new_kind);
+                    assert_eq!(
+                        actual.tag, expected,
+                        "{version:?}: kind{old_kind}, id={with_id}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_chunk_block_entities_use_the_same_forward_datafixes() {
+        use horizon_world::{datafix::dynamic as d, nbt::Tag};
+        // Synthetic old packet envelopes exercise the full normalization pipeline;
+        // their block-entity goldens above come from the independent vanilla DFU.
+        for &version in block_entity_versions() {
+            for with_id in [true, false] {
+                let mut old = Writer::new();
+                old.i32(2);
+                old.i32(-3);
+                old_block_entity_tag(version, &Tag::Compound(Default::default()), &mut old);
+                old.byte_array(&[]);
+                let fixtures = block_entity_oracles();
+                old.varint(fixtures.len() as i32 + 2);
+                let mut expected = Vec::new();
+                for (old_kind, new_kind, mut before, mut after) in fixtures {
+                    if !with_id {
+                        d::remove(&mut before, "id");
+                        d::remove(&mut after, "id");
+                    }
+                    old.i8(0x12);
+                    old.i16(64);
+                    old.varint(old_kind);
+                    old_block_entity_tag(version, &before, &mut old);
+                    expected.push((new_kind, after));
+                }
+                // End stays End; the removed bed block-entity type is dropped.
+                for kind in [1, 24] {
+                    old.i8(0x12);
+                    old.i16(64);
+                    old.varint(kind);
+                    old_block_entity_tag(version, &Tag::End, &mut old);
+                }
+                expected.push((1, Tag::End));
+                for _ in 0..4 {
+                    old.long_array(&[]);
+                }
+                old.varint(0);
+                old.varint(0);
+                let session = Session::new(version);
+                let (id, body) = super::super::clientbound(
+                    &session,
+                    State::Play,
+                    packet_ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT,
+                    &old.data,
+                )
+                .unwrap()
+                .unwrap();
+                let play::Clientbound::LevelChunkWithLight(actual) =
+                    play::Clientbound::decode(id, body.as_deref().unwrap_or(&old.data)).unwrap()
+                else {
+                    panic!("chunk")
+                };
+                assert_eq!((actual.x, actual.z), (2, -3));
+                assert_eq!(actual.chunk.block_entities.len(), expected.len());
+                for (actual, (kind, tag)) in actual.chunk.block_entities.iter().zip(expected) {
+                    assert_eq!((actual.packed_xz, actual.y, actual.kind), (0x12, 64, kind));
+                    assert_eq!(actual.tag, tag, "{version:?}: kind{kind}, id={with_id}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn block_entity_upgrade_preserves_absent_and_current_tags() {
+        use horizon_world::{datafix::dynamic as d, nbt::Tag};
+        let (_, _, old, _) = block_entity_oracles().remove(0);
+        for version in [
+            ServerVersion::V1_20_5,
+            ServerVersion::V1_21_1,
+            ServerVersion::Current,
+        ] {
+            let mut actual = old.clone();
+            upgrade_block_entity(&Session::new(version), 19, &mut actual);
+            assert_eq!(actual, old, "{version:?}");
+        }
+        for &version in block_entity_versions() {
+            for original in [Tag::End, d::string("opaque non-compound")] {
+                let mut actual = original.clone();
+                upgrade_block_entity(&Session::new(version), 19, &mut actual);
+                assert_eq!(actual, original);
+            }
+            for old_kind in [-1, i32::MAX] {
+                let mut actual = old.clone();
+                upgrade_block_entity(&Session::new(version), old_kind, &mut actual);
+                assert_eq!(actual, old);
+            }
+            // An explicit identity is never replaced with the external type.
+            let (_, _, mut chest, expected) = block_entity_oracles().remove(3);
+            upgrade_block_entity(&Session::new(version), 19, &mut chest);
+            assert_eq!(chest, expected);
+        }
+    }
+
+    #[test]
+    fn legacy_removed_block_entity_updates_drop_instead_of_reusing_an_id() {
+        use horizon_world::nbt::Tag;
+        for &version in block_entity_versions() {
+            for (kind, dropped) in [(1, false), (24, true)] {
+                let mut old = Writer::new();
+                <crate::buf::Pos>::write(&[1, 64, 2], &mut old);
+                old.varint(kind);
+                old_block_entity_tag(version, &Tag::End, &mut old);
+                let actual = super::super::clientbound(
+                    &Session::new(version),
+                    State::Play,
+                    packet_ids::play::clientbound::BLOCK_ENTITY_DATA,
+                    &old.data,
+                )
+                .unwrap();
+                assert_eq!(actual.is_none(), dropped);
+                if let Some((id, body)) = actual {
+                    let play::Clientbound::BlockEntityData(packet) =
+                        play::Clientbound::decode(id, body.as_deref().unwrap_or(&old.data))
+                            .unwrap()
+                    else {
+                        panic!("block entity")
+                    };
+                    assert_eq!(packet.tag, Tag::End);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_attribute_names_keep_their_meaning_across_registry_orders() {
+        // Names and pinned IDs independently checked against vanilla registry reports.
+        let expected = [
+            ("minecraft:generic.armor", 1),
+            ("minecraft:generic.armor_toughness", 2),
+            ("minecraft:generic.attack_damage", 3),
+            ("minecraft:generic.attack_knockback", 4),
+            ("minecraft:generic.attack_speed", 5),
+            ("minecraft:generic.flying_speed", 15),
+            ("minecraft:generic.follow_range", 16),
+            ("minecraft:generic.knockback_resistance", 20),
+            ("minecraft:generic.luck", 21),
+            ("minecraft:generic.max_absorption", 22),
+            ("minecraft:generic.max_health", 23),
+            ("minecraft:generic.movement_speed", 26),
+            ("minecraft:horse.jump_strength", 19),
+            ("minecraft:zombie.spawn_reinforcements", 32),
+        ];
+        for version in [ServerVersion::V1_20_2, ServerVersion::V1_20_3] {
+            let session = Session::new(version);
+            let mut old = Writer::new();
+            old.varint(42);
+            old.varint(expected.len() as i32);
+            for (index, (name, _)) in expected.iter().enumerate() {
+                old.string(name);
+                old.f64((index + 1) as f64 / 8.0);
+                old.varint(0);
+            }
+            let (id, translated) = super::super::clientbound(
+                &session,
+                State::Play,
+                packet_ids::play::clientbound::UPDATE_ATTRIBUTES,
+                &old.data,
+            )
+            .unwrap()
+            .unwrap();
+            let play::Clientbound::UpdateAttributes(packet) =
+                play::Clientbound::decode(id, translated.as_deref().unwrap_or(&old.data)).unwrap()
+            else {
+                panic!("attributes")
+            };
+            assert_eq!(packet.id, 42);
+            assert_eq!(packet.values.len(), expected.len());
+            for (index, (value, (name, attribute))) in
+                packet.values.iter().zip(expected).enumerate()
+            {
+                assert_eq!(value.attribute, attribute, "{version:?}: {name}");
+                assert_eq!(value.base, (index + 1) as f64 / 8.0);
+                assert!(value.modifiers.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn llama_carpet_colors_resolve_by_item_name_for_each_legacy_registry() {
+        // All sixteen names/IDs come from the vanilla 26.3 item report. The old
+        // white-carpet ID is424 in1.20.2 and445 in1.20.3, not a shared offset.
+        for version in [ServerVersion::V1_20_2, ServerVersion::V1_20_3] {
+            for kind in [79, 138] {
+                let session = Session::new(version);
+                session.kinds.lock().unwrap().insert(42, kind);
+                for color in -1..=16 {
+                    let mut data = play::SetEntityData {
+                        id: 42,
+                        values: vec![(20, serializer::INT, Value::Int(color))],
+                    };
+                    entity_data(&session, &mut data);
+                    assert!(data.values.is_empty());
+                    let (id, body) = session.next_incoming().unwrap();
+                    let play::Clientbound::SetEquipment(packet) =
+                        play::Clientbound::decode(id, &body).unwrap()
+                    else {
+                        panic!("equipment")
+                    };
+                    let expected = match color {
+                        -1 => None,
+                        0..=15 => Some(580 + color),
+                        _ => Some(580),
+                    };
+                    assert_eq!(packet.id, 42);
+                    assert_eq!(
+                        packet
+                            .slots
+                            .iter()
+                            .map(|(slot, stack)| (*slot, stack.as_ref().map(|stack| stack.item)))
+                            .collect::<Vec<_>>(),
+                        [(6, expected)],
+                        "{version:?}: kind{kind}, color{color}",
+                    );
+                }
+            }
+        }
     }
 
     #[test]
