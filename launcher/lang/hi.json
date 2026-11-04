@@ -458,7 +458,9 @@
   "runs {command} after": "बाद में {command} चलाता है",
   "downloaded": "डाउनलोड किया गया",
   "24/7 online": "24/7 ऑनलाइन",
-  "Updated to {version}. Restart the launcher to use it.": "{version} पर अपडेट किया गया। इसका उपयोग करने के लिए लॉन्चर रीस्टार्ट करें।",
+  "A new version is available": "एक नया संस्करण उपलब्ध है",
+  "Download again": "फिर से डाउनलोड करें",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "लॉन्चर की यह कॉपी खुद को बदल नहीं सकती। इसे एक बार फिर से डाउनलोड करें; उसके बाद यह खुद अपडेट होता है।",
   "Any MCP client": "कोई भी MCP क्लाइंट",
   "{name}'s cape is kept.": "{name} का केप रखा गया है।",
   "Not reviewed by the Horizon registry": "Horizon रजिस्ट्री द्वारा समीक्षित नहीं",
@@ -637,7 +639,6 @@
   "Copied": "कॉपी किया गया",
   "Couldn't load patch notes. {error}": "पैच नोट्स लोड नहीं हो सके। {error}",
   "Couldn't load releases. {error}": "रिलीज़ लोड नहीं हो सकीं। {error}",
-  "Launcher updated to {version}": "ल लॉन्चर {version} पर अपडेट किया गया",
   "Launcher {version}": "ल लॉन्चर {version}",
   "Launcher {version}  {percent}%": "ल लॉन्चर {version}  {percent}%",
   "Manage versions": "संस्करण प्रबंधित करें",
@@ -844,7 +845,6 @@
   "Something went wrong.": "कुछ गलत हो गया।",
   "Instances": "Instances",
   "Join the Discord": "Join the Discord",
-  "Restart to update": "Restart to update",
   "Duplicate…": "Duplicate…",
   "Create a desktop shortcut": "Create a desktop shortcut",
   "Remove the desktop shortcut": "Remove the desktop shortcut",
@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "आपका डेटा कॉपी और सत्यापित किए जाने के दौरान लॉन्चर बंद रहता है, फिर दोबारा खुलता है। पुराने फ़ोल्डर सुरक्षित रखे जाते हैं और तब तक डिस्क पर जगह घेरते रहते हैं, जब तक आप स्थानांतरण सफल होने की पुष्टि करके उन्हें खुद नहीं हटा देते।",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "दुकान खोलें",
-  "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।"
+  "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।",
+  "Claim for free": "मुफ़्त पाएँ",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "दुकान का भुगतान प्रदाता आपके देश में सेवा नहीं देता, इसलिए आप फ़ाउंडर सेट यहाँ मुफ़्त पा सकते हैं।",
+  "The Founder Set is yours.": "फ़ाउंडर सेट अब आपका है।"
 }

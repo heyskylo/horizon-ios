@@ -456,7 +456,9 @@
   "runs {command} after": "yn rhedeg {command} ar ôl",
   "downloaded": "llwytho i lawr",
   "24/7 online": "24/7 ar-lein",
-  "Updated to {version}. Restart the launcher to use it.": "Wedi'i ddiweddaru i {version}. Ailgychwynnwch y lansiwr i'w ddefnyddio.",
+  "A new version is available": "Mae fersiwn newydd ar gael",
+  "Download again": "Lawrlwytho eto",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Ni all y copi hwn o'r lansiwr gymryd ei le ei hun. Lawrlwythwch ef eto unwaith; wedyn mae'n diweddaru ei hun.",
   "Any MCP client": "Unrhyw gleient MCP",
   "{name}'s cape is kept.": "Mae clogyn {name} yn cael ei gadw.",
   "Not reviewed by the Horizon registry": "Heb ei adolygu gan y gofrestrfa Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Wedi'i gopïo",
   "Couldn't load patch notes. {error}": "Methu llwytho nodiadau clytiau. {error}",
   "Couldn't load releases. {error}": "Methu llwytho datganiadau. {error}",
-  "Launcher updated to {version}": "Lansiwr wedi'i ddiweddaru i {version}",
   "Launcher {version}": "Lansiwr {version}",
   "Launcher {version}  {percent}%": "Lansiwr {version} {percent}%",
   "Manage versions": "Rheoli fersiynau",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Aeth rhywbeth o'i le.",
   "Instances": "Enghreifftiau",
   "Join the Discord": "Ymunwch â'r Discord",
-  "Restart to update": "Ailgychwyn i ddiweddaru",
   "Duplicate…": "Dyblyg…",
   "Create a desktop shortcut": "Creu llwybr byr bwrdd gwaith",
   "Remove the desktop shortcut": "Tynnwch y llwybr byr bwrdd gwaith",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Agor y siop",
-  "You don't own any cosmetics yet.": "Does gennych chi ddim colur eto."
+  "You don't own any cosmetics yet.": "Does gennych chi ddim colur eto.",
+  "Claim for free": "Hawlio am ddim",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Nid yw darparwr talu'r siop yn gwasanaethu eich gwlad, felly gallwch hawlio'r Set sylfaenydd yma am ddim.",
+  "The Founder Set is yours.": "Mae'r Set sylfaenydd yn eiddo i chi."
 }

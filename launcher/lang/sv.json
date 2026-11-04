@@ -458,7 +458,9 @@
   "runs {command} after": "kör {command} efter",
   "downloaded": "nedladdade",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Uppdaterad till {version}. Starta om startprogrammet för att använda det.",
+  "A new version is available": "En ny version finns",
+  "Download again": "Ladda ner igen",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Den här kopian av startprogrammet kan inte ersätta sig själv. Ladda ner den igen en gång; sedan uppdaterar den sig själv.",
   "Any MCP client": "Vilken MCP-klient som helst",
   "{name}'s cape is kept.": "{name}s udde behålls.",
   "Not reviewed by the Horizon registry": "Ej granskad av Horizon-registret",
@@ -637,7 +639,6 @@
   "Copied": "Kopierade",
   "Couldn't load patch notes. {error}": "Det gick inte att ladda patch-anteckningar. {error}",
   "Couldn't load releases. {error}": "Det gick inte att läsa in versioner. {error}",
-  "Launcher updated to {version}": "Launcher uppdaterad till {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version} {percent}%",
   "Manage versions": "Hantera versioner",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Något gick fel.",
   "Instances": "Förekomster",
   "Join the Discord": "Gå med i Discord",
-  "Restart to update": "Starta om för att uppdatera",
   "Duplicate…": "Duplicera...",
   "Create a desktop shortcut": "Skapa en genväg på skrivbordet",
   "Remove the desktop shortcut": "Ta bort genvägen på skrivbordet",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Öppna butiken",
-  "You don't own any cosmetics yet.": "Du äger ingen kosmetika än."
+  "You don't own any cosmetics yet.": "Du äger ingen kosmetika än.",
+  "Claim for free": "Hämta gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Butikens betalleverantör finns inte i ditt land, så du kan hämta Grundaruppsättningen här gratis.",
+  "The Founder Set is yours.": "Grundaruppsättningen är din."
 }

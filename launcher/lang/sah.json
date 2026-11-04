@@ -458,7 +458,9 @@
   "runs {command} after": "кэнниттэн {command} сүүрэр",
   "downloaded": "хачайдаан ылбыт",
   "24/7 online": "24/7 онлайн",
-  "Updated to {version}. Restart the launcher to use it.": "{version} диэри саҥардыллыбыт. Ону туһанарга лаунчеры хаттаан холбоо.",
+  "A new version is available": "Саҥа барыл баар",
+  "Download again": "Хат хачайдаа",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Лаунчер бу куопуйата бэйэтин солбуйар кыаҕа суох. Биир төгүл хат хачайдааҥ; онтон ыла бэйэтэ саҥардыллар.",
   "Any MCP client": "Ханнык баҕарар MCP клиенэ",
   "{name}'s cape is kept.": "{name} плащын тутар.",
   "Not reviewed by the Horizon registry": "Horizon реестрынан көрүллүбэтэх",
@@ -637,7 +639,6 @@
   "Copied": "Копированнай",
   "Couldn't load patch notes. {error}": "Патч бэлиэтээһиннэрин кыайан киллэрбэтэ. {error}",
   "Couldn't load releases. {error}": "Релизтары кыайан тиэйбэтэ. {error}",
-  "Launcher updated to {version}": "Лаунчер {version} диэри саҥардыллыбыт",
   "Launcher {version}": "Лаунчер {version}",
   "Launcher {version}  {percent}%": "Лаунчер {version} {percent}%",
   "Manage versions": "Версиялары салай",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Туох эрэ сыыһа барда.",
   "Instances": "Инстанциялар",
   "Join the Discord": "Discord кыттыһыҥ",
-  "Restart to update": "Саҥардыыга хаттаан саҕалаа",
   "Duplicate…": "Дубликат...",
   "Create a desktop shortcut": "Үлэ остуолун кылгас суолун оҥор",
   "Remove the desktop shortcut": "Үлэ остуолун быстах суолун суох оҥор",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Маҕаһыыны аһыы",
-  "You don't own any cosmetics yet.": "Эйиэхэ билигин косметика суох."
+  "You don't own any cosmetics yet.": "Эйиэхэ билигин косметика суох.",
+  "Claim for free": "Босхо ыл",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Маҕаһыын төлөбүрүн сулууспата эн дойдугар үлэлээбэт, онон Төрүттээччи наборын манна босхо ылыаххын сөп.",
+  "The Founder Set is yours.": "Төрүттээччи набора — эйиэнэ."
 }

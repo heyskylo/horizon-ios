@@ -166,13 +166,14 @@ impl Game<'_> {
         let now = self.started.elapsed().as_secs_f64();
         self.pvp.combo.attacked(id, now);
     }
-    /// The server reports entity `id` hurt; `own` when it is this player.
-    pub(super) fn pvp_hurt(&mut self, id: i32, own: bool) {
+    /// The server reports entity `id` hurt; `own` when it is this player,
+    /// `by_me` whether this player was the damage's direct entity (if named).
+    pub(super) fn pvp_hurt(&mut self, id: i32, own: bool, by_me: Option<bool>) {
         if own {
             self.pvp.combo.broken();
         } else {
             let now = self.started.elapsed().as_secs_f64();
-            self.pvp.combo.hurt(id, now);
+            self.pvp.combo.hurt(id, by_me, now);
         }
     }
     /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
@@ -202,7 +203,8 @@ impl Game<'_> {
         });
         // The address is copied only when it changed (`server_address` borrows the whole game).
         let server = self.server_address().filter(|_| multiplayer);
-        let server = (self.pvp.server.next.as_deref() != server).then(|| server.map(str::to_owned));
+        let server = (hud.server && self.pvp.server.next.as_deref() != server)
+            .then(|| server.map(str::to_owned));
         let now = self.started.elapsed().as_secs_f64();
         let atlas = &self.gui.atlas;
         let width = |s: &str| HudBatch::text_width(atlas, s);

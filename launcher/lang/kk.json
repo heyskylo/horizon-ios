@@ -456,7 +456,9 @@
   "runs {command} after": "кейін {command} орындалады",
   "downloaded": "жүктелді",
   "24/7 online": "24/7 онлайн",
-  "Updated to {version}. Restart the launcher to use it.": "{version} дейін жаңартылды. Оны пайдалану үшін іске қосқышты қайта іске қосыңыз.",
+  "A new version is available": "Жаңа нұсқа бар",
+  "Download again": "Қайта жүктеп алу",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Лаунчердің бұл көшірмесі өзін ауыстыра алмайды. Оны бір рет қайта жүктеп алыңыз; содан кейін ол өзі жаңарады.",
   "Any MCP client": "Кез келген MCP клиенті",
   "{name}'s cape is kept.": "{name} шапаны сақталады.",
   "Not reviewed by the Horizon registry": "Horizon тізілімінде қаралмаған",
@@ -635,7 +637,6 @@
   "Copied": "Көшірілген",
   "Couldn't load patch notes. {error}": "Түзету жазбаларын жүктеу мүмкін болмады. {error}",
   "Couldn't load releases. {error}": "Шығарылымдарды жүктеу мүмкін болмады. {error}",
-  "Launcher updated to {version}": "Іске қосу құралы {version} болып жаңартылды",
   "Launcher {version}": "Іске қосу құралы {version}",
   "Launcher {version}  {percent}%": "Іске қосу құралы {version} {percent}%",
   "Manage versions": "Нұсқаларды басқару",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Бірдеңе дұрыс болмады.",
   "Instances": "Даналар",
   "Join the Discord": "Discord-қа қосылыңыз",
-  "Restart to update": "Жаңарту үшін қайта іске қосыңыз",
   "Duplicate…": "Көшірме…",
   "Create a desktop shortcut": "Жұмыс үстелінің таңбашасын жасаңыз",
   "Remove the desktop shortcut": "Жұмыс үстеліндегі таңбашаны алып тастаңыз",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Дүкенді ашу",
-  "You don't own any cosmetics yet.": "Сізде әлі косметика жоқ."
+  "You don't own any cosmetics yet.": "Сізде әлі косметика жоқ.",
+  "Claim for free": "Тегін алу",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Дүкеннің төлем провайдері сіздің елде қызмет көрсетпейді, сондықтан Құрылтайшы жиынтығын осында тегін ала аласыз.",
+  "The Founder Set is yours.": "Құрылтайшы жиынтығы енді сіздікі."
 }

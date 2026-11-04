@@ -1733,8 +1733,10 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64; an Intel Mac has none yet, so native builds there stop with "the launcher has none for
-   macos x86_64". Windows uses the `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
+   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet and stops with
+   "the launcher has none for windows aarch64"; it doesn't build x64 game binaries for an ARM64 install. An Intel
+   Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
+   `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
    (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
    SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
    and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on
@@ -2793,6 +2795,22 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+### Fluid currents
+
+`native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
+push an item there gets. It is zero for still water and for no fluid, and none where the chunk isn't loaded or the
+dimension isn't available (a client has only the level it is in), so a water wheel on a chunk edge can keep its last
+speed rather than stop.
+
+### A mod's own fluids in tanks
+
+Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water and lava: any id in a namespace other
+than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
+and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
+a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
+cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
+mod's fluid yet, and no buckets of one.
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
@@ -2827,6 +2845,25 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
   the end, or more than 65536 filters.
 
+### Machines
+
+`crates/horizon-client/src/game/native_machines.rs`: helpers for a mod's machines on a server, in the level in place.
+These are what Create's drill, saw, harvester and deployer need.
+
+- `native_machine_destroy_block(pos, tool, collect)` (`Host::destroy_block`) is `Level.destroyBlock(pos, true)` with
+  the loot rolled for `tool` and no player (`Block.dropResources(state, level, pos, blockEntity, null, tool)`).
+  It shows the break particles and plays the sound, and the block entity's contents go into the drops as a player's
+  break puts them. An ore gives experience as with no tool, and the block's fluid takes its place. Mods' loot changes
+  (`native_loot_drops`) apply. With `collect`, the drops are returned instead of popped.
+- `native_set_break_progress(breaker, pos, progress)` is `ServerLevel.destroyBlockProgress`: a crack, stage 0 to 9, for
+  the players within 64 blocks. Pass a negative id of your own, the same each time; any other stage removes the crack.
+- `native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` is NeoForge's `FakePlayer`. It uses `stack` on a
+  block (`useItemOn`), in the air (`useItem`) or on an entity (`interactOn`). The fake player is in survival and holds
+  nothing else. It has no connection: nothing it opens stays open, and its stats and advancements count for no one.
+  The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
+  afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
+  `None`.
+
 ### Column reads
 
 `crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
@@ -2846,6 +2883,14 @@ pieces.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
 
+### Chunk tickets
+
+`crates/horizon-client/src/game/native_chunk_tickets.rs`: `native_force_chunk(owner, [x, z], hold)` holds a chunk of the
+level in place for `owner` (`create:train/<uuid>`), as NeoForge's `TicketController.forceChunk` does. The chunk stays
+held while any owner holds it. It is kept as a `/forceload`ed chunk is: it is loaded with the ring around it, it ticks,
+and its level stays open. `/forceload` neither lists nor releases it. `native_forced_chunks(owner)` lists what an owner
+holds. Tickets are not saved: keep what you hold (a level attachment) and hold it again in `native_level_load`.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
@@ -2860,6 +2905,15 @@ one custom payload channel `horizon:mod_net`. A vanilla client never gets them, 
   message: check the channel. What a client sent is checked by nothing, so treat it as a player's own input.
 - A player's message reaches the server's hook in the tick after it arrives, when the helpers can reach every player;
   a message to a player leaves at the end of the tick, from any server hook.
+
+### Scenes in screens
+
+`native_draw_scene(batch, rect, blocks, view)` (client, `crates/horizon-client/src/game/native_scene.rs`) draws a small
+scene into a box of a screen: block states at positions of the scene's own (`NativeSceneBlock`), each with its model and,
+given a mod block entity, its drawing through `native_block_entity_submit`, `spin` parts included. `NativeSceneView`
+sets the point at the box's middle, the turn (`yaw`, counterclockwise seen from above; at 0 the scene is seen from the
+north), the tilt of its top towards the viewer (`pitch`) and the pixels per block (`scale`). The scene has a depth of its
+own and is cut to the box. Draw it from the screen's drawing hook; Create's Ponder steps through its scenes this way.
 
 ### Chat and commands a client mod sends
 
@@ -2904,6 +2958,24 @@ stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is insta
 
 The menu hooks run with no player's state swapped in; `native_player_stacks` and `native_exchange_items` refuse a
 player whose state is (inside `native_perform_command`): call them from a menu hook or `native_server_tick`.
+
+### Text, turning parts and copycats in block entities
+
+- `native_draw_text(draw, text, at, color, glowing, outline)` draws a `Text` under a block entity's pose, as a sign
+  draws its lines. One unit is one font pixel and y points down, so scale the pose by `[1/64, -1/64, 1/64]` as a sign
+  does. Each span keeps its own colour, and glowing text is full bright. It returns the width, for centring. Only the
+  spans' text and colour are drawn, in the default font: no bold, italic or other font yet. Clamp text read from NBT,
+  since an outlined glyph costs nine quads, and widen `native_block_entity_render_bounding_box` for a long line, which
+  the one-block default bounds cull while it is still on screen.
+- `BlockEntityDraw::spin(axis, pivot, degrees_per_tick, phase)` makes what is drawn next turn by itself, and `still`
+  ends it. The game works out the angle from the game time each frame (`game_time * degrees_per_tick + phase`), so a
+  new speed needs a new phase to carry on from the current angle. With `keep`, a shaft turning at a steady speed
+  is drawn again with no call of `native_block_entity_submit` until its block entity changes. This stands in for
+  Flywheel's rotating instances, on the CPU.
+- `native_block_face_sprite(state, side)` names the texture a block state shows on a side, as `native_draw_cube`
+  takes it (`block/oak_planks`: vanilla's without the namespace). With it, a copycat block draws its material's textures on its own shape and keeps the result.
+- Connected textures (casings, framed glass) need no code. A content mod ships OptiFine CTM rules under
+  `assets/<id>/optifine/ctm/`, and the mesher reads them as it reads a resource pack's.
 
 ### Render hook points
 
@@ -2993,6 +3065,13 @@ only for a server's players (single player's server thread, LAN guests, a dedica
 never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
 shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
 slot from filling that way, lower `max_stack`.
+
+### What a mod's container takes
+
+`native_container_accepts(pos, entity, slot, stack, face, cancel)` is a hook (NeoForge's `IItemHandler.isItemValid`).
+Hoppers, droppers and `native_insert_item` ask it before they put an item into a slot that the block's `ModContainer`
+lets them fill. Set `cancel` to refuse the item there: a millstone takes only what it has a recipe for. Players' clicks
+in a menu are `native_menu_slot_rules`' instead.
 
 ### Shift-click in a mod container
 
@@ -3394,16 +3473,31 @@ receiver and documentation; a helper without `self` (`config_dir`) takes
 A helper's `receiver` also exposes it on that handle. Receivers come from public
 `*Ref` structs in `mod_api.rs`: for example, a public `BlockEntityRef` struct registers
 `block_entity`. Adding a handle requires no separate generator registration.
+
+Some helpers reach `Host` in another form, because their own signatures can't
+go through `dyn Host` (`native_host_bridge.rs`):
+
+| `Host` method | For | What it does |
+|---|---|---|
+| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. |
+| `trigger_criterion(uuid, trigger, &test)` | `trigger_criterion` | The same call, with the test as `&dyn Fn`. |
+| `play_sound`, `send_particles` | `LevelWriteHost`'s methods | Work in the level in place, from any server hook, such as a block entity's tick. |
+| `block_name_in_tag(block, tag)` | `server_block_in_tag` | Takes a block name instead of a state. |
+
+`equipment(slot)` is the player's own equipment on a client and the acting player's on a server.
+`sneaking()` is `isSecondaryUseActive` in a use hook. `draw_model`, `item_entities`, `level_random`,
+`server_item_in_tag`, `component`, `set_component` and `remove_component` are the helpers themselves.
+
 The following documented `Game` helpers are not in the trait yet:
 
 - `spawn_mob`, `mob`, `mobs`, `block_in_tag`, `item_in_tag`,
-  `server_block_in_tag`, `server_item_in_tag`, `server_block`,
+  `server_block_in_tag`, `server_block`,
   `set_display`, `sidebar`, `experience_orbs`,
-  `item_entities`, `player`, `panel_recipes`, `recipes`, `component`,
-  `set_component`, `remove_component`, `spawn_falling_block`, `explode`,
-  `fluid_tanks` and `container_slots` use gameplay-private types.
+  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`
+  and `container_slots` use gameplay-private types.
 - `with_mod_block_entity` and `trigger_criterion` are generic or take
-  `impl Trait`, so their signatures cannot be called through `dyn Host`.
+  `impl Trait`, so their signatures cannot be called through `dyn Host`;
+  the forms above stand in for them.
 
 The following catalog hooks are not in the trait yet:
 
