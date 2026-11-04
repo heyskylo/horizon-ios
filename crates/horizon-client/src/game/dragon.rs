@@ -1034,11 +1034,7 @@ impl Game<'_> {
         }
         if self.fight.players {
             if self.fight.needs_scan {
-                // scanState: a missing exit portal means a fight in progress.
-                self.fight.previously_killed = self.end_portal_active();
-                if !self.fight.previously_killed {
-                    self.fight.killed = false;
-                }
+                self.scan_state();
                 self.fight.needs_scan = false;
                 self.fight.dirty = true;
             }
@@ -3911,12 +3907,38 @@ impl Game<'_> {
     /// `EnderDragonFight.findOrCreateDragon`: the End's dragon becomes the
     /// fight's, or a new one is made.
     fn find_or_create_dragon(&mut self) {
-        match self.dragon.as_ref().map(|d| d.id) {
+        match self.dragon.as_ref().map(|d| (d.id, d.alive())) {
             None => self.create_new_dragon(),
-            Some(id) => {
+            Some((id, true)) => {
                 self.fight.dragon_uuid = Some(self.uuid_for(id));
                 self.fight.dirty = true;
             }
+            // `ServerLevel.getDragons` takes only living dragons, so vanilla
+            // makes a new one beside a dying one; with one dragon to a level,
+            // the new one comes once the dying one is gone.
+            Some((_, false)) => {}
+        }
+    }
+    /// `EnderDragonFight.scanState`, for a world from before the fight was
+    /// saved: an active exit portal means the dragon was killed before. A
+    /// living dragon there is the fight's, unless there is no active portal:
+    /// then it is removed for a new one.
+    fn scan_state(&mut self) {
+        let active = self.end_portal_active();
+        self.fight.previously_killed = active;
+        match self.dragon.as_ref().filter(|d| d.alive()).map(|d| d.id) {
+            None => self.fight.killed = true,
+            Some(id) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.killed = false;
+                if !active {
+                    self.dragon = None;
+                    self.fight.dragon_uuid = None;
+                }
+            }
+        }
+        if !self.fight.previously_killed && self.fight.killed {
+            self.fight.killed = false;
         }
     }
     /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
