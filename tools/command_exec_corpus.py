@@ -4711,6 +4711,25 @@ def advancement_reward_functions():
     return ops
 
 
+def piston_entity_tick_order():
+    """#9337: entities travel before moving pistons push them, not afterward."""
+    ops = []
+    for block in ('stone', 'slime_block'):
+        ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                     '/setblock 1 200 1 piston[facing=up]',
+                     f'/setblock 1 201 1 {block}',
+                     '/summon wither_skeleton 1.5 202 1.5 '
+                     '{PersistenceRequired:1b,Tags:["piston_rider"]}',
+                     '/attribute @e[tag=piston_rider,limit=1] movement_speed base set 0',
+                     '/setblock 2 200 1 redstone_block')
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd('/data get entity @e[tag=piston_rider,limit=1] Pos'))
+            ops.append(cmd('/data get entity @e[tag=piston_rider,limit=1] Motion'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4764,6 +4783,7 @@ def groups():
         ('sulfur cube fuse ticks', sulfur_cube_fuse_ticks()),
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
+        ('piston entity tick order', piston_entity_tick_order()),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
         ('camel riders', camel_riders()),
