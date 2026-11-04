@@ -3265,6 +3265,60 @@ mod tests {
         assert!(freeze_meta(&axolotl).0.iter().all(|e| e.0 != 1));
     }
 
+    /// Raider.IS_CELEBRATING goes out through the tracker's own metadata
+    /// (`mob_meta`), not only through the helper: false is listed as a
+    /// default so the end of a celebration is sent, and true is sent while
+    /// the raider celebrates.
+    #[test]
+    fn a_celebrating_raider_is_sent_by_mob_meta() {
+        use horizon_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data, hub};
+        let Some(mut pillager) = mob_of("minecraft:pillager") else {
+            return;
+        };
+        let sync = std::sync::Arc::new(data::SyncData::empty());
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "RaiderMetaTest".into(), 2)
+        };
+        let lan = Lan::start_with(sync.clone(), config).unwrap();
+        let encoder = ChunkEncoder::new(
+            [] as [(std::sync::Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let hub_config = hub::HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 20,
+            integrated: false,
+            levels: Default::default(),
+        };
+        let hub = hub::Hub::new(lan, sync, encoder, hub_config);
+        let meta_of = |m: &Mob| {
+            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+            super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
+            (meta, defaults)
+        };
+
+        let (meta, defaults) = meta_of(&pillager);
+        assert!(defaults.contains(&(16, serializer::BOOLEAN, Value::Bool(false))));
+        assert!(meta.iter().all(|e| e.0 != 16), "{meta:?}");
+        horizon_client::mobs::raider::state_mut(&mut pillager).celebrating = true;
+        let (meta, _) = meta_of(&pillager);
+        assert!(
+            meta.contains(&(16, serializer::BOOLEAN, Value::Bool(true))),
+            "{meta:?}"
+        );
+    }
+
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for
     /// the off hand, so an off-hand use is 3, not 2. A reader takes bit 0 as
     /// `isUsingItem` and bit 1 as `getUsedItemHand`.
