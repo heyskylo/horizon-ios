@@ -81,7 +81,8 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 - **Vanilla's management protocol**: `serversettings/*` (the live settings not yet done) and the world
   upgrade's notifications (the others are sent). The methods answer
   an internal error saying so; a kick's translatable message is sent as its key.
-- **Compatibility tests**: golden replies per endpoint, and a `server.toml` from each release line.
+- **Compatibility tests**: golden replies for the remaining endpoint groups (the lifecycle replies are pinned),
+  and a `server.toml` from each release line.
 
 ## Changelog
 
@@ -92,6 +93,7 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
   `whitelist/{add,remove}`, stopped-server list edits, `metrics/prometheus`, `GET`/`PATCH config`,
   `DELETE backups`, `GET backups/download`; `POST start` resumes a stopped supervisor;
   `server.toml` gets `[api]` (`bind`, `token`, `allow_public`); `GET events` (server-sent events, or JSON).
+- The API compatibility suite pins the `/api/v1` status, metrics, logs, start, stop and restart replies.
 - RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.
 - GS4 query (`enable-query`, `query.port`): vanilla's UDP query (handshake, basic and full stat), served by the
   supervisor.

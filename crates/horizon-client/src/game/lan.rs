@@ -1708,6 +1708,13 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live entity tracking range percentage.
+    pub(super) fn set_entity_broadcast_range_percentage(&mut self, percentage: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.entity_range_percent = percentage;
+        }
+    }
+
     /// Update the live movement check's flight policy.
     pub(super) fn set_allow_flight(&mut self, allow: bool) {
         if let Some(host) = self.lan.as_mut() {
