@@ -1,9 +1,9 @@
 # Cosmetics
 
-Small items Horizon players wear: a hat, something on the back, a pet on the shoulder, a style for
-their name tag. They are
-drawn by Horizon clients only and change nothing in the game. **Off by default**: nothing below
-runs until the feature flag is turned on.
+Small items Horizon players wear: a hat, something on the back, a shirt, a pet on the shoulder, a
+style for their name tag. They are drawn by Horizon clients only and change nothing in the game.
+**On by default** (Ludovic, 2026-11-04: on when the shop opens), other players' and your own shown;
+the settings below hide them.
 
 ## Rules
 
@@ -39,13 +39,17 @@ y points down, as in vanilla's `ModelPart`s and Blockbench's "Modded Entity" mod
 }
 ```
 
-- `slot`: `head`, `back`, `shoulder` or `name_tag`; a player wears at most one item per slot.
+- `slot`: `head`, `back`, `torso`, `shoulder` or `name_tag`; a player wears at most one item per
+  slot. A `torso` item is hidden under a chestplate (not an elytra).
 - `bone`: the player model part the item follows (`head`, `body`, `left_arm`, `right_arm`,
   `left_leg`, `right_leg`; `head` if left out). The item sits at the bone's matrix times `attach` (offset in pixels,
   rotation in degrees, a uniform scale in (0, 2]).
 - `parts`: a tree of parts, each with a pivot, a rotation in degrees and boxes with Minecraft's box
   UV (`ModelPart.Cube`'s faces and order), grown by `inflate`, mirrored in x on request. Names are
-  unique.
+  unique and never start with `cosmetic`.
+- A **top-level part's `bone`** (optional) makes it ride another bone than the item's, under the
+  same attachment: a shirt's sleeves (`"bone": "right_arm"`) follow the arms as they swing. Only
+  top-level parts take one; the reach limit counts from each part's own bone.
 - `animations`: loops on top of a part's rest pose, a sine of `period` ticks (4 to 1200) started
   `phase` periods in. `swing` turns the part `amplitude` degrees (at most 45) about the axis, `bob`
   moves it `amplitude` pixels (at most 4), `spin` turns it all the way round once per period.
@@ -92,9 +96,9 @@ does the asking.
 
 ## In the game
 
-- **The flag**: `horizon_cosmetics::ON_BY_DEFAULT` is `false`. Until it is turned on nothing runs:
-  no thread, no request, no setting, no drawing. `HORIZON_COSMETICS=1` turns them on for one run
-  (development, the bench); `HORIZON_COSMETICS_API=<url>` points the game at another service, and
+- **The flag**: `horizon_cosmetics::ON_BY_DEFAULT` is `true`. `HORIZON_COSMETICS=0` turns
+  everything off for one run (no thread, no request, no setting, no drawing), `=1` on;
+  `HORIZON_COSMETICS_API=<url>` points the game at another service, and
   `HORIZON_COSMETICS_LOCAL=<folder>` reads items from a folder instead: every player and every
   mannequin wears its first item of each slot (the art and the bench, without the network).
 - **Settings** (Extras, under "Cosmetics", shown only with the flag on), the same three as the
@@ -129,22 +133,25 @@ from any angle.
 ## The Wardrobe's account check (`launcher/src/wardrobe.rs`)
 
 The launcher talks to the same service for the player's own items: the catalogue, what the account
-owns, claiming the founder set while its window is open, what each slot wears and whether other
-players see it.
+owns, its purchase history, what each slot wears and whether other players see it. Buying and
+claiming the founder set happen on the website's shop (https://playhorizon.dev/shop), never in the
+launcher.
 
 - **Who the player is**: the service hands out a one-time server id (`POST /v1/auth/start`), the
   launcher tells Mojang's session server that the account joins it
   (`account::session::join_server`, the call a client makes before joining an online-mode server),
   and the service asks Mojang (`hasJoined`) before it answers `POST /v1/auth/finish` with a
   session of its own. The Minecraft token goes to Mojang only; the service never sees it.
-- **Then**: `GET /v1/me`, `POST /v1/claim`, `PUT /v1/equipped {"slot", "item"}` and
+- **Then**: `GET /v1/me`, `PUT /v1/equipped {"slot", "item"}` and
   `PUT /v1/visible {"visible"}` ("Show my cosmetics": off, `/v1/worn` leaves the player out) with
   that session (`Authorization: Bearer`), kept in memory for the time the service gave, less a
   minute.
-- **The founder set** is free and can be claimed only between the window's start and end; after
-  that it is retired for good and never offered again. Players who claimed it keep it.
-- **Launcher themes** (`"slot": "theme"`) have no item file: the catalogue carries their six sky
-  stops and accent hue, and the game never asks for them.
+- **The founder set** (Founder Visor, Founder Tee, Founder Backpack, Founder Tag) is free and can
+  be claimed on the website only between the window's start and end; after that it is retired for
+  good and never offered again. Players who claimed it keep it, and it shows in the Wardrobe.
+- **Launcher themes** are never claimed or sold: they are free for everyone in Settings ›
+  Appearance (*Launcher theme*: Horizon or First Light, `horizon_launcher::themes::THEMES`). A
+  catalogue entry with `"slot": "theme"` is ignored.
 - **Offline**: the last catalogue and answer, and the changes not sent yet, are kept per account
   in the launcher's data folder (`wardrobe/<uuid>.json`; never a session or token), item files
   under their hash. A change shows at once; the ones the service couldn't take (offline, or a
@@ -154,19 +161,21 @@ players see it.
 ## The Wardrobe page (`launcher/src/wardrobe_page.rs`)
 
 A top-bar page between Servers and Versions, for the selected Microsoft account (signed out, it asks
-you to sign in). It shows with the flag on, and also, whatever the flag says, when the service has a
-founder set to show (`horizon_launcher::shop`): the launcher asks `GET /v1/shop` at start and every
+you to sign in). It shows only when the service has a founder set to show (or with
+`HORIZON_COSMETICS=1`, for development), whatever cosmetics in the game do (`horizon_launcher::shop`): the launcher asks `GET /v1/shop` at start and every
 half hour, with no session and nothing about the player. The page shows when the set can be claimed
-now (`open`), when the public window has dates (to say when it opens, or that it is over), or when the
-selected account's own answer, kept from its last visit, does (a claim, or a preview the service grants
-that account). With no window set, the page stays hidden.
+now (`open`), when the public window has dates, or when the selected account's own answer, kept from
+its last visit, does (a claim, or a preview the service grants that account). With no window set, the
+page stays hidden.
 
-- **A row per slot** (head, back, shoulder pet, name tag, launcher theme) with what it wears,
+- **A row per slot** (head, back, shirt, shoulder pet, name tag) with what it wears,
   "Nothing equipped" or "None owned yet"; **your player** in the middle, on your own skin, wearing
   it, with your name tag style over the head (`horizon_cosmetics::preview`); **what you own for the
   chosen slot**, "Nothing" first. Equipping shows at once.
-- **The founder set**: a line to claim it while its window is open, and once the window is closed,
-  that it was free until that day and isn't offered any more.
+- **The shop is on the website**: an *Open the shop* button by the page's title opens
+  `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim, purchases through
+  Paddle). An account that owns nothing yet sees "You don't own any cosmetics yet." with that button
+  instead. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
@@ -175,9 +184,6 @@ that account). With no window set, the page stays hidden.
 - **States**: offline, the page keeps working from what's kept on disk and says how many changes
   wait to sync; a service failure says what you wear still shows in the game, with *Try again* and
   *Copy details* (host, status, time).
-- **A launcher theme** worn (First Light) replaces the sky's six stops and the accent's hue
-  (`Saved::theme`, `Theme::with_sky`), from the outfit kept on disk, so it holds offline too. Taking
-  it off brings the player's own look back.
 - `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build shows the page for a made-up account
-  wearing `HORIZON_COSMETICS_LOCAL`'s items; `HORIZON_WARDROBE_STATE=offline|failed|closed|empty`
-  shows that state, `theme` wears First Light.
+  wearing `HORIZON_COSMETICS_LOCAL`'s items; `HORIZON_WARDROBE_STATE=offline|failed|empty`
+  shows that state.

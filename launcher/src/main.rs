@@ -126,7 +126,7 @@ impl Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
-            Ok("wardrobe") if horizon_cosmetics::enabled() => Page::Wardrobe,
+            Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -261,6 +261,9 @@ struct Launcher {
     /// The newer Horizon the open warning's build moves to (Update), else None: a build stays
     /// on the Horizon the instance plays.
     native_update: Option<String>,
+    /// The build waiting for the trust warning builds every mod on its Horizon's own commit,
+    /// pinned or not (`native_mods::build`'s `on_base`): Rebuild on Horizon's.
+    native_on_base: bool,
     /// What each installed native build was made from, by version. A build's version names its
     /// contents, so an entry never goes stale.
     native_builds:
@@ -298,7 +301,7 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
-    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
@@ -586,6 +589,7 @@ impl Launcher {
             native_confirm: None,
             native_for: None,
             native_update: None,
+            native_on_base: false,
             native_builds: Default::default(),
             native_mismatch: None,
             native_log: Default::default(),
@@ -605,7 +609,8 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            restyle: horizon_cosmetics::enabled(),
+            // The first draw takes the launcher theme from Settings.
+            restyle: true,
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
@@ -933,6 +938,7 @@ impl Launcher {
         let instance = instances::selected();
         self.native_for = Some(instance.id.clone());
         let plays = self.version_of(&instance).cloned();
+        let on_base = std::mem::take(&mut self.native_on_base);
         let base = match self.native_update.take() {
             Some(newer) => Some(newer),
             None => native_mods::base_for(plays.as_deref(), &self.installed, false),
@@ -957,9 +963,17 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(&base, &folder, &instance, anyway, profile, |step| {
-                let _ = tx.send(Msg::NativeProgress(step.label()));
-            });
+            let result = native_mods::build(
+                &base,
+                &folder,
+                &instance,
+                anyway,
+                on_base,
+                profile,
+                |step| {
+                    let _ = tx.send(Msg::NativeProgress(step.label()));
+                },
+            );
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -1558,8 +1572,7 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        // A removal still running could take the folder of the same program imported again.
-        if self.importing_build || !self.removing.is_empty() {
+        if !self.can_import_build() {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1577,19 +1590,31 @@ impl Launcher {
             };
             let _ = this.update(cx, |this, cx| {
                 // Another picker's import, or a removal, may have started meanwhile.
-                if this.importing_build || !this.removing.is_empty() {
-                    return;
-                }
-                this.importing_build = true;
-                this.import_error = None;
-                let tx = this.tx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
-                });
-                cx.notify();
+                this.start_build_import(path, cx);
             });
         })
         .detach();
+    }
+    /// Whether a build may be imported now. A removal still running could take
+    /// the folder of the same program imported again.
+    fn can_import_build(&self) -> bool {
+        !self.importing_build && self.removing.is_empty()
+    }
+    /// Starts importing the build at `path` on a thread, as the picker does.
+    /// Separate from [`Self::import_build`] so a file dropped on the window can
+    /// start the same import (`import_dropped`) without a picker. Does nothing
+    /// when one is already running. `Msg::Imported` ends it.
+    fn start_build_import(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.can_import_build() {
+            return;
+        }
+        self.importing_build = true;
+        self.import_error = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
+        });
+        cx.notify();
     }
 
     /// Prepares the selected version, its Minecraft files from the player's install or, for an
@@ -3903,6 +3928,7 @@ impl Launcher {
                 |this, _: &ClickEvent, _, cx| {
                     this.native_confirm = None;
                     this.native_update = None;
+                    this.native_on_base = false;
                     cx.notify();
                 },
             )),

@@ -41,7 +41,7 @@ pub fn native_ingredient(
 /// stack being matched, `accept` already true (the load-time list named
 /// the item). Set `accept` to false to refuse the stack — its components
 /// are the usual reason. The hook may be called many times a craft; the
-/// answer must be the same for the same stack. API @API:ingredient_test@.
+/// answer must be the same for the same stack. API 377.
 #[inline(never)]
 pub fn native_ingredient_test(
     kind: &str,

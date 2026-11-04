@@ -10,11 +10,9 @@
   "horizon.options.move_deadzone": "Zone morte du déplacement",
   "horizon.options.look_deadzone": "Zone morte de la vue",
   "horizon.options.button_glyphs": "Symboles des boutons",
-  "horizon.options.menu_navigation": "Navigation dans les menus",
   "horizon.options.on_screen_keyboard": "Clavier à l'écran",
   "horizon.options.chat_delay": "Délai du tchat",
   "horizon.options.lightbar.health": "Santé",
-  "horizon.options.menu_pointer": "Pointeur",
   "horizon.options.unavailable": "Cette fonction n'est pas encore disponible dans Horizon.",
   "horizon.options.search": "Rechercher une option...",
   "horizon.pages.shader_packs": "Packs de shaders",
@@ -469,5 +467,10 @@
   "horizon.tempban.usage": "/tempban <joueur> <durée> [raison]",
   "horizon.tempban.invalid_duration": "%s n'est pas une durée : 30m, 12h, 7d",
   "horizon.tempban.dedicated_required": "Les bannissements temporaires nécessitent un serveur dédié",
-  "horizon.tempban.success": "%1$s pour %2$s, jusqu'au %3$s"
+  "horizon.tempban.success": "%1$s pour %2$s, jusqu'au %3$s",
+  "horizon.options.pointer_speed": "Vitesse du pointeur des menus",
+  "horizon.options.scroll_speed": "Vitesse de défilement des menus",
+  "horizon.options.repeat_delay": "Délai de répétition de navigation",
+  "horizon.options.repeat_interval": "Intervalle de répétition de navigation",
+  "horizon.options.milliseconds": "%s ms"
 }
