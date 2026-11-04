@@ -6,6 +6,7 @@
 use super::Game;
 use super::commands::Target;
 use horizon_core::geometry::Vec3;
+use horizon_protocol::packets::play::{self, Clientbound as C};
 
 /// `Entity.calculatePassengerTransition` with no relative axes: the passenger
 /// keeps its offset from the vehicle.
@@ -68,15 +69,41 @@ impl Game<'_> {
             p.position = passenger_destination(old, new, p.position);
             self.previous_position = p.position;
         }
+        let [yaw, pitch] = self.vehicle_rotation(vehicle);
         if let Some(host) = self.lan.as_mut() {
             for i in 0..host.hub.guests.len() {
                 if host.hub.guests[i].vehicle != Some(vehicle) {
                     continue;
                 }
+                // Entity.sendTeleportTransitionToRidingPlayers: the rider's
+                // client moves the vehicle it drives itself, so it hears the
+                // vehicle's teleport (else its next MoveVehicle undoes it).
+                host.hub.guests[i].send(&C::TeleportEntity(play::TeleportEntity {
+                    id: vehicle as i32,
+                    position: [new.x, new.y, new.z],
+                    delta: [0.0; 3],
+                    yaw,
+                    pitch,
+                    relatives: 0,
+                    on_ground: false,
+                }));
                 let g = host.hub.guests[i].position;
                 let at = passenger_destination(old, new, Vec3::new(g[0], g[1], g[2]));
                 host.hub.teleport_keeping_motion(i, [at.x, at.y, at.z]);
             }
+        }
+    }
+
+    /// A vehicle's yaw and pitch, for the riders' teleport packet.
+    fn vehicle_rotation(&self, id: u32) -> [f32; 2] {
+        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+            [b.yaw, 0.0]
+        } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+            [c.yaw, c.pitch]
+        } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            [m.yaw, m.head_pitch]
+        } else {
+            [0.0, 0.0]
         }
     }
 
@@ -100,6 +127,8 @@ impl Game<'_> {
                 if let Some(pitch) = pitch {
                     self.pitch = pitch;
                 }
+                // A server's player hears the turn alone when its turn ends.
+                self.rotation_forced = self.lan_acting.is_some();
             }
             Target::Mob(id) => {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {

@@ -2862,6 +2862,9 @@ struct Game<'a> {
     /// last tick (`game/boarding.rs`).
     boarding_cooldown: i32,
     riding_at_tick: Option<u32>,
+    /// A rotation-only write (`/rotate`, `Entity.forceSetRotation`) to the player of this
+    /// turn: `leave_guest` sends it as `ClientboundPlayerRotationPacket`, not a teleport.
+    rotation_forced: bool,
     /// The mount the last `position_rider` put the player on, to tell the tick
     /// a seat is taken (`Entity.moveTo`, no camera sweep) from the ones that
     /// follow it (`positionRider`, interpolated as usual).
@@ -19156,6 +19159,7 @@ impl<'a> Game<'a> {
             riding: None,
             boarding_cooldown: 0,
             riding_at_tick: None,
+            rotation_forced: false,
             posed_rider: None,
             pending_vehicle: None,
             ender_items: vec![None; 27],
