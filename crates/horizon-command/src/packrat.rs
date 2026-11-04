@@ -341,10 +341,12 @@ pub struct State<'g, V> {
     /// Context for the rules (e.g. the registries a lookup checks).
     pub ctx: Option<&'g dyn std::any::Any>,
 }
-/// The deepest rule nesting the parser accepts. Well below the point where a
-/// recursive parse overflows the parsing thread's stack (measured at ~300 for
-/// the server thread), and far above any real command or data value.
-const MAX_DEPTH: usize = 128;
+/// The deepest rule nesting the parser accepts. A level of SNBT nesting costs
+/// about four rules: 256 takes 63 nested compounds, 36 levels of a text
+/// component's `extra` list, or 13 containers in an item in a container. It
+/// stays under the stack overflow of a 2 MiB thread (the server thread's,
+/// Rust's default) in a debug build, where frames are largest: 384 overflows.
+const MAX_DEPTH: usize = 256;
 const UNBOUND: usize = usize::MAX;
 impl<'g, V: Value> State<'g, V> {
     pub fn new(grammar: &'g Grammar<V>, input: &'g str, cursor: usize) -> Self {

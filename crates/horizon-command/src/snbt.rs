@@ -1010,4 +1010,22 @@ mod tests {
         assert!(parse_fully("{a:{b:{c:1}}}").is_ok());
         assert!(parse_fully("[[1,2],[3,4]]").is_ok());
     }
+
+    /// Deep but real values parse: 50 nested compounds, and an item whose
+    /// `container` holds an item with a `container`, ten levels down.
+    #[test]
+    fn deep_real_values_still_parse() {
+        let mut compound = String::from("1");
+        for _ in 0..50 {
+            compound = format!("{{a:{compound}}}");
+        }
+        assert!(parse_fully(&compound).is_ok());
+        let mut item = String::from("{id:\"minecraft:stone\",count:1}");
+        for _ in 0..10 {
+            item = format!(
+                "{{id:\"minecraft:shulker_box\",count:1,components:{{\"minecraft:container\":[{{slot:0,item:{item}}}]}}}}"
+            );
+        }
+        assert!(parse_fully(&item).is_ok());
+    }
 }
