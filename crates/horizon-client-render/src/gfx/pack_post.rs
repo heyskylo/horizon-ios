@@ -38,6 +38,9 @@ mod world_target_tests;
 mod higher_shadowcolor_tests;
 
 #[cfg(test)]
+mod shadow_faces_tests;
+
+#[cfg(test)]
 mod forced_flip_tests;
 
 /// The texture behind a pack sampler name.
@@ -1035,6 +1038,10 @@ pub(super) struct ShadowView {
     /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
     /// packs that voxelize the world in their shadow pass need all of it.
     pub unculled: Option<f32>,
+    /// Every face of the drawn sections, not only those that can face the light. Iris 1.11.7's
+    /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
+    /// a cave's ceiling, which faces away, is often all that shadows the cave.
+    pub every_face: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -2124,13 +2131,24 @@ impl PackPost {
             .water
             .zip(terrain_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
+        // The shadow pass draws terrain faces from both sides, as Iris 1.11.7 does (#9033): a
+        // cave ceiling faces away from the sun, and is often all that shadows the cave.
+        let shadow_geometry = terrain_geometry.as_ref().map(|g| Geometry {
+            buffers: g.buffers,
+            table: g.table,
+            depth_write: g.depth_write,
+            atlas: g.atlas.clone(),
+            material_maps: g.material_maps,
+            ids: g.ids,
+            cull: false,
+        });
         let shadow_terrain = post
             .shadow
-            .zip(terrain_geometry.as_ref())
+            .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let shadow_water = post
             .shadow_water
-            .zip(terrain_geometry.as_ref())
+            .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let (hides_sky, hides_celestial) = (post.sky.is_some(), post.sky_textured.is_some());
         let sky = (post.sky.is_some() || post.sky_textured.is_some()).then(|| {
@@ -3787,6 +3805,7 @@ impl PackPost {
                 horizon_shaders::ShadowCulling::Off => Some(f32::INFINITY),
                 horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
             },
+            every_face: true,
         })
     }
 
