@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "force_chunk", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_force_chunk"},
+    {"name": "forced_chunks", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_forced_chunks"}
+  ],
+  "rust_summary": "chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).",
+  "doc_summary": "`native_force_chunk(owner, chunk, hold)` holds a chunk of the level in place loaded and ticking for `owner`, as NeoForge's `TicketController.forceChunk`; `native_forced_chunks(owner)` lists what it holds. Tickets aren't saved. Bundles need \"hooks\": @API:chunk_tickets@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_chunk_tickets.rs"
+  ]
+}

@@ -203,6 +203,7 @@ mod narrator;
 mod native_biome_colors;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
+mod native_chunk_tickets;
 mod native_claimed_items;
 mod native_components;
 mod native_configs;
@@ -2897,6 +2898,9 @@ struct Game<'a> {
     mod_screen: Option<native_hooks::OpenNativeScreen>,
     /// The players with each mod container open, by level (`tick_mod_container_viewers`).
     mod_container_viewers: HashMap<(&'static str, (i32, i32, i32)), u32>,
+    /// The owners of each chunk a native mod's ticket holds, by level
+    /// (`native_force_chunk`); `streaming.mod_forced` is the level's chunks.
+    mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
     creative_screen: Creative,
@@ -4798,7 +4802,20 @@ impl Game<'_> {
                     .filter(|&(_, spectator)| game_mode::loads_chunks(rule, spectator))
                     .map(|(chunk, _)| chunk)
                     .collect(),
-                forced: self.streaming.forced.iter().copied().collect(),
+                // A native mod's ticket holds its chunk as `/forceload` does
+                // (NeoForge's `TicketController` uses the same `FORCED` level).
+                forced: self
+                    .streaming
+                    .forced
+                    .iter()
+                    .chain(
+                        self.streaming
+                            .mod_forced
+                            .iter()
+                            .filter(|c| !self.streaming.forced.contains(c)),
+                    )
+                    .copied()
+                    .collect(),
                 // Filled from the `PORTAL` tickets by `update`.
                 portal: Vec::new(),
                 // EnderDragonFight.tick: while a player watches the fight, the
@@ -19090,6 +19107,7 @@ impl<'a> Game<'a> {
             hoppers: HashMap::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),
+            mod_chunk_tickets: HashMap::new(),
             item_columns: None,
             creative_screen: prepared.creative_screen,
             control: None,

@@ -607,13 +607,15 @@ impl Game<'_> {
         let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
             .into_iter()
             .filter(|d| {
+                // `/forceload`ed chunks, or a native mod's tickets.
+                let held = |s: &Streaming| !s.forced.is_empty() || !s.mod_forced.is_empty();
                 let forced = if *d == self.dim {
-                    !self.streaming.forced.is_empty()
+                    held(&self.streaming)
                 } else {
                     self.levels
                         .parked
                         .get(d)
-                        .is_some_and(|p| !p.streaming.forced.is_empty())
+                        .is_some_and(|p| held(&p.streaming))
                 };
                 guests.iter().any(|g| g.dimension == d.id())
                     // A viewer count not yet told to 0 (`tick_mod_container_viewers`).

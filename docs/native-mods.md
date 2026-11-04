@@ -2682,6 +2682,14 @@ pieces.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
 
+### Chunk tickets
+
+`crates/horizon-client/src/game/native_chunk_tickets.rs`: `native_force_chunk(owner, [x, z], hold)` holds a chunk of the
+level in place for `owner` (`create:train/<uuid>`), as NeoForge's `TicketController.forceChunk` does. The chunk stays
+held while any owner holds it. It is kept as a `/forceload`ed chunk is: it is loaded with the ring around it, it ticks,
+and its level stays open. `/forceload` neither lists nor releases it. `native_forced_chunks(owner)` lists what an owner
+holds. Tickets are not saved: keep what you hold (a level attachment) and hold it again in `native_level_load`.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
