@@ -17,11 +17,26 @@ use std::time::{Duration, Instant};
 /// An item as the renderer takes it.
 struct Baked {
     item: Arc<Item>,
-    model: Arc<Part>,
+    /// A model per bone it rides (a shirt's sleeves are on the arms).
+    models: Vec<(horizon_cosmetics::Bone, Arc<Part>)>,
     /// Its texture's sprite (a 64×64 skin slot of the atlas).
     location: String,
     /// The frame it was last marked drawn in (its slot is kept).
     marked: Cell<u32>,
+}
+
+impl Baked {
+    fn new(item: &Arc<Item>, frame: u32) -> Self {
+        Self {
+            item: item.clone(),
+            models: item
+                .roots()
+                .map(|(bone, root)| (bone, Arc::new(part(root))))
+                .collect(),
+            location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
+            marked: Cell::new(frame.wrapping_sub(1)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -127,6 +142,12 @@ fn covered(m: &Mob, slot: Slot) -> bool {
         Slot::Head => m.extra.head.is_some(),
         Slot::Back => m.cape.is_some() || m.extra.chest.as_deref() == Some("minecraft:elytra"),
         Slot::Shoulder => false,
+        // A chestplate, not an elytra.
+        Slot::Torso => m
+            .extra
+            .chest
+            .as_deref()
+            .is_some_and(|c| c != "minecraft:elytra"),
         Slot::NameTag => true,
     }
 }
@@ -198,12 +219,7 @@ impl Game<'_> {
         let mut baked = self.cosmetics.baked.borrow_mut();
         let entry = baked
             .entry(Arc::as_ptr(item) as usize)
-            .or_insert_with(|| Baked {
-                item: item.clone(),
-                model: Arc::new(part(&item.root)),
-                location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
-                marked: Cell::new(frame.wrapping_sub(1)),
-            });
+            .or_insert_with(|| Baked::new(item, frame));
         let Some(slot) = self.gui.atlas.sprites.get(&entry.location) else {
             self.cosmetics.uploads.borrow_mut().push(item.clone());
             return None;
@@ -274,8 +290,9 @@ impl Game<'_> {
         let ticks = m.age as f32 + alpha;
         let frame = self.cosmetics.frame.get();
         let mut bounds = None;
-        // Items on one bone (a back item and a shoulder pet both ride the body) share its matrix.
-        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 3] = [None; 3];
+        // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
+        // matrix: the head, the body and the two arms at most.
+        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
         let bodies = own || self.settings.extras.cosmetics_others == Others::Shown;
         for item in worn.iter() {
@@ -285,12 +302,7 @@ impl Game<'_> {
             let mut baked = self.cosmetics.baked.borrow_mut();
             let b = baked
                 .entry(Arc::as_ptr(item) as usize)
-                .or_insert_with(|| Baked {
-                    item: item.clone(),
-                    model: Arc::new(part(&item.root)),
-                    location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
-                    marked: Cell::new(frame.wrapping_sub(1)),
-                });
+                .or_insert_with(|| Baked::new(item, frame));
             let Some(rect) = self.gui.atlas.sprites.get(&b.location) else {
                 self.cosmetics.uploads.borrow_mut().push(item.clone());
                 continue;
@@ -298,21 +310,6 @@ impl Game<'_> {
             if b.marked.replace(frame) != frame {
                 self.skin_downloads.borrow_mut().drawn(&b.location);
             }
-            let known = bones.iter().flatten().find(|(b, _)| *b == item.bone);
-            let bone = match known {
-                Some(&(_, matrix)) => matrix,
-                None => {
-                    let Some(matrix) =
-                        render::part_matrix(body, base, body_poses, item.bone.part(), 0.0)
-                    else {
-                        continue;
-                    };
-                    if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
-                        *free = Some((item.bone, matrix));
-                    }
-                    matrix
-                }
-            };
             // The texture fills the top-left of its 64×64 slot.
             let (w, h) = (
                 item.texture.width as f32 / 64.0,
@@ -324,34 +321,51 @@ impl Game<'_> {
                 rect.u0 + (rect.u1 - rect.u0) * w,
                 rect.v0 + (rect.v1 - rect.v0) * h,
             ];
-            poses.reset(&b.model);
-            item.animate(ticks, |name, pose| *poses.get(name) = pose);
-            if gpu {
-                let mut models = self.skin_models.borrow_mut();
-                let mut frame = self.skin_frame.borrow_mut();
-                let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
-                skin.bounds = bounds;
-                let paint = horizon_client::mobs::skin::Paint {
-                    uv,
-                    scroll: 0.0,
-                    color: 0xFFFF_FFFF,
-                    light,
-                    overlay: 0,
+            for (bone_of, model) in &b.models {
+                let known = bones.iter().flatten().find(|(b, _)| b == bone_of);
+                let bone = match known {
+                    Some(&(_, matrix)) => matrix,
+                    None => {
+                        let Some(matrix) =
+                            render::part_matrix(body, base, body_poses, bone_of.part(), 0.0)
+                        else {
+                            continue;
+                        };
+                        if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
+                            *free = Some((*bone_of, matrix));
+                        }
+                        matrix
+                    }
                 };
-                if skin.draw(&b.model, bone, poses, paint) {
-                    bounds = skin.bounds;
-                    continue;
+                poses.reset(model);
+                item.animate(ticks, |name, pose| *poses.get(name) = pose);
+                if gpu {
+                    let mut models = self.skin_models.borrow_mut();
+                    let mut frame = self.skin_frame.borrow_mut();
+                    let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+                    skin.bounds = bounds;
+                    let paint = horizon_client::mobs::skin::Paint {
+                        uv,
+                        scroll: 0.0,
+                        color: 0xFFFF_FFFF,
+                        light,
+                        overlay: 0,
+                    };
+                    if skin.draw(model, bone, poses, paint) {
+                        bounds = skin.bounds;
+                        continue;
+                    }
                 }
+                horizon_client::mobs::render_model(
+                    model,
+                    bone,
+                    &|p: &Part| poses.pose(p),
+                    uv,
+                    light,
+                    0,
+                    out,
+                );
             }
-            horizon_client::mobs::render_model(
-                &b.model,
-                bone,
-                &|p: &Part| poses.pose(p),
-                uv,
-                light,
-                0,
-                out,
-            );
         }
         bounds
     }

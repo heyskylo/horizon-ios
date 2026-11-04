@@ -324,6 +324,26 @@ fn chunk_visibility(elapsed_ms: u64, fade_ms: u64) -> f32 {
 fn fade_millis(seconds: f32) -> u64 {
     (f64::from(seconds) * 1000.0).floor().max(0.0) as u64
 }
+/// `chunk_visibility` at `now` of a section first uploaded at `uploaded`
+/// (`Renderer::section_uploaded`; none: one that fades in over far terrain, or
+/// whose column left), with the chunk fade-in `fade_ms`.
+fn section_visibility(uploaded: Option<&Instant>, fade_ms: u64, now: Instant) -> f32 {
+    uploaded.map_or(1.0, |&t| {
+        let elapsed = now.saturating_duration_since(t).as_millis() as u64;
+        chunk_visibility(elapsed, fade_ms)
+    })
+}
+/// What a section's fade depends on besides the section itself
+/// (`SectionGpu::drawn_faded`): the time, the chunk fade-in time, the sections'
+/// first uploads (`Renderer::section_uploaded`) and those held while far
+/// terrain comes in (`Renderer::lod_retiring`).
+#[derive(Clone, Copy)]
+struct FadeInputs<'a> {
+    now: Instant,
+    fade_ms: u64,
+    uploaded: &'a FxHashMap<SectionKey, Instant>,
+    retiring: &'a crate::fast_hash::FxHashSet<SectionKey>,
+}
 /// `LevelRenderer.CHUNK_VISIBILITY_THRESHOLD`: a section's block entities wait for it.
 const CHUNK_VISIBILITY_THRESHOLD: f32 = 0.3;
 /// A new value for `Renderer::block_entity_revision`.
@@ -419,6 +439,10 @@ struct SectionGpu {
     /// Its record's id in GPU culling's table (`gpu_culling::Records`), while
     /// that is on and it has solid quads.
     gpu_id: Option<u32>,
+    /// Its record is `FADING` (GPU culling on): the CPU draws its solid quads
+    /// while its instance carries a fade (`drawn_faded`), and GPU culling's
+    /// pass leaves it out.
+    gpu_fading: bool,
     /// When it began to fade in over the far terrain it replaces, which
     /// stays whole behind it until then: a section new where far tiles are
     /// drawn. Meshed again, it stays as it was.
@@ -486,7 +510,7 @@ impl SectionGpu {
         }
     }
     /// GPU culling's record of it at `key`, its quads within `bounds`
-    /// (`SectionMesh::bounds`).
+    /// (`SectionMesh::bounds`), `FADING` while it fades (`gpu_fading`).
     fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
         let boxed = gpu_culling::rounded_box(bounds);
         gpu_culling::Record::new(
@@ -496,13 +520,44 @@ impl SectionGpu {
             self.solid,
             boxed,
         )
+        .fading(self.gpu_fading)
     }
     /// Whether GPU frames' walk lists it within the render distance
-    /// (`Resident::walk`): its mark, kept whether GPU culling is on or
-    /// not. Its translucent quads are the CPU's, or GPU culling can have no
-    /// record of it.
+    /// (`Resident::walk`): its mark. Its translucent quads are the CPU's, or
+    /// GPU culling can have no record of it, which holds whether GPU culling is
+    /// on or not; or, while it is, its solid quads are the CPU's while it fades
+    /// (`gpu_fading`).
     fn listed(&self, key: SectionKey, sections: usize) -> bool {
-        self.translucent > 0 || !self.gpu_recorded(key, sections)
+        self.translucent > 0 || !self.gpu_recorded(key, sections) || self.gpu_fading
+    }
+    /// Whether GPU culling draws its solid quads in a GPU frame, `near`: its
+    /// column within the render distance.
+    fn gpu_draws_solid(&self, near: bool) -> bool {
+        near && self.gpu_id.is_some() && !self.gpu_fading
+    }
+    /// Whether frames draw it faded at `f.now`: its instance, as the instance
+    /// loop makes it (`section_instance` with its `fade` and its vanilla
+    /// visibility), is not a whole section's. As time goes on a fade only ends:
+    /// once false, this stays false until the section is meshed again, leaves,
+    /// is held (`lod_retiring`), or the chunk fade-in time changes.
+    fn drawn_faded(&self, key: SectionKey, f: FadeInputs<'_>) -> bool {
+        let fade = self.fade(f.now, f.retiring.contains(&key));
+        let visibility = section_visibility(f.uploaded.get(&key), f.fade_ms, f.now);
+        section_instance([0.0; 3], fade, visibility)[3].to_bits()
+            != section_instance([0.0; 3], 0, 1.0)[3].to_bits()
+    }
+    /// When its fade is over at the latest (`drawn_faded`): the later of the
+    /// ends of its fade-in over far terrain (`fading` and `lod::FADE`, a few
+    /// milliseconds after `fade` reaches 0) and of vanilla's (its first upload
+    /// and `f.fade_ms`). None while it leaves or is held, which ends only when
+    /// it goes or is meshed again, and without either fade-in.
+    fn fade_end(&self, key: SectionKey, f: FadeInputs<'_>) -> Option<Instant> {
+        if self.leaving.is_some() || f.retiring.contains(&key) {
+            return None;
+        }
+        let vanilla = f.uploaded.get(&key).filter(|_| f.fade_ms > 0);
+        let vanilla = vanilla.map(|&t| t + std::time::Duration::from_millis(f.fade_ms));
+        vanilla.max(self.fading.map(|t| t + lod::FADE))
     }
 }
 /// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
@@ -619,6 +674,103 @@ fn begin_shrink<'a>(
     }
     arena.close(page);
     Some(true)
+}
+/// GPU culling's flag (`SectionGpu::gpu_fading`) for its recorded section `s`
+/// at `key`, decided at `f.now`: whether it draws faded (`drawn_faded`), and if
+/// time ends that, its end waited for in `fades` (`fade_end`).
+fn decide_fade(
+    s: &SectionGpu,
+    key: SectionKey,
+    fades: &mut gpu_culling::Fades,
+    f: FadeInputs<'_>,
+) -> bool {
+    let fading = s.drawn_faded(key, f);
+    if let Some(end) = s.fade_end(key, f).filter(|_| fading) {
+        fades.push(end, key);
+    }
+    fading
+}
+/// GPU culling: the section at `key` began to fade out over far terrain
+/// (`Renderer::leave_section`), or is held while far terrain comes in
+/// (`Renderer::lod_retiring`). It draws faded until it goes or is meshed again,
+/// so its record is flagged and the CPU draws it, with no end to wait for.
+fn hold_fading(
+    sections: &mut resident::Resident<SectionGpu>,
+    records: &mut gpu_culling::Records,
+    key: SectionKey,
+) {
+    let Some(s) = sections.find_mut(key).filter(|s| !s.gpu_fading) else {
+        return;
+    };
+    let Some(id) = s.gpu_id else {
+        return;
+    };
+    s.gpu_fading = true;
+    records.set_fading(id, true);
+    sections.set_marked(key, true);
+}
+/// GPU culling switched off (`Renderer::set_gpu_culling`): no section keeps a
+/// record or a flag, and those it flagged get back the walk marks they have
+/// while it is off (`SectionGpu::listed`). `rows`: the level's sections.
+fn forget_records(sections: &mut resident::Resident<SectionGpu>, rows: usize) {
+    let mut marks = Vec::new();
+    for (key, s, _) in sections.iter_mut() {
+        s.gpu_id = None;
+        if std::mem::take(&mut s.gpu_fading) {
+            marks.push((key, s.listed(key, rows)));
+        }
+    }
+    for (key, marked) in marks {
+        sections.set_marked(key, marked);
+    }
+}
+/// GPU culling's fading sections brought up to `f.now`, before a frame's gate
+/// and `prepare`: every recorded section anew when the flags were decided with
+/// another chunk fade-in time (GPU culling just switched on, or Video Settings
+/// changed it), else those whose fade was due to end, handed back to the GPU if
+/// whole by then. A section's record (`FADING`) and its walk mark follow its
+/// `gpu_fading`. `rows`: the level's sections.
+fn mark_fades(
+    sections: &mut resident::Resident<SectionGpu>,
+    records: &mut gpu_culling::Records,
+    fades: &mut gpu_culling::Fades,
+    rows: usize,
+    f: FadeInputs<'_>,
+) {
+    let mut marks = Vec::new();
+    if fades.fade_ms != Some(f.fade_ms) {
+        fades.clear();
+        fades.fade_ms = Some(f.fade_ms);
+        for (key, s, _) in sections.iter_mut() {
+            let Some(id) = s.gpu_id else {
+                continue;
+            };
+            let fading = decide_fade(s, key, fades, f);
+            if fading != s.gpu_fading {
+                s.gpu_fading = fading;
+                records.set_fading(id, fading);
+                marks.push((key, s.listed(key, rows)));
+            }
+        }
+    } else {
+        while let Some(key) = fades.pop_due(f.now) {
+            // Gone since, or no longer flagged.
+            let Some(s) = sections.find_mut(key).filter(|s| s.gpu_fading) else {
+                continue;
+            };
+            // Still fading: meshed again since, with its own end waited for
+            // (`decide_fade`), or leaving or held, with none.
+            if s.drawn_faded(key, f) {
+                continue;
+            }
+            s.gpu_fading = false;
+            records.set_fading(s.gpu_id.expect("flagged sections have records"), false);
+            marks.push((key, s.listed(key, rows)));
+        }
+    }
+    for (key, marked) in marks {
+        sections.set_marked(key, marked);
+    }
 }
 /// Line segments the hit outline can hold.
 const MAX_OUTLINE_EDGES: u64 = 256;
@@ -777,6 +929,9 @@ pub struct Frame<'a> {
     pub stars: Option<(Mat4, f32)>,
     /// First-person hand and held item, drawn after clearing depth.
     pub hand: &'a [Vertex],
+    /// Where the arm and each held item start in `hand` (first vertex), with the
+    /// `currentRenderedItemId` a shader pack's `gbuffers_hand` reads for them.
+    pub hand_items: &'a [(u32, i32)],
     /// `CameraRenderState.hudFov`: the hand's own field of view
     /// (`GameRenderer.render3dHud`).
     pub hand_fov_degrees: f32,
@@ -914,8 +1069,8 @@ pub struct Renderer {
     cull_on: bool,
     /// Solid quads facing away from the eye are left out (`mesher::Sides`).
     sides_on: bool,
-    /// The near solid sections culled and drawn on the GPU (`gpu_culling`): its pass
-    /// and records while it is on, where the device can (`gpu_culling_supported`),
+    /// The near solid sections culled and drawn on the GPU (`gpu_culling`): its pass,
+    /// records and fades while it is on, where the device can (`gpu_culling_supported`),
     /// and whether the last frame drew them so (`gpu_frame`).
     gpu_culling: Option<gpu_culling::GpuCulling>,
     gpu_culling_supported: bool,
@@ -1019,8 +1174,8 @@ pub struct Renderer {
     entity_skin: Option<entity_skin::EntitySkin>,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
-    /// The resource packs' LabPBR maps (normals, specular), for native shader packs.
-    pbr_maps: Option<[wgpu::Texture; 2]>,
+    /// Resource-pack normal/specular maps, split like the colour sprite arrays.
+    pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
     lightmap: wgpu::Texture,
     /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
@@ -1049,6 +1204,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
+    material_animations: Vec<SpriteAnimation>,
     active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
@@ -1174,6 +1330,11 @@ pub struct Renderer {
     emission_stats: hdr_stats::EmissionStats,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// What every pipeline that draws the frame targets: the swapchain's 8-bit format, or
+    /// `Rgba16Unorm` when the renderer was made with HDR output on (`wide_frame`) and the
+    /// device draws and blends into it. A 16-bit frame with HDR off since reaches the
+    /// swapchain through `readback`.
+    frame_format: wgpu::TextureFormat,
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
@@ -1193,6 +1354,7 @@ pub struct Renderer {
     pack_weather: Option<pack_weather::PackWeather>,
     /// The block sprites as one atlas, while a shader pack is loaded.
     pack_atlas: Option<pack_atlas::PackAtlas>,
+    pack_material_atlases: Option<[pack_atlas::PackAtlas; 2]>,
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
@@ -1732,6 +1894,45 @@ fn surface_format(
     .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
     .unwrap_or(default)
 }
+/// The 16-bit frame HDR output draws into where it can (`Renderer::frame_format`). Unorm
+/// rather than float: it clips at white after every pass as the 8-bit frame does, so light
+/// added past white (the sun on the sky) and then blended over (glass) looks the same.
+const WIDE_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Unorm;
+
+/// Whether a device with `features` can draw, blend and filter `WIDE_FRAME`, whose
+/// format features (`format`) the adapter reports. Drawing into it is an adapter-specific
+/// format feature, beyond the format itself.
+fn draws_wide_frame(features: wgpu::Features, format: wgpu::TextureFormatFeatures) -> bool {
+    features.contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) && format.allowed_usages.contains(
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+    ) && format.flags.contains(
+        wgpu::TextureFormatFeatureFlags::BLENDABLE | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+    )
+}
+
+/// What a renderer's frame is drawn in: `WIDE_FRAME` when it is made with HDR on and Smooth
+/// Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
+/// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
+/// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
+fn frame_format(
+    wide_frame: bool,
+    hdr_offered: bool,
+    device_draws_it: bool,
+    swapchain: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if wide_frame && hdr_offered && device_draws_it {
+        WIDE_FRAME
+    } else {
+        swapchain.remove_srgb_suffix()
+    }
+}
+
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -2084,7 +2285,9 @@ impl Renderer {
             ("block_sprites", textures(&self.sprite_textures)),
             (
                 "pbr_maps",
-                self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
+                self.pbr_maps
+                    .as_ref()
+                    .map_or(0, |maps| maps.iter().flatten().map(texture_bytes).sum()),
             ),
             (
                 "flat_draws",
@@ -2163,6 +2366,7 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
         translucent_batching: bool,
+        wide_frame: bool,
         shader_pack: bool,
     ) -> Result<Self> {
         let Opened {
@@ -2275,11 +2479,29 @@ impl Renderer {
                 view_formats: vec![format],
                 color_space: wgpu::SurfaceColorSpace::default(),
             };
-            (config, Vec::new(), None)
+            let hdr_output = hdr::offscreen_output();
+            // Only where one is named: splitscreen's views draw offscreen too, and their
+            // window's renderer offers what its display does.
+            if let Some(output) = hdr_output {
+                crate::graphics::offer_hdr(true);
+                if previous.is_none() {
+                    log::info!(
+                        "Horizon renderer: HDR output {} offscreen (HORIZON_HDR_OUTPUT)",
+                        output.name()
+                    );
+                }
+            }
+            (config, Vec::new(), hdr_output)
         };
         let offscreen = surface
             .is_none()
             .then(|| Self::offscreen_target(&device, &config));
+        let wide_ok = draws_wide_frame(
+            device.features(),
+            adapter.get_texture_format_features(WIDE_FRAME),
+        );
+        crate::graphics::offer_smooth_gradients(wide_ok);
+        let frame_format = frame_format(wide_frame, hdr_output.is_some(), wide_ok, config.format);
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -2443,7 +2665,7 @@ impl Renderer {
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -2635,7 +2857,7 @@ impl Renderer {
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::empty(),
                 })],
@@ -2726,39 +2948,48 @@ impl Renderer {
         };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
-        // The resource packs' LabPBR maps, for native shader packs: one array each, cut to
-        // the layers the GPU has (`block_normal_map` gives the default past them).
+        // Keep every colour layer's companion, split by the same device limit. Native
+        // material stages read the first array; terrain packs stitch all of them.
         let pbr_maps = prepared
             .pbr
-            .map(|(normals, specular, levels, layers, size)| {
-                let kept = layers.min(device.limits().max_texture_array_layers);
-                let count = array_layers(kept, gl);
-                [("LabPBR normals", normals), ("LabPBR specular", specular)].map(
-                    |(label, mut data)| {
-                        // The extra layers are empty.
-                        let layer_bytes = data.len() / layers as usize;
-                        data.resize(layer_bytes * count as usize, 0);
-                        device.create_texture_with_data(
-                            &queue,
-                            &wgpu::TextureDescriptor {
-                                label: Some(label),
-                                size: wgpu::Extent3d {
-                                    width: size,
-                                    height: size,
-                                    depth_or_array_layers: count,
-                                },
-                                mip_level_count: levels,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format: wgpu::TextureFormat::Rgba8Unorm,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                                view_formats: &[],
+            .map(|(normals, specular, levels, map_layers, size)| {
+                let layer_bytes = normals.len() / map_layers as usize;
+                (0..map_layers.div_ceil(split))
+                    .map(|array| {
+                        let first = array * split;
+                        let used = (map_layers - first).min(split);
+                        let count = array_layers(used, gl);
+                        [("LabPBR normals", &normals), ("LabPBR specular", &specular)].map(
+                            |(label, data)| {
+                                let start = first as usize * layer_bytes;
+                                let mut data =
+                                    data[start..start + used as usize * layer_bytes].to_vec();
+                                data.resize(layer_bytes * count as usize, 0);
+                                device.create_texture_with_data(
+                                    &queue,
+                                    &wgpu::TextureDescriptor {
+                                        label: Some(label),
+                                        size: wgpu::Extent3d {
+                                            width: size,
+                                            height: size,
+                                            depth_or_array_layers: count,
+                                        },
+                                        mip_level_count: levels,
+                                        sample_count: 1,
+                                        dimension: wgpu::TextureDimension::D2,
+                                        format: wgpu::TextureFormat::Rgba8Unorm,
+                                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                            | wgpu::TextureUsages::COPY_SRC
+                                            | wgpu::TextureUsages::COPY_DST,
+                                        view_formats: &[],
+                                    },
+                                    wgpu::util::TextureDataOrder::LayerMajor,
+                                    &data,
+                                )
                             },
-                            wgpu::util::TextureDataOrder::LayerMajor,
-                            &data,
                         )
-                    },
-                )
+                    })
+                    .collect()
             });
         let sprite_textures: Vec<wgpu::Texture> = prepared
             .sprites
@@ -2795,6 +3026,11 @@ impl Renderer {
                     &mips,
                 )
             })
+            .collect();
+        let material_animations = animations
+            .iter()
+            .filter(|a| a.has_materials())
+            .cloned()
             .collect();
         let animations = animate::SpriteAnimator::new(
             &device,
@@ -2995,7 +3231,7 @@ impl Renderer {
         let glint_armor_view = glint_armor_texture.create_view(&Default::default());
         let mut hud = HudRenderer::new(
             &device,
-            config.format.remove_srgb_suffix(),
+            frame_format,
             &atlas_view,
             &glint_view,
             &glint_sampler,
@@ -3088,12 +3324,8 @@ impl Renderer {
                     },
                 )],
             });
-        let weather = weather::Weather::new(
-            &device,
-            config.format.remove_srgb_suffix(),
-            &entity_bindings,
-            &entity_shader,
-        );
+        let weather =
+            weather::Weather::new(&device, frame_format, &entity_bindings, &entity_shader);
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Atlas"),
             ..Default::default()
@@ -3297,7 +3529,7 @@ impl Renderer {
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend: Some(blend),
                         write_mask,
                     })],
@@ -3477,7 +3709,7 @@ impl Renderer {
                     entry_point: Some("fs_entity"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         // fs_entity's discard handles binary cutout alpha. Any
                         // sprite with fractional alpha stays on the blended
                         // dynamic entity path.
@@ -3569,7 +3801,7 @@ impl Renderer {
                 entry_point: Some("fs_celestial"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -3606,7 +3838,7 @@ impl Renderer {
         // HDR output's mark on lightning bolts: fs_hdr_mark over the bolts' own vertex layout,
         // as hdr_mark_pipeline marks entities and particles (only alpha written).
         let mark_targets = [Some(wgpu::ColorTargetState {
-            format: config.format.remove_srgb_suffix(),
+            format: frame_format,
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALPHA,
         })];
@@ -3661,7 +3893,7 @@ impl Renderer {
                 entry_point: Some("fs_sky_celestial"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     // RenderPipelines.CELESTIAL: additive (src alpha, one), with
                     // the colour premultiplied in fs_sky_celestial. Its alpha is
                     // how much a texel adds: HDR output (hdr.wgsl) lets the sun's
@@ -3835,7 +4067,7 @@ impl Renderer {
                 entry_point: Some("fs_border"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
+                    format: frame_format,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -3913,7 +4145,7 @@ impl Renderer {
                     entry_point: Some(entry),
                     compilation_options,
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
+                        format: frame_format,
                         blend: Some(blend),
                         // 8 and up: colour only, for a tint of the world in HDR output.
                         write_mask: if i & 8 == 0 {
@@ -4064,13 +4296,7 @@ impl Renderer {
                 log::info!(
                     "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
                 );
-                visbuffer::Visbuffer::new(
-                    &device,
-                    &bindings,
-                    f,
-                    config.format.remove_srgb_suffix(),
-                    &sprite_constants,
-                )
+                visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
         let multi_draw = device
             .features()
@@ -4132,8 +4358,7 @@ impl Renderer {
                 _ => depth_test,
             })
             .map(|depth_test| {
-                let mut cull =
-                    cull::Cull::new(&device, config.format.remove_srgb_suffix(), depth_test);
+                let mut cull = cull::Cull::new(&device, frame_format, depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
                 if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
@@ -4141,17 +4366,16 @@ impl Renderer {
                 cull
             });
         let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
+        let world_post = world_post::Post::new(&device, frame_format);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
-        let stars = stars::Stars::new(&device, config.format.remove_srgb_suffix());
+        let stars = stars::Stars::new(&device, frame_format);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
-            config.format.remove_srgb_suffix(),
+            frame_format,
         );
-        let panorama =
-            panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
+        let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -4308,6 +4532,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
+            material_animations,
             active_animated_layers: vec![0; active_layer_words],
             uploads,
             section_uploads,
@@ -4372,6 +4597,7 @@ impl Renderer {
             hdr: None,
             emission_stats,
             hdr_output,
+            frame_format,
             hdr_marker: None,
             pack_post: None,
             native: None,
@@ -4381,6 +4607,7 @@ impl Renderer {
             cloud_bindings,
             pack_weather: None,
             pack_atlas: None,
+            pack_material_atlases: None,
             pack_terrain_flat: false,
             separate_ao: false,
             hud,
@@ -4471,7 +4698,7 @@ impl Renderer {
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
     /// outline, or the built-in one.
     pub fn set_lines_shader(&mut self, program: Option<&horizon_shaders::CoreProgram>) {
-        let format = self.config.format.remove_srgb_suffix();
+        let format = self.frame_format;
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
     }
@@ -4704,17 +4931,22 @@ impl Renderer {
     pub fn gpu_frame(&self) -> bool {
         self.gpu_frame
     }
-    /// Switches GPU culling, for A/B checks. Its pass and its records of the
-    /// resident sections are made when it is switched on and dropped when it is
-    /// switched off: nothing is kept for it while it is off but the sections'
-    /// walk marks (`SectionGpu::listed`) and the cave-culling graph's bits
+    /// Of the sections GPU culling keeps records of, those it leaves to the CPU
+    /// while they fade (`SectionGpu::gpu_fading`); `None` while it is off.
+    pub fn gpu_fading(&self) -> Option<u32> {
+        self.gpu_culling.as_ref().map(|g| g.records.fading())
+    }
+    /// Switches GPU culling, for A/B checks. Its pass, its records of the
+    /// resident sections and their flags while they fade are made when it is
+    /// switched on (the next world frame decides the flags, `mark_fades`) and
+    /// dropped when it is switched off, with the walk marks the flags gave:
+    /// nothing is kept for it while it is off but the sections' other walk marks
+    /// (`SectionGpu::listed`) and the cave-culling graph's bits
     /// (`occlusion::Reach`), which are the same either way.
     pub fn set_gpu_culling(&mut self, on: bool) -> Result<()> {
         if !on {
             if self.gpu_culling.take().is_some() {
-                for s in self.sections.values_mut() {
-                    s.gpu_id = None;
-                }
+                forget_records(&mut self.sections, self.layout.sections());
             }
             self.gpu_frame = false;
             return Ok(());
@@ -4751,9 +4983,13 @@ impl Renderer {
     /// section's walk mark is `SectionGpu::listed`: one unmarked that should be
     /// would leave its translucent quads, or all of it, undrawn. And the bits
     /// the pass copies of the cave-culling graph are its cells'
-    /// (`occlusion::Reach`): one off would hide a section the walk shows.
+    /// (`occlusion::Reach`): one off would hide a section the walk shows. And,
+    /// at `f.now`, a recorded section draws faded only while it is flagged
+    /// (`SectionGpu::gpu_fading`, its record's `FADING`), and an end is waited
+    /// for while it is unless it leaves or is held: one the pass drew whole
+    /// would pop in, one flagged for good would cost the CPU its draws.
     #[cfg(debug_assertions)]
-    fn check_gpu_records(&self) {
+    fn check_gpu_records(&self, f: FadeInputs<'_>) {
         let Some(gpu) = &self.gpu_culling else {
             return;
         };
@@ -4762,21 +4998,36 @@ impl Renderer {
             "the reach bits are the graph's cells"
         );
         let (records, sections) = (&gpu.records, self.layout.sections());
+        let pending: crate::fast_hash::FxHashSet<SectionKey> = gpu.fades.pending().collect();
         let mut pages = vec![0; records.page_sections().len()];
-        let mut live = 0;
+        let (mut live, mut flagged) = (0, 0);
         for (key, s, bounds) in self.sections.iter() {
             let recorded = s.gpu_recorded(key, sections);
             assert_eq!(s.gpu_id.is_some(), recorded, "{key:?}: a record");
             let marked = self.sections.is_marked(key);
             assert_eq!(marked, s.listed(key, sections), "{key:?}: its walk mark");
+            assert!(
+                !s.gpu_fading || s.gpu_id.is_some(),
+                "{key:?}: flagged without a record"
+            );
+            assert!(
+                s.gpu_id.is_none() || s.gpu_fading || !s.drawn_faded(key, f),
+                "{key:?}: GPU culling draws it whole while it fades"
+            );
+            assert!(
+                !s.gpu_fading || s.fade_end(key, f).is_none() || pending.contains(&key),
+                "{key:?}: flagged, with no end waited for"
+            );
             if let Some(id) = s.gpu_id {
                 let record = s.record(key, bounds);
                 assert_eq!(records.at(id), Some(&record), "{key:?}: its record {id}");
                 pages[s.page as usize] += 1;
                 live += 1;
+                flagged += u32::from(s.gpu_fading);
             }
         }
         assert_eq!(records.live(), live, "records of sections gone");
+        assert_eq!(records.fading(), flagged, "flagged records");
         assert_eq!(records.page_sections(), pages, "records per page");
         for (page, &n) in pages.iter().enumerate() {
             assert!(
@@ -4909,6 +5160,17 @@ impl Renderer {
             if let Some(gpu) = &mut self.gpu_culling
                 && section.gpu_recorded(key, sections)
             {
+                // A fade starts with its section: flagged from the first frame that
+                // draws it, once a frame has decided the flags (`mark_fades`).
+                if let Some(fade_ms) = gpu.fades.fade_ms {
+                    let f = FadeInputs {
+                        now: Instant::now(),
+                        fade_ms,
+                        uploaded: &self.section_uploaded,
+                        retiring: &self.lod_retiring,
+                    };
+                    section.gpu_fading = decide_fade(&section, key, &mut gpu.fades, f);
+                }
                 section.gpu_id = Some(gpu.records.insert(section.record(key, mesh.bounds)));
             }
             let marked = section.listed(key, sections);
@@ -5062,6 +5324,7 @@ impl Renderer {
             sorted_indices,
             flat_id,
             gpu_id: None,
+            gpu_fading: false,
             fading: None,
             leaving: None,
             animated_layers,
@@ -5433,6 +5696,8 @@ impl Renderer {
         self.graveyard.add(self.arena.clear());
         if let Some(gpu) = &mut self.gpu_culling {
             gpu.records.clear();
+            // The chunk fade-in time they were decided with stays.
+            gpu.fades.clear();
         }
         if let Some(arena) = &mut self.translucent_arena {
             self.graveyard.add(arena.clear());
@@ -5566,6 +5831,9 @@ impl Renderer {
         {
             section.leaving = Some(now);
             self.lod_leaving.push((key, now));
+            if let Some(gpu) = &mut self.gpu_culling {
+                hold_fading(&mut self.sections, &mut gpu.records, key);
+            }
         }
     }
     /// Releases the sections that have faded out (`leave_section`).
@@ -5625,6 +5893,9 @@ impl Renderer {
                 if retiring {
                     // Distant tiles still leave its column out: drawn until they don't.
                     self.lod_retiring.insert(key);
+                    if let Some(gpu) = &mut self.gpu_culling {
+                        hold_fading(&mut self.sections, &mut gpu.records, key);
+                    }
                 } else if !self.lods.is_empty() && self.sections.contains(key) {
                     // Far terrain draws the column: it fades out over it.
                     self.leave_section(key);
@@ -5796,6 +6067,8 @@ impl Renderer {
     }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
+    /// Offscreen (`hdr::offscreen_output`) the frame is drawn the same and its HDR screenshot
+    /// taken, but nothing is presented, and Auto takes its defaults: no display reports.
     pub fn set_hdr(
         &mut self,
         on: bool,
@@ -5805,28 +6078,35 @@ impl Renderer {
         ui: f32,
         marker: &std::path::Path,
     ) {
-        let output = self.hdr_output.filter(|_| on && self.surface.is_some());
+        let output = self
+            .hdr_output
+            .filter(|_| on && (self.surface.is_some() || self.offscreen.is_some()));
         if output.is_some() != self.hdr.is_some() {
             // If the game dies before HDR output shows a frame, the marker is still there at
             // the next start, which then comes up with HDR off.
             if output.is_some() {
-                let _ = std::fs::write(marker, "HDR output was being switched on\n");
-                self.hdr_marker = Some(marker.to_owned());
+                if self.surface.is_some() {
+                    let _ = std::fs::write(marker, "HDR output was being switched on\n");
+                    self.hdr_marker = Some(marker.to_owned());
+                }
             } else if let Some(marker) = self.hdr_marker.take() {
                 let _ = std::fs::remove_file(marker);
             }
             // Only HDR output asks the system about the display, so with HDR off the
             // game never waits on the compositor for it.
             self.display = if output.is_some() {
-                let (watch, now) =
-                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
+                let (watch, now) = if self.surface.is_some() {
+                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter)
+                } else {
+                    (DisplayWatch::default(), None)
+                };
                 crate::graphics::report(now);
                 self.display_fresh = true;
                 watch
             } else {
                 DisplayWatch::default()
             };
-            let format = self.config.format.remove_srgb_suffix();
+            let format = self.frame_format;
             self.hdr =
                 output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
             self.configure_surface();
@@ -5936,6 +6216,7 @@ impl Renderer {
     ) -> Option<(Vec<String>, Vec<String>)> {
         if pack.is_none() {
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         let instance = wgpu::vertex_attr_array![5=>Float32x4];
         let vertex = wgpu::VertexBufferLayout {
@@ -5953,6 +6234,10 @@ impl Renderer {
         let post = pack.map(|post| {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+                material_maps: self
+                    .pack_material_atlases
+                    .as_ref()
+                    .map(|a| [a[0].view.clone(), a[1].view.clone()]),
                 lightmap: self.lightmap_view.clone(),
                 gui_size: self
                     .hud
@@ -5964,6 +6249,7 @@ impl Renderer {
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
+                    material_maps: true,
                     ids: None,
                     cull: true,
                 }),
@@ -5982,7 +6268,7 @@ impl Renderer {
                 &self.queue,
                 &self.adapter,
                 post,
-                self.config.format.remove_srgb_suffix(),
+                self.frame_format,
                 world,
             )
         });
@@ -6033,12 +6319,12 @@ impl Renderer {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
-            format: self.config.format.remove_srgb_suffix(),
+            format: self.frame_format,
             sprite_tags: &sprite_tags,
             sprite_materials: &sprite_materials,
             entities: &self.entity_bindings,
             weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
-            pbr: self.pbr_maps.as_ref(),
+            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
         };
         let (pack, labels) = native_pack::NativePack::new(
             &self.device,
@@ -6052,6 +6338,7 @@ impl Renderer {
         if self.native.is_some() {
             self.pack_post = None;
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         Ok(labels)
     }
@@ -6106,6 +6393,20 @@ impl Renderer {
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
+            self.pack_material_atlases = atlas.as_ref().and_then(|_| {
+                let maps = self.pbr_maps.as_ref()?;
+                let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
+                    let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
+                    pack_atlas::PackAtlas::material(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.sprite_split,
+                        layers,
+                    )
+                };
+                Some([make(0, &mut encoder)?, make(1, &mut encoder)?])
+            });
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
@@ -6337,6 +6638,49 @@ impl Renderer {
             active,
             self.own_timing.as_mut(),
         );
+        if let Some(arrays) = &self.pbr_maps {
+            for animation in &self.material_animations {
+                if !self.animations.changed().contains(&animation.layer) {
+                    continue;
+                }
+                let Some(pair) = arrays.get((animation.layer / self.sprite_split) as usize) else {
+                    continue;
+                };
+                for kind in 0..2 {
+                    let Some(pixels) = animation.material_pixels(kind, tick) else {
+                        continue;
+                    };
+                    let texture = &pair[kind];
+                    let from = (pixels.len() / 4).isqrt() as u32;
+                    for level in 0..texture.mip_level_count() {
+                        let size = texture.width() >> level;
+                        let pixels = crate::sprites::resample(pixels, from, size);
+                        self.uploads.texture(
+                            encoder,
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: level,
+                                origin: wgpu::Origin3d {
+                                    x: 0,
+                                    y: 0,
+                                    z: animation.layer % self.sprite_split,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            size,
+                            size,
+                            &pixels,
+                        );
+                    }
+                }
+            }
+            if let Some(atlases) = &self.pack_material_atlases {
+                for kind in 0..2 {
+                    let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
+                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                }
+            }
+        }
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -6422,6 +6766,12 @@ impl Renderer {
         let mut config = self.config.clone();
         [config.width, config.height] = size;
         config.usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        if self.frame_format != config.format.remove_srgb_suffix() {
+            // A 16-bit frame, read back through an 8-bit copy (`take_readback`).
+            config.format = self.frame_format;
+            config.view_formats = vec![self.frame_format];
+            config.usage |= wgpu::TextureUsages::TEXTURE_BINDING;
+        }
         // Out of video memory (an invalid texture's view is a validation error):
         // tried again at half the size next frame; the window keeps its last one.
         let checks = GpuChecks::push(&self.device);
@@ -6523,10 +6873,11 @@ impl Renderer {
         laps.lap("r_prepare");
         // Frame generation: its present thread acquires and presents, this frame draws
         // into frames of its own. Not over menus that blur the frame, a shader pack's
-        // own post passes, HDR or the title screen.
+        // own post passes, HDR (or the 16-bit frame it was started with) or the title screen.
         let fg = self.frame_gen.on
             && !self.frame_gen.paused
             && self.hdr.is_none()
+            && self.frame_format == self.config.format.remove_srgb_suffix()
             && !frame.title
             && frame.menu_blur.is_none()
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
@@ -6601,14 +6952,24 @@ impl Renderer {
         let size = [self.config.width, self.config.height];
         let target_texture = match (&surface_frame, &mut self.hdr) {
             _ if let Some((real, _)) = &fg_frames => real.clone(),
-            (Some(_), Some(hdr)) => hdr.frame(&self.device, size),
-            // A screenshot of a swapchain without COPY_SRC (OpenGL) draws
-            // into a texture that has it, then onto the swapchain.
-            (Some(f), None) => self
-                .readback
-                .target(&self.device, &f.texture, self.screenshot.is_some())
-                .unwrap_or_else(|| f.texture.clone()),
-            (None, _) => self.offscreen.clone().ok_or("no offscreen target")?,
+            (_, Some(hdr)) => hdr.frame(&self.device, size),
+            // A screenshot of a swapchain without COPY_SRC (OpenGL), and a 16-bit frame
+            // with HDR off, draw into a texture of their own, then onto the swapchain or
+            // the offscreen target.
+            (f, None) => {
+                let image = match f {
+                    Some(f) => f.texture.clone(),
+                    None => self.offscreen.clone().ok_or("no offscreen target")?,
+                };
+                self.readback
+                    .target(
+                        &self.device,
+                        &image,
+                        self.frame_format,
+                        self.screenshot.is_some(),
+                    )
+                    .unwrap_or(image)
+            }
         };
         // One command buffer for the frame, after the section copies staged
         // since the last one: Metal commits every command buffer wgpu-core
@@ -6914,6 +7275,24 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_terrain());
+        // `LevelRenderer.extractSectionDrawGroups`' fade-in time, for the instances.
+        let fade_ms = fade_millis(frame.chunk_fade);
+        // GPU culling's fading sections, decided at `fades.now`: before the gate, the record
+        // check and `prepare`, which sends their flags, and no later than the instances' `now`,
+        // so a section the pass draws whole is whole there too. Title frames draw no terrain
+        // (a loading screen's fade-in time is 0): they leave them as they are.
+        let fades = FadeInputs {
+            now: Instant::now(),
+            fade_ms,
+            uploaded: &self.section_uploaded,
+            retiring: &self.lod_retiring,
+        };
+        if !frame.title
+            && let Some(gpu) = &mut self.gpu_culling
+        {
+            let (sections, rows) = (&mut self.sections, self.layout.sections());
+            mark_fades(sections, &mut gpu.records, &mut gpu.fades, rows, fades);
+        }
         // The near solid sections culled and drawn on the GPU (`gpu_culling`): never where a
         // shader pack's terrain, a shadow pass or the water mirror draws the CPU's lists.
         // Decided before the walk, so that a pass whose buffers no longer fit can still
@@ -6927,7 +7306,7 @@ impl Renderer {
         #[cfg(debug_assertions)]
         if gpu_frame {
             if self.gpu_checks.is_multiple_of(64) {
-                self.check_gpu_records();
+                self.check_gpu_records(fades);
             }
             self.gpu_checks = self.gpu_checks.wrapping_add(1);
         }
@@ -6973,9 +7352,9 @@ impl Renderer {
         let mut visible = std::mem::take(&mut self.visible);
         visible.clear();
         crate::spans::time("visibility", || {
-            // GPU culling draws the solid quads of the near sections it has records of: within
-            // the render distance the walk lists only those with translucent quads or without a
-            // record (`SectionGpu::listed`).
+            // GPU culling draws the solid quads of the near whole sections it has records of:
+            // within the render distance the walk lists only those with translucent quads,
+            // without a record or fading (`SectionGpu::listed`).
             self.sections.walk(
                 camera,
                 radius,
@@ -7103,7 +7482,6 @@ impl Renderer {
         laps.lap("r_cameras");
         // `LevelRenderer.extractSectionDrawGroups`: each section's `getVisibility`. Once
         // nothing is fading (the usual frame), every section is whole without a lookup.
-        let fade_ms = fade_millis(frame.chunk_fade);
         let fading_in = self.sections_fading_in(fade_ms, now);
         let fading_over_lods = self.sections_fading_over_lods(now);
         let fade_code = move |section: &SectionGpu, key: &SectionKey| {
@@ -7118,12 +7496,7 @@ impl Renderer {
             if !fading_in {
                 return 1.0;
             }
-            uploaded.get(&key).map_or(1.0, |t| {
-                chunk_visibility(
-                    now.saturating_duration_since(*t).as_millis() as u64,
-                    fade_ms,
-                )
-            })
+            section_visibility(uploaded.get(&key), fade_ms, now)
         };
         self.origins.extend(
             visible
@@ -7217,16 +7590,18 @@ impl Renderer {
             !(split_solid && gpu_frame),
             "GPU culling is never offered on Metal"
         );
-        // In a GPU frame the GPU draws the solid quads of the sections within the render
-        // distance that have records (`gpu_culling`), and the walk listed those among them
-        // with translucent quads. Here stay those without a record and those past the
-        // distance (far terrain's cutout, and columns leaving).
+        // In a GPU frame the GPU draws the solid quads of the whole sections within the
+        // render distance that have records (`SectionGpu::gpu_draws_solid`), and the walk
+        // listed those among them with translucent quads. Here stay those fading in or out
+        // (`gpu_fading`), those without a record and those past the distance (far terrain's
+        // cutout, and columns leaving).
         let from = resident::camera_column(camera);
         for (i, v) in visible.iter().enumerate() {
             let s = self.sections.get(v.slot);
             if gpu_frame
-                && s.gpu_id.is_some()
-                && crate::streaming::in_view_distance(from, radius, v.key.0, v.key.2)
+                && s.gpu_draws_solid(crate::streaming::in_view_distance(
+                    from, radius, v.key.0, v.key.2,
+                ))
             {
                 continue;
             }
@@ -8162,13 +8537,13 @@ impl Renderer {
             );
         }
         // A GPU frame's walk leaves out the sections GPU culling draws, and nothing reads back
-        // which it kept: every record counts, an upper bound (the world icon waits for more
-        // than a few drawn).
+        // which it kept: every record counts but the flagged ones, which the walk lists, an
+        // upper bound (the world icon waits for more than a few drawn).
         if gpu_frame && let Some(gpu) = &self.gpu_culling {
-            self.drawn_sections += gpu.records.live();
+            self.drawn_sections += gpu.records.live() - gpu.records.fading() as usize;
         }
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.config.format.remove_srgb_suffix()),
+            format: Some(self.frame_format),
             ..Default::default()
         });
         if let Some(timer) = &mut self.gpu_timer {
@@ -8274,7 +8649,7 @@ impl Renderer {
             let (device, layout, sprites) =
                 (&self.device, &self.terrain_layout, self.terrain_sprites);
             let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
-            let format = self.config.format.remove_srgb_suffix();
+            let format = self.frame_format;
             let flat = self
                 .flat
                 .as_ref()
@@ -8451,7 +8826,7 @@ impl Renderer {
             && let Some(sky) = &native.sky
         {
             if let Some(t) = &mut native.timing {
-                let format = self.config.format.remove_srgb_suffix();
+                let format = self.frame_format;
                 t.mark(&self.device, &mut encoder, (world_view, format));
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -8514,7 +8889,7 @@ impl Renderer {
                     size,
                     color: target(
                         "Water mirror",
-                        self.config.format.remove_srgb_suffix(),
+                        self.frame_format,
                         wgpu::TextureUsages::RENDER_ATTACHMENT
                             | wgpu::TextureUsages::TEXTURE_BINDING,
                     ),
@@ -9737,7 +10112,7 @@ impl Renderer {
                 encoder: &mut encoder,
                 color: &target_texture,
                 color_view: &view_target,
-                color_format: self.config.format.remove_srgb_suffix(),
+                color_format: self.frame_format,
                 size,
                 depth,
                 depth_size,
@@ -9777,7 +10152,7 @@ impl Renderer {
             timer.end(
                 &self.device,
                 &mut encoder,
-                (&view_target, self.config.format.remove_srgb_suffix()),
+                (&view_target, self.frame_format),
             );
         }
         laps.lap("r_passes");
@@ -9796,18 +10171,30 @@ impl Renderer {
             self.section_copy_bytes = 0;
             self.section_uploads.finish(&encoder);
         }
-        if let Some(f) = &surface_frame {
-            self.readback
-                .present(&self.device, &mut encoder, &f.texture);
+        if let Some(image) = surface_frame
+            .as_ref()
+            .map(|f| &f.texture)
+            .or(self.offscreen.as_ref())
+        {
+            self.readback.present(&self.device, &mut encoder, image);
         }
-        if let (Some(hdr), Some(f)) = (&self.hdr, &surface_frame) {
-            hdr.present(
+        match (&self.hdr, &surface_frame) {
+            (Some(hdr), Some(f)) => hdr.present(
                 &self.queue,
                 &mut encoder,
                 &f.texture,
                 !frame.title,
                 self.own_timing.as_mut(),
-            );
+            ),
+            // Offscreen nothing shows HDR: the target gets the frame as SDR shows it, for
+            // splitscreen's compositor.
+            (Some(_), None) => {
+                if let Some(image) = &self.offscreen {
+                    self.readback
+                        .draw_onto(&self.device, &mut encoder, &target_texture, image);
+                }
+            }
+            (None, _) => {}
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
@@ -10075,7 +10462,7 @@ impl Renderer {
                 encoder: &mut *encoder,
                 color: target_texture,
                 color_view: view_target,
-                color_format: self.config.format.remove_srgb_suffix(),
+                color_format: self.frame_format,
                 size: [self.config.width, self.config.height],
                 hand: if overlay.hand_drawn { frame.hand } else { &[] },
                 view_proj: overlay.hand_view_proj,
@@ -10245,7 +10632,7 @@ impl Renderer {
             timing.as_mut(),
         );
         if let Some(radius) = menu_blur {
-            let format = self.config.format;
+            let format = self.frame_format;
             let device = &self.device;
             let software = is_software(self.info.device_type);
             self.menu_blur
@@ -10396,6 +10783,15 @@ impl Renderer {
         // the row stride too small for the copy and abort in validation.
         if self.config.format.block_copy_size(None) == Some(4) {
             let size = [self.config.width, self.config.height];
+            // The 16-bit frame is read through an 8-bit copy in the swapchain's format.
+            let copy = (texture.format() != self.config.format.remove_srgb_suffix()
+                && texture.format() == self.frame_format)
+                .then(|| {
+                    let format = self.config.format.remove_srgb_suffix();
+                    self.readback
+                        .unorm_copy(&self.device, encoder, texture, format)
+                });
+            let texture = copy.as_ref().unwrap_or(texture);
             Some((request, copy_frame(&self.device, encoder, texture, size)))
         } else {
             self.screenshot_result = Some(Err(format!(
@@ -10779,12 +11175,16 @@ mod tests {
     /// shaders with storage buffers enough, where Translucent Batching is (indirect
     /// multi-draws that aren't OpenGL's) and vanilla frames are never drawn flat, and never
     /// on Intel Gen11/Gen12's Vulkan driver, whose draws read instance-rate origins from the
-    /// wrong first instance, even with flat draws off there.
+    /// wrong first instance, even with flat draws off there, nor on DX12 with flat page
+    /// groups, whose count draws leave the base vertex out of the pulled pipelines'
+    /// `vertex_index`.
     #[test]
     fn gpu_culling_is_offered_where_counts_are_drawn_and_vanilla_never_draws_flat() {
         let vulkan = adapter(wgpu::DeviceType::DiscreteGpu);
         let mut gl = adapter(wgpu::DeviceType::DiscreteGpu);
         gl.backend = wgpu::Backend::Gl;
+        let mut dx12 = adapter(wgpu::DeviceType::DiscreteGpu);
+        dx12.backend = wgpu::Backend::Dx12;
         let mut intel = adapter(wgpu::DeviceType::IntegratedGpu);
         (intel.vendor, intel.device) = (0x8086, 0x9a49); // Tiger Lake
         let counts = wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
@@ -10818,6 +11218,8 @@ mod tests {
         assert!(!offered(&vulkan, counts, compute, 8, false, None));
         assert!(!offered(&gl, counts, compute, 8, true, None));
         assert!(!offered(&intel, counts, compute, 8, true, None));
+        assert!(offered(&dx12, counts, compute, 8, true, None));
+        assert!(!offered(&dx12, counts, compute, 8, true, Some(usize::MAX)));
     }
 
     /// The pack-flat rule: with Translucent Batching translucent quads have an arena of
@@ -11025,6 +11427,72 @@ mod tests {
             Rgba8Unorm,
         ];
         assert_eq!(surface_format(&without_bgra, Rgba8UnormSrgb), Rgba8Unorm);
+    }
+    /// The 16-bit frame only with HDR on, Smooth Gradients on, an HDR surface and a device
+    /// that draws it; in every other case the swapchain's 8-bit format, as before it existed.
+    #[test]
+    fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
+        use super::frame_format;
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
+        assert_eq!(frame_format(true, true, true, Bgra8Unorm), Rgba16Unorm);
+        for (wide_frame, hdr_offered, draws) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb),
+                Bgra8Unorm
+            );
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Rgba8Unorm),
+                Rgba8Unorm
+            );
+        }
+    }
+    /// What `draws_wide_frame` needs of a device: both features, and the usages and flags
+    /// every pass takes of the frame. Missing any one of them keeps the 8-bit frame.
+    #[test]
+    fn the_16_bit_frame_needs_every_usage_and_flag_the_passes_take() {
+        use super::draws_wide_frame;
+        use wgpu::{Features as F, TextureFormatFeatureFlags as Fl, TextureUsages as U};
+        let features = F::TEXTURE_FORMAT_16BIT_NORM | F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let usages = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC | U::COPY_DST;
+        let flags = Fl::BLENDABLE | Fl::FILTERABLE;
+        let format = |allowed_usages, flags| wgpu::TextureFormatFeatures {
+            allowed_usages,
+            flags,
+        };
+        // A desktop GPU: all of it, and more.
+        assert!(draws_wide_frame(
+            features | F::FLOAT32_FILTERABLE,
+            format(usages | U::STORAGE_BINDING, flags | Fl::MULTISAMPLE_X4),
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_FORMAT_16BIT_NORM,
+            format(usages, flags)
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            format(usages, flags)
+        ));
+        // A downlevel device reports no usages at all for a format it lacks.
+        assert!(!draws_wide_frame(
+            F::empty(),
+            format(U::empty(), Fl::empty())
+        ));
+        for usage in [
+            U::RENDER_ATTACHMENT,
+            U::TEXTURE_BINDING,
+            U::COPY_SRC,
+            U::COPY_DST,
+        ] {
+            assert!(!draws_wide_frame(features, format(usages - usage, flags)));
+        }
+        for flag in [Fl::BLENDABLE, Fl::FILTERABLE] {
+            assert!(!draws_wide_frame(features, format(usages, flags - flag)));
+        }
     }
     #[test]
     fn special_material_batches_preserve_quad_order_and_offsets() {
@@ -11318,6 +11786,316 @@ mod tests {
         }
         // A section fading in over far terrain keeps its dither code unchanged.
         assert_eq!(section_instance([0.0; 3], 7, 0.5)[3], -(7.0 + step));
+    }
+    /// A section as `Renderer::upload_mesh` makes one, with `solid` and
+    /// `translucent` quads, fading in over far terrain since `fading`.
+    fn section(
+        solid: u32,
+        translucent: u32,
+        fading: Option<std::time::Instant>,
+    ) -> super::SectionGpu {
+        super::SectionGpu {
+            page: 0,
+            start: 0,
+            translucent_at: (0, u64::from(solid) * 4),
+            solid,
+            solid_slots: u64::from(solid) * 4,
+            packed: false,
+            sides: crate::mesher::Sides::unsorted(solid),
+            translucent,
+            sort: super::translucency::SortState::new(Vec::new()),
+            sorted_indices: None,
+            flat_id: None,
+            gpu_id: None,
+            gpu_fading: false,
+            fading,
+            leaving: None,
+            animated_layers: Box::new([]),
+        }
+    }
+    /// A section's fade (`SectionGpu::drawn_faded`) only ends as time goes on,
+    /// never while it leaves or is held, and by its `fade_end`, at most 10 ms
+    /// after it has (a fade-in over far terrain is whole 9.4 ms before
+    /// `lod::FADE`): fading in over far terrain or not, first uploaded or not,
+    /// both, at every chunk fade-in time, in 1 ms steps over 3 s and at its end.
+    #[test]
+    fn a_fade_ends_by_its_deadline_and_never_comes_back() {
+        use super::FadeInputs;
+        use crate::fast_hash::{FxHashMap, FxHashSet};
+        use std::time::{Duration, Instant};
+        let ms = Duration::from_millis;
+        // The steps start at `zero`; what began `t` ms before it began off the steps.
+        let zero = Instant::now() + Duration::from_secs(3);
+        let ago = |t: u64| zero - ms(t) + Duration::from_micros(370);
+        let key = (3, 5, -2);
+        // Neither leaving nor held, leaving, held, both.
+        let states = [(false, false), (true, false), (false, true), (true, true)];
+        for fading in [None, Some(0), Some(300), Some(590), Some(700)] {
+            for up in [None, Some(0), Some(1), Some(740), Some(2_500)] {
+                let uploaded: FxHashMap<_, _> = up.map(|t| (key, ago(t))).into_iter().collect();
+                for (leaving, held) in states {
+                    let mut s = section(1, 0, fading.map(ago));
+                    s.leaving = leaving.then(|| ago(250));
+                    let retiring: FxHashSet<_> = held.then_some(key).into_iter().collect();
+                    for fade_ms in [0, 1, 50, 300, 750, 2_000] {
+                        let case = (fading, up, leaving, held, fade_ms);
+                        let at = |now: Instant| FadeInputs {
+                            now,
+                            fade_ms,
+                            uploaded: &uploaded,
+                            retiring: &retiring,
+                        };
+                        let faded = |now: Instant| s.drawn_faded(key, at(now));
+                        let end = s.fade_end(key, at(zero));
+                        if leaving || held {
+                            assert!(end.is_none(), "{case:?}: an end");
+                        }
+                        let mut was = true;
+                        for t in 0..=3_000 {
+                            let now = zero + ms(t);
+                            let is = faded(now);
+                            assert!(was || !is, "{case:?}: faded again at {t} ms");
+                            was = is;
+                            if leaving || held {
+                                assert!(is, "{case:?}: whole at {t} ms");
+                            } else if end.is_none_or(|end| now >= end) {
+                                assert!(!is, "{case:?}: faded at {t} ms, past its end");
+                            }
+                        }
+                        if let Some(end) = end {
+                            assert!(!faded(end), "{case:?}: faded at its end");
+                            assert!(faded(end - ms(10)), "{case:?}: whole 10 ms before it");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /// GPU culling's fading sections over 5 s of 16 ms frames, with no device
+    /// (`mark_fades`): some 2,000 sections come, fading in as vanilla does or
+    /// over far terrain, are meshed again, leave over far terrain, are held while
+    /// it comes in and let go, and go, while the chunk fade-in time goes 750 ms,
+    /// 2 s, Off and 750 ms. After every frame the GPU keeps only whole sections,
+    /// the walk lists every other one, each record's flag is its section's, and
+    /// a flagged section that neither leaves nor is held still faded a frame
+    /// before. Each kind of event flags sections, and thousands go back. Once
+    /// GPU culling is switched off (`forget_records`), every mark is the one a
+    /// section has while it is off.
+    #[test]
+    fn fading_sections_go_to_the_cpu_and_come_back() {
+        use super::{
+            FadeInputs, SectionGpu, SectionKey, decide_fade, forget_records, gpu_culling,
+            hold_fading, mark_fades,
+        };
+        use crate::fast_hash::{FxHashMap, FxHashSet};
+        use std::time::{Duration, Instant};
+        /// The level's sections: those at y -1 and 14 have no record.
+        const ROWS: usize = 14;
+        const FRAME: Duration = Duration::from_millis(16);
+        /// The renderer's sections and what their fades depend on, and GPU
+        /// culling's records and ends.
+        #[derive(Default)]
+        struct Sim {
+            sections: super::resident::Resident<SectionGpu>,
+            records: gpu_culling::Records,
+            fades: gpu_culling::Fades,
+            uploaded: FxHashMap<SectionKey, Instant>,
+            retiring: FxHashSet<SectionKey>,
+        }
+        impl Sim {
+            /// `Renderer::upload` at `at`: a new section, fading in over far
+            /// terrain if `far`, or one meshed again.
+            fn upload(&mut self, key: SectionKey, quads: (u32, u32), far: bool, at: Instant) {
+                self.retiring.remove(&key);
+                let fading = match self.sections.find(key) {
+                    Some(old) => old.fading,
+                    None => far.then_some(at),
+                };
+                if fading.is_none() {
+                    self.uploaded.entry(key).or_insert(at);
+                }
+                self.release(key);
+                let mut s = section(quads.0, quads.1, fading);
+                if s.gpu_recorded(key, ROWS) {
+                    if let Some(fade_ms) = self.fades.fade_ms {
+                        let f = FadeInputs {
+                            now: at,
+                            fade_ms,
+                            uploaded: &self.uploaded,
+                            retiring: &self.retiring,
+                        };
+                        s.gpu_fading = decide_fade(&s, key, &mut self.fades, f);
+                    }
+                    s.gpu_id = Some(self.records.insert(s.record(key, None)));
+                }
+                let marked = s.listed(key, ROWS);
+                self.sections.insert_marked(key, s, None, marked);
+            }
+            /// `Renderer::release_section`.
+            fn release(&mut self, key: SectionKey) {
+                if let Some(id) = self.sections.remove(key).and_then(|s| s.gpu_id) {
+                    self.records.remove(id);
+                }
+            }
+            /// `Renderer::leave_section`: its column gone (`remove_columns`), or
+            /// no longer left out by far terrain while held (`set_lod_cutout`).
+            fn leave(&mut self, key: SectionKey, at: Instant) {
+                self.uploaded.remove(&key);
+                if let Some(s) = self.sections.find_mut(key)
+                    && s.leaving.is_none()
+                {
+                    s.leaving = Some(at);
+                    hold_fading(&mut self.sections, &mut self.records, key);
+                }
+            }
+            /// `Renderer::remove_columns`' held section: far terrain comes in under it.
+            fn hold(&mut self, key: SectionKey) {
+                self.uploaded.remove(&key);
+                self.retiring.insert(key);
+                hold_fading(&mut self.sections, &mut self.records, key);
+            }
+            fn flagged(&self, key: SectionKey) -> bool {
+                self.sections.find(key).is_some_and(|s| s.gpu_fading)
+            }
+        }
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        // 16 x 16 columns of sections at y -1 to 14.
+        let key = |r: u32| {
+            let [x, y, z] = [0, 4, 8].map(|shift| ((r >> shift) % 16) as i32);
+            (x, y - 1, z)
+        };
+        // Solid quads alone, with translucent ones, or translucent ones alone.
+        let kinds = [(64, 0), (64, 0), (64, 0), (64, 16), (64, 16), (0, 16)];
+        let quads = |r: u32| kinds[r as usize % 6];
+        let start = Instant::now();
+        let mut sim = Sim::default();
+        for r in 0..4_096 {
+            if next().is_multiple_of(2) {
+                sim.upload(key(r), quads(next()), next().is_multiple_of(2), start);
+            }
+        }
+        // Flags set by an upload, `leave_section`, a held section and a fade-in
+        // time (GPU culling switched on in the first frame), and dropped.
+        let (mut set_by, mut handed_back) = ([0; 4], 0);
+        let mut last = start;
+        for frame in 0..=312 {
+            let now = start + FRAME * frame;
+            for event in 0..12 {
+                let at = last + (now - last) * (event + 1) / 13;
+                let r = next();
+                let k = key(r);
+                let was = sim.flagged(k);
+                let kind = match (r >> 20) % 16 {
+                    0..=7 => {
+                        sim.upload(k, quads(r >> 12), (r >> 24).is_multiple_of(2), at);
+                        0
+                    }
+                    8 | 9 => {
+                        sim.leave(k, at);
+                        1
+                    }
+                    10 | 11 => {
+                        sim.hold(k);
+                        2
+                    }
+                    12 => {
+                        // Far terrain no longer leaves a held section's column out.
+                        let held = sim.retiring.iter().next().copied();
+                        if let Some(held) = held {
+                            sim.retiring.remove(&held);
+                            sim.leave(held, at);
+                        }
+                        continue;
+                    }
+                    _ => {
+                        sim.uploaded.remove(&k);
+                        sim.release(k);
+                        continue;
+                    }
+                };
+                if !was && sim.flagged(k) {
+                    set_by[kind] += 1;
+                }
+            }
+            // Those faded out go (`release_left`).
+            let gone = |t: Instant| now.saturating_duration_since(t) >= super::lod::FADE;
+            let left: Vec<SectionKey> = sim
+                .sections
+                .iter()
+                .filter(|(_, s, _)| s.leaving.is_some_and(gone))
+                .map(|(k, ..)| k)
+                .collect();
+            for k in left {
+                sim.release(k);
+            }
+            let flagged_before: FxHashSet<SectionKey> = sim
+                .sections
+                .iter()
+                .filter(|(_, s, _)| s.gpu_fading)
+                .map(|(k, ..)| k)
+                .collect();
+            let fade_ms = [750, 2_000, 0, 750][frame as usize * 4 / 313];
+            let f = FadeInputs {
+                now,
+                fade_ms,
+                uploaded: &sim.uploaded,
+                retiring: &sim.retiring,
+            };
+            mark_fades(&mut sim.sections, &mut sim.records, &mut sim.fades, ROWS, f);
+            let a_frame_before = FadeInputs {
+                now: now - FRAME,
+                ..f
+            };
+            let mut flagged = 0;
+            for (k, s, _) in sim.sections.iter() {
+                let marked = sim.sections.is_marked(k);
+                assert_eq!(marked, s.listed(k, ROWS), "frame {frame}, {k:?}: its mark");
+                // The GPU draws its solid quads whole, or the walk lists it.
+                assert!(
+                    s.solid == 0 || s.gpu_draws_solid(true) || marked,
+                    "frame {frame}, {k:?}: drawn by neither"
+                );
+                assert!(
+                    !s.gpu_draws_solid(true) || !s.drawn_faded(k, f),
+                    "frame {frame}, {k:?}: drawn whole by the GPU while it fades"
+                );
+                if let Some(id) = s.gpu_id {
+                    let record = s.record(k, None);
+                    assert_eq!(sim.records.at(id), Some(&record), "frame {frame}, {k:?}");
+                }
+                if s.gpu_fading {
+                    flagged += 1;
+                    set_by[3] += usize::from(!flagged_before.contains(&k));
+                    if s.leaving.is_none() && !sim.retiring.contains(&k) {
+                        assert!(
+                            s.drawn_faded(k, a_frame_before),
+                            "frame {frame}, {k:?}: flagged a frame after its fade"
+                        );
+                    }
+                } else {
+                    handed_back += usize::from(flagged_before.contains(&k));
+                }
+            }
+            assert_eq!(sim.records.fading(), flagged, "frame {frame}");
+            last = now;
+        }
+        assert!(set_by.iter().all(|&n| n > 20), "flags set {set_by:?}");
+        assert!(handed_back > 2_000, "{handed_back} handed back");
+        // Switched off with sections still flagged: none keeps a record or a
+        // flag, and each is marked as while GPU culling is off.
+        assert!(sim.records.fading() > 0, "none flagged at the end");
+        forget_records(&mut sim.sections, ROWS);
+        for (k, s, _) in sim.sections.iter() {
+            assert!(s.gpu_id.is_none() && !s.gpu_fading, "{k:?}: kept once off");
+            let off = s.translucent > 0 || !s.gpu_recorded(k, ROWS);
+            assert_eq!(sim.sections.is_marked(k), off, "{k:?}: its mark once off");
+        }
     }
     #[test]
     fn terrain_attributes_follow_the_terrain_vertex() {

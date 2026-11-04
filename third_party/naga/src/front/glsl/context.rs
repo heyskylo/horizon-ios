@@ -1332,6 +1332,23 @@ impl<'a> Context<'a> {
                                 meta,
                             });
                         }
+                        if self.is_const {
+                            // `.length()` of an explicitly sized array is a constant expression
+                            // whether or not the array is (GLSL 4.60, 4.3.3, as #8463 quotes
+                            // it): the array is lowered outside the constant context, for its
+                            // type only.
+                            self.is_const = false;
+                            let size = self.constant_array_size(stmt, frontend, object, meta);
+                            self.is_const = true;
+                            if let Some(size) = size? {
+                                let mut array_length = self.add_expression(
+                                    Expression::Literal(Literal::U32(size.get())),
+                                    meta,
+                                )?;
+                                self.forced_conversion(&mut array_length, meta, Scalar::I32)?;
+                                return Ok((Some(array_length), meta));
+                            }
+                        }
                         let lowered_array = self.lower_expect_inner(stmt, frontend, object, pos)?.0;
                         let array_type = self.resolve_type(lowered_array, meta)?;
 
@@ -1393,6 +1410,31 @@ impl<'a> Context<'a> {
         log::trace!("Lowered {expr:?}\n\tKind = {kind:?}\n\tPos = {pos:?}\n\tResult = {handle:?}");
 
         Ok((Some(handle), meta))
+    }
+
+    /// The size of the array `object` is, through a pointer or not, if it has one.
+    fn constant_array_size(
+        &mut self,
+        stmt: &StmtContext,
+        frontend: &mut Frontend,
+        object: Handle<HirExpr>,
+        meta: Span,
+    ) -> Result<Option<core::num::NonZeroU32>> {
+        let pos = ExprPos::AccessBase {
+            constant_index: true,
+        };
+        let array = self.lower_expect_inner(stmt, frontend, object, pos)?.0;
+        let ty = match *self.resolve_type(array, meta)? {
+            TypeInner::Pointer { base, .. } => &self.module.types[base].inner,
+            ref ty => ty,
+        };
+        Ok(match *ty {
+            TypeInner::Array {
+                size: crate::ArraySize::Constant(size),
+                ..
+            } => Some(size),
+            _ => None,
+        })
     }
 
     pub fn expr_scalar_components(
