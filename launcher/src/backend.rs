@@ -48,10 +48,10 @@ pub struct Release {
     pub nightly: Option<String>,
 }
 
-/// The release assets of each system Horizon ships for: (`std::env::consts::OS`, `ARCH`, the game,
-/// the launcher). game-build.yml builds the game's, nightly-build.yml signs and publishes them, and
-/// launcher.yml builds the launcher's (`platform_assets_are_published`).
-pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
+/// The release assets of each system Horizon ships for: (OS, architecture, the game, the launcher).
+/// game-build.yml builds the game's, nightly-build.yml signs and publishes them, and launcher.yml
+/// builds the launcher's (`platform_assets_are_published`).
+pub const PLATFORMS: [(&str, &str, &str, &str); 5] = [
     (
         "linux",
         "x86_64",
@@ -76,6 +76,12 @@ pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
         "x86_64",
         "horizon-windows-x64.zip",
         "horizon-launcher-windows-x64.zip",
+    ),
+    (
+        "windows",
+        "aarch64",
+        "horizon-windows-arm64.zip",
+        "horizon-launcher-windows-arm64.zip",
     ),
 ];
 
@@ -108,6 +114,10 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
     None
 }
 
+/// Both follow this launcher's own architecture. An x64 launcher on a Windows ARM64 PC (under
+/// emulation) keeps updating itself, installing games and building native mods as x64, so a player
+/// whose emulated setup works is never moved to an ARM64 build by an update. The ARM64 launcher is
+/// what `horizon-launcher-setup-arm64.exe` installs.
 const OWN_ASSETS: Option<(&str, &str)> =
     platform_assets(std::env::consts::OS, std::env::consts::ARCH);
 /// The game build this launcher installs, None where Horizon has none.
@@ -120,6 +130,22 @@ pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
     Some((_, launcher)) => Some(launcher),
     None => None,
 };
+/// The game build the ARM64 Windows launcher installs from a release that has no ARM64 one (every
+/// release before it, or a Nightly whose ARM64 job failed): the x64 build, which Windows runs under
+/// emulation.
+const GAME_FALLBACK: Option<&str> = game_fallback_for(std::env::consts::OS, std::env::consts::ARCH);
+
+/// The asset a platform's launcher falls back to when a release has no build of its own.
+const fn game_fallback_for(os: &str, arch: &str) -> Option<&'static str> {
+    if same(os, "windows") && same(arch, "aarch64") {
+        match platform_assets("windows", "x86_64") {
+            Some((game, _)) => Some(game),
+            None => None,
+        }
+    } else {
+        None
+    }
+}
 
 /// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
 /// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
@@ -382,9 +408,26 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
-    let mut out = parse_releases(list, ASSET, |tag| {
-        is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
-    });
+    game_releases_with(list, ASSET, GAME_FALLBACK)
+}
+
+/// [`game_releases`] for one platform's asset, and the one it installs from a release that has
+/// none of its own ([`GAME_FALLBACK`]).
+fn game_releases_with(
+    list: &serde_json::Value,
+    asset: Option<&str>,
+    fallback: Option<&str>,
+) -> Vec<Release> {
+    let keep = |tag: &str| is_game_tag(tag) || horizon_release_sign::is_nightly(tag);
+    let mut out = parse_releases(list, asset, keep);
+    if fallback.is_some() {
+        // The same releases in the same order: only the asset looked for differs.
+        for (r, other) in out.iter_mut().zip(parse_releases(list, fallback, keep)) {
+            if r.asset.is_none() && r.tag == other.tag {
+                r.asset = other.asset;
+            }
+        }
+    }
     for r in &mut out {
         if horizon_release_sign::is_nightly(&r.tag) {
             let version = crate::nightly::version_of(r);
@@ -791,18 +834,36 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
+    let asset = asset_installed(release, ASSET, GAME_FALLBACK).unwrap_or_default();
     let sha256 = match &release.nightly {
         // Signed for the Nightly channel, served under its own GitHub tag.
         Some(published) => crate::signed::nightly_digest(
             published,
-            ASSET.unwrap_or_default(),
+            asset,
             &horizon_release_sign::trusted_keys(),
             fetch_small,
         )?,
-        None if is_game_tag(tag) => signed_digest(tag, ASSET.unwrap_or_default())?,
+        None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
     install_as(release, tag, &sha256, progress)
+}
+
+/// The asset `release` installs from: the fallback when [`game_releases_with`] took it (its file
+/// name ends the download address), so the signed checksum checked is that file's.
+fn asset_installed<'a>(
+    release: &Release,
+    asset: Option<&'a str>,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    let file = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| url.rsplit('/').next());
+    match fallback {
+        Some(name) if file == Some(name) => fallback,
+        _ => asset,
+    }
 }
 
 /// Downloads `release`'s archive for this platform, checks it against `sha256` (its signed
@@ -3898,8 +3959,18 @@ pub fn {f}("
             Some(("horizon-macos-x64.zip", "horizon-launcher-macos-x64.zip"))
         );
         assert_eq!(
-            platform_assets("windows", "x86_64").map(|(game, _)| game),
-            Some("horizon-windows-x64.zip")
+            platform_assets("windows", "x86_64"),
+            Some((
+                "horizon-windows-x64.zip",
+                "horizon-launcher-windows-x64.zip"
+            ))
+        );
+        assert_eq!(
+            platform_assets("windows", "aarch64"),
+            Some((
+                "horizon-windows-arm64.zip",
+                "horizon-launcher-windows-arm64.zip"
+            ))
         );
         assert_eq!(platform_assets("linux", "aarch64"), None);
         assert_eq!(platform_assets("macos", "x86"), None);
@@ -3907,6 +3978,70 @@ pub fn {f}("
             ASSET,
             platform_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| game)
         );
+        assert_eq!(
+            game_fallback_for("windows", "aarch64"),
+            Some("horizon-windows-x64.zip")
+        );
+        assert_eq!(game_fallback_for("windows", "x86_64"), None);
+        assert_eq!(game_fallback_for("macos", "aarch64"), None);
+    }
+
+    /// The ARM64 Windows launcher installs the ARM64 build where a release has one, and the x64
+    /// build (under emulation) from the releases that have only that, checked against that file's
+    /// signed checksum.
+    #[test]
+    fn an_arm64_windows_launcher_falls_back_to_the_x64_game() {
+        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        let asset = |name: &str, url: &str| serde_json::json!({"name": name, "browser_download_url": url, "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "v2026.11.05", "assets": [
+                asset(x64, "https://example.test/v2026.11.05/horizon-windows-x64.zip"),
+                asset(arm, "https://example.test/v2026.11.05/horizon-windows-arm64.zip")]},
+            {"tag_name": "v2026.11.04", "assets": [
+                asset(x64, "https://example.test/v2026.11.04/horizon-windows-x64.zip")]},
+            {"tag_name": "v2026.11.03", "assets": []},
+        ]);
+        let releases = game_releases_with(&list, Some(arm), Some(x64));
+        let urls: Vec<_> = releases
+            .iter()
+            .map(|r| {
+                r.asset
+                    .as_ref()
+                    .map(|(url, _)| url.rsplit('/').next().unwrap())
+            })
+            .collect();
+        assert_eq!(urls, [Some(arm), Some(x64), None]);
+        let installs: Vec<_> = releases
+            .iter()
+            .map(|r| asset_installed(r, Some(arm), Some(x64)))
+            .collect();
+        assert_eq!(installs, [Some(arm), Some(x64), Some(arm)]);
+
+        // An x64 launcher, on any Windows, never looks at the ARM64 build.
+        let x64_only = game_releases_with(&list, Some(x64), None);
+        assert!(x64_only[..2]
+            .iter()
+            .all(|r| r.asset.as_ref().unwrap().0.ends_with(x64)));
+    }
+
+    /// launcher.yml publishes a release even when its ARM64 build failed. An ARM64 launcher then
+    /// stays on its version until a release has its own zip: it never takes the x64 one.
+    #[test]
+    fn an_arm64_launcher_skips_a_release_without_its_zip() {
+        let (arm, x64) = (
+            "horizon-launcher-windows-arm64.zip",
+            "horizon-launcher-windows-x64.zip",
+        );
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "launcher@0.30.0", "assets": [asset(x64)]},
+            {"tag_name": "launcher@0.29.0", "assets": [asset(x64), asset(arm)]},
+        ]);
+        let releases = parse_releases(&list, Some(arm), is_launcher_tag);
+        assert!(launcher_update_from(&releases, "launcher@0.29.0").is_none());
+        let update = launcher_update_from(&releases, "launcher@0.28.0").unwrap();
+        assert_eq!(update.tag, "launcher@0.29.0");
+        assert!(update.asset.unwrap().0.ends_with(arm));
     }
 
     /// Every asset a launcher looks for is one the release workflows build, sign and publish.
@@ -3922,10 +4057,12 @@ pub fn {f}("
                 build.contains(&format!("asset: {game}")),
                 "game-build.yml builds no {game}"
             );
-            // Signed (SHA256SUMS), then published.
-            assert_eq!(
-                nightly.matches(&format!("dist/{game}")).count(),
-                2,
+            // Signed (SHA256SUMS), then published. Windows ARM64's build may fail without holding the
+            // Nightly, so both steps name it again where they check that it was built.
+            let named = nightly.matches(&format!("dist/{game}")).count();
+            let optional = (os, arch) == ("windows", "aarch64");
+            assert!(
+                named == 2 || (optional && named > 2),
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
             );
             assert!(
