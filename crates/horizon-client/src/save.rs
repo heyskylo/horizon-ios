@@ -528,14 +528,15 @@ impl SaveTables {
 
 pub use crate::chunk::{ChunkExtras, RolledLoot, SavedProto};
 
-/// A container was opened: its eager roll is now the container's own inventory.
+/// A container was opened, or a command's tag dropped or replaced its roll: the
+/// table it was loaded with is no longer what it holds.
 pub fn consume_container_loot(extras: &mut ChunkExtras, pos: (i32, i32, i32)) {
     let before = extras.rolled_loot.len();
     extras.rolled_loot.retain(|r| r.pos != pos);
     if extras.rolled_loot.len() == before {
         return;
     }
-    // The source compound participates in the save overlay. Once opened,
+    // The source compound participates in the save overlay. From here on,
     // even an emptied chest must not inherit its old loot table from there.
     for (source_pos, source) in &mut extras.block_entity_sources {
         if *source_pos == pos

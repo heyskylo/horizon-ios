@@ -1092,3 +1092,134 @@ impl Game<'_> {
         Ok(target)
     }
 }
+
+#[cfg(test)]
+mod loot_table_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{
+        chunk::Chunk,
+        containers::BlockEntity,
+        items::ItemStack,
+        save::{self, ChunkExtras, RolledLoot},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+
+    const TABLE: &str = "minecraft:chests/simple_dungeon";
+
+    /// The chest as a chunk save writes it, and its slots when that save loads.
+    fn saved_and_reloaded(game: &Game<'_>, pos: (i32, i32, i32)) -> (Tag, Vec<Option<ItemStack>>) {
+        let live = game.world.chunks.get(&(0, 0)).unwrap().clone();
+        let chunk = game.with_entities([&live]).remove(0);
+        let registry = game.pack.assets.registry;
+        let encoded = save::encode(&chunk, registry, game.res.biomes());
+        let Some(Tag::List(list)) = encoded.tag.get("block_entities") else {
+            panic!("no block entities");
+        };
+        let saved = list
+            .iter()
+            .find(|t| save::number(t.get("x")) == Some(i64::from(pos.0)))
+            .unwrap()
+            .clone();
+        let reloaded = save::decode(&encoded, registry, game.res.biomes()).unwrap();
+        let (_, BlockEntity::Chest(slots)) = reloaded
+            .block_entities
+            .iter()
+            .find(|(p, _)| *p == pos)
+            .unwrap()
+        else {
+            panic!("chest");
+        };
+        (saved, slots.clone())
+    }
+
+    /// RandomizableContainer.tryLoadLootTable: a tag without a table loads an
+    /// empty chest that stays so, and one with a table keeps it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn data_commands_on_an_unopened_loaded_chest_survive_a_save_and_reload() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        // Two chests as a load leaves them: rolled, with the table in their source.
+        let removed = (1, 64, 2);
+        let merged = (2, 64, 2);
+        let chest = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:chest")
+            .unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        let mut extras = ChunkExtras::default();
+        for pos in [removed, merged] {
+            let mut slots = vec![None; 27];
+            slots[0] = Some(ItemStack::new("minecraft:gold_ingot", 2));
+            chunk.set(pos.0, pos.1, pos.2, chest.0);
+            extras.rolled_loot.push(RolledLoot {
+                pos,
+                table: TABLE.into(),
+                seed: Some(42),
+                items: save::encode_items(&slots),
+            });
+            extras.block_entity_sources.push((
+                pos,
+                Tag::compound([
+                    ("id", Tag::String("minecraft:chest".into())),
+                    ("x", Tag::Int(pos.0)),
+                    ("y", Tag::Int(pos.1)),
+                    ("z", Tag::Int(pos.2)),
+                    ("LootTable", Tag::String(TABLE.into())),
+                    ("LootTableSeed", Tag::Long(42)),
+                ]),
+            ));
+            game.world
+                .block_entities
+                .insert(pos, BlockEntity::Chest(slots));
+        }
+        chunk.saved = Some(Arc::new(extras));
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+
+        assert!(game.run_command("data remove block 1 64 2 LootTable"));
+        let (saved, slots) = saved_and_reloaded(&game, removed);
+        assert!(
+            saved.get("LootTable").is_none(),
+            "the emptied chest rolls again on load: {saved:?}"
+        );
+        assert!(saved.get("LootTableSeed").is_none());
+        assert!(slots.iter().all(Option::is_none));
+
+        assert!(game.run_command("data merge block 2 64 2 {LootTableSeed:7L}"));
+        let (saved, _) = saved_and_reloaded(&game, merged);
+        assert_eq!(save::text(saved.get("LootTable")).as_deref(), Some(TABLE));
+        assert_eq!(save::number(saved.get("LootTableSeed")), Some(7));
+        assert!(saved.get("Items").is_none());
+    }
+}
