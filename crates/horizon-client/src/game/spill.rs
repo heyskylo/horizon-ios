@@ -397,7 +397,10 @@ impl GameLevel<'_> {
     }
     /// `Block.dropResources(state, level, pos, blockEntity)`: the block's loot
     /// (from its random sequence, else the level random), with what its block
-    /// entity copies into it, popped at once.
+    /// entity copies into it, popped at once. While a mod's machine breaks
+    /// the block (`native_machine_destroy_block`), the loot is rolled with its
+    /// `drop_tool` (`dropResources(.., entity, tool)`) and, given `drop_into`,
+    /// kept there instead of popped.
     pub(super) fn drop_resources_now(&mut self, pos: BlockPos, state: BlockStateId) {
         let key = (pos.x, pos.y, pos.z);
         let at = [pos.x, pos.y, pos.z];
@@ -410,23 +413,31 @@ impl GameLevel<'_> {
             self.pending.record_saved(at, &tag);
         }
         let dynamic = self.pending.dynamic(at);
+        let tool = self.drop_tool.as_ref();
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.seed);
                 self.items
-                    .block_drops_with(self.registry, state, None, &dynamic, random)
+                    .block_drops_with(self.registry, state, tool, &dynamic, random)
             }
             None => self.items.block_drops_with(
                 self.registry,
                 state,
-                None,
+                tool,
                 &dynamic,
                 &mut self.world.random,
             ),
         };
-        for stack in drops {
-            if &*stack.item != "minecraft:air" && stack.count > 0 {
-                self.pop_resource(at, stack);
+        for mut stack in drops {
+            if &*stack.item == "minecraft:air" || stack.count == 0 {
+                continue;
+            }
+            match self.drop_into.as_mut() {
+                Some(kept) => {
+                    self.pending.attach(at, &mut stack);
+                    kept.push(stack);
+                }
+                None => self.pop_resource(at, stack),
             }
         }
         self.pending.clear(at);

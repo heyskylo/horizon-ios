@@ -2663,6 +2663,25 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
   the end, or more than 65536 filters.
 
+### Machines
+
+`crates/horizon-client/src/game/native_machines.rs`: helpers for a mod's machines on a server, in the level in place.
+These are what Create's drill, saw, harvester and deployer need.
+
+- `native_machine_destroy_block(pos, tool, collect)` (`Host::destroy_block`) is `Level.destroyBlock(pos, true)` with
+  the loot rolled for `tool` and no player (`Block.dropResources(state, level, pos, blockEntity, null, tool)`).
+  It shows the break particles and plays the sound, and the block entity's contents go into the drops as a player's
+  break puts them. An ore gives experience as with no tool, and the block's fluid takes its place. Mods' loot changes
+  (`native_loot_drops`) apply. With `collect`, the drops are returned instead of popped.
+- `native_set_break_progress(breaker, pos, progress)` is `ServerLevel.destroyBlockProgress`: a crack, stage 0 to 9, for
+  the players within 64 blocks. Pass a negative id of your own, the same each time; any other stage removes the crack.
+- `native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` is NeoForge's `FakePlayer`. It uses `stack` on a
+  block (`useItemOn`), in the air (`useItem`) or on an entity (`interactOn`). The fake player is in survival and holds
+  nothing else. It has no connection: nothing it opens stays open, and its stats and advancements count for no one.
+  The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
+  afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
+  `None`.
+
 ### Column reads
 
 `crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
