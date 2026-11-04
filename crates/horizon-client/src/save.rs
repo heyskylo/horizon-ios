@@ -6499,6 +6499,36 @@ mod tests {
         assert_eq!(again.update_tag(), spawner.update_tag());
     }
     #[test]
+    fn transient_client_update_fields_are_not_saved_or_restored() {
+        use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+        let saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"test:machine",x:5,y:-60,z:12,progress:7,unknown:{value:2b}}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, mut entity) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(machine) = &mut entity else {
+            panic!("not a mod's");
+        };
+        let revision = machine.revision();
+        let pending = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(pending.clone());
+        assert_eq!(encode_block_entity(pos, &entity, "test:machine"), saved);
+        let (_, cold) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(cold) = cold else {
+            panic!("not a mod's");
+        };
+        assert!(cold.take_client_update_fields().is_empty());
+        let BlockEntity::Mod(machine) = &entity else {
+            unreachable!();
+        };
+        assert_eq!(machine.take_client_update_fields(), pending);
+        assert_eq!(machine.revision(), revision);
+        let fresh = ModBlockEntity::new(ModBlockEntityFields::default());
+        assert!(fresh.take_client_update_fields().is_empty());
+    }
+
+    #[test]
     fn mod_block_entity_round_trips() {
         let saved = horizon_world::nbt::parse_snbt(
             r#"{id:"gtmod:macerator",x:5,y:-60,z:12,energy:1200L,progress:7,Items:[{Slot:0b,id:"minecraft:iron_ore",count:3}]}"#,
