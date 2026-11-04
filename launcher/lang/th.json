@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "บันทึกการเปลี่ยนแปลงจะสลับให้ ไม่มีสิ่งใดในโฟลเดอร์ถูกลบ",
   "Its mods made for {loader} stay in its folder but won't load.": "ม็อดสำหรับ {loader} ยังอยู่ในโฟลเดอร์ แต่จะไม่ถูกโหลด",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "ม็อดสำหรับ Minecraft {from} ยังอยู่ในโฟลเดอร์ บางตัวอาจโหลดไม่ได้ใน {to}",
+  "Maximum memory": "หน่วยความจำสูงสุด",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java อาจใช้หน่วยความจำได้เท่าใด (-Xmx) ตั้งค่าต่ำเกินไปและเกมอาจพังได้",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "โลกถูกบันทึกโดย Minecraft {from}: {to} จะอัปเกรดโลกเหล่านั้นอย่างถาวร และเปิดไม่ได้หากเป็นเวอร์ชันที่เก่ากว่า"
 }

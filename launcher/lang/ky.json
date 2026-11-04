@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "Расмий SMP серверинде {count}",
   "{mode} · stopped": "{mode} · токтотулган",
   "{online} of {max}": "{max} ичинен {online}",
+  "Maximum memory": "Максималдуу эс",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Канча эстутум Java колдоно алат (-Xmx). Аны өтө төмөн коюп, оюн бузулушу мүмкүн.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "Horizon ичинде {support}"
 }

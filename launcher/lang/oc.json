@@ -1083,5 +1083,10 @@
   "Its mods made for {loader} stay in its folder but won't load.": "Sos mods fargats per {loader} demòran dins son dorsièr mas se cargaràn pas.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Sos mondes foguèron enregistrats per Minecraft {from}: {to} los met a jorn per totjorn, e los pòt pas dobrir se es mai ancian.",
   "Save changes switches it. Nothing in its folder is deleted.": "« Enregistrar las modificacions » lo càmbia. Res dins son dorsièr es pas suprimit.",
+  "Maximum memory": "Memòria maximala",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Quant de memòria Java pòt utilizar (-Xmx). Reglatz-lo tròp bas e lo jòc pòt s'escrachar.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "What this change can't keep": "Çò que aqueste cambiament pòt pas gardar"
 }

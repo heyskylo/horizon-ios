@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Salva i canbiamenti i ło canbia. Niente neła so cartèła vien cancełà.",
   "Its mods made for {loader} stay in its folder but won't load.": "I so mod fati par {loader} i resta neła so cartèła ma no i se cariga.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "I suoi mod fatti per Minecraft {from} restano nella sua cartella; alcuni pol no cargarse in {to}.",
+  "Maximum memory": "Memoria masima",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Quanta memoria Java può usare (-Xmx). Metilo masa baso e el zogo el pol blocarse.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I so mondi i xe stai salvài da Minecraft {from}: {to} i li agiorna par senpre, e no i pol verxarli se i xe pì veci."
 }

@@ -1083,5 +1083,10 @@
   "Its mods made for {loader} stay in its folder but won't load.": "Z'n mods veur {loader} blieve in z'n map, mer laje neet.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Z'n werelde zien opgesjlage door Minecraft {from}: {to} werk ze veur good bij, en kin ze neet opene es 't auwer is.",
   "Save changes switches it. Nothing in its folder is deleted.": "‘Wijziginge opsjlaon’ verandert 't. Niks in z'n map weurt gewis.",
+  "Maximum memory": "Maximaal geheuge",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Hoeveel geheuge Java kin gebruke (-Xmx). Stel ‘t te lieg en ‘t spel kin crashe.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "What this change can't keep": "Wat dees verandering neet kin hawwe"
 }

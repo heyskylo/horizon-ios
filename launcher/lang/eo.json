@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "{count} en la oficiala SMP",
   "{mode} · stopped": "{mode} · haltigita",
   "{online} of {max}": "{online} el {max}",
+  "Maximum memory": "Maksimuma memoro",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Kiom da memoro Java povas uzi (-Xmx). Agordu ĝin tro malalte kaj la ludo povas kraŝi.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "{support} en Horizon"
 }

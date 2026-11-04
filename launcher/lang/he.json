@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "„שמירת השינויים” מחליפה אותו. שום דבר בתיקייה שלו לא נמחק.",
   "Its mods made for {loader} stay in its folder but won't load.": "המודים שלו שנבנו ל־{loader} נשארים בתיקייה שלו אבל לא ייטענו.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "המודים שלו שנבנו ל־Minecraft {from} נשארים בתיקייה שלו; חלקם אולי לא ייטענו ב־{to}.",
+  "Maximum memory": "מקסימום זיכרון",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "כמה זיכרון Java עשויה להשתמש (-Xmx). הגדר את זה נמוך מדי והמשחק יכול לקרוס.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "העולמות שלו נשמרו ב־Minecraft {from}: ‏{to} משדרג אותם לתמיד, ולא יכול לפתוח אותם אם הוא ישן יותר."
 }

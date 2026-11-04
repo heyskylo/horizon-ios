@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "{count} fuq l-SMP uffiċjali",
   "{mode} · stopped": "{mode} · waqaf",
   "{online} of {max}": "{online} minn {max}",
+  "Maximum memory": "Memorja massima",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Kemm jista' juża memorja Java (-Xmx). Issettjah baxx wisq u l-logħba tista 'tiġġarraf.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "{support} f'Horizon"
 }

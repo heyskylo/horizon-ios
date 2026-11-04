@@ -1083,5 +1083,10 @@
   "{count} min ago": "virun {count} Min.",
   "{count} on the official SMP": "{count} um offiziellen SMP",
   "{mode} · stopped": "{mode} · gestoppt",
+  "Maximum memory": "Maximum Erënnerung",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Wéi vill Erënnerung Java ka benotzen (-Xmx). Setzt et ze niddreg an d'Spill kann Crash.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{online} of {max}": "{online} vun {max}"
 }

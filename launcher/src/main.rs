@@ -446,6 +446,8 @@ struct Launcher {
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
     launch: Option<launch_page::LaunchPanel>,
+    /// The memory row on Home.
+    memory_slider: launch_page::MemorySlider,
     importing: import_page::Importing,
     console: console_page::Console,
     /// What the window did when the game started (`while_playing.rs`).
@@ -691,6 +693,7 @@ impl Launcher {
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
             launch: None,
+            memory_slider: Default::default(),
             importing: Default::default(),
             console: Default::default(),
             aside: while_playing::Aside::new(window.window_handle()),
@@ -3103,6 +3106,7 @@ impl Launcher {
             .or_else(|| java.is_some().then(String::new))
         else {
             // No hero without a version: the page starts below the top bar like the others.
+            let memory = self.memory_row(cx);
             // The first version, downloading since an instance was made to play it.
             let waiting = match &self.installing {
                 Some((_, p)) => format!("{} {:.0}%", tr("Installing"), p * 100.),
@@ -3125,7 +3129,8 @@ impl Launcher {
                             cx.notify();
                         }),
                     ),
-                ));
+                ))
+                .children(memory);
         };
         let prepared = backend::is_prepared(&tag);
         // Prepared without sounds (#1035): Prepare again is the fix, so it stands out.
@@ -3245,7 +3250,9 @@ impl Launcher {
             // The glass look's sidebar ⋮ menu holds what the Instance row offers.
             .children((!t.glass).then(|| self.instance_row(1, cx)).flatten())
             .children(self.export_panel(cx))
-            .children(self.launch_panel(cx));
+            .children(self.launch_panel(cx))
+            // The glass look keeps Maximum memory in the instance's Edit dialog.
+            .children((!t.glass).then(|| self.memory_row(cx)).flatten());
         rows = match &java {
             Some(java) => rows.child(index_row(
                 2,

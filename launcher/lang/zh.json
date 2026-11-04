@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "“保存更改”会切换它。其文件夹中的任何内容都不会被删除。",
   "Its mods made for {loader} stay in its folder but won't load.": "其为 {loader} 制作的模组会留在其文件夹中，但不会加载。",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "其为 Minecraft {from} 制作的模组会留在其文件夹中；部分可能无法在 {to} 中加载。",
+  "Maximum memory": "最大内存",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java 可使用的内存量（-Xmx）。设置过低可能导致游戏崩溃。",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "其世界由 Minecraft {from} 保存：{to} 会永久升级它们；如果 {to} 更旧，则无法打开它们。"
 }

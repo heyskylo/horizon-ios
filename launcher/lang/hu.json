@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "A Változások mentése átállítja. A mappájából semmi sem törlődik.",
   "Its mods made for {loader} stay in its folder but won't load.": "A(z) {loader}-hoz készült modjai a mappájában maradnak, de nem töltődnek be.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "A Minecraft {from}-hoz készült modjai a mappájában maradnak; némelyik talán nem töltődik be a(z) {to} alatt.",
+  "Maximum memory": "Maximális memória",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Mennyi memóriát használhat a Java (-Xmx). Túl alacsonyra állítva a játék összeomolhat.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "A világait a Minecraft {from} mentette: a(z) {to} végleg frissíti őket, és ha régebbi, nem tudja megnyitni őket."
 }

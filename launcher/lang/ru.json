@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "«Сохранить изменения» переключит её. Из её папки ничего не удаляется.",
   "Its mods made for {loader} stay in its folder but won't load.": "Её моды для {loader} останутся в её папке, но не загрузятся.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Её моды для Minecraft {from} останутся в её папке; некоторые могут не загрузиться в {to}.",
+  "Maximum memory": "Максимум памяти",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Сколько памяти может использовать Java (-Xmx). При слишком низком значении игра может вылететь.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Её миры сохранены в Minecraft {from}: {to} обновит их навсегда, а если он старше — не сможет открыть."
 }

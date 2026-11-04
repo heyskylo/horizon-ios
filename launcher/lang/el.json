@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Η Αποθήκευση αλλαγών την εφαρμόζει. Τίποτα στον φάκελό της δεν διαγράφεται.",
   "Its mods made for {loader} stay in its folder but won't load.": "Τα mods της για {loader} μένουν στον φάκελό της, αλλά δεν θα φορτώνονται.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Τα mods της για Minecraft {from} μένουν στον φάκελό της· κάποια ίσως δεν φορτώνουν στο {to}.",
+  "Maximum memory": "Μέγιστη μνήμη",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Πόση μνήμη μπορεί να χρησιμοποιήσει η Java (-Xmx). Ρυθμίστε το πολύ χαμηλά και το παιχνίδι μπορεί να καταρρεύσει.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Οι κόσμοι της αποθηκεύτηκαν από το Minecraft {from}: το {to} τους αναβαθμίζει οριστικά και δεν μπορεί να τους ανοίξει αν είναι παλαιότερο."
 }

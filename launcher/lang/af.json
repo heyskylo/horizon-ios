@@ -1083,5 +1083,10 @@
   "{online} of {max}": "{online} van {max}",
   "{support} in Horizon": "{support} in Horizon",
   "{value} px": "{value} px",
+  "Maximum memory": "Maksimum geheue",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Hoeveel geheue Java mag gebruik (-Xmx). Stel dit te laag en die speletjie kan crash.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{value}%": "{value}%"
 }

@@ -1083,5 +1083,10 @@
   "Its mods made for {loader} stay in its folder but won't load.": "I siei mods fats par {loader} a restin te sô cartele, ma no si cjariaran.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "I siei monds a son stâts salvâts di Minecraft {from}: {to} ju inzorne par simpri, e nol pues vierzju se al è plui vieli.",
   "Save changes switches it. Nothing in its folder is deleted.": "«Salve lis modifichis» le cambie. Nuie te sô cartele al ven eliminât.",
+  "Maximum memory": "Memorie massime",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Cuante memorie Java e pues doprâ (-Xmx). Mettilu masse bas e il zûc al pues crash.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "What this change can't keep": "Ce che chest cambiament nol pues tignî"
 }

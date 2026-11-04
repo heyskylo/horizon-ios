@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Lưu thay đổi sẽ chuyển nó. Không có gì trong thư mục của nó bị xóa.",
   "Its mods made for {loader} stay in its folder but won't load.": "Các mod làm cho {loader} vẫn ở trong thư mục của nó nhưng sẽ không được tải.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Các mod làm cho Minecraft {from} vẫn ở trong thư mục của nó; một số có thể không tải được trong {to}.",
+  "Maximum memory": "Bộ nhớ tối đa",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java có thể sử dụng bao nhiêu bộ nhớ (-Xmx). Đặt nó quá thấp và trò chơi có thể bị sập.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Các thế giới của nó được lưu bởi Minecraft {from}: {to} nâng cấp chúng vĩnh viễn, và không mở được nếu là bản cũ hơn."
 }

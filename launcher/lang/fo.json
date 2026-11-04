@@ -1083,5 +1083,10 @@
   "{count} min ago": "fyri {count} min síðan",
   "{count} on the official SMP": "{count} á almenna SMP",
   "{mode} · stopped": "{mode} · steðgað",
+  "Maximum memory": "Mesta minni",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Hvussu nógv minni Java kann brúka (-Xmx). Set tað ov lágt og spælið kann krasja.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{online} of {max}": "{online} av {max}"
 }

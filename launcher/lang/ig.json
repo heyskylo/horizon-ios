@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "{count} na SMP ọfịshịal",
   "{mode} · stopped": "{mode} · akwụsịla",
   "{online} of {max}": "{online} n'ime {max}",
+  "Maximum memory": "Ebe nchekwa kacha",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Ego ole ebe nchekwa Java nwere ike iji (-Xmx). Tọọ ya oke ala ma egwuregwu ahụ nwere ike ịdaba.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "{support} na Horizon"
 }

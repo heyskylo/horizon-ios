@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "{count} אויפֿן אָפֿיציעלן SMP",
   "{mode} · stopped": "{mode} · אָפּגעשטעלט",
   "{online} of {max}": "{online} פֿון {max}",
+  "Maximum memory": "מאַקסימום זכּרון",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "ווי פיל זכּרון Java קען נוצן (-קסמקס). שטעלן עס צו נידעריק און די שפּיל קענען קראַך.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "{support} אין Horizon"
 }

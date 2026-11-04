@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "ಅಧಿಕೃತ SMP ಯಲ್ಲಿ {count}",
   "{mode} · stopped": "{mode} · ನಿಲ್ಲಿಸಲಾಗಿದೆ",
   "{online} of {max}": "{max} ರಲ್ಲಿ {online}",
+  "Maximum memory": "ಗರಿಷ್ಠ ಮೆಮೊರಿ",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "ಎಷ್ಟು ಮೆಮೊರಿ Java ಬಳಸಬಹುದು (-Xmx). ಅದನ್ನು ತುಂಬಾ ಕಡಿಮೆ ಹೊಂದಿಸಿ ಮತ್ತು ಆಟವು ಕ್ರ್ಯಾಶ್ ಆಗಬಹುದು.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "Horizon ನಲ್ಲಿ {support}"
 }

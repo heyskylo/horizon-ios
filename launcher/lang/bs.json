@@ -1083,5 +1083,10 @@
   "{online} of {max}": "{online} od {max}",
   "{support} in Horizon": "{support} u Horizonu",
   "{value} px": "{value} px",
+  "Maximum memory": "Maksimalna memorija",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Koliko memorije Java može da koristi (-Xmx). Postavite prenisko i igra se može srušiti.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{value}%": "{value}%"
 }

@@ -1083,5 +1083,10 @@
   "{online} of {max}": "{max}-இல் {online}",
   "{support} in Horizon": "Horizon-இல் {support}",
   "{value} px": "{value} px",
+  "Maximum memory": "அதிகபட்ச நினைவகம்",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java எவ்வளவு நினைவகத்தைப் பயன்படுத்தலாம் (-Xmx). மிகக் குறைவாக அமைத்தால் கேம் செயலிழக்கலாம்.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{value}%": "{value}%"
 }

@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Seaillut rievdadusaid rievdada dan. Ii mihkkege dan máppas leat sihkkojuvvon.",
   "Its mods made for {loader} stay in its folder but won't load.": "Dan moddat mat leat dahkkon {loader} ovddas bissot dan máppas muhto eai lasta.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dan moddat mat leat dahkkon Minecraft {from} ovddas bissot dan máppas; muhtimat eai soaitte lasta {to}.",
+  "Maximum memory": "Alimus muitu",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Man ollu muittu Java sáhttá geavahit (-Xmx). Bija dan menddo allat ja speallu sáhttá gahččat.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dan máilmmit leat gádjon Minecraft {from} bokte: {to} ođasmahttá daid buorrin, ja ii sáhte rahpat daid jus lea boarráset."
 }

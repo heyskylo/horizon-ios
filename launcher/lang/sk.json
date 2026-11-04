@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Uložiť zmeny ju prepne. Z jej priečinka sa nič nezmaže.",
   "Its mods made for {loader} stay in its folder but won't load.": "Jej módy pre {loader} zostanú v jej priečinku, ale nenačítajú sa.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Jej módy pre Minecraft {from} zostanú v jej priečinku; niektoré sa v {to} možno nenačítajú.",
+  "Maximum memory": "Maximálna pamäť",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Koľko pamäte môže Java použiť (-Xmx). Nastavte ho príliš nízko a hra môže spadnúť.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Jej svety uložil Minecraft {from}: {to} ich natrvalo aktualizuje a ak je starší, nedokáže ich otvoriť."
 }

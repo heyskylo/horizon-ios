@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "„Išsaugoti pakeitimus“ jį perjungia. Iš jo aplanko niekas neištrinama.",
   "Its mods made for {loader} stay in its folder but won't load.": "Jo modai, skirti {loader}, lieka jo aplanke, bet nebus įkelti.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Jo modai, skirti Minecraft {from}, lieka jo aplanke; kai kurie gali neįsikelti {to} versijoje.",
+  "Maximum memory": "Maksimali atmintis",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Kiek atminties gali naudoti Java (-Xmx). Nustatykite jį per žemai ir žaidimas gali sugesti.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Jo pasauliai išsaugoti Minecraft {from}: {to} juos atnaujina visam laikui ir negali jų atidaryti, jei yra senesnė."
 }

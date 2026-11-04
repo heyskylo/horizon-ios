@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Spara ändringar byter den. Inget i dess mapp raderas.",
   "Its mods made for {loader} stay in its folder but won't load.": "Dess moddar för {loader} stannar i dess mapp men laddas inte.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Dess moddar för Minecraft {from} stannar i dess mapp; vissa kanske inte laddas i {to}.",
+  "Maximum memory": "Maximalt minne",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Hur mycket minne Java kan använda (-Xmx). Sätt den för lågt och spelet kan krascha.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dess världar sparades av Minecraft {from}: {to} uppgraderar dem för gott och kan inte öppna dem om den är äldre."
 }

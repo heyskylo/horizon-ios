@@ -1083,5 +1083,10 @@
   "{online} of {max}": "{max}-с {online}",
   "{support} in Horizon": "Horizon-д {support}",
   "{value} px": "{value} px",
+  "Maximum memory": "Хамгийн их санах ой",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java хэр их санах ой ашиглаж болох вэ (-Xmx). Үүнийг хэт бага тохируулбал тоглоом эвдэрч болзошгүй.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{value}%": "{value}%"
 }

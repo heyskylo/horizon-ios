@@ -1083,5 +1083,10 @@
   "{online} of {max}": "{online} / {max}",
   "{support} in Horizon": "{support} Horizon-en",
   "{value} px": "{value} px",
+  "Maximum memory": "Gehienezko memoria",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Zenbat memoria erabil dezakeen Javak (-Xmx). Ezarri baxuegia eta jokoa huts egin dezake.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{value}%": "{value}%"
 }

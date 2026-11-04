@@ -117,6 +117,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
+- **Maximum memory** (Java instances): set the Java heap limit (`-Xmx`) with the slider or
+  a value such as `4096` or `4gb`. Leave the box empty to restore the default (4096 MB).
+  Find it on Home in the classic layout, or in the instance’s Edit dialog in the glass layout.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in

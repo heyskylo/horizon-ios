@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "„Änderungen speichern“ stellt sie um. In ihrem Ordner wird nichts gelöscht.",
   "Its mods made for {loader} stay in its folder but won't load.": "Ihre Mods für {loader} bleiben in ihrem Ordner, laden aber nicht.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Ihre Mods für Minecraft {from} bleiben in ihrem Ordner; manche laden in {to} vielleicht nicht.",
+  "Maximum memory": "Maximaler Arbeitsspeicher",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Wie viel Speicher Java nutzen darf (-Xmx). Ist der Wert zu niedrig, kann das Spiel abstürzen.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Ihre Welten wurden von Minecraft {from} gespeichert: {to} aktualisiert sie endgültig und kann sie nicht öffnen, wenn es älter ist."
 }

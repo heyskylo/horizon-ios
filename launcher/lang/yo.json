@@ -1083,5 +1083,10 @@
   "{count} min ago": "iṣẹju {count} sẹyin",
   "{count} on the official SMP": "{count} lori SMP osise",
   "{mode} · stopped": "{mode} · ti duro",
+  "Maximum memory": "O pọju iranti",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Elo iranti Java le lo (-Xmx). Ṣeto rẹ kere ju ati ere le jamba.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{online} of {max}": "{online} ninu {max}"
 }

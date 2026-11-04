@@ -56,6 +56,8 @@ pub(super) enum Field {
     Wrapper,
     LaunchEnv,
     PostExit,
+    /// Home's memory row (`launch_page.rs`).
+    MemoryLimit,
     /// Settings' new offline name (`switch_page.rs`).
     OfflineName,
     DeleteServer,
@@ -64,7 +66,7 @@ pub(super) enum Field {
 }
 
 impl Field {
-    const ALL: [Field; 23] = [
+    const ALL: [Field; 24] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -85,6 +87,7 @@ impl Field {
         Field::Wrapper,
         Field::LaunchEnv,
         Field::PostExit,
+        Field::MemoryLimit,
         Field::OfflineName,
         Field::DeleteServer,
         Field::AccentHex,
@@ -1157,6 +1160,7 @@ impl Launcher {
             Field::PreLaunch | Field::Wrapper | Field::LaunchEnv | Field::PostExit => {
                 self.save_launch()
             }
+            Field::MemoryLimit => self.memory_enter(),
             Field::OfflineName => self.offline_name_enter(),
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }

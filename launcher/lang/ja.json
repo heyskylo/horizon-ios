@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "「変更を保存」で切り替わります。フォルダー内のものは何も削除されません。",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} 用の Mod はフォルダーに残りますが、読み込まれません。",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} 用の Mod はフォルダーに残ります。{to} では一部が読み込まれないかもしれません。",
+  "Maximum memory": "最大メモリ",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java が使用できるメモリ量 (-Xmx) です。低すぎるとゲームがクラッシュすることがあります。",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "ワールドは Minecraft {from} で保存されています：{to} はそれらを元に戻せない形で更新し、より古いバージョンなら開けません。"
 }

@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "Simpan perubahan akan menggantinya. Tidak ada yang dihapus dari foldernya.",
   "Its mods made for {loader} stay in its folder but won't load.": "Mod-nya untuk {loader} tetap ada di foldernya, tetapi tidak akan dimuat.",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Mod-nya untuk Minecraft {from} tetap ada di foldernya; beberapa mungkin tidak dimuat di {to}.",
+  "Maximum memory": "Memori maksimum",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Berapa banyak memori yang boleh digunakan Java (-Xmx). Menetapkannya terlalu rendah dapat menyebabkan game crash.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dunianya disimpan oleh Minecraft {from}: {to} meningkatkannya secara permanen, dan tidak bisa membukanya jika versinya lebih lama."
 }

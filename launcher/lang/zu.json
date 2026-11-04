@@ -1083,5 +1083,10 @@
   "{count} min ago": "imiz. engu-{count} edlule",
   "{count} on the official SMP": "{count} ku-SMP esemthethweni",
   "{mode} · stopped": "{mode} · imisiwe",
+  "Maximum memory": "Inkumbulo enkulu",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Ingakanani inkumbulo Java engase isetshenziswe (-Xmx). Ibeke phansi kakhulu futhi igeyimu ingaphahlazeka.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{online} of {max}": "{online} kokungu-{max}"
 }

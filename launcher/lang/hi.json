@@ -1083,5 +1083,10 @@
   "Save changes switches it. Nothing in its folder is deleted.": "बदलाव सहेजें इसे बदल देता है। इसके फ़ोल्डर से कुछ भी नहीं हटता।",
   "Its mods made for {loader} stay in its folder but won't load.": "{loader} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं, पर लोड नहीं होंगे।",
   "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं; कुछ {to} में शायद लोड न हों।",
+  "Maximum memory": "अधिकतम मेमोरी",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java कितना मेमोरी उपयोग कर सकता है (-Xmx)। इसे बहुत कम सेट करने पर गेम क्रैश हो सकता है।",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "इसकी दुनिया Minecraft {from} से सहेजी गई थीं: {to} उन्हें हमेशा के लिए अपग्रेड करता है, और पुराना हो तो उन्हें खोल नहीं सकता।"
 }

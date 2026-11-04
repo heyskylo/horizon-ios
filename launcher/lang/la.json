@@ -1083,5 +1083,10 @@
   "{count} on the official SMP": "{count} in SMP officiali",
   "{mode} · stopped": "{mode} · sistitum",
   "{online} of {max}": "{online} ex {max}",
+  "Maximum memory": "Maximum memoriae",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Quam multa memoria?Javauti (-Xmx). Pone eam nimis humilis et lusus potest fragore.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{support} in Horizon": "{support} in Horizon"
 }

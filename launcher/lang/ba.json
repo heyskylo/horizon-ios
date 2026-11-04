@@ -1083,5 +1083,10 @@
   "{count} min ago": "{count} мин элек",
   "{count} on the official SMP": "Рәсми SMP-ла {count}",
   "{mode} · stopped": "{mode} · туҡтатылған",
+  "Maximum memory": "Максималь хәтер",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "Java күпме хәтер ҡулланырға мөмкин (-Xmx). Уны бик түбән ҡуйырға һәм уйын аварияға осрауы мөмкин.",
+  "Saved: the next Play uses at most {mb} MB of Java heap.": "Saved: the next Play uses at most {mb} MB of Java heap.",
+  "Saved: the next Play uses the default Java heap size.": "Saved: the next Play uses the default Java heap size.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for the default.": "Type a number of MB like 4096, or 4gb, or leave it empty for the default.",
   "{online} of {max}": "{max} эсенән {online}"
 }
