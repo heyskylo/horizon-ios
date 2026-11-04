@@ -710,6 +710,7 @@ impl Mode {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Main => "title",
+            Self::Realms(_) => "realms",
             Self::Select { .. } => "world_select",
             Self::Create { .. } => "world_create",
             Self::CreateFlat { .. } => "world_create_flat",
@@ -2365,6 +2366,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     ),
                 ),
             ),
+            Mode::Realms(_) => ScreenInfo::new("realms", lang::get("menu.online")),
             Mode::Multiplayer(_) => return None,
         };
         Some(info)
@@ -3476,7 +3478,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.mode = Mode::Main;
                     Action::None
                 }
-                crate::realms::Outcome::Connect(address) => Action::Connect { address },
+                crate::realms::Outcome::Connect(address) => Action::Connect {
+                    address,
+                    lan: false,
+                },
                 crate::realms::Outcome::None => Action::None,
             },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
