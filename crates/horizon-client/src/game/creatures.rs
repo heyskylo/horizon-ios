@@ -2794,21 +2794,6 @@ impl Game<'_> {
                     if let Some(ty) = horizon_client::particles::ParticleType::from_name(kind) {
                         let options = horizon_client::particles::ParticleOptions::simple(ty);
                         self.particles.add(&options, at, velocity);
-                        // A serving client draws nothing on its own: the mob's
-                        // particles have to reach the clients as packets. With
-                        // count 0 the packet's deltas are the particle's motion
-                        // (`ServerLevel.sendParticles` with no spread), which is
-                        // what the event already carries.
-                        self.lan_send_particles(super::lan_particles::QueuedParticle {
-                            dimension: self.dim.id(),
-                            options,
-                            state: None,
-                            at,
-                            spread: velocity,
-                            speed: 0.1,
-                            count: 0,
-                            randomization: 0,
-                        });
                     }
                 }
                 MobEvent::ParticleColored {
