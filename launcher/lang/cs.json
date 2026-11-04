@@ -458,7 +458,9 @@
   "runs {command} after": "běží {command} po",
   "downloaded": "staženo",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Aktualizováno na {version}. Chcete-li spustit spouštěč, restartujte jej.",
+  "A new version is available": "Je k dispozici nová verze",
+  "Download again": "Stáhnout znovu",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Tato kopie spouštěče se nemůže sama nahradit. Stáhněte ji jednou znovu; potom se už aktualizuje sama.",
   "Any MCP client": "Jakýkoli klient MCP",
   "{name}'s cape is kept.": "{name} plášť je zachován.",
   "Not reviewed by the Horizon registry": "Nekontrolováno registrem Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Zkopírováno",
   "Couldn't load patch notes. {error}": "Poznámky k opravě se nepodařilo načíst. {error}",
   "Couldn't load releases. {error}": "Vydání se nepodařilo načíst. {error}",
-  "Launcher updated to {version}": "Spouštěč aktualizován na {version}",
   "Launcher {version}": "Spouštěč {version}",
   "Launcher {version}  {percent}%": "Spouštěč {version} {percent}%",
   "Manage versions": "Spravovat verze",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Něco se pokazilo.",
   "Instances": "Instance",
   "Join the Discord": "Připojte se k Discordu",
-  "Restart to update": "Pro aktualizaci restartujte",
   "Duplicate…": "Duplikovat…",
   "Create a desktop shortcut": "Vytvořte zástupce na ploše",
   "Remove the desktop shortcut": "Odeberte zástupce na ploše",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Otevřít obchod",
-  "You don't own any cosmetics yet.": "Zatím nevlastníte žádnou kosmetiku."
+  "You don't own any cosmetics yet.": "Zatím nevlastníte žádnou kosmetiku.",
+  "Claim for free": "Získat zdarma",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Platební služba obchodu ve vaší zemi nefunguje, takže si Zakladatelský set můžete vyzvednout zde zdarma.",
+  "The Founder Set is yours.": "Zakladatelský set je váš."
 }

@@ -456,7 +456,9 @@
   "runs {command} after": "nṣiṣẹ {command} lẹhin",
   "downloaded": "gbaa lati ayelujara",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Ṣe imudojuiwọn si {version}. Tun ifilọlẹ bẹrẹ lati lo.",
+  "A new version is available": "Ẹ̀dà tuntun wà",
+  "Download again": "Ṣe igbasilẹ lẹ́ẹ̀kan sí i",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Ẹ̀dà launcher yìí kò lè rọ́pò ara rẹ̀. Ṣe igbasilẹ rẹ̀ lẹ́ẹ̀kan sí i; lẹ́yìn náà yóò máa ṣe imudojuiwọn ara rẹ̀.",
   "Any MCP client": "Eyikeyi MCP onibara",
   "{name}'s cape is kept.": "Kapu {name} ti wa ni ipamọ.",
   "Not reviewed by the Horizon registry": "Ko ṣe atunyẹwo nipasẹ iforukọsilẹ Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Ti daakọ",
   "Couldn't load patch notes. {error}": "Ko le gbe awọn akọsilẹ patch silẹ. {error}",
   "Couldn't load releases. {error}": "Ko le gbe awọn idasilẹ. {error}",
-  "Launcher updated to {version}": "Ifilọlẹ ti ni imudojuiwọn si {version}",
   "Launcher {version}": "Ifilọlẹ {version}",
   "Launcher {version}  {percent}%": "Olupilẹṣẹ {version} {percent}%",
   "Manage versions": "Ṣakoso awọn ẹya",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Nkankan ti ko tọ.",
   "Instances": "Awọn apẹẹrẹ",
   "Join the Discord": "Darapọ mọ Discord",
-  "Restart to update": "Tun bẹrẹ lati ṣe imudojuiwọn",
   "Duplicate…": "Ṣe pidánpidán…",
   "Create a desktop shortcut": "Ṣẹda ọna abuja tabili kan",
   "Remove the desktop shortcut": "Yọ ọna abuja tabili kuro",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Ṣí ṣọ́ọ̀bù",
-  "You don't own any cosmetics yet.": "O ò tíì ní ohun ikunra kankan."
+  "You don't own any cosmetics yet.": "O ò tíì ní ohun ikunra kankan.",
+  "Claim for free": "Gbà á lọ́fẹ̀ẹ́",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Olùpèsè ìsanwó ṣọ́ọ̀bù kò ṣiṣẹ́ ní orílẹ̀-èdè rẹ, nítorí náà o lè gba Oludasile ṣeto níbí lọ́fẹ̀ẹ́.",
+  "The Founder Set is yours.": "Oludasile ṣeto jẹ́ tìrẹ."
 }

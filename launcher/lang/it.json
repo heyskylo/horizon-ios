@@ -458,7 +458,9 @@
   "runs {command} after": "corre {command} dopo",
   "downloaded": "scaricato",
   "24/7 online": "online 24 ore su 24, 7 giorni su 7",
-  "Updated to {version}. Restart the launcher to use it.": "Aggiornato a {version}. Riavvia il launcher per usarlo.",
+  "A new version is available": "È disponibile una nuova versione",
+  "Download again": "Scarica di nuovo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Questa copia del launcher non può sostituirsi da sola. Scaricalo di nuovo una volta; dopo si aggiorna da solo.",
   "Any MCP client": "Qualsiasi cliente MCP",
   "{name}'s cape is kept.": "Il mantello di {name} viene mantenuto.",
   "Not reviewed by the Horizon registry": "Non revisionato dal registro Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Copiato",
   "Couldn't load patch notes. {error}": "Impossibile caricare le note sulla patch. {error}",
   "Couldn't load releases. {error}": "Impossibile caricare le versioni. {error}",
-  "Launcher updated to {version}": "Launcher aggiornato a {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Lanciatore {version} {percent}%",
   "Manage versions": "Gestisci le versioni",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Qualcosa è andato storto.",
   "Instances": "Istanze",
   "Join the Discord": "Unisciti alla Discordia",
-  "Restart to update": "Riavvia per aggiornare",
   "Duplicate…": "Duplicato...",
   "Create a desktop shortcut": "Crea un collegamento sul desktop",
   "Remove the desktop shortcut": "Rimuovi il collegamento sul desktop",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Apri il negozio",
-  "You don't own any cosmetics yet.": "Non possiedi ancora nessun cosmetico."
+  "You don't own any cosmetics yet.": "Non possiedi ancora nessun cosmetico.",
+  "Claim for free": "Ottieni gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il fornitore di pagamenti del negozio non opera nel tuo paese, quindi puoi ottenere qui gratis l'Insieme del fondatore.",
+  "The Founder Set is yours.": "L'Insieme del fondatore è tuo."
 }

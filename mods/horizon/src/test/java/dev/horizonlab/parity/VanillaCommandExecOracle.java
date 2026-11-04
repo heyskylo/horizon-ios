@@ -198,6 +198,24 @@ public final class VanillaCommandExecOracle {
                             out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "weather_state" -> {
+                        // Read-only prerequisites for named weather predicates.
+                        var data = level.getWeatherData();
+                        JsonArray results = new JsonArray();
+                        for (int value : new int[] {data.isRaining() ? 1 : 0,
+                                data.isThundering() ? 1 : 0, data.getClearWeatherTime(),
+                                data.getRainTime(), data.getThunderTime()}) {
+                            JsonArray result = new JsonArray();
+                            result.add(true);
+                            result.add(value);
+                            results.add(result);
+                        }
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#weather_state " + op.get("label").getAsString());
+                        record.add("messages", new JsonArray());
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
                         messages.clear();

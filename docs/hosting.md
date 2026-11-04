@@ -46,13 +46,14 @@ Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64), in PowerShell:
+Windows (x64 or ARM64), in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+the current Horizon Nightly from GitHub (the only build Horizon ships;
 `--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
@@ -317,7 +318,9 @@ is online is kicked with the reason and the time the ban ends, and the same mess
 try to join. A player who is already banned (and whose ban has not ended) is left as they are: `pardon` first to
 change a ban. The player may be offline if the server has seen them. The console logs it as
 `[tempban] <operator> banned <player> for <duration>`, and the event stream (`GET /api/v1/events`) gets a `ban`
-event with `reason`, `by` and `until`. It is not in the command tree, so it has no completions, like `/mute`.
+event with `reason`, `by` and `until`. `tempbanlist` lists the bans that end by themselves, soonest first, with
+who banned, the time left, the end and the reason. Both are in operators' command tree (level 3 and above), so
+their clients complete them, as they do the [mute commands](chat-filter.md#muting-by-hand).
 
 To generate the world around spawn ahead of the players, Horizon has its own `pregen` command, off until
 `server.toml` has `horizon-pregen = true` under `[properties]`: `horizon-server cmd pregen start 2500`

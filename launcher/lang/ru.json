@@ -458,7 +458,9 @@
   "runs {command} after": "затем выполняет {command}",
   "downloaded": "downloaded",
   "24/7 online": "онлайн 24/7",
-  "Updated to {version}. Restart the launcher to use it.": "Обновлено до {version}. Перезапустите лаунчер, чтобы применить.",
+  "A new version is available": "Доступна новая версия",
+  "Download again": "Скачать заново",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Эта копия лаунчера не может заменить сама себя. Скачайте его заново один раз; после этого он обновляется сам.",
   "Any MCP client": "Any MCP client",
   "{name}'s cape is kept.": "Плащ {name} сохранён.",
   "Not reviewed by the Horizon registry": "Не проверено реестром Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Скопировано",
   "Couldn't load patch notes. {error}": "Не удалось загрузить список изменений. {error}",
   "Couldn't load releases. {error}": "Не удалось загрузить сборки. {error}",
-  "Launcher updated to {version}": "Лаунчер обновлён до {version}",
   "Launcher {version}": "Лаунчер {version}",
   "Launcher {version}  {percent}%": "Лаунчер {version}  {percent}%",
   "Manage versions": "Управление версиями",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Что-то пошло не так.",
   "Instances": "Сборки",
   "Join the Discord": "Вступить в Discord",
-  "Restart to update": "Перезапустить для обновления",
   "Duplicate…": "Дублировать…",
   "Create a desktop shortcut": "Создать ярлык на рабочем столе",
   "Remove the desktop shortcut": "Удалить ярлык с рабочего стола",
@@ -1117,5 +1117,8 @@
   "Move and restart": "Перенести и перезапустить",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Открыть магазин",
-  "You don't own any cosmetics yet.": "У вас пока нет косметики."
+  "You don't own any cosmetics yet.": "У вас пока нет косметики.",
+  "Claim for free": "Получить бесплатно",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Платёжный сервис магазина не работает в вашей стране, поэтому Набор основателя можно получить здесь бесплатно.",
+  "The Founder Set is yours.": "Набор основателя теперь ваш."
 }

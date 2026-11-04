@@ -458,7 +458,9 @@
   "runs {command} after": "core {command} dopo",
   "downloaded": "scaricà",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Ajornà a {version}. Riavia el lansador pa dopararlo.",
+  "A new version is available": "Ze disponibiłe na version nova",
+  "Download again": "Descarga da novo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Sta copia del launcher no ła pol sostituirse da soła. Descarghelo da novo na volta; dopo el se ajorna da soło.",
   "Any MCP client": "Ogni cliente MCP",
   "{name}'s cape is kept.": "Se mantiene el capa de {name}.",
   "Not reviewed by the Horizon registry": "Non rivisto dal registro Horizon .",
@@ -637,7 +639,6 @@
   "Copied": "Copià",
   "Couldn't load patch notes. {error}": "No se pol caricare łe note deła patch. {error}",
   "Couldn't load releases. {error}": "No se pol caricare i rilasci. {error}",
-  "Launcher updated to {version}": "Launcher ajornà a {version}",
   "Launcher {version}": "Lansador {version}",
   "Launcher {version}  {percent}%": "Lansador {version} {percent}%",
   "Manage versions": "Gestise łe version",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Qualcosa xe ndà storto.",
   "Instances": "Istanse",
   "Join the Discord": "Entra al Discord",
-  "Restart to update": "Riavia pa l’ajornamento",
   "Duplicate…": "Dopià…",
   "Create a desktop shortcut": "Crea un scorciatoia pa desktop",
   "Remove the desktop shortcut": "Cava ła scorciatoia del desktop",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Verxi el negozio",
-  "You don't own any cosmetics yet.": "Te ghè ancora nissun cosmetico."
+  "You don't own any cosmetics yet.": "Te ghè ancora nissun cosmetico.",
+  "Claim for free": "Ciapa gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "El fornidor de pagamenti del negozio no el lavora nel to paese, cussì te pol ciapar qua gratis el Set fondador.",
+  "The Founder Set is yours.": "El Set fondador el xe tuo."
 }
