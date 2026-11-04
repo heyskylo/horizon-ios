@@ -2377,6 +2377,70 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def marker_data_mutation():
+    """Marker data write-back preserves identity and modeled-entity controls (#8929)."""
+    marker = '00000000-0000-0000-0000-000000000001'
+    pig = '00000000-0000-0000-0000-000000000002'
+    objective = 'marker_result'
+    ops = setup('/forceload add 0 0 15 15', f'/scoreboard objectives add {objective} dummy')
+    ops += [cmd('/execute if loaded 0 200 0', expect_result=1),
+            cmd('/summon marker 4.5 200 4.5 {UUID:[I;0,0,0,1]}', expect_result=1),
+            cmd(f'/execute if entity {marker}', expect_result=1),
+            cmd(f'/data get entity {marker} Pos', expect_result=3),
+            cmd(f'/data get entity {marker} UUID', expect_result=4)]
+
+    def stored(command, result, success=True):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run {command}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=result),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(success))]
+
+    def names(target):
+        return (stored(f'data modify entity {target} CustomName set value "original"', 1)
+                + stored(f'data modify entity {target} CustomName set value "hello"', 1)
+                + stored(f'data get entity {target} CustomName', 5)
+                + stored(f'data modify entity {target} CustomName set value "hello"', 0, False)
+                + stored(f'data remove entity {target} CustomName', 1)
+                + stored(f'data get entity {target} CustomName', 0, False)
+                + [cmd(f'/execute if entity {target}', expect_result=1)])
+
+    ops += names(marker)
+    ops += stored(f'data modify entity {marker} Pos set value [6.25d,202d,7.75d]', 1)
+    ops += stored(f'data get entity {marker} Pos', 3)
+    ops += [cmd('/execute positioned 6.25 202 7.75 if entity '
+                '@e[type=marker,nbt={UUID:[I;0,0,0,1]},distance=..0.01]', expect_result=1)]
+    ops += stored(f'data modify entity {marker} Rotation set value [45f,-30f]', 1)
+    ops += stored(f'data get entity {marker} Rotation', 2)
+    ops += [cmd('/execute if entity @e[type=marker,nbt={UUID:[I;0,0,0,1]},'
+                'y_rotation=45,x_rotation=-30]', expect_result=1)]
+    ops += stored(f'data merge entity {marker} {{data:{{value:7,label:"plain"}}}}', 1)
+    ops += stored(f'data get entity {marker} data', 2)
+    ops += stored(f'data modify entity {marker} data.value set value 9', 1)
+    ops += stored(f'data get entity {marker} data.value', 9)
+    ops += stored(f'data remove entity {marker} data.label', 1)
+    ops += stored(f'data get entity {marker} data', 1)
+    # /tag already has a working raw-storage path; /data must join it.
+    ops += [cmd(f'/tag {marker} add control', expect_result=1)]
+    ops += stored(f'data modify entity {marker} Tags append value "mutated"', 1)
+    ops += [cmd('/execute if entity @e[type=marker,tag=mutated]', expect_result=1),
+            cmd(f'/tag {marker} list', expect_result=2)]
+    ops += stored(f'data modify entity {marker} UUID set value [I;0,0,0,99]', 1)
+    ops += stored(f'data get entity {marker} UUID', 4)
+    ops += [cmd(f'/execute if entity {marker}', expect_result=1)]
+    ops += stored('execute if entity @e[nbt={UUID:[I;0,0,0,99]}]', 0, False)
+    ops += stored(f'data modify entity {marker} id set value "minecraft:pig"', 1)
+    ops += [cmd('/execute if entity @e[type=marker,nbt={UUID:[I;0,0,0,1]}]', expect_result=1)]
+    ops += [cmd('/summon pig 10.5 200 10.5 {UUID:[I;0,0,0,2],NoAI:1b,NoGravity:1b}', expect_result=1)]
+    ops += names(pig)
+    ops += stored(f'data modify entity {pig} Pos set value [10.25d,201d,11.75d]', 1)
+    ops += stored(f'data get entity {pig} Pos', 3)
+    ops += [cmd('/execute if entity @e[type=pig]', expect_result=1),
+            cmd(f'/kill {marker}', expect_result=1), cmd(f'/kill {pig}', expect_result=1)]
+    return ops + setup(f'/scoreboard objectives remove {objective}', '/forceload remove 0 0')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2389,6 +2453,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('marker data mutation', marker_data_mutation()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),

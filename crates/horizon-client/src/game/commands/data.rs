@@ -340,12 +340,31 @@ impl Game<'_> {
                     *slot = new;
                 }
             }
+            Target::Other(id) => {
+                let uuid = self.uuid_for(id);
+                let marker = self
+                    .others
+                    .iter_mut()
+                    .find(|o| {
+                        o.id == id && matches!(o.kind.as_str(), "minecraft:marker" | "marker")
+                    })
+                    .ok_or_else(stale)?;
+                let position = entity_nbt::position(&tag).ok_or_else(stale)?;
+                let [yaw, pitch] = entity_nbt::rotation(&tag);
+                marker.position = position;
+                marker.yaw = yaw;
+                marker.pitch = pitch;
+                // Keep the existing marker identity even when the input edits UUID or id.
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+                set_key(&mut tag, "id", Tag::String(marker.kind.as_str().into()));
+            }
             _ => return Err(stale()),
         }
         if let Target::Mob(id)
         | Target::Item(id)
         | Target::Stand(id)
         | Target::Frame(id)
+        | Target::Other(id)
         | Target::Fangs(id) = t
         {
             self.persist.raw.insert(id, tag);
