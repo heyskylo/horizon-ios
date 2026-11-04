@@ -179,6 +179,18 @@ fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3]
     ]
 }
 
+/// `ClientPacketListener.handleSetEntityData`'s `Fireball.DATA_ITEM_STACK`:
+/// the item the guest draws the fireball as, through `Fireball.setItem`;
+/// a kind that is no `Fireball` has none.
+pub(super) fn remote_projectile_item(projectiles: &mut [Projectile], id: u32, stack: ItemStack) {
+    if let Some(p) = projectiles
+        .iter_mut()
+        .find(|p| p.id == id && p.kind.is_item_fireball())
+    {
+        p.set_item(stack);
+    }
+}
+
 /// `ClientPacketListener.handleProjectilePowerPacket`: the power a hurting
 /// projectile (`AbstractHurtingProjectile`) accelerates by, found by id;
 /// anything else is ignored.
@@ -503,6 +515,17 @@ impl Game<'_> {
             }
             return;
         }
+        // Fireball.DATA_ITEM_STACK: the item a fireball is drawn as.
+        if let Some(stack) = values
+            .iter()
+            .find_map(|(index, _, value)| match (index, value) {
+                (8, Value::Item(stack)) => Some(stack),
+                _ => None,
+            })
+            && let Some(stack) = self.to_stack(stack)
+        {
+            remote_projectile_item(&mut self.creatures.projectiles, id, stack);
+        }
         for (index, _, value) in values {
             if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                 // PrimedTnt.DATA_FUSE_ID.
@@ -652,6 +675,14 @@ impl Game<'_> {
             let _ = t.tick(world, collision, assets, facts, fluids, border);
             t.fuse > 0
         });
+        // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
+        // particle at (x, y + 0.5, z). The server's Level.addParticle never
+        // reaches this window.
+        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoke = ParticleOptions::simple(ParticleType::Smoke);
+        for p in smoking {
+            self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
@@ -1085,5 +1116,32 @@ mod tests {
             list.iter().map(|p| p.acceleration).collect::<Vec<_>>(),
             [0.1; 3]
         );
+    }
+
+    #[test]
+    fn a_guest_draws_a_fireball_as_the_item_the_server_sends() {
+        // `ClientPacketListener.handleSetEntityData` of
+        // Fireball.DATA_ITEM_STACK: the item `Fireball.getItem` returns, which
+        // is the fire charge the default was until the server says otherwise.
+        let mut list = vec![
+            tracked(ProjectileKind::LargeFireball { power: 1 }, 12),
+            tracked(ProjectileKind::SmallFireball, 13),
+            tracked(ProjectileKind::Snowball, 14),
+        ];
+        remote_projectile_item(&mut list, 12, ItemStack::new("minecraft:diamond", 4));
+        assert_eq!(
+            list[0].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:diamond", 1)),
+            "one of it, as `setItem` keeps"
+        );
+        // The default fire charge goes back when the server sends an empty
+        // stack, and a snowball is no `Fireball`: it has no item to set.
+        remote_projectile_item(&mut list, 13, ItemStack::new("minecraft:air", 1));
+        assert_eq!(
+            list[1].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:fire_charge", 1))
+        );
+        remote_projectile_item(&mut list, 14, ItemStack::new("minecraft:diamond", 1));
+        assert_eq!(list[2].item, None);
     }
 }
