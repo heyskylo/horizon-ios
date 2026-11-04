@@ -1678,6 +1678,9 @@ impl GraphicsUi {
             crate::widgets::widget_cursor(hovered(rect), true);
             crate::widgets::target(rect);
             let primary = target == Target::Done;
+            if primary {
+                crate::widgets::declare_action(crate::widgets::Action::Done, rect, true);
+            }
             style::button(batch, atlas, rect, &label, (hover, true, primary));
         }
     }

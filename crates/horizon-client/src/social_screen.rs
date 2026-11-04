@@ -370,9 +370,10 @@ pub fn draw(
     batch.clip_since(start, 0.0, LIST_START + 4.0, w, list_end(h));
     // `Done`.
     let [dx, dy, dw, dh] = done(w, h);
-    ui::button(
+    ui::action_button(
         batch,
         atlas,
+        crate::widgets::Action::Done,
         dx,
         dy,
         dw,

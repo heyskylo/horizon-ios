@@ -251,6 +251,7 @@ mod options;
 mod ordered_tick;
 mod packs;
 mod pad;
+mod pad_actions;
 mod pad_menu;
 mod paintings;
 mod pandas;

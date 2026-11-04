@@ -67,6 +67,11 @@ impl Confirm {
     ) {
         self.draw_active(batch, atlas, cursor, labels, true);
     }
+    /// The second button answers no, as Escape does (`widgets::Action`).
+    pub fn declare_no(&self) {
+        let (x, y) = self.buttons[1];
+        crate::widgets::declare_action(crate::widgets::Action::Cancel, [x, y, 150.0, 20.0], true);
+    }
     /// `draw` with the buttons greyed out while `setDelay` runs (`active` false).
     pub fn draw_active(
         &self,
@@ -182,6 +187,16 @@ impl Choice {
         self.buttons
             .iter()
             .position(|&(x, y)| ui::hovered(cursor, x, y, self.width, 20.0))
+    }
+    /// Button `i` answers no, as Escape does (`widgets::Action`).
+    pub fn declare_no(&self, i: usize) {
+        if let Some(&(x, y)) = self.buttons.get(i) {
+            crate::widgets::declare_action(
+                crate::widgets::Action::Cancel,
+                [x, y, self.width, 20.0],
+                true,
+            );
+        }
     }
     /// The lines and the buttons, over whatever is behind.
     pub fn draw(

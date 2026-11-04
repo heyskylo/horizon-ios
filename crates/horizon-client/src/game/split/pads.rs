@@ -268,10 +268,13 @@ impl Split<'_> {
         if !lends_output(solo, self.p1_pad.owner.is_some()) {
             self.host.pad.release_hardware();
         }
-        self.host.pad.feed = Some(self.pad_state(self.p1_pad.owner));
+        let owner = self.p1_pad.owner;
+        let state = self.pad_state(owner);
+        self.host.pad.feed_from(owner, state);
         for i in 0..self.guests.len() {
-            let state = self.pad_state(self.guests[i].pad);
-            self.guests[i].game.pad.feed = Some(state);
+            let pad = self.guests[i].pad;
+            let state = self.pad_state(pad);
+            self.guests[i].game.pad.feed_from(pad, state);
         }
         joins
     }

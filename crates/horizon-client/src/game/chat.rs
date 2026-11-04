@@ -1162,8 +1162,9 @@ impl Game<'_> {
             Text::translate("chat.copy", &[]),
             Text::translate("gui.no", &[]),
         ];
-        self.link_prompt_layout(url, (w, h))
-            .draw(batch, atlas, self.cursor, &labels);
+        let layout = self.link_prompt_layout(url, (w, h));
+        layout.declare_no(2);
+        layout.draw(batch, atlas, self.cursor, &labels);
     }
     /// The prompt's answer: the link opens on yes; either way the chat is back.
     pub(super) fn answer_link_prompt(&mut self, yes: bool) {

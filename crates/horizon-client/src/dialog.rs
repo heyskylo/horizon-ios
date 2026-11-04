@@ -639,6 +639,19 @@ impl Dialog {
             | Kind::DialogList { exit, .. } => exit.as_ref().and_then(|b| b.action.as_ref()),
         }
     }
+    /// Which of [`Self::buttons`] does what Escape does, if Escape does anything.
+    pub fn escape_button(&self) -> Option<usize> {
+        if !self.can_close_with_escape {
+            return None;
+        }
+        let last = self.buttons().len().checked_sub(1);
+        match &self.kind {
+            Kind::Notice(_) | Kind::Confirmation { .. } => last,
+            Kind::MultiAction { exit, .. }
+            | Kind::ServerLinks { exit, .. }
+            | Kind::DialogList { exit, .. } => exit.as_ref().and(last),
+        }
+    }
     /// The buttons it draws, in order: the list, then the footer's.
     pub fn buttons(&self) -> Vec<&Button> {
         match &self.kind {
@@ -855,6 +868,22 @@ mod tests {
             .unwrap()
             .click(&d.inputs, &values);
         assert_eq!(command, Some(Click::RunCommand("say p\\\"w !".into())));
+    }
+
+    #[test]
+    fn the_button_that_does_what_escape_does() {
+        let notice = |escape: i8| {
+            Dialog::parse(&Tag::compound([
+                ("type", s("notice")),
+                ("title", s("Hi")),
+                ("can_close_with_escape", Tag::Byte(escape)),
+            ]))
+            .unwrap()
+        };
+        assert_eq!(notice(1).escape_button(), Some(0));
+        assert_eq!(notice(0).escape_button(), None);
+        // Multi-action with no exit button: Escape has no button to be.
+        assert_eq!(Dialog::parse(&register()).unwrap().escape_button(), None);
     }
 
     #[test]

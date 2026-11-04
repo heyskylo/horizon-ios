@@ -204,10 +204,11 @@ pub(super) fn buttons(w: f32, h: f32, state: &State) -> Vec<Button> {
         id,
         icon: None,
         trailing: None,
+        action: None,
     };
     vec![
-        b(x, "gui.done", "Done", state.selected().is_some(), 80),
-        b(x + 158.0, "gui.cancel", "Cancel", true, 81),
+        b(x, "gui.done", "Done", state.selected().is_some(), 80).does(crate::widgets::Action::Done),
+        b(x + 158.0, "gui.cancel", "Cancel", true, 81).does(crate::widgets::Action::Cancel),
     ]
 }
 /// The screen: the menu background, the title, the search box and the rows.

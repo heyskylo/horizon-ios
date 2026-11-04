@@ -28,6 +28,8 @@ pub(super) const HELP: &[&str] = &[
 pub(super) struct Pads {
     /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
     pub(super) feed: Option<PadState>,
+    /// The pad behind `feed`.
+    feed_source: Option<PadId>,
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
@@ -70,6 +72,7 @@ struct Context {
     focus_navigation: bool,
     focused: bool,
     osk: bool,
+    dialog: bool,
     enabled: bool,
 }
 
@@ -162,8 +165,18 @@ impl Pads {
     pub(super) fn inject_button(&mut self, button: Button, down: bool) {
         self.injected.set(button, down);
     }
+    /// Splitscreen: this player's pad state, from `source`. Another pad, or
+    /// none: the old one's A going away isn't a release.
+    pub(super) fn feed_from(&mut self, source: Option<PadId>, state: PadState) {
+        if self.feed_source != source {
+            self.feed_source = source;
+            self.menu.armed = None;
+        }
+        self.feed = Some(state);
+    }
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
+        self.menu.armed = None;
         self.injected = PadState::default();
     }
 
@@ -188,6 +201,7 @@ impl Game<'_> {
             focus_navigation: self.pad_navigation_mode(),
             focused: self.focused,
             osk: self.pad.menu.osk.is_some(),
+            dialog: self.dialog_open() || self.code_of_conduct.is_some(),
             enabled: self.settings.controller.enabled,
         }
     }
@@ -307,6 +321,8 @@ impl Game<'_> {
 
     /// End held actions and captures before another context receives input.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
+        // Before the releases below: a cancelled press must not click.
+        self.pad.menu.armed = None;
         let held_sticks = [
             gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
                 != [0.0; 2],
@@ -562,6 +578,7 @@ impl Game<'_> {
                 Ok(status)
             }
             "release" => {
+                self.pad.menu.armed = None;
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))

@@ -818,7 +818,18 @@ impl Game<'_> {
         });
         let hover = ui::hovered(self.cursor, dx, dy, 200.0, 20.0) || is_focused;
         let label = Text::translate("gui.done", &[]);
-        ui::button(batch, atlas, dx, dy, 200.0, 20.0, &label, true, hover);
+        ui::action_button(
+            batch,
+            atlas,
+            horizon_client::widgets::Action::Done,
+            dx,
+            dy,
+            200.0,
+            20.0,
+            &label,
+            true,
+            hover,
+        );
     }
 
     fn draw_options_view(&self, o: &mut WorldOptions, batch: &mut HudBatch, cursor: (f32, f32)) {
@@ -887,6 +898,10 @@ impl Game<'_> {
             }
             if b == Button::Lock {
                 widgets::narratable(|| o.narration(b, [bx, by, 20.0, 20.0], tr).hovered(hover));
+                // An icon, but a button: the D-pad and Tab stop on it as on the others.
+                if active {
+                    widgets::target([bx, by, 20.0, 20.0]);
+                }
                 let lock = if o.locked { "locked" } else { "unlocked" };
                 let state = match (active, hover) {
                     (false, _) => "_disabled",
@@ -971,7 +986,22 @@ impl Game<'_> {
             let active = o.active(b);
             let is_focused = o.focused_button == Some(b);
             let hover = active && (ui::hovered(cursor, bx, by, bw, 20.0) || is_focused);
-            ui::button(batch, atlas, bx, by, bw, 20.0, &o.label(b), active, hover);
+            let action = match b {
+                Button::Apply => horizon_client::widgets::Action::Apply,
+                _ => horizon_client::widgets::Action::Cancel,
+            };
+            ui::action_button(
+                batch,
+                atlas,
+                action,
+                bx,
+                by,
+                bw,
+                20.0,
+                &o.label(b),
+                active,
+                hover,
+            );
         }
     }
 

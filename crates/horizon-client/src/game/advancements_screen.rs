@@ -518,9 +518,10 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (bx, by) = ((w / 2.0 - 100.0).floor(), h - FOOTER + 6.0);
         let hover = ui::hovered(self.cursor, bx, by, 200.0, 20.0);
-        ui::button(
+        ui::action_button(
             batch,
             atlas,
+            horizon_client::widgets::Action::Done,
             bx,
             by,
             200.0,

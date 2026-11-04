@@ -268,7 +268,16 @@ impl Game<'_> {
                 }
                 _ => Text::translate(key, &[]),
             };
-            ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            let action = match id {
+                0 => Some(horizon_client::widgets::Action::Back),
+                2 => Some(horizon_client::widgets::Action::Exit),
+                _ => None,
+            };
+            if let Some(action) = action {
+                ui::action_button(batch, atlas, action, x, y, bw, 20.0, &label, active, hover);
+            } else {
+                ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            }
             // PauseScreen's customAdditions button: CUSTOM_OPTIONS_TOOLTIP.
             if (id == 11 || id == 14) && hover {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));

@@ -351,6 +351,14 @@ impl SplitProfiles {
             if matches!(target, Target::Forget) {
                 text = text.with_color(0xFF5555);
             }
+            let action = match target {
+                Target::Keep | Target::Cancel => Some(crate::widgets::Action::Cancel),
+                Target::Back => Some(crate::widgets::Action::Back),
+                _ => None,
+            };
+            if let Some(action) = action {
+                crate::widgets::declare_action(action, [*x, *y, *bw, *bh], *enabled);
+            }
             ui::button(batch, atlas, *x, *y, *bw, *bh, &text, *enabled, hover);
             if remove {
                 crate::widgets::record(label, [*x, *y, *bw, *bh], *enabled);

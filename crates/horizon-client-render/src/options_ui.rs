@@ -3592,9 +3592,10 @@ impl OptionsUi {
                     true,
                 );
             }
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                crate::widgets::Action::Done,
                 w / 2.0 - 100.0,
                 h - 28.0,
                 200.0,
@@ -3748,9 +3749,24 @@ impl OptionsUi {
                 tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
             }
             match &wd.kind {
-                WKind::Button { label, active, .. } => {
+                WKind::Button { label, active, act } => {
                     let label = fitted.as_ref().map_or(label, |f| &f.0);
-                    ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    if matches!(act, Act::Done) {
+                        ui::action_button(
+                            batch,
+                            atlas,
+                            crate::widgets::Action::Done,
+                            wd.x,
+                            wd.y,
+                            wd.w,
+                            wd.h,
+                            label,
+                            *active,
+                            hover,
+                        );
+                    } else {
+                        ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    }
                     crate::widgets::last_narratable(|n| {
                         narrate_widget(n, s, wd, hover, list_key, framebuffer);
                     });

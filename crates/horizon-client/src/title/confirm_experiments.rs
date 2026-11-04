@@ -164,9 +164,10 @@ impl ConfirmExperimentsScreen {
                 y += 10.0;
             }
             let [(bx, by)] = footer_single(w, h);
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                crate::widgets::Action::Back,
                 bx,
                 by,
                 BUTTON,
@@ -209,6 +210,7 @@ impl ConfirmExperimentsScreen {
             ui::hovered(cursor, dx, dy, DETAILS, 20.0),
         );
         let [(px, py), (bx, by)] = footer_pair(w, h);
+        crate::widgets::declare_action(crate::widgets::Action::Back, [bx, by, BUTTON, 20.0], true);
         for (fx, fy, key) in [(px, py, "gui.proceed"), (bx, by, "gui.back")] {
             ui::button(
                 batch,

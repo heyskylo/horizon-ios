@@ -412,8 +412,9 @@ impl Game<'_> {
                 &[],
             ),
         ];
-        self.command_prompt_layout(prompt, (w, h))
-            .draw(batch, atlas, self.cursor, &labels);
+        let layout = self.command_prompt_layout(prompt, (w, h));
+        layout.declare_no(1);
+        layout.draw(batch, atlas, self.cursor, &labels);
     }
 
     /// The confirmation's answer; on no, what was behind it is back.

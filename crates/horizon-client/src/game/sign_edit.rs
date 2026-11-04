@@ -844,6 +844,11 @@ impl Game<'_> {
             horizon_client::preedit::report_caret(caret_x, ly, line_height);
         }
         let (bx, by) = done_button(w, h);
+        horizon_client::widgets::declare_action(
+            horizon_client::widgets::Action::Done,
+            [bx, by, 200.0, 20.0],
+            true,
+        );
         horizon_client::widgets::narratable(|| {
             horizon_client::widgets::Narratable::button(done_label(), [bx, by, 200.0, 20.0], true)
         });

@@ -464,6 +464,7 @@ pub(super) fn buttons(w: f32, h: f32, state: &State) -> Vec<Button> {
         id,
         icon: None,
         trailing: None,
+        action: None,
     };
     match state.page {
         Page::Layers => {
@@ -487,8 +488,10 @@ pub(super) fn buttons(w: f32, h: f32, state: &State) -> Vec<Button> {
                     true,
                     71,
                 ),
-                b(x, h - 28.0, 150.0, "gui.done", "Done", true, 72),
-                b(x + 158.0, h - 28.0, 150.0, "gui.cancel", "Cancel", true, 73),
+                b(x, h - 28.0, 150.0, "gui.done", "Done", true, 72)
+                    .does(crate::widgets::Action::Done),
+                b(x + 158.0, h - 28.0, 150.0, "gui.cancel", "Cancel", true, 73)
+                    .does(crate::widgets::Action::Cancel),
             ]
         }
         Page::Presets => vec![
@@ -509,7 +512,8 @@ pub(super) fn buttons(w: f32, h: f32, state: &State) -> Vec<Button> {
                 "Cancel",
                 true,
                 75,
-            ),
+            )
+            .does(crate::widgets::Action::Cancel),
         ],
     }
 }

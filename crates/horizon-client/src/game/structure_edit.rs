@@ -2,7 +2,9 @@
 //! mode and options, with its buttons laid out as vanilla's.
 use super::{
     Game,
-    block_editor::{Editor, Item, Outcome, Pos, cycle, on_off, valid_character_for_name},
+    block_editor::{
+        Editor, Item, Outcome, Pos, cycle, footer_action, on_off, valid_character_for_name,
+    },
 };
 use horizon_client::{
     containers::BlockEntity,
@@ -160,6 +162,7 @@ impl Editor for StructureEditor {
             w: bw,
             label: text,
             active,
+            action: footer_action(id, DONE, CANCEL),
         };
         let edit = |index: usize, x: f32, y: f32, ew: f32| Item::Edit { index, x, y, w: ew };
         let mode = b.mode;
