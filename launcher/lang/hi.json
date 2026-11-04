@@ -1086,5 +1086,10 @@
   "{count} min ago": "{count} मिनट पहले",
   "1 hour ago": "1 घंटा पहले",
   "{count} hours ago": "{count} घंटे पहले",
-  "{count} on the official SMP": "आधिकारिक SMP पर {count}"
+  "{count} on the official SMP": "आधिकारिक SMP पर {count}",
+  "What this change can't keep": "यह बदलाव क्या नहीं रख सकता",
+  "Save changes switches it. Nothing in its folder is deleted.": "बदलाव सहेजें इसे बदल देता है। इसके फ़ोल्डर से कुछ भी नहीं हटता।",
+  "Its mods made for {loader} stay in its folder but won't load.": "{loader} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं, पर लोड नहीं होंगे।",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} के लिए बने इसके मॉड इसके फ़ोल्डर में रहते हैं; कुछ {to} में शायद लोड न हों।",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "इसकी दुनिया Minecraft {from} से सहेजी गई थीं: {to} उन्हें हमेशा के लिए अपग्रेड करता है, और पुराना हो तो उन्हें खोल नहीं सकता।"
 }

@@ -1086,5 +1086,10 @@
   "{count} min ago": "πριν από {count} λεπ.",
   "1 hour ago": "πριν από 1 ώρα",
   "{count} hours ago": "πριν από {count} ώρες",
-  "{count} on the official SMP": "{count} στο επίσημο SMP"
+  "{count} on the official SMP": "{count} στο επίσημο SMP",
+  "What this change can't keep": "Τι δεν μπορεί να κρατήσει αυτή η αλλαγή",
+  "Save changes switches it. Nothing in its folder is deleted.": "Η Αποθήκευση αλλαγών την εφαρμόζει. Τίποτα στον φάκελό της δεν διαγράφεται.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Τα mods της για {loader} μένουν στον φάκελό της, αλλά δεν θα φορτώνονται.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Τα mods της για Minecraft {from} μένουν στον φάκελό της· κάποια ίσως δεν φορτώνουν στο {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Οι κόσμοι της αποθηκεύτηκαν από το Minecraft {from}: το {to} τους αναβαθμίζει οριστικά και δεν μπορεί να τους ανοίξει αν είναι παλαιότερο."
 }

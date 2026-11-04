@@ -1086,5 +1086,10 @@
   "{count} min ago": "قبل {count} دقيقة",
   "1 hour ago": "قبل ساعة",
   "{count} hours ago": "قبل {count} ساعة",
-  "{count} on the official SMP": "{count} على خادم SMP الرسمي"
+  "{count} on the official SMP": "{count} على خادم SMP الرسمي",
+  "What this change can't keep": "ما لا يمكن لهذا التغيير الاحتفاظ به",
+  "Save changes switches it. Nothing in its folder is deleted.": "«حفظ التغييرات» يطبّق التبديل. لا يُحذف شيء من مجلده.",
+  "Its mods made for {loader} stay in its folder but won't load.": "تبقى إضافاته المصنوعة لـ {loader} في مجلده لكنها لن تعمل.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "تبقى إضافاته المصنوعة لـ Minecraft {from} في مجلده؛ قد لا يعمل بعضها في {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "حُفظت عوالمه بـ Minecraft {from}: يرقّيها {to} نهائيًا، ولا يستطيع فتحها إن كان أقدم."
 }

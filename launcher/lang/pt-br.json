@@ -1086,5 +1086,10 @@
   "{count} min ago": "há {count} min",
   "1 hour ago": "há 1 hora",
   "{count} hours ago": "há {count} horas",
-  "{count} on the official SMP": "{count} no SMP oficial"
+  "{count} on the official SMP": "{count} no SMP oficial",
+  "What this change can't keep": "O que esta mudança não consegue manter",
+  "Save changes switches it. Nothing in its folder is deleted.": "Salvar alterações faz a troca. Nada na pasta dela é apagado.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Os mods dela feitos para {loader} ficam na pasta dela, mas não serão carregados.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Os mods dela feitos para Minecraft {from} ficam na pasta dela; alguns podem não carregar no {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Os mundos dela foram salvos pelo Minecraft {from}: o {to} os atualiza para sempre e não consegue abri-los se for mais antigo."
 }

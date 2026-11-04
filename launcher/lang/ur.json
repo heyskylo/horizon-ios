@@ -1086,5 +1086,10 @@
   "{count} min ago": "{count} منٹ پہلے",
   "1 hour ago": "1 گھنٹہ پہلے",
   "{count} hours ago": "{count} گھنٹے پہلے",
-  "{count} on the official SMP": "سرکاری SMP پر {count}"
+  "{count} on the official SMP": "سرکاری SMP پر {count}",
+  "What this change can't keep": "یہ تبدیلی کیا برقرار نہیں رکھ سکتی",
+  "Save changes switches it. Nothing in its folder is deleted.": "تبدیلیاں محفوظ کریں اسے بدل دیتا ہے۔ اس کے فولڈر سے کچھ حذف نہیں ہوتا۔",
+  "Its mods made for {loader} stay in its folder but won't load.": "{loader} کے لیے بنے اس کے موڈ اس کے فولڈر میں رہتے ہیں لیکن لوڈ نہیں ہوں گے۔",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} کے لیے بنے اس کے موڈ اس کے فولڈر میں رہتے ہیں؛ کچھ شاید {to} میں لوڈ نہ ہوں۔",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "اس کی دنیائیں Minecraft {from} نے محفوظ کیں: {to} انہیں ہمیشہ کے لیے اپ گریڈ کرتا ہے، اور اگر پرانا ہو تو انہیں کھول نہیں سکتا۔"
 }
