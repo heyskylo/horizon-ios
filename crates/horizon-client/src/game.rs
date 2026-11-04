@@ -431,6 +431,7 @@ use horizon_world::{
     },
     registry::BlockStateId,
 };
+pub use machines::native_fluids::NativeFluidTank;
 pub use maps::{NativeMapDecoration, NativeMapInfo};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
@@ -8643,7 +8644,16 @@ impl Game<'_> {
         hud_layout::paint(batch, &self.gui.atlas, &draws);
         self.native_item_decorations(stack, x, y, batch);
     }
+    /// Profile resolution and atlas uploads belong to the frame, independent
+    /// of HUD visibility or a native hook cancelling an optional widget.
+    fn advance_skin_frame(&mut self) {
+        if self.title.is_none() {
+            self.flush_skin_slots();
+            self.update_remote_skins();
+        }
+    }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
+        self.advance_skin_frame();
         // The pack prompt replaces the connecting screen (setScreen), but
         // in game it opens over the world.
         let mut batch = if (self.server_packs.prompt.is_some()
@@ -8695,10 +8705,6 @@ impl Game<'_> {
             return batch;
         }
         if self.screen == Screen::Options {
-            if self.title.is_none() {
-                self.flush_skin_slots();
-                self.update_remote_skins();
-            }
             self.draw_options(&mut batch);
             self.fire_screen_render_post(&mut batch);
             self.draw_split_hud(&mut batch, true);
@@ -14273,6 +14279,9 @@ impl Game<'_> {
     /// `left` or right arm with its skin at pose `m`, in its rest pose
     /// turned 0.1 radians outwards.
     fn first_person_arm(&self, left: bool, m: glam::Mat4, light: u32, out: &mut Vec<Vertex>) {
+        if let Some(model) = &self.player_model {
+            self.request_avatar_skin(model, true);
+        }
         let slim = self.player_model.as_ref().is_some_and(|m| m.slim);
         let Some(arm) = self.res.player_arm(slim, left).as_ref() else {
             return;
@@ -14297,7 +14306,16 @@ impl Game<'_> {
             pose[5] = if p.name == arm.name { z_rot } else { 0.0 };
             pose
         };
+        let start = out.len();
         horizon_client::mobs::render_model(arm, m, &pose, [r.u0, r.v0, r.u1, r.v1], light, 0, out);
+        if out.len() > start
+            && let Some(skin) = self
+                .player_model
+                .as_ref()
+                .and_then(|model| model.skin.as_deref())
+        {
+            self.mark_skin_used(skin);
+        }
     }
     /// FirstPersonHandsAndItemsRenderer: the right arm or the held items of
     /// both hands in view space, converted to camera-relative world space,
@@ -19155,6 +19173,14 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
+        // A Realm's address came back (GetServerDetailsTask hands over to ConnectScreen).
+        if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
+            && let Err(error) = self.title_action(event_loop, action)
+        {
+            self.error = Some(error);
+            event_loop.exit();
+            return;
+        }
         horizon_client::spans::time("server_packs", || self.tick_server_packs());
         horizon_client::spans::time("control", || self.poll_control(event_loop));
         if !self.splitscreen.guest && !self.options.split_guest {
@@ -19891,6 +19917,9 @@ impl GameCpuResources {
 
 /// The data the background loader produces for `Game::new`.
 struct Loaded {
+    /// Finite startup ownership: retained through the frame-thread handoff,
+    /// never stored in the running Game.
+    home_access: Option<horizon_client::import::HomeAccess>,
     game_cpu: Option<GameCpuResources>,
     renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
     root: PathBuf,
@@ -20641,6 +20670,34 @@ fn gameplay_tables(
 /// the launch opens, whose data is preloaded meanwhile.
 #[allow(clippy::too_many_arguments)]
 fn load_resources(
+    root: PathBuf,
+    launch_world: Option<&str>,
+    vanilla_root: &std::path::Path,
+    settings: &Settings,
+    started: Instant,
+    menu: bool,
+    headless: bool,
+    progress: &Progress,
+    publish: &mut dyn FnMut(UiResources, &std::path::Path),
+) -> Result<Loaded> {
+    load_resources_with_access(
+        root,
+        launch_world,
+        vanilla_root,
+        settings,
+        started,
+        menu,
+        headless,
+        progress,
+        None,
+        publish,
+    )
+}
+
+/// The asynchronous generation carries its home ownership through detached
+/// reads and the eventual UI handoff. The synchronous entry above keeps its API.
+#[allow(clippy::too_many_arguments)]
+fn load_resources_with_access(
     mut root: PathBuf,
     launch_world: Option<&str>,
     vanilla_root: &std::path::Path,
@@ -20649,6 +20706,7 @@ fn load_resources(
     menu: bool,
     headless: bool,
     progress: &Progress,
+    home_access: Option<horizon_client::import::HomeAccess>,
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
     let threads = settings.horizon.worker_threads();
@@ -20796,6 +20854,7 @@ fn load_resources(
     // shapes already hold their faces, not a second load of the same tables.
     let visibility = pack.context.tables.visibility.clone();
     let rest_loader = if menu {
+        let home_access = home_access.clone();
         let resources = resources.clone();
         let root = root.clone();
         let vanilla_root = vanilla_root.to_owned();
@@ -20828,7 +20887,7 @@ fn load_resources(
                     "Horizon: rest-ready after {} ms",
                     started.elapsed().as_millis()
                 );
-                world_loading::write_prepared_files(vanilla_root);
+                world_loading::write_prepared_files(vanilla_root, home_access);
                 Ok(())
             })?;
         Some(WorldRestLoader {
@@ -20885,6 +20944,7 @@ fn load_resources(
         (None, None)
     };
     Ok(Loaded {
+        home_access,
         game_cpu,
         renderer_cpu,
         root,
@@ -21818,6 +21878,7 @@ impl Loading {
             &mut self.airplay,
             horizon_airplay::screen(true, false),
         );
+        self.poll_menu_realms(event_loop);
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
@@ -21874,6 +21935,9 @@ impl Loading {
         }
     }
     fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+        // This token was acquired by the worker. Keeping it here does not
+        // block the frame thread and covers the final filesystem readers.
+        let _home_access = loaded.home_access;
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();

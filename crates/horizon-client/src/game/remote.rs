@@ -167,25 +167,35 @@ fn hurt_sound_for(
         })
 }
 
-/// Position of the entity a `ClientboundSoundEntityPacket` names, if this level
-/// has it and `EntityBoundSoundInstance.canPlaySound` (`!entity.isSilent()`)
-/// holds. The local player is not a tracked entity; removed ids leave the
-/// tracked table.
-fn entity_position(
+/// The live entity a bound sound names; absence means that object was removed.
+fn entity_sound_state(
     id: i32,
-    player: Option<(i32, [f64; 3])>,
+    player: Option<(i32, [f64; 3], bool)>,
     mobs: &[Mob],
     tracked: &HashMap<i32, Tracked>,
-) -> Option<[f64; 3]> {
-    if let Some((player_id, at)) = player
+) -> Option<horizon_client::sound_engine::SoundEntityState> {
+    use horizon_client::sound_engine::SoundEntityState;
+    if let Some((player_id, position, silent)) = player
         && player_id == id
     {
-        return Some(at);
+        return Some(SoundEntityState {
+            position,
+            silent,
+            removed: false,
+        });
     }
     if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
-        return (!m.silent).then_some([m.position.x, m.position.y, m.position.z]);
+        return Some(SoundEntityState {
+            position: [m.position.x, m.position.y, m.position.z],
+            silent: m.silent,
+            removed: m.removed,
+        });
     }
-    tracked.get(&id).map(|t| t.position)
+    tracked.get(&id).map(|t| SoundEntityState {
+        position: t.position,
+        silent: t.silent,
+        removed: false,
+    })
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -248,6 +258,7 @@ struct Tracked {
     player_name: Option<String>,
     kind: String,
     position: [f64; 3],
+    silent: bool,
 }
 /// `Entity.getScoreboardName`: player profiles use their name; every other
 /// entity uses its UUID. Display names and tab-list visibility do not change it.
@@ -569,6 +580,7 @@ pub(super) struct Remote {
     pub(super) logged_in: bool,
     status: String,
     pub(super) entity_id: i32,
+    local_entity_silent: bool,
     /// `Minecraft.cameraEntity` when the server put the view on another
     /// entity (ClientboundSetCameraPacket); None while it is the player.
     pub(super) camera: Option<i32>,
@@ -844,14 +856,28 @@ impl Game<'_> {
             }),
         }
     }
-    /// Position of an entity `ClientboundSoundEntityPacket` names.
-    fn remote_entity_position(&self, id: i32) -> Option<[f64; 3]> {
+    pub(super) fn remote_sound_entity_state(
+        &self,
+        id: i32,
+    ) -> Option<horizon_client::sound_engine::SoundEntityState> {
         let r = self.remote.as_ref()?;
-        let player = self
-            .player
-            .as_ref()
-            .map(|p| (r.entity_id, [p.position.x, p.position.y, p.position.z]));
-        entity_position(id, player, &self.mobs, &r.entities)
+        let player = self.player.as_ref().map(|p| {
+            (
+                r.entity_id,
+                [p.position.x, p.position.y, p.position.z],
+                r.local_entity_silent,
+            )
+        });
+        let mut state = entity_sound_state(id, player, &self.mobs, &r.entities)?;
+        // Vehicles, projectiles and other simulated objects may have moved since
+        // the last tracking packet, just as the mob interpolation has.
+        if let Some(position) = self
+            .level_entity(id)
+            .and_then(|target| self.target_position(target))
+        {
+            state.position = position;
+        }
+        Some(state)
     }
     /// The hurt sound the hurt player's own client plays from
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
@@ -1103,6 +1129,7 @@ impl Game<'_> {
             reconfiguring: None,
             logged_in: false,
             entity_id: 0,
+            local_entity_silent: false,
             camera: None,
             use_item: None,
             dimension: DimensionType::vanilla("minecraft:overworld"),
@@ -2712,6 +2739,7 @@ impl Game<'_> {
                         .flatten(),
                     kind: kind.to_owned(),
                     position,
+                    silent: false,
                 },
             );
         }
@@ -2972,6 +3000,7 @@ impl Game<'_> {
         self.turn_remote_projectile(id, rotation);
     }
     fn remove_entity(&mut self, id: i32) {
+        self.audio.remove_sound_entity(id as u32);
         // Entity.setRemoved detaches every passenger, even when no empty
         // SetPassengers packet preceded the vehicle's removal. Otherwise
         // mobs and other players keep their passenger pose after it is gone.
@@ -3262,6 +3291,7 @@ impl Game<'_> {
                     r.online_mode = p.online_mode;
                     r.enforces_secure_chat = p.enforces_secure_chat;
                     r.entity_id = p.player_id;
+                    r.local_entity_silent = false;
                     // handleLogin: the new LocalPlayer is the camera.
                     r.camera = None;
                     r.logged_in = true;
@@ -3289,6 +3319,9 @@ impl Game<'_> {
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
+                if let Some(r) = self.remote.as_ref() {
+                    self.audio.remove_sound_entity(r.entity_id as u32);
+                }
                 // A new player, without effects (the server sends them
                 // again) and with no item in use.
                 self.potions.effects.clear();
@@ -3309,6 +3342,7 @@ impl Game<'_> {
                     if let Some(r) = self.remote.as_mut() {
                         r.own_invisible = false;
                         r.own_on_fire = false;
+                        r.local_entity_silent = false;
                     }
                 }
                 let dimension_changed = self.dim != Dim::from_id(&p.spawn.dimension);
@@ -3447,30 +3481,29 @@ impl Game<'_> {
                     }
                 }
             }
-            // shortcut: vanilla's `EntityBoundSoundInstance` re-reads the entity's position
-            // every tick and stops with it, so the sound follows the entity; a play at the
-            // packet's arrival does not. Upgrade when the sound engine has a generic
-            // entity-bound instance (its tickable ones are one per mob kind, e.g. `Ticking::Bee`).
             C::SoundEntity(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && let Some(at) = self.remote_entity_position(p.id)
+                    && let Some(state) = self.remote_sound_entity_state(p.id)
                 {
-                    match usize::try_from(p.source)
+                    let source = usize::try_from(p.source)
                         .ok()
                         .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
-                    {
-                        Some(source) => {
-                            self.audio
-                                .play_on(source, &name, Some(at), p.volume, p.pitch)
-                        }
-                        None => self.audio.play(&name, Some(at), p.volume, p.pitch),
-                    }
+                        .unwrap_or_else(|| horizon_client::settings::sound_source(&name));
+                    let entity = horizon_client::sound_engine::SoundEntity::new(
+                        p.id as u32,
+                        state.position,
+                        state.silent,
+                    );
+                    entity.update(state);
+                    self.audio
+                        .play_entity_seeded(&name, source, p.volume, p.pitch, p.seed, entity);
                 }
             }
             C::StopSound(p) => self
                 .audio
                 .stop_sounds(p.sound.as_deref(), p.source.map(|s| s as usize)),
             C::AddEntity(p) => {
+                self.audio.remove_sound_entity(p.id as u32);
                 let kind = self
                     .remote
                     .as_ref()
@@ -3687,6 +3720,18 @@ impl Game<'_> {
                 }
             }
             C::SetEntityData(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    for (index, _, value) in &p.values {
+                        if let (4, Value::Bool(silent)) = (index, value) {
+                            if p.id == r.entity_id {
+                                r.local_entity_silent = *silent;
+                            }
+                            if let Some(t) = r.entities.get_mut(&p.id) {
+                                t.silent = *silent;
+                            }
+                        }
+                    }
+                }
                 // Entity.DATA_SHARED_FLAGS_ID, DATA_CUSTOM_NAME and
                 // DATA_CUSTOM_NAME_VISIBLE: server NPCs and holograms rely on
                 // these instead of saved NBT.
@@ -5242,7 +5287,6 @@ impl Game<'_> {
     pub(super) fn remote_tab_players(
         &mut self,
     ) -> Option<(Vec<horizon_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
-        self.update_remote_skins();
         let mut players: Vec<_> = {
             let r = self.remote.as_ref()?;
             r.listed
@@ -5380,6 +5424,42 @@ impl Game<'_> {
         Some(model)
     }
 
+    fn mannequin_textures(
+        &self,
+        profile: Option<&horizon_protocol::entity_data::Profile>,
+    ) -> horizon_client::skins::Textures {
+        let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
+        if let Some(t) = t {
+            let signature = if t.signature.is_some() {
+                horizon_client::skins::Signature::Signed
+            } else {
+                horizon_client::skins::Signature::Unsigned
+            };
+            horizon_client::skins::unpack(&t.value, signature, &horizon_client::skins::TEXTURE_URIS)
+        } else {
+            // `ResolvableProfile.resolveProfile`: no `textures` and
+            // only a name or an id resolves through the services.
+            let key = profile.and_then(|p| match (&p.name, p.uuid) {
+                (Some(name), None) => Some(horizon_client::skins::NameOrId::Name(name.clone())),
+                (None, Some(id)) => Some(horizon_client::skins::NameOrId::Id(id)),
+                _ => None,
+            });
+            key.and_then(|key| match self.skin_profiles.borrow_mut().state(&key) {
+                horizon_client::skins::Resolve::Done(Some(profile)) => {
+                    profile.textures().map(|(value, signature)| {
+                        horizon_client::skins::unpack(
+                            &value,
+                            signature,
+                            &horizon_client::skins::TEXTURE_URIS,
+                        )
+                    })
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+        }
+    }
+
     pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
@@ -5459,9 +5539,11 @@ impl Game<'_> {
             && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
         {
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
-                self.store_skin(OFFLINE.into(), rgba.clone());
+            let mut downloads = self.skin_downloads.borrow_mut();
+            if downloads.image(OFFLINE).is_none() {
+                downloads.remember_image(OFFLINE, rgba);
             }
+            drop(downloads);
             if *is_slim {
                 slim.insert(local);
             }
@@ -5472,9 +5554,11 @@ impl Game<'_> {
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
-            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
-                self.store_skin(OFFLINE.into(), rgba.to_vec());
+            let mut downloads = self.skin_downloads.borrow_mut();
+            if downloads.image(OFFLINE).is_none() {
+                downloads.remember_image(OFFLINE, rgba);
             }
+            drop(downloads);
             capes.insert(local, OFFLINE.into());
         }
         // PlayerInfo.getSkin: the downloaded skin and its model, else the
@@ -5509,10 +5593,10 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let (skin, is_slim) = self.drawn_skin(uuid, skin_of(&skins, uuid));
+            let (skin, is_slim) = self.ready_skin(uuid, skin_of(&skins, uuid));
             let kind = self.mobs[i].kind.clone();
             let skin_3d = self.skin_3d_model(&kind, &skin, is_slim);
-            let cape = capes.get(&uuid).filter(|c| self.again_skin(c)).cloned();
+            let cape = capes.get(&uuid).cloned();
             let mob = &mut self.mobs[i];
             mob.skin = Some(skin);
             mob.slim = is_slim;
@@ -5520,12 +5604,11 @@ impl Game<'_> {
             mob.cape = cape;
         }
         if self.player_model.is_some() {
-            let (skin, is_slim) = self.drawn_skin(own, skin_of(&skins, own));
+            let (skin, is_slim) = self.ready_skin(own, skin_of(&skins, own));
             // Avatar.isModelPartShown(CAPE): the Skin Customization option.
             let cape = capes
                 .get(&own)
                 .filter(|_| self.settings.file.bool("modelPart_cape"))
-                .filter(|c| self.again_skin(c))
                 .cloned();
             let kind = self.player_model.as_ref().map(|m| m.kind.clone());
             let skin_3d = kind
@@ -5545,46 +5628,7 @@ impl Game<'_> {
             .mobs
             .iter()
             .filter(|m| &*m.kind.id == "minecraft:mannequin" && m.profile.is_some())
-            .map(|m| {
-                let profile = m.profile.as_ref();
-                let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
-                let textures = if let Some(t) = t {
-                    let signature = if t.signature.is_some() {
-                        horizon_client::skins::Signature::Signed
-                    } else {
-                        horizon_client::skins::Signature::Unsigned
-                    };
-                    horizon_client::skins::unpack(
-                        &t.value,
-                        signature,
-                        &horizon_client::skins::TEXTURE_URIS,
-                    )
-                } else {
-                    // `ResolvableProfile.resolveProfile`: no `textures` and
-                    // only a name or an id resolves through the services.
-                    let key = profile.and_then(|p| match (&p.name, p.uuid) {
-                        (Some(name), None) => {
-                            Some(horizon_client::skins::NameOrId::Name(name.clone()))
-                        }
-                        (None, Some(id)) => Some(horizon_client::skins::NameOrId::Id(id)),
-                        _ => None,
-                    });
-                    key.and_then(|key| match self.skin_profiles.borrow_mut().state(&key) {
-                        horizon_client::skins::Resolve::Done(Some(profile)) => {
-                            profile.textures().map(|(value, signature)| {
-                                horizon_client::skins::unpack(
-                                    &value,
-                                    signature,
-                                    &horizon_client::skins::TEXTURE_URIS,
-                                )
-                            })
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_default()
-                };
-                (m.id, textures)
-            })
+            .map(|m| (m.id, self.mannequin_textures(m.profile.as_ref())))
             .collect();
         let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::new();
         for (id, textures) in mannequins {
@@ -5598,7 +5642,7 @@ impl Game<'_> {
             resolved.push((id, skin, slim));
         }
         for (id, skin, slim) in resolved {
-            let skin = skin.filter(|s| !s.starts_with("skins/") || self.again_skin(s));
+            let skin = skin.filter(|s| !s.starts_with("skins/") || self.skin_available(s));
             if let Some(mob) = self
                 .mobs
                 .iter_mut()
@@ -5646,10 +5690,67 @@ impl Game<'_> {
         }
         self.gui.atlas.sprites.insert(location, rect);
     }
+    fn skin_available(&self, location: &str) -> bool {
+        self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location)
+    }
+    /// Updating a level model is not drawing it. Offscreen profiles neither
+    /// pin atlas slots nor refill the upload queue ahead of visible players.
+    fn ready_skin(&self, uuid: u128, (skin, slim): (String, bool)) -> (String, bool) {
+        if (skin.starts_with("skins/") || skin == "horizon/offline_skin")
+            && !self.skin_available(&skin)
+        {
+            let fallback = horizon_client::tab_list::default_skin(uuid);
+            return (fallback.to_owned(), fallback.contains("/slim/"));
+        }
+        (skin, slim)
+    }
+    fn request_skin(&self, location: &str) {
+        if !self.skin_available(location) {
+            self.skin_downloads.borrow_mut().again(location);
+        }
+    }
+    /// The visible avatar is about to submit geometry. Its wanted skin may
+    /// still be the fallback on the model until this upload reaches the atlas.
+    pub(super) fn request_avatar_skin(&self, mob: &horizon_client::mobs::Mob, local: bool) {
+        if let Some(remote) = &self.remote {
+            let profile = if local {
+                Some(remote.profile)
+            } else {
+                remote.level_players.get(&(mob.id as i32)).copied()
+            };
+            if let Some(wanted) = profile.and_then(|id| remote.skins.get(&id)) {
+                self.request_skin(wanted);
+            }
+        }
+        if &*mob.kind.id == "minecraft:mannequin" {
+            let textures = self.mannequin_textures(mob.profile.as_ref());
+            let skin = horizon_client::skins::lookup(&textures, false, |kind, url| {
+                self.skin_downloads.borrow_mut().state(kind, url)
+            });
+            if let Some(skin) = skin {
+                self.request_skin(&skin);
+            }
+        }
+        if let Some(cape) = &mob.cape {
+            self.request_skin(cape);
+        }
+    }
+    /// Called for actual geometry/face references, even when posed geometry
+    /// is cached. Model readiness alone must not keep an atlas slot alive.
+    pub(super) fn mark_skin_used(&self, location: &str) {
+        if (location.starts_with("skins/")
+            || location.starts_with("capes/")
+            || location.starts_with("patch/")
+            || location == "horizon/offline_skin")
+            && self.skin_available(location)
+        {
+            self.skin_downloads.borrow_mut().drawn(location);
+        }
+    }
     /// Whether a downloaded skin or cape is in the atlas to draw, marking it
     /// drawn; if not (new, or its slot taken), its image is queued for upload
     /// again and it is drawn from the next frame.
-    fn again_skin(&mut self, location: &str) -> bool {
+    fn again_skin(&self, location: &str) -> bool {
         let mut downloads = self.skin_downloads.borrow_mut();
         // A slot without its sprite (the atlas was rebuilt, or the upload
         // never happened) counts as missing, so the skin is stored again.
@@ -11487,29 +11588,61 @@ mod tests {
                 player_name: None,
                 kind: "minecraft:cow".to_owned(),
                 position: [8.5, 64.0, -3.5],
+                silent: false,
             },
         );
-        let player = Some((2, [0.5, 70.0, 0.5]));
+        let player = Some((2, [0.5, 70.0, 0.5], false));
         assert_eq!(
-            super::entity_position(2, player, &[], &tracked),
+            super::entity_sound_state(2, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             Some([0.5, 70.0, 0.5]),
             "the local player is named by Remote.entity_id"
         );
         assert_eq!(
-            super::entity_position(7, player, &[], &tracked),
+            super::entity_sound_state(7, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             Some([8.5, 64.0, -3.5]),
             "another entity the server spawned"
         );
         assert_eq!(
-            super::entity_position(9, player, &[], &tracked),
+            super::entity_sound_state(9, player, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             None,
             "getEntity is null: handleSoundEntityEvent returns"
         );
         assert_eq!(
-            super::entity_position(2, None, &[], &tracked),
+            super::entity_sound_state(2, None, &[], &tracked)
+                .filter(|s| !s.silent)
+                .map(|s| s.position),
             None,
             "a player with no position yet"
         );
+    }
+    #[test]
+    fn a_sound_entity_retains_silence_for_players_and_non_mob_targets() {
+        use std::collections::HashMap;
+        let mut tracked = HashMap::new();
+        tracked.insert(
+            7,
+            super::Tracked {
+                uuid: 7,
+                player_name: None,
+                kind: "minecraft:arrow".to_owned(),
+                position: [8.5, 64.0, -3.5],
+                silent: true,
+            },
+        );
+        let state = super::entity_sound_state(7, None, &[], &tracked).unwrap();
+        assert!(state.silent);
+        assert!(!state.removed);
+        assert_eq!(state.position, [8.5, 64.0, -3.5]);
+        let player =
+            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), &[], &tracked).unwrap();
+        assert!(player.silent);
+        assert!(super::entity_sound_state(9, None, &[], &tracked).is_none());
     }
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW
     /// drops the stack, so the player's hand swings, as `LivingEntity.drop`
@@ -11689,6 +11822,7 @@ mod tests {
             player_name: Some("OtherProfile".into()),
             kind: "minecraft:player".into(),
             position: [0.0; 3],
+            silent: false,
         };
         // PlayerInfoRemove (e.g. an NPC removed from the tab list) must not
         // change the immutable profile of an entity still in the level.

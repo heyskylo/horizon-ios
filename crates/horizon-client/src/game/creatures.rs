@@ -6885,7 +6885,11 @@ impl Game<'_> {
 
     pub(super) fn mob_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
         let atlas = &self.gui.atlas;
-        let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let lookup = |name: &str| {
+            let rect = atlas.sprites.get(name)?;
+            self.mark_skin_used(name);
+            Some([rect.u0, rect.v0, rect.u1, rect.v1])
+        };
         let scale = self.view_scale();
         self.rendered_mobs.set(0);
         let skinning = self.skinning();
@@ -6956,6 +6960,11 @@ impl Game<'_> {
                     continue;
                 }
             }
+            let skin_jobs = self.skin_frame.borrow().mark().0;
+            self.skin_downloads.borrow_mut().begin_draw();
+            if is_player || &*mob.kind.id == "minecraft:mannequin" {
+                self.request_avatar_skin(mob, false);
+            }
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
@@ -7003,16 +7012,25 @@ impl Game<'_> {
                 !is_player && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
             };
             if modded {
+                if let Some(skin) = &mob.skin {
+                    self.mark_skin_used(skin);
+                }
                 if let Some(rgb) = outline {
                     self.mark_outline(&out[entity_start..], rgb);
                     if mob.invisible {
+                        let submitted = out.len() > entity_start
+                            || self.skin_frame.borrow().mark().0 > skin_jobs;
                         out.truncate(entity_start);
+                        self.skin_downloads.borrow_mut().finish_draw(submitted);
                         continue;
                     }
                 }
                 if outline.is_none() {
                     self.cull_entity_vertices(out, entity_start);
                 }
+                self.skin_downloads.borrow_mut().finish_draw(
+                    out.len() > entity_start || self.skin_frame.borrow().mark().0 > skin_jobs,
+                );
                 continue;
             }
             if mob.species() == Species::SulfurCube
@@ -7154,7 +7172,10 @@ impl Game<'_> {
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
                 if mob.invisible {
+                    let submitted =
+                        out.len() > entity_start || self.skin_frame.borrow().mark().0 > skin_jobs;
                     out.truncate(entity_start);
+                    self.skin_downloads.borrow_mut().finish_draw(submitted);
                     continue;
                 }
             }
@@ -7186,6 +7207,9 @@ impl Game<'_> {
                     out,
                 );
             }
+            self.skin_downloads.borrow_mut().finish_draw(
+                out.len() > entity_start || self.skin_frame.borrow().mark().0 > skin_jobs,
+            );
         }
         // What follows isn't a tracked mob: close the last one's span.
         self.mark_motion(out.len(), 0);

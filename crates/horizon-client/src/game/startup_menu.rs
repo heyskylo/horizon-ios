@@ -363,6 +363,13 @@ pub(super) fn spawn_loader(
         .name("resource-loader".into())
         .spawn(move || {
             let load = || {
+                // A detached tail and the Loaded handoff retain clones of this
+                // same transaction; neither reacquires a lock on the UI thread.
+                let home_access = if import_home.is_dir() {
+                    Some(horizon_client::import::acquire_home_access(&import_home)?)
+                } else {
+                    None
+                };
                 let mut pack_error = None;
                 let root = packs::startup_root(&vanilla_root, &settings.resource_packs, &[])
                     .unwrap_or_else(|error| {
@@ -370,7 +377,7 @@ pub(super) fn spawn_loader(
                         vanilla_root.clone()
                     });
                 let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
-                load_resources(
+                load_resources_with_access(
                     root,
                     world.as_deref(),
                     &vanilla_root,
@@ -379,6 +386,7 @@ pub(super) fn spawn_loader(
                     true,
                     false,
                     &progress,
+                    home_access,
                     &mut |gui, root| {
                         let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
                     },
@@ -388,15 +396,7 @@ pub(super) fn spawn_loader(
                     loaded
                 })
             };
-            // Imports can arrive over HTTP as well as the native launcher. Keep
-            // initialization on one resource generation without blocking UIKit.
-            // An external-resource start need not create an unused import home.
-            let result = if import_home.is_dir() {
-                horizon_client::import::with_home_access(&import_home, load)
-            } else {
-                load()
-            }
-            .map_err(|error| error.to_string());
+            let result = load().map_err(|error| error.to_string());
             let _ = sender.send(LoaderMsg::Done(result));
         })?;
     Ok((receiver, handle))
@@ -695,6 +695,18 @@ impl Loading {
             right,
         );
         self.menu_option_events(events);
+    }
+
+    /// The Realms screen's join, once its address came back: queued like a click on a server.
+    pub(super) fn poll_menu_realms(&mut self, event_loop: &dyn EventLoopCtl) {
+        if let Some(action) = self
+            .menu
+            .title
+            .as_mut()
+            .and_then(Title::take_connect_request)
+        {
+            self.menu_action(event_loop, action);
+        }
     }
 
     fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {

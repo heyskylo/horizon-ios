@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "Pokretač se zatvara dok se podaci kopiraju i provjeravaju, a zatim se ponovno otvara. Stare mape ostaju sačuvane i zauzimaju prostor na disku dok ne provjerite je li premještanje uspjelo i sami ih izbrišete.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Otvori trgovinu",
-  "You don't own any cosmetics yet.": "Još nemaš nijednu kozmetiku."
+  "You don't own any cosmetics yet.": "Još nemaš nijednu kozmetiku.",
+  "Claim for free": "Preuzmi besplatno",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Pružatelj plaćanja trgovine ne posluje u vašoj zemlji, pa Osnivački set možete preuzeti ovdje besplatno.",
+  "The Founder Set is yours.": "Osnivački set je vaš."
 }

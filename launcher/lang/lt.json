@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Atidaryti parduotuvę",
-  "You don't own any cosmetics yet.": "Dar neturite kosmetikos."
+  "You don't own any cosmetics yet.": "Dar neturite kosmetikos.",
+  "Claim for free": "Gauti nemokamai",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Parduotuvės mokėjimų paslaugos jūsų šalyje neveikia, todėl Steigėjų rinkinį čia galite gauti nemokamai.",
+  "The Founder Set is yours.": "Steigėjų rinkinys jūsų."
 }

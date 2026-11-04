@@ -235,11 +235,15 @@ pub enum Resolve {
 /// background threads.
 pub struct Resolver {
     entries: std::collections::HashMap<NameOrId, Entry>,
-    done: std::sync::mpsc::Receiver<(NameOrId, Option<ResolvedProfile>)>,
-    send: std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>,
+    done: std::sync::mpsc::Receiver<ProfileCompletion>,
+    send: std::sync::mpsc::Sender<ProfileCompletion>,
     last_sweep: std::time::Instant,
+    next_request: u64,
 }
+type ProfileCompletion = (NameOrId, u64, Option<ResolvedProfile>);
 struct Entry {
+    /// The fetch that owns this entry, even if this key was evicted and requested again.
+    request: u64,
     touched: std::time::Instant,
     /// `None` while the fetch is in flight.
     resolved: Option<Option<ResolvedProfile>>,
@@ -305,6 +309,7 @@ impl Resolver {
             done,
             send,
             last_sweep: std::time::Instant::now(),
+            next_request: 0,
         }
     }
     /// `CacheBuilder.expireAfterAccess` with `maximumSize`.
@@ -327,14 +332,16 @@ impl Resolver {
     }
     /// How the resolution of `key` stands, starting it the first time.
     pub fn state(&mut self, key: &NameOrId) -> Resolve {
-        while let Ok((key, resolved)) = self.done.try_recv() {
-            self.entries.insert(
-                key,
-                Entry {
-                    touched: std::time::Instant::now(),
-                    resolved: Some(resolved),
-                },
-            );
+        while let Ok((key, request, resolved)) = self.done.try_recv() {
+            // A cache eviction does not stop its worker. Only the fetch that
+            // owns the current entry may settle it; an old answer must neither
+            // replace a newer profile nor bring an evicted entry back.
+            if let Some(entry) = self.entries.get_mut(&key)
+                && entry.request == request
+            {
+                entry.touched = std::time::Instant::now();
+                entry.resolved = Some(resolved);
+            }
         }
         self.sweep();
         if let Some(entry) = self.entries.get_mut(key) {
@@ -347,9 +354,12 @@ impl Resolver {
         // `fetchByName` refuses an invalid name without a fetch; like every
         // other empty answer that is the cached result.
         let resolved = matches!(key, NameOrId::Name(name) if !valid_player_name(name));
+        self.next_request = self.next_request.wrapping_add(1);
+        let request = self.next_request;
         self.entries.insert(
             key.clone(),
             Entry {
+                request,
                 touched: std::time::Instant::now(),
                 resolved: resolved.then_some(None),
             },
@@ -362,7 +372,7 @@ impl Resolver {
             let resolved = crate::auth::discovery()
                 .ok()
                 .and_then(|doc| resolve_profile(&key, &doc));
-            let _ = send.send((key, resolved));
+            let _ = send.send((key, request, resolved));
         });
         Resolve::Pending
     }
@@ -808,6 +818,10 @@ pub struct Downloader {
     image_order: std::collections::VecDeque<String>,
     /// Skins and capes drawn from the atlas since `take_drawn`.
     drawn: std::collections::HashSet<String>,
+    /// References of the entity currently being built, committed only if its
+    /// CPU/GPU geometry survives culling. Reused between entities.
+    draw_scope: Option<Vec<String>>,
+    draw_scratch: Vec<String>,
     /// The resource packs' root, where a profile's `texture` patch is read.
     resource_root: std::path::PathBuf,
     /// How each `patch/` texture of the resource packs loaded, by location.
@@ -840,6 +854,8 @@ impl Downloader {
             images: Default::default(),
             image_order: Default::default(),
             drawn: Default::default(),
+            draw_scope: None,
+            draw_scratch: Vec::new(),
             resource_root: Default::default(),
             resources: Default::default(),
         }
@@ -847,10 +863,25 @@ impl Downloader {
     /// The resource packs changed (or were first loaded) at `root`: patch
     /// textures load again from there.
     pub fn set_resource_root(&mut self, root: std::path::PathBuf) {
-        for location in std::mem::take(&mut self.resources).into_keys() {
-            self.images.remove(&location);
-            self.image_order.retain(|l| *l != location);
+        let removed: std::collections::HashSet<_> =
+            std::mem::take(&mut self.resources).into_keys().collect();
+        for location in &removed {
+            self.images.remove(location);
         }
+        self.image_order
+            .retain(|location| !removed.contains(location));
+        // A completed old-pack texture may still be waiting for its atlas
+        // upload. Leaving it queued would register the old pixels in the new
+        // atlas, whose presence then prevents the new pack from being read.
+        self.ready
+            .retain(|(location, _)| !removed.contains(location));
+        self.queued.retain(|location| !removed.contains(location));
+        self.drawn.retain(|location| !removed.contains(location));
+        if let Some(scope) = &mut self.draw_scope {
+            scope.retain(|location| !removed.contains(location));
+        }
+        self.draw_scratch
+            .retain(|location| !removed.contains(location));
         self.resource_root = root;
     }
     /// `ClientAsset.ResourceTexture`: loads `<namespace>:textures/<path>.png`
@@ -941,14 +972,16 @@ impl Downloader {
     /// its image for upload again, from memory or the disk cache.
     pub fn again(&mut self, location: &str) -> bool {
         if self.queued.contains(location) {
+            self.prioritize(location);
             return true;
         }
-        if location.starts_with("patch/") {
+        if location == "horizon/offline_skin" || location.starts_with("patch/") {
             let Some(image) = self.images.get(location).cloned() else {
                 self.resources.remove(location);
                 return false;
             };
             self.queue(location.to_owned(), image);
+            self.prioritize(location);
             return true;
         }
         let (kind, digest) = if let Some(digest) = location.strip_prefix("skins/") {
@@ -969,7 +1002,18 @@ impl Downloader {
             return false;
         };
         self.queue(location.to_owned(), image);
+        self.prioritize(location);
         true
+    }
+    /// A texture requested for an actual draw goes ahead of unrelated
+    /// completed downloads; the atlas keeps its existing frame pin budget.
+    fn prioritize(&mut self, location: &str) {
+        if let Some(at) = self.ready.iter().position(|(name, _)| name == location)
+            && at != 0
+        {
+            let ready = self.ready.remove(at);
+            self.ready.insert(0, ready);
+        }
     }
     /// Skins and capes that finished since the last call: texture id and 64x64 RGBA.
     pub fn take_ready(&mut self) -> Vec<(String, Vec<u8>)> {
@@ -980,8 +1024,31 @@ impl Downloader {
     }
     /// A skin or cape in the atlas drawn this frame: `SkinSlots` keeps its slot.
     pub fn drawn(&mut self, location: &str) {
-        if !self.drawn.contains(location) {
+        if self.drawn.contains(location) {
+            return;
+        }
+        if let Some(scope) = &mut self.draw_scope {
+            if !scope.iter().any(|name| name == location) {
+                scope.push(location.to_owned());
+            }
+        } else {
             self.drawn.insert(location.to_owned());
+        }
+    }
+    /// Capture texture references while an entity's geometry is built.
+    pub fn begin_draw(&mut self) {
+        debug_assert!(self.draw_scope.is_none());
+        self.draw_scope = Some(std::mem::take(&mut self.draw_scratch));
+    }
+    /// A culled entity must not pin its body, cape or head-item textures.
+    pub fn finish_draw(&mut self, submitted: bool) {
+        if let Some(mut scope) = self.draw_scope.take() {
+            if submitted {
+                self.drawn.extend(scope.drain(..));
+            } else {
+                scope.clear();
+            }
+            self.draw_scratch = scope;
         }
     }
     /// The skins and capes drawn since the last call.
@@ -1237,6 +1304,207 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_completions_only_settle_their_current_request() {
+        use super::{Entry, NameOrId, Resolve, ResolvedProfile, Resolver};
+        let key = NameOrId::Name("NPC".into());
+        let profile = |value: &str| ResolvedProfile {
+            id: 1,
+            name: "NPC".into(),
+            properties: vec![("textures".into(), value.into(), None)],
+        };
+        let mut cache = Resolver::new();
+        let now = std::time::Instant::now();
+        cache.entries.insert(
+            key.clone(),
+            Entry {
+                request: 1,
+                touched: now - super::PROFILE_TTL,
+                resolved: None,
+            },
+        );
+        cache.last_sweep = now - std::time::Duration::from_secs(31);
+        cache.sweep();
+        assert!(
+            !cache.entries.contains_key(&key),
+            "the first fetch was evicted"
+        );
+        // The same profile was requested again before the first fetch ended.
+        cache.entries.insert(
+            key.clone(),
+            Entry {
+                request: 2,
+                touched: now,
+                resolved: None,
+            },
+        );
+        cache
+            .send
+            .send((key.clone(), 1, Some(profile("old"))))
+            .unwrap();
+        assert!(matches!(cache.state(&key), Resolve::Pending));
+        cache
+            .send
+            .send((key.clone(), 2, Some(profile("new"))))
+            .unwrap();
+        let Resolve::Done(Some(current)) = cache.state(&key) else {
+            panic!("the current worker must resolve its profile");
+        };
+        assert_eq!(current.properties[0].1, "new");
+        // A late old completion must not roll a ready newer skin back either.
+        cache
+            .send
+            .send((key.clone(), 1, Some(profile("old"))))
+            .unwrap();
+        let Resolve::Done(Some(current)) = cache.state(&key) else {
+            panic!("the current resolved profile must stay ready");
+        };
+        assert_eq!(current.properties[0].1, "new");
+    }
+
+    #[test]
+    fn profile_completions_keep_capacity_evictions_and_current_negative_results() {
+        use super::{Entry, NameOrId, Resolve, Resolver};
+        let key = NameOrId::Id(7);
+        let mut cache = Resolver::new();
+        let now = std::time::Instant::now();
+        cache.entries.insert(
+            key.clone(),
+            Entry {
+                request: 1,
+                touched: now - std::time::Duration::from_secs(1),
+                resolved: None,
+            },
+        );
+        for id in 100..100 + super::MAX_PROFILES {
+            cache.entries.insert(
+                NameOrId::Id(id as u128),
+                Entry {
+                    request: 1,
+                    touched: now,
+                    resolved: Some(None),
+                },
+            );
+        }
+        cache.last_sweep = now - std::time::Duration::from_secs(31);
+        cache.sweep();
+        assert_eq!(cache.entries.len(), super::MAX_PROFILES);
+        assert!(!cache.entries.contains_key(&key));
+        cache.entries.insert(
+            key.clone(),
+            Entry {
+                request: 2,
+                touched: now,
+                resolved: None,
+            },
+        );
+        cache.send.send((key.clone(), 1, None)).unwrap();
+        assert!(matches!(cache.state(&key), Resolve::Pending));
+        cache.send.send((key.clone(), 2, None)).unwrap();
+        assert!(matches!(cache.state(&key), Resolve::Done(None)));
+        // A genuine missing-profile answer remains cached, as before; this
+        // repair does not introduce a new per-frame network retry policy.
+        assert!(matches!(cache.state(&key), Resolve::Done(None)));
+    }
+
+    #[test]
+    fn profile_completions_do_not_revive_evicted_entries() {
+        use super::{Entry, NameOrId, Resolve, Resolver};
+        let key = NameOrId::Id(7);
+        let mut cache = Resolver::new();
+        cache.entries.insert(
+            key.clone(),
+            Entry {
+                request: 1,
+                touched: std::time::Instant::now(),
+                resolved: None,
+            },
+        );
+        cache.entries.remove(&key);
+        cache.send.send((key.clone(), 1, None)).unwrap();
+        // An unrelated invalid-name lookup drains completions without HTTP.
+        assert!(matches!(
+            cache.state(&NameOrId::Name("invalid name".into())),
+            Resolve::Done(None)
+        ));
+        assert!(!cache.entries.contains_key(&key));
+    }
+
+    #[test]
+    fn changing_resource_roots_cannot_upload_old_patch_pixels() {
+        use super::{Downloader, patch_skin};
+        use std::collections::HashMap;
+        let root = std::env::temp_dir().join(format!(
+            "horizon-skin-root-generation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let old = root.join("old");
+        let new = root.join("new");
+        let write = |pack: &std::path::Path, name: &str, colour: [u8; 4]| {
+            let file = pack.join(format!("assets/server/textures/entity/{name}.png"));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 64, 64);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder
+                    .write_header()
+                    .unwrap()
+                    .write_image_data(&colour.repeat(64 * 64))
+                    .unwrap();
+            }
+            std::fs::write(file, bytes).unwrap();
+        };
+        write(&old, "npc", [255, 0, 0, 255]);
+        write(&old, "other", [255, 0, 0, 255]);
+        write(&new, "npc", [0, 0, 255, 255]);
+        let patch = "patch/server/entity/npc";
+        let other = "patch/server/entity/other";
+        let mut downloads = Downloader::new(root.join("url-cache"));
+        downloads.set_resource_root(old);
+        assert!(patch_skin("server:entity/npc", &mut downloads, |_| false).is_none());
+        assert!(patch_skin("server:entity/other", &mut downloads, |_| false).is_none());
+        downloads.queue("skins/url".into(), vec![11]);
+        downloads.queue("horizon/offline_skin".into(), vec![22]);
+        downloads.drawn(patch);
+        downloads.drawn("skins/url");
+        downloads.drawn("horizon/offline_skin");
+        downloads.begin_draw();
+        downloads.drawn(other);
+        downloads.set_resource_root(new);
+        downloads.finish_draw(true);
+        let kept = downloads.take_drawn();
+        assert!(!kept.contains(patch) && !kept.contains(other));
+        assert!(kept.contains("skins/url") && kept.contains("horizon/offline_skin"));
+        // The atlas has just been rebuilt. Old queued red pixels must not
+        // register a sprite that would bypass reading the new pack below.
+        let mut atlas: HashMap<_, _> = downloads.take_ready().into_iter().collect();
+        assert!(!atlas.contains_key(patch) && !atlas.contains_key(other));
+        assert_eq!(atlas["skins/url"], vec![11]);
+        assert_eq!(atlas["horizon/offline_skin"], vec![22]);
+        assert!(
+            patch_skin("server:entity/npc", &mut downloads, |name| atlas
+                .contains_key(name))
+            .is_none()
+        );
+        atlas.extend(downloads.take_ready());
+        assert_eq!(&atlas[patch][..4], &[0, 0, 255, 255]);
+        assert_eq!(&downloads.image(patch).unwrap()[..4], &[0, 0, 255, 255]);
+        assert_eq!(
+            patch_skin("server:entity/npc", &mut downloads, |name| atlas
+                .contains_key(name))
+            .as_deref(),
+            Some(patch)
+        );
+        assert!(downloads.take_drawn().contains(patch));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A profile's `texture` names a pack texture, never a file outside the
     /// packs: bad characters and `..` segments draw nothing.
     #[test]

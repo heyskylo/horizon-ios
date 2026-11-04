@@ -807,9 +807,8 @@ impl Game<'_> {
     /// objective.
     pub(super) fn draw_tab_list(&mut self, batch: &mut HudBatch) {
         use horizon_client::tab_list::{self, TabInputs};
-        // Player heads and the player list both draw from the same skin
-        // slots: a new frame, with what the last one drew.
-        self.flush_skin_slots();
+        // Skin preparation ran before the frame's optional HUD widgets.
+        // This layer may be cancelled without stopping NPC skin progress.
         let key = self.screen == super::Screen::Playing
             && self.keys.contains(&winit::keyboard::KeyCode::Tab);
         let (mut players, online_mode, upside_down) = match self.remote_tab_players() {

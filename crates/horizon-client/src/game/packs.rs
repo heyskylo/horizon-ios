@@ -293,20 +293,23 @@ impl Game<'_> {
         let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
         let import_home = horizon_client::import::home();
         self.pack_reload = Some(PackReload::spawn(kind, move |progress| {
-            let stage = || {
-                stage_pack(
-                    &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context,
-                    unicode, japanese, progress,
+            let home_access = if import_home.is_dir() {
+                Some(
+                    horizon_client::import::acquire_home_access(&import_home)
+                        .map_err(|error| error.to_string())?,
                 )
-            };
-            // The CPU stage reads the base tree before applying it on the frame
-            // thread; do not let an importer replace that tree halfway through.
-            let result = if import_home.is_dir() {
-                horizon_client::import::with_home_access(&import_home, stage)
             } else {
-                stage()
+                None
             };
-            result.map_err(|e| e.to_string())
+            let mut staged = stage_pack(
+                &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context, unicode,
+                japanese, progress,
+            )
+            .map_err(|error| error.to_string())?;
+            // The frame-thread application still reads metadata from this
+            // generation. Transfer ownership instead of acquiring there.
+            staged.home_access = home_access;
+            Ok(staged)
         })?);
         Ok(())
     }
@@ -357,6 +360,7 @@ impl Game<'_> {
     /// the swap (`ReloadInstance`'s application listeners).
     pub(super) fn apply_staged_pack(&mut self, staged: StagedPack) -> horizon_client::Result<()> {
         let StagedPack {
+            home_access: _home_access,
             root,
             gui,
             pack,
@@ -582,6 +586,7 @@ pub(super) fn stage_pack(
     let block_entity_shapes = res.block_entity_render().shapes_for(&root);
     progress.set(3);
     Ok(StagedPack {
+        home_access: None,
         root,
         gui,
         pack,
@@ -597,6 +602,8 @@ pub(super) fn stage_pack(
 /// Everything a pack reload builds on the CPU (`apply_staged_pack` finishes
 /// it on the render thread).
 pub(super) struct StagedPack {
+    /// Acquired on the CPU worker, released after application or discard.
+    home_access: Option<horizon_client::import::HomeAccess>,
     pub root: PathBuf,
     pub gui: UiResources,
     pub pack: PackResources,

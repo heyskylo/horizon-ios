@@ -21,7 +21,7 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
+    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak},
 };
 use zip::{CompressionMethod, ZipArchive, write::SimpleFileOptions, write::ZipWriter};
 
@@ -35,15 +35,46 @@ const MAX_PACKED: u64 = 2 << 30;
 const MAX_UNPACKED: u64 = 4 << 30;
 const MAX_ENTRIES: usize = 50_000;
 
-/// Serialize imports, recovery, and resource-read stages for one existing game
-/// home. Canonical paths make different aliases of the same home share a gate;
-/// unrelated homes remain independent. This coordinates threads in this process,
-/// not another process writing the same files.
+#[derive(Debug, Default)]
+struct HomeGate {
+    busy: Mutex<bool>,
+    ready: Condvar,
+}
+
+#[derive(Debug)]
+struct HomeTransaction {
+    gate: Arc<HomeGate>,
+}
+
+impl Drop for HomeTransaction {
+    fn drop(&mut self) {
+        *self
+            .gate
+            .busy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        self.gate.ready.notify_one();
+    }
+}
+
+/// Owned access to one resource generation. Cloning extends the same
+/// transaction across worker tails or handoff objects; only dropping its last
+/// clone releases the home. A clone does not acquire another transaction.
+#[derive(Clone, Debug)]
+pub struct HomeAccess {
+    _transaction: Arc<HomeTransaction>,
+}
+
+/// Acquire access to one existing game home. This waits on the calling thread:
+/// callers must acquire on a worker, not the UI thread. The owned token can then
+/// be moved or cloned to other threads without keeping a borrowed mutex guard.
 ///
-/// The operation runs on the caller's thread and must not call `install`,
-/// `recover`, or this function again for the same home: the gate is not reentrant.
-pub fn with_home_access<T>(home: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-    type HomeGates = Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>;
+/// Canonical aliases share a gate; different homes remain independent. This
+/// coordinates only this process. It is not reentrant: while holding a token,
+/// clone it instead of calling `acquire_home_access`, `with_home_access`,
+/// `install`, or `recover` for that home again.
+pub fn acquire_home_access(home: &Path) -> Result<HomeAccess> {
+    type HomeGates = Mutex<BTreeMap<PathBuf, Weak<HomeGate>>>;
     static GATES: OnceLock<HomeGates> = OnceLock::new();
     let home = fs::canonicalize(home)?;
     let gate = {
@@ -51,19 +82,37 @@ pub fn with_home_access<T>(home: &Path, operation: impl FnOnce() -> Result<T>) -
             .get_or_init(Default::default)
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        // Do not retain every home ever imported: waiting/active operations own
-        // the strong references needed to keep a particular gate alive.
+        // Active transactions and their waiters retain a home. Do not retain
+        // every home that was ever used after its operations have all ended.
         gates.retain(|_, gate| gate.strong_count() != 0);
         match gates.get(&home).and_then(Weak::upgrade) {
             Some(gate) => gate,
             None => {
-                let gate = Arc::new(Mutex::new(()));
+                let gate = Arc::new(HomeGate::default());
                 gates.insert(home, Arc::downgrade(&gate));
                 gate
             }
         }
     };
-    let _access = gate.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut busy = gate.busy.lock().unwrap_or_else(PoisonError::into_inner);
+    while *busy {
+        busy = gate
+            .ready
+            .wait(busy)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    *busy = true;
+    drop(busy);
+    Ok(HomeAccess {
+        _transaction: Arc::new(HomeTransaction { gate }),
+    })
+}
+
+/// Run a synchronous operation while holding the home's transaction. Detached
+/// workers must instead acquire and retain `HomeAccess` until all their reads
+/// and any result handoff have finished.
+pub fn with_home_access<T>(home: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _access = acquire_home_access(home)?;
     operation()
 }
 
@@ -900,6 +949,155 @@ mod tests {
             "complete"
         );
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn detached_and_handoff_clones_keep_import_and_recovery_waiting_until_last_drop() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let home = temp_home("owned-transaction-handoff");
+        fs::create_dir_all(home.join("resources")).unwrap();
+        fs::write(home.join("resources/horizon-resources.json"), "old").unwrap();
+        fs::write(home.join("resources/payload.txt"), "old payload").unwrap();
+        let archive = home.join("new.zip");
+        write_archive(
+            &archive,
+            &[
+                ("horizon-resources.json", "new"),
+                ("payload.txt", "new payload"),
+            ],
+        );
+        let pack = Pack::open(&archive).unwrap();
+        let original = acquire_home_access(&home).unwrap();
+        let handoff = original.clone();
+        let detached_access = original.clone();
+        drop(original);
+        let (tail_started, tail_started_rx) = mpsc::channel();
+        let (finish_tail, finish_tail_rx) = mpsc::channel();
+        let tail_home = home.clone();
+        let tail = std::thread::spawn(move || {
+            let _access = detached_access;
+            tail_started.send(()).unwrap();
+            finish_tail_rx.recv().unwrap();
+            fs::read_to_string(tail_home.join("resources/payload.txt")).unwrap()
+        });
+        tail_started_rx.recv().unwrap();
+        let (writer_started, writer_started_rx) = mpsc::channel();
+        let (written, written_rx) = mpsc::channel();
+        let writer_home = home.clone();
+        let writer = std::thread::spawn(move || {
+            writer_started.send(()).unwrap();
+            written
+                .send(pack.install(&writer_home).map_err(|e| e.to_string()))
+                .unwrap();
+        });
+        let (recovery_started, recovery_started_rx) = mpsc::channel();
+        let (recovered, recovered_rx) = mpsc::channel();
+        let recovery_home = home.clone();
+        let recovery = std::thread::spawn(move || {
+            recovery_started.send(()).unwrap();
+            recovered
+                .send(recover(&recovery_home).map_err(|e| e.to_string()))
+                .unwrap();
+        });
+        writer_started_rx.recv().unwrap();
+        recovery_started_rx.recv().unwrap();
+        let writer_during_tail = written_rx.recv_timeout(Duration::from_millis(50));
+        let recovery_during_tail = recovered_rx.recv_timeout(Duration::from_millis(50));
+        finish_tail.send(()).unwrap();
+        let observed = tail.join().unwrap();
+        let writer_during_handoff = written_rx.recv_timeout(Duration::from_millis(50));
+        let recovery_during_handoff = recovered_rx.recv_timeout(Duration::from_millis(50));
+        drop(handoff);
+        for blocked in [
+            writer_during_tail.map(|_| ()),
+            recovery_during_tail.map(|_| ()),
+            writer_during_handoff.map(|_| ()),
+            recovery_during_handoff.map(|_| ()),
+        ] {
+            assert!(
+                matches!(blocked, Err(mpsc::RecvTimeoutError::Timeout)),
+                "an operation escaped a live transaction clone"
+            );
+        }
+        assert_eq!(observed, "old payload");
+        assert_eq!(
+            written_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap()
+                .kind,
+            Kind::Resources
+        );
+        assert_eq!(
+            recovered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        writer.join().unwrap();
+        recovery.join().unwrap();
+        assert_eq!(
+            fs::read_to_string(home.join("resources/horizon-resources.json")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("resources/payload.txt")).unwrap(),
+            "new payload"
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn owned_home_access_releases_waiting_imports_on_error_and_unwind() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for panic in [false, true] {
+            let home = temp_home(&format!("owned-transaction-error-{panic}"));
+            let archive = home.join("new.zip");
+            write_archive(&archive, &[("horizon-resources.json", "new")]);
+            let pack = Pack::open(&archive).unwrap();
+            let access = acquire_home_access(&home).unwrap();
+            let (started, started_rx) = mpsc::channel();
+            let (finished, finished_rx) = mpsc::channel();
+            let writer_home = home.clone();
+            let writer = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                finished
+                    .send(pack.install(&writer_home).map_err(|e| e.to_string()))
+                    .unwrap();
+            });
+            started_rx.recv().unwrap();
+            let blocked = finished_rx.recv_timeout(Duration::from_millis(50));
+            let outcome = std::panic::catch_unwind(move || -> Result<()> {
+                let _access = access;
+                if panic {
+                    panic!("resource stage failed");
+                }
+                Err("resource stage failed".into())
+            });
+            assert!(matches!(blocked, Err(mpsc::RecvTimeoutError::Timeout)));
+            match outcome {
+                Err(_) => assert!(panic),
+                Ok(Err(_)) => assert!(!panic),
+                Ok(Ok(())) => panic!("the stage unexpectedly succeeded"),
+            }
+            assert_eq!(
+                finished_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap()
+                    .kind,
+                Kind::Resources
+            );
+            writer.join().unwrap();
+            assert_eq!(
+                fs::read_to_string(home.join("resources/horizon-resources.json")).unwrap(),
+                "new"
+            );
+            fs::remove_dir_all(home).unwrap();
+        }
     }
 
     #[test]

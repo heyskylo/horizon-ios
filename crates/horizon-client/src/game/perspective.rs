@@ -632,6 +632,7 @@ impl Game<'_> {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
+        self.request_avatar_skin(m, true);
         let eye = self
             .player
             .as_ref()
@@ -640,7 +641,11 @@ impl Game<'_> {
         let light = self.world.light(probe[0], probe[1], probe[2]);
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
         let atlas = &self.gui.atlas;
-        let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let lookup = |name: &str| {
+            let rect = atlas.sprites.get(name)?;
+            self.mark_skin_used(name);
+            Some([rect.u0, rect.v0, rect.u1, rect.v1])
+        };
         let start = out.len();
         let body = self.own_body_visible();
         // `native_player_submit`: a native mod's own model for this player,
@@ -652,6 +657,11 @@ impl Game<'_> {
             local: true,
         };
         if body && self.mod_player_geometry(m, who, alpha as f32, camera, packed, out) {
+            if out.len() > start
+                && let Some(skin) = &m.skin
+            {
+                self.mark_skin_used(skin);
+            }
             return;
         }
         // A spectator still draws its own model in third person: the poses'
@@ -750,6 +760,7 @@ impl Game<'_> {
         {
             return;
         }
+        self.request_avatar_skin(m, true);
         let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
         let x_angle = ((cx - self.cursor.0) / 40.0).atan();
         let y_angle = ((cy - self.cursor.1) / 40.0).atan();
@@ -769,7 +780,11 @@ impl Game<'_> {
         m.previous = m.position;
         let camera = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
         let atlas = &self.gui.atlas;
-        let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let lookup = |name: &str| {
+            let rect = atlas.sprites.get(name)?;
+            self.mark_skin_used(name);
+            Some([rect.u0, rect.v0, rect.u1, rect.v1])
+        };
         let mut verts = Vec::new();
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
@@ -959,6 +974,14 @@ impl Game<'_> {
             overlay,
             out,
         );
+        if out.len() > start
+            && let Some(cape) = cape
+            && sprites
+                .get(cape)
+                .is_some_and(|candidate| std::ptr::eq(candidate, rect))
+        {
+            self.mark_skin_used(cape);
+        }
         // The elytra texture's OptiFine emissive overlay (not a cape's), full bright.
         let glow = cape
             .and_then(|c| sprites.get(c))
@@ -1023,6 +1046,7 @@ impl Game<'_> {
         if layers.is_some_and(|k| k.contains_key("humanoid")) {
             base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.053125, 0.06875));
         }
+        let start = out.len();
         horizon_client::mobs::render::cape(
             m,
             partial,
@@ -1032,6 +1056,11 @@ impl Game<'_> {
             self.res.mob_data(),
             out,
         );
+        if out.len() > start
+            && let Some(cape) = &m.cape
+        {
+            self.mark_skin_used(cape);
+        }
     }
     /// `Deadmau5EarsLayer` (`AbstractClientPlayer.showExtraEars`): the ears
     /// of a player whose profile name is `deadmau5`, in the player's skin.
@@ -1057,6 +1086,7 @@ impl Game<'_> {
         else {
             return;
         };
+        let start = out.len();
         horizon_client::mobs::render::ears(
             m,
             partial,
@@ -1066,6 +1096,11 @@ impl Game<'_> {
             self.res.mob_data(),
             out,
         );
+        if out.len() > start
+            && let Some(skin) = &m.skin
+        {
+            self.mark_skin_used(skin);
+        }
     }
     /// The entity id the local player has on its server.
     fn own_entity_id(&self) -> i32 {

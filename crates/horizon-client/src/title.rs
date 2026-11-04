@@ -332,6 +332,7 @@ pub enum Mode {
         alert: Option<Alert>,
     },
     Multiplayer(crate::multiplayer::Screen),
+    Realms(crate::realms::Screen),
     /// SafetyScreen: the warning before the first Multiplayer click, with its
     /// "Do not show this screen again" box.
     MultiplayerWarning {
@@ -445,6 +446,8 @@ pub struct Title {
     erase_check: Cell<[f32; 4]>,
     /// The folder to open next, once that backup has finished.
     open_request: Option<String>,
+    /// A Realm's checked address, once the Realms screen's join came back.
+    connect_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
     toast: Option<(crate::toasts::Slide, WorldToast)>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
@@ -741,6 +744,7 @@ impl Mode {
         match self {
             Self::Main => "title",
             Self::Account => "account",
+            Self::Realms(_) => "realms",
             Self::Select { .. } => "world_select",
             Self::Create { .. } => "world_create",
             Self::CreateFlat { .. } => "world_create_flat",
@@ -815,6 +819,7 @@ impl Title {
             optimize_lock: None,
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
+            connect_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(&splashes, seed, (today.month(), today.day())),
@@ -1239,6 +1244,7 @@ impl Title {
     }
     /// Polling is done once per rendered frame so filesystem work never blocks drawing.
     pub fn poll_backup(&mut self) {
+        self.poll_realms();
         self.poll_onboarding(std::time::Instant::now());
         self.poll_account();
         self.poll_optimize();
@@ -1314,6 +1320,23 @@ impl Title {
         self.toast.is_some()
     }
     /// The world a finished backup made before its upgrade opens next.
+    /// The Realms screen's workers: a join that came back connects (`GetServerDetailsTask`
+    /// handing over to `ConnectScreen`).
+    fn poll_realms(&mut self) {
+        if let Mode::Realms(screen) = &mut self.mode
+            && let crate::realms::Outcome::Connect(address) = screen.poll()
+        {
+            self.connect_request = Some(address);
+        }
+    }
+    /// The server the Realms screen joins once its address came back.
+    pub fn take_connect_request(&mut self) -> Option<Action> {
+        let address = self.connect_request.take()?;
+        Some(Action::Connect {
+            address,
+            lan: false,
+        })
+    }
     pub fn take_open_request(&mut self) -> Option<String> {
         self.open_request.take()
     }
@@ -1778,8 +1801,10 @@ impl Title {
                         y + 48.0,
                         200.0,
                         &lang::get_or("menu.online", "Minecraft Realms"),
-                        false,
-                        0,
+                        // TitleScreen.createNormalMenuOptions: Realms is off when
+                        // multiplayer is.
+                        self.allows_multiplayer,
+                        8,
                     ),
                     b(
                         cx - 100.0,
@@ -1808,7 +1833,7 @@ impl Title {
                         7,
                         "icon/accessibility",
                     ),
-                    ("horizon.account", "Microsoft Account", 8, ACCOUNT_ICON),
+                    ("horizon.account", "Microsoft Account", 9, ACCOUNT_ICON),
                 ];
                 let icons = &icons[..if cfg!(target_os = "ios") { 3 } else { 4 }];
                 let start = cx - (icons.len() as f32 * 24.0 - 4.0) / 2.0;
@@ -2229,6 +2254,15 @@ impl Title {
                 .into_iter()
                 .map(|(x, y, bw, label, enabled, id)| b(x, y, bw, &label, enabled, id))
                 .collect(),
+            Mode::Realms(screen) => screen
+                .buttons(w, h)
+                .into_iter()
+                .map(|(x, y, bw, label, enabled, id, icon)| {
+                    let mut btn = b(x, y, bw, &label, enabled, id);
+                    btn.icon = icon;
+                    btn
+                })
+                .collect(),
         }
     }
     /// The screen this mode is, as the narrator reads it: its id and
@@ -2419,6 +2453,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 ),
             ),
             Mode::Account => ScreenInfo::new("account", "Microsoft account"),
+            Mode::Realms(_) => ScreenInfo::new("realms", lang::get("menu.online")),
             Mode::Multiplayer(_) => return None,
         };
         Some(info)
@@ -3213,6 +3248,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 cursor,
                 hide_server_address,
             ),
+            Mode::Realms(screen) => screen.draw(
+                batch,
+                atlas,
+                &mut self.caret.borrow_mut(),
+                self.started,
+                cursor,
+                w,
+                h,
+            ),
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
@@ -3558,6 +3602,22 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves));
                 Action::None
             }
+            (Mode::Main, Some(8)) => {
+                self.mode = Mode::Realms(crate::realms::Screen::new());
+                Action::None
+            }
+            (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {
+                crate::realms::Outcome::Back => {
+                    self.mode = Mode::Main;
+                    Action::None
+                }
+                crate::realms::Outcome::Connect(address) => Action::Connect {
+                    address,
+                    lan: false,
+                },
+                crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
+                crate::realms::Outcome::None => Action::None,
+            },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
                 self.mode = Mode::Main;
                 Action::None
@@ -3586,7 +3646,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             (Mode::Main, Some(3)) => Action::Options,
             (Mode::Main, Some(7)) => Action::Accessibility,
             (Mode::Main, Some(6)) => Action::Language,
-            (Mode::Main, Some(8)) => {
+            (Mode::Main, Some(9)) => {
                 // iOS owns its account in the native launcher and Keychain. Opening a
                 // second device-code account here could leave the two identities out of sync.
                 #[cfg(target_os = "ios")]
@@ -3941,6 +4001,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         match &mut self.mode {
             Mode::Multiplayer(screen) => screen.focused_text(),
+            Mode::Realms(screen) => screen.focused_text(),
             mode => caret_field(mode, self.search_focused, &mut self.search),
         }
     }
@@ -4011,6 +4072,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 .filter(|(id, _)| id == focus)
                 .map(|(_, rect)| rect),
             Mode::Multiplayer(screen) => screen.focused_box((w, h)),
+            Mode::Realms(screen) => screen.focused_box((w, h)),
             Mode::CreateBuffet { buffet, .. } if buffet.query_focused => {
                 Some(buffet::search_box(w))
             }
@@ -4152,6 +4214,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     }
     /// Tab navigation through widgets and fields in either forward or reverse order.
     pub fn tab_dir(&mut self, reverse: bool, size: (f32, f32)) {
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.tab();
+            return;
+        }
         if self.rules.get_mut().is_some() {
             return;
         }
@@ -4653,6 +4719,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         {
             return;
         }
+        if let Mode::Realms(screen) = &mut self.mode
+            && !screen.escape()
+        {
+            return;
+        }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.
             Mode::Backup { .. } | Mode::Optimize { .. } => {}
@@ -4751,6 +4822,7 @@ fn caret_field<'a>(
             _ => None,
         },
         Mode::Multiplayer(screen) => screen.focused_text(),
+        Mode::Realms(screen) => screen.focused_text(),
         Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets && flat.share_focused => {
             Some((FLAT_SHARE, &mut flat.share, 1230))
         }
@@ -4877,6 +4949,40 @@ mod classic_tests {
     }
 
     #[test]
+    fn realms_and_account_controls_have_distinct_actions() {
+        let mut title = Title::new(
+            PathBuf::new(),
+            Path::new("/nonexistent/horizon-test-resources"),
+        );
+        let size = (480.0, 320.0);
+        let buttons = title.buttons(size.0, size.1);
+        let ids: std::collections::BTreeSet<_> = buttons.iter().map(|b| b.id).collect();
+        assert_eq!(
+            ids.len(),
+            buttons.len(),
+            "each main-menu control needs its own action"
+        );
+        let realms = buttons.iter().find(|b| b.id == 8).unwrap();
+        assert!(realms.icon.is_none());
+        assert_eq!(
+            title.click(realms.x + realms.w / 2.0, realms.y + 10.0, size),
+            (Action::None, true),
+        );
+        assert!(matches!(title.mode, Mode::Realms(_)));
+        title.mode = Mode::Main;
+        if let Some(account) = buttons
+            .iter()
+            .find(|b| b.icon.is_some_and(|(icon, _)| icon == ACCOUNT_ICON))
+        {
+            assert_eq!(
+                title.click(account.x + account.w / 2.0, account.y + 10.0, size),
+                (Action::None, true),
+            );
+            assert!(matches!(title.mode, Mode::Account));
+        }
+    }
+
+    #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {
         let mut title = Title::new(
             PathBuf::new(),
@@ -4887,15 +4993,15 @@ mod classic_tests {
             let cx = (w / 2.0).floor();
             let y = (h / 4.0).floor() + 48.0;
             let start = cx - if cfg!(target_os = "ios") { 34.0 } else { 46.0 };
-            assert_eq!(buttons.iter().any(|b| b.id == 8), !cfg!(target_os = "ios"));
+            assert_eq!(buttons.iter().any(|b| b.id == 9), !cfg!(target_os = "ios"));
             for (id, x, enabled, icon) in [
                 (5, start, true, "friends/friends"),
                 (6, start + 24.0, true, "icon/language"),
                 (7, start + 48.0, true, "icon/accessibility"),
-                (8, start + 72.0, true, ACCOUNT_ICON),
+                (9, start + 72.0, true, ACCOUNT_ICON),
             ]
             .into_iter()
-            .filter(|(id, _, _, _)| *id != 8 || !cfg!(target_os = "ios"))
+            .filter(|(id, _, _, _)| *id != 9 || !cfg!(target_os = "ios"))
             {
                 let b = buttons.iter().find(|b| b.id == id).unwrap();
                 assert_eq!(
@@ -4906,8 +5012,8 @@ mod classic_tests {
                     title.click(x + 10.0, y + 82.0, (w, h)),
                     match id {
                         6 => (Action::Language, true),
-                        8 if cfg!(target_os = "ios") => (Action::Quit, true),
-                        8 => (Action::None, true),
+                        9 if cfg!(target_os = "ios") => (Action::Quit, true),
+                        9 => (Action::None, true),
                         7 => (Action::Accessibility, true),
                         _ => (Action::None, true),
                     }
@@ -4919,7 +5025,7 @@ mod classic_tests {
                     ));
                     title.mode = Mode::Main;
                 }
-                if id == 8 && !cfg!(target_os = "ios") {
+                if id == 9 && !cfg!(target_os = "ios") {
                     assert!(matches!(title.mode, Mode::Account));
                     title.mode = Mode::Main;
                 }

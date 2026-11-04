@@ -522,7 +522,10 @@ static PREPARED_WRITERS: std::sync::Mutex<Vec<(PathBuf, std::thread::JoinHandle<
 
 /// Build the optional packed-file cache without holding the window thread up.
 /// Shutdown keeps every handle until its writer is done, before imports can replace the root.
-pub(super) fn write_prepared_files(root: PathBuf) {
+pub(super) fn write_prepared_files(
+    root: PathBuf,
+    home_access: Option<horizon_client::import::HomeAccess>,
+) {
     use horizon_core::prepared_files;
     if prepared_files::open(&root).is_some() || !root.join("horizon-resources.json").is_file() {
         return;
@@ -538,6 +541,9 @@ pub(super) fn write_prepared_files(root: PathBuf) {
     let spawned = std::thread::Builder::new()
         .name("Prepared data file".into())
         .spawn(move || {
+            // Continue the resource generation's finite transaction; this
+            // background cache writer must not race an import either.
+            let _home_access = home_access;
             horizon_threads::idle_current();
             let started = Instant::now();
             match prepared_files::write(&root) {

@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "கடையைத் திற",
-  "You don't own any cosmetics yet.": "உங்களிடம் இன்னும் அழகுசாதனப் பொருட்கள் எதுவும் இல்லை."
+  "You don't own any cosmetics yet.": "உங்களிடம் இன்னும் அழகுசாதனப் பொருட்கள் எதுவும் இல்லை.",
+  "Claim for free": "இலவசமாகப் பெறு",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "கடையின் கட்டணச் சேவை உங்கள் நாட்டில் இயங்காததால், நிறுவனர் தொகுப்பை இங்கே இலவசமாகப் பெறலாம்.",
+  "The Founder Set is yours.": "நிறுவனர் தொகுப்பு இப்போது உங்களுடையது."
 }
