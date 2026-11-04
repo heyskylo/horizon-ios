@@ -481,10 +481,14 @@ impl<'p> Stage<'p> {
 
     /// Core names share the compatibility state for geometry, including shadow transforms.
     /// Authored non-uniform globals (or uniforms of another type) keep their own meaning.
+    /// `textureMatrix` is `gl_TextureMatrix[0]` in the vertex stage only: our probes read the
+    /// identity in Iris 1.11.7's terrain and shadow vertex stages, and zero in the terrain
+    /// fragment stage (#9080).
     pub(super) fn core_matrix(&self, name: &str) -> Option<&'static str> {
         let matrix = match name {
             "projectionMatrix" => "hz_ProjectionMatrix",
             "modelViewMatrix" => "hz_ModelViewMatrix",
+            "textureMatrix" if self.kind == ShaderStage::Vertex => "hz_TextureMatrix[0]",
             _ => return None,
         };
         if !self.gbuffers
