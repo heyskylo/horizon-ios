@@ -40,6 +40,7 @@ pub struct Rewards {
     pub recipes: Vec<String>,
     pub experience: i32,
     pub loot: Vec<String>,
+    pub function: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Advancement {
@@ -327,6 +328,7 @@ fn parse(id: &str, v: &Value) -> Option<Advancement> {
             recipes: strings(&r["recipes"]),
             experience: r["experience"].as_i64().unwrap_or(0) as i32,
             loot: strings(&r["loot"]),
+            function: r["function"].as_str().map(|id| full(id).into_owned()),
         },
     })
 }
@@ -455,6 +457,8 @@ impl Progress {
 /// What predicates may ask about the world.
 pub trait World {
     fn dimension(&self) -> &str;
+    /// Effective rain/thunder booleans, including the level's dimension rules.
+    fn weather(&self) -> (bool, bool);
     fn biome(&self, pos: [i32; 3]) -> String;
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
     /// Block name and properties.
@@ -1029,6 +1033,12 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     block(&Value::Object(pred), b, w)
                 }),
                 "minecraft:match_tool" => ctx.tool.is_some_and(|t| item(&v["predicate"], t, w)),
+                "minecraft:weather_check" => {
+                    // WeatherCheck.test: absent fields impose no constraint.
+                    let (rain, thunder) = w.weather();
+                    v["raining"].as_bool().is_none_or(|r| r == rain)
+                        && v["thundering"].as_bool().is_none_or(|t| t == thunder)
+                }
                 "minecraft:inverted" => !conditions(&v["term"], ctx, w),
                 "minecraft:all_of" => v["terms"]
                     .as_array()
@@ -1348,6 +1358,31 @@ impl Tree {
 mod tests {
     use super::*;
 
+    #[test]
+    fn advancement_reward_function_is_optional_and_namespaced() {
+        for (raw, expected) in [
+            ("parity:reward", "parity:reward"),
+            ("reward", "minecraft:reward"),
+        ] {
+            let input = serde_json::json!({
+                "criteria": {"never": {"trigger": "minecraft:impossible"}},
+                "rewards": {"function": raw, "experience": 7, "recipes": ["minecraft:bread"]}
+            });
+            let advancement = parse("parity:test", &input).unwrap();
+            assert_eq!(advancement.rewards.function.as_deref(), Some(expected));
+            assert_eq!(advancement.rewards.experience, 7);
+            assert_eq!(advancement.rewards.recipes, ["minecraft:bread"]);
+        }
+        let without = parse(
+            "parity:empty",
+            &serde_json::json!({
+                "criteria": {"never": {"trigger": "minecraft:impossible"}}
+            }),
+        )
+        .unwrap();
+        assert!(without.rewards.function.is_none());
+    }
+
     /// The criteria an inventory change and a recipe unlock test, on vanilla's tree:
     /// `cargo test -p horizon-client --lib -- --ignored --nocapture index_on_vanilla_tree`
     /// with HORIZON_RESOURCES set to the prepared resources.
@@ -1423,6 +1458,9 @@ mod tests {
         fn dimension(&self) -> &str {
             "minecraft:overworld"
         }
+        fn weather(&self) -> (bool, bool) {
+            (false, false)
+        }
         fn biome(&self, _: [i32; 3]) -> String {
             "minecraft:plains".into()
         }
@@ -1451,6 +1489,47 @@ mod tests {
                     && matches!(id, "minecraft:fireball" | "minecraft:arrow"))
         }
     }
+    #[test]
+    fn weather_conditions_leave_absent_fields_unconstrained_and_compose() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for (mut predicate, expected) in [
+            (serde_json::json!({}), true),
+            (serde_json::json!({"raining": false}), true),
+            (serde_json::json!({"raining": true}), false),
+            (serde_json::json!({"thundering": false}), true),
+            (serde_json::json!({"thundering": true}), false),
+            (
+                serde_json::json!({"raining": false, "thundering": false}),
+                true,
+            ),
+            (
+                serde_json::json!({"raining": false, "thundering": true}),
+                false,
+            ),
+        ] {
+            predicate["type"] = "minecraft:weather_check".into();
+            assert_eq!(conditions(&predicate, &ctx, &Flat), expected, "{predicate}");
+        }
+        let dry = serde_json::json!({"type": "minecraft:weather_check", "raining": false});
+        let wet = serde_json::json!({"type": "minecraft:inverted", "term": dry});
+        assert!(!conditions(&wet, &ctx, &Flat));
+        assert!(conditions(
+            &serde_json::json!({"type": "minecraft:all_of", "terms": [dry]}),
+            &ctx,
+            &Flat
+        ));
+        assert!(!conditions(
+            &serde_json::json!({"type": "minecraft:any_of", "terms": [wet]}),
+            &ctx,
+            &Flat
+        ));
+    }
+
     /// A `recipe_crafted` criterion names `minecraft:x`; the craft hands
     /// the recipe book and the trigger the same whole id (`award_crafted`
     /// qualifies). The bare name the crafting copy uses never matched —
