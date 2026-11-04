@@ -2602,7 +2602,9 @@ impl Game<'_> {
         // The lock is outside the model: a tag that only changes it still
         // changes the block entity.
         let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        if after == before && !rolled && !lock_changed {
+        // So is the custom name.
+        let name_changed = self.load_block_name(key, &new, &tag);
+        if after == before && !rolled && !lock_changed && !name_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
@@ -2879,12 +2881,13 @@ impl Game<'_> {
                         ],
                         s,
                         self.world.block_entities.get(&(x, y, z)).cloned(),
+                        self.world.block_names.get(&(x, y, z)).cloned(),
                     ));
                 }
             }
         }
         if moving {
-            for (from, _, _, _) in &copies {
+            for (from, ..) in &copies {
                 self.place_state(*from, air, true)?;
             }
         }
@@ -2893,13 +2896,19 @@ impl Game<'_> {
         // each copied state but a barrier counts as placed.
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         let mut count = 0;
-        for (_, to, s, entity) in copies {
+        for (_, to, s, entity, name) in copies {
             self.place_state(to, s, strict)?;
             if Some(s) != barrier {
                 count += 1;
             }
             if let Some(e) = entity {
-                self.world.block_entities.insert((to[0], to[1], to[2]), e);
+                let key = (to[0], to[1], to[2]);
+                self.world.block_entities.insert(key, e);
+                // The copied tag carries the custom name.
+                match name {
+                    Some(name) => self.world.block_names.insert(key, name),
+                    None => self.world.block_names.remove(&key),
+                };
             }
         }
         if count == 0 {
