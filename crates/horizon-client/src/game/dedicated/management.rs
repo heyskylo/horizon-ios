@@ -208,10 +208,12 @@ impl Game<'_> {
                     .lan
                     .as_ref()
                     .map_or(100, |host| host.hub.entity_range_percent);
-                let percentage = percentage.clamp(10, 1000);
+                // MinecraftServerSettingsServiceImpl logs the value asked for; the
+                // DedicatedServerProperties deserializer clamps what is applied and saved.
                 rpc(format!(
                     "Update entity broadcast range percentage from {current}% to {percentage}%"
                 ));
+                let percentage = percentage.clamp(10, 1000);
                 self.set_entity_broadcast_range_percentage(percentage);
                 self.store_property("entity-broadcast-range-percentage", percentage.to_string());
                 return json!({
