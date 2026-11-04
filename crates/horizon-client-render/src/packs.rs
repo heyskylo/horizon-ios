@@ -170,8 +170,17 @@ fn last_pre_minor(current: Format) -> i64 {
 /// `PackFormat.fullCodec(default_minor)`: an int, or a list of 1 to 256
 /// non-negative ints whose second is the minor. None: it does not parse.
 fn format_codec(v: &serde_json::Value, default_minor: i64) -> Option<Format> {
-    let non_negative =
-        |v: &serde_json::Value| v.as_i64().filter(|n| *n >= 0 && *n <= i64::from(i32::MAX));
+    // `Codec.INT` reads any JSON number through `Number.intValue`: a decimal such as `97.1`
+    // counts as its whole part (97), as it does for the game.
+    let non_negative = |v: &serde_json::Value| {
+        v.as_i64()
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.is_finite())
+                    .map(|f| f.trunc() as i64)
+            })
+            .filter(|n| *n >= 0 && *n <= i64::from(i32::MAX))
+    };
     match v {
         serde_json::Value::Array(a) if (1..=256).contains(&a.len()) => {
             let list: Option<Vec<i64>> = a.iter().map(non_negative).collect();
@@ -1256,6 +1265,16 @@ mod tests {
             check(r#"{"min_format":97,"max_format":98,"supported_formats":[97,98]}"#)
                 .unwrap_err()
                 .contains("deprecated")
+        );
+        // A decimal reads as its whole part, in a list or alone: `[97.1]` is format 97 (a pack
+        // that meant `[97, 1]` still loads and counts as compatible).
+        assert_eq!(
+            check(r#"{"min_format":[97.1],"max_format":[97.1]}"#),
+            Ok(((97, 0), (97, i64::from(i32::MAX))))
+        );
+        assert_eq!(
+            check(r#"{"min_format":97.9,"max_format":98.5}"#),
+            Ok(((97, 0), (98, i64::from(i32::MAX))))
         );
         assert_eq!(
             check(r#"{"min_format":97,"max_format":98}"#),
