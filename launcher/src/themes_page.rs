@@ -273,7 +273,7 @@ impl Launcher {
                     .left(px(f * (TRACK - 16.)))
                     .size(px(16.))
                     .rounded_full()
-                    .bg(gpui::white()),
+                    .bg(ui::paper()),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -378,6 +378,7 @@ impl Launcher {
                     this.accent_strip = false;
                     this.background_error = None;
                     this.theme = this.settings_theme(window);
+                    crate::glass_toast::say(tr("Launcher settings are back to their defaults"));
                     cx.notify();
                 }))
                 .into_any_element(),

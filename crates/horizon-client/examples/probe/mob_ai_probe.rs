@@ -1146,6 +1146,7 @@ pub fn main() -> horizon_client::Result<()> {
                 sleeping: false,
                 sleep_timer: 0,
                 passenger: false,
+                riding_vehicle: None,
                 vehicle: None,
             }
         });
@@ -1174,12 +1175,14 @@ pub fn main() -> horizon_client::Result<()> {
                     collision: &collision,
                     data: &data,
                     player: player.clone(),
+                    controlling_player_movement: None,
                     nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
                     others: $snapshot,
                     dragon: None,
                     leash_boats: &[],
                     others_grid: $grid,
                     others_index: None,
+                    others_villagers: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
                     monsters_burn: !(12542..23460).contains(&world.day_time.rem_euclid(24000)),
                     game_time: world.game_time,

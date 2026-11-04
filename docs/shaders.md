@@ -255,4 +255,5 @@ without the pack.
 
 ## Next
 
-The overlay and lighting stages, and option values other than the defaults.
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).

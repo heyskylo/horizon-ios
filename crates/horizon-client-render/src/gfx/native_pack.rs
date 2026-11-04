@@ -6,7 +6,7 @@ use horizon_shader_api::{Report, StageKind};
 use super::displace::Displacement;
 use super::native_material::{DisplacedShape, NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
-use super::native_shadow::NativeShadow;
+use super::native_shadow::{NativeShadow, ShadowGrid};
 use super::native_sky::NativeSky;
 use super::pack_timing::PassTiming;
 
@@ -117,12 +117,32 @@ impl NativePack {
                     .max(1);
                 let steps =
                     d.steps_option.is_some() && option_on(constants, d.steps_option.as_ref());
-                Displacement::new(device, d.distance, cells, steps, &frame.pbr[0], false)
+                Displacement::new(
+                    device,
+                    d.distance,
+                    cells,
+                    steps,
+                    &frame.pbr[0],
+                    report.shadow.is_some(),
+                )
             });
         let shadow = chosen
             .as_ref()
             .map(|s| {
                 let vertex = report.stages.iter().find(|s| s.kind == StageKind::Vertex);
+                // `[displacement]`'s grid casts too, from the material's module.
+                let material = report.stages.iter().find(|s| s.kind == StageKind::Material);
+                let grid = displacement.as_ref().and_then(|d| {
+                    let picks = d.shadow.as_ref()?;
+                    Some(ShadowGrid {
+                        distance: d.distance,
+                        cells: picks.cells,
+                        steps: picks.steps,
+                        material: material?,
+                        layout: &d.draw_layout,
+                        normals: &frame.pbr[0],
+                    })
+                });
                 NativeShadow::new(
                     device,
                     terrain,
@@ -130,6 +150,7 @@ impl NativePack {
                     &s.solid_materials,
                     vertex,
                     constants,
+                    grid,
                 )
             })
             .transpose()?;

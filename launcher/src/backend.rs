@@ -2275,6 +2275,7 @@ pub fn client_command(tag: &str) -> Command {
     let mut cmd = Command::new(client_program(tag));
     strip_launcher_render_env(&mut cmd);
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    cmd.env_remove("HORIZON_ACCOUNT_SESSIONS");
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -2466,19 +2467,23 @@ pub fn client(tag: &str) -> Result<Command, String> {
 
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
-    let (session, offline) = match who {
+    let session = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
     .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
-    need_prepared(tag)?;
+    if let Err(e) = need_prepared(tag) {
+        account::discard_unread_sessions();
+        return Err(e);
+    }
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    if let Some(file) = session {
+    if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
     }
-    if let Some(e) = offline {
+    cmd.envs(session.env);
+    if let Some(e) = session.offline {
         eprintln!("Playing offline: {e}");
     }
     if let Some(e) = account::take_unsaved() {
@@ -3150,7 +3155,7 @@ pub enum Msg {
     AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
-    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
+    Session(Result<crate::account::GameSession, crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
@@ -4103,7 +4108,7 @@ pub fn {f}("
         assert_eq!(Settings::parse("{}").language, None);
         let fr = Settings::parse(r#"{"language": "fr"}"#);
         assert_eq!(fr.language(), Language::French);
-        let future = Settings::parse(r#"{"language": "eo", "game_args": "--x"}"#);
+        let future = Settings::parse(r#"{"language": "tlh", "game_args": "--x"}"#);
         assert_eq!((future.language, future.game_args.as_str()), (None, "--x"));
         let saved = serde_json::to_value(Settings::default()).unwrap();
         assert!(saved.get("language").is_none(), "unset is left out");

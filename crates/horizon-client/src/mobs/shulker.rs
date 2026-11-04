@@ -27,6 +27,16 @@ pub const NO_COLOR: u8 = 16;
 /// `Direction.DOWN`'s 3D data value.
 const DOWN: u8 = 0;
 
+/// `Shulker.startRiding`: a shulker that boards a vehicle puts its attach face
+/// back to `DOWN`, so it rides lid up whatever block face it was stuck to. The
+/// client half (clearing the teleport interpolation) has no counterpart here:
+/// the face itself is the whole of the synced change.
+pub fn on_start_riding(m: &mut Mob) {
+    if m.species() == Species::Shulker {
+        m.extra.variant3 = DOWN;
+    }
+}
+
 /// `Shulker.getDefaultDimensions`: a shell attached to the block below it
 /// (attach face `DOWN`, its lid opening upward) grows `1 + currentPeekAmount`
 /// tall as the lid opens. Width is
