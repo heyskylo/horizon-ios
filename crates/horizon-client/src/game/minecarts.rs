@@ -2785,8 +2785,12 @@ impl Minecart {
         c.custom_offset = int("DisplayOffset");
         if kind == CartKind::CommandBlock {
             c.command = horizon_client::command_block::CommandBlock::load(tag);
-            // readAdditionalSaveData sets both synched values.
-            c.synced_command.clone_from(&c.command.command);
+            // MinecartCommandBlock.readAdditionalSaveData sets the synched command.
+            // A changed value invokes onSyncedDataUpdated -> setCommand, resetting successes.
+            if c.synced_command != c.command.command {
+                c.synced_command.clone_from(&c.command.command);
+                c.command.set_command(&c.synced_command);
+            }
             c.synced_output = c.command.last_output_string();
         }
         // MinecartSpawner.readAdditionalSaveData: BaseSpawner.load.
@@ -3101,18 +3105,13 @@ mod tests {
         ]);
         let cart = Minecart::from_nbt(&saved, 1, CartKind::CommandBlock).unwrap();
         assert_eq!(cart.command.command, "say hi");
-        assert_eq!(cart.command.success_count, 3);
+        assert_eq!(cart.command.success_count, 0);
         // readAdditionalSaveData syncs both values.
         assert_eq!(cart.synced_command, "say hi");
         assert_eq!(cart.synced_output, "[12:00:00] hi");
         let out = cart.to_nbt([0; 4], Some(&saved));
-        for key in [
-            "Command",
-            "SuccessCount",
-            "TrackOutput",
-            "LastOutput",
-            "LastExecution",
-        ] {
+        assert_eq!(out.get("SuccessCount"), Some(&Tag::Int(0)));
+        for key in ["Command", "TrackOutput", "LastOutput", "LastExecution"] {
             assert_eq!(out.get(key), saved.get(key), "{key}");
         }
         assert_eq!(out.get("UpdateLastExecution"), Some(&Tag::Byte(1)));

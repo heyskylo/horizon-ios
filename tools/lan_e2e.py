@@ -12911,5 +12911,118 @@ CHECKS += ['trident-durability']
 CHECK_FNS['trident-durability'] = check_trident_stack_durability
 
 
+def check_pig_saddle_shears(host, guest, out):
+    """#9124: a real click shears an unoccupied pig before the mounting route.
+
+    Fresh Java 26.3: remove/drop/wear for unoccupied shears, no change or
+    mounting when occupied, and ordinary mounting with an empty hand.
+    """
+    player = guest or host
+    name = getattr(player, 'player', GUEST_NAME)
+    old_host, old_player = pos_of(host), pos_of(player)
+    rows = []
+    objective = 'pig_shear_test'
+
+    def reply(text):
+        return '\n'.join(host('command', command=text)['chat'])
+
+    def number(text, success=False):
+        mode = 'success' if success else 'result'
+        reply(f'scoreboard players set probe {objective} 0')
+        reply(f'execute store {mode} score probe {objective} run {text}')
+        line = reply(f'scoreboard players get probe {objective}')
+        found = re.search(r'has (-?\d+) ', line)
+        assert found, f'prerequisite: missing score reply: {line}'
+        return int(found.group(1))
+
+    def step(n):
+        start = int(re.search(r'is (-?\d+)', reply('time query gametime')).group(1))
+        reply(f'tick step {n}')
+        deadline = time.monotonic() + 30
+        while True:
+            now = int(re.search(r'is (-?\d+)', reply('time query gametime')).group(1))
+            if now >= start + n:
+                assert now == start + n, 'prerequisite: world advanced extra ticks'
+                return
+            assert time.monotonic() < deadline, 'prerequisite: world ticks stalled'
+            player.wait(1)
+
+    try:
+        for text in ['tick freeze', 'gamerule spawn_mobs false', 'difficulty normal',
+                     'forceload add 0 0 15 15', 'fill 0 98 0 15 99 15 stone',
+                     'fill 0 100 0 15 106 15 air', f'scoreboard objectives add {objective} dummy']:
+            reply(text)
+        if guest:
+            reply(f'gamemode spectator {host.player}')
+            reply(f'tp {host.player} 60.5 100 70.5')
+        for i, label in enumerate(('unoccupied', 'occupied', 'mount-control'), 1):
+            occupied, empty = label == 'occupied', label == 'mount-control'
+            player.raw('release')
+            reply(f'ride {name} dismount')
+            reply('kill @e[tag=pig_shear_subject]')
+            reply('kill @e[tag=pig_shear_rider]')
+            step(25)
+            reply('kill @e[type=item]')
+            reply(f'gamemode survival {name}')
+            reply(f'clear {name}')
+            reply(f'tp {name} 4.5 100 4.5 0 0')
+            if not empty:
+                reply(f'item replace entity {name} weapon.mainhand with shears')
+            uid = f'00000007-0000-0007-0000-00070000000{i}'
+            child = ',Passengers:[{id:"minecraft:chicken",Pos:[6.5d,100d,4.5d],NoAI:1b,Tags:["pig_shear_rider"]}]' if occupied else ''
+            reply(f'summon pig 6.5 100 4.5 {{UUID:[I;7,7,7,{i}],NoAI:1b,PersistenceRequired:1b,Tags:["pig_shear_subject"],'
+                  'Health:20f,attributes:[{id:"minecraft:max_health",base:20d}],'
+                  'equipment:{saddle:{id:"minecraft:saddle",count:1}}' + child + '}')
+            step(1)  # publish the loaded pig to the real client before the click
+            player.wait(2)
+            saddle = 'execute if entity @e[tag=pig_shear_subject,nbt={equipment:{saddle:{id:"minecraft:saddle"}}}]'
+            passenger = f'execute as @e[tag=pig_shear_rider,type=chicken] on vehicle if entity @s[nbt={{UUID:[I;7,7,7,{i}]}}]'
+            assert number(f'execute if entity @e[tag=pig_shear_subject,type=pig,nbt={{UUID:[I;7,7,7,{i}],NoAI:1b,Pos:[6.5d,100d,4.5d]}}]', True) == 1
+            assert number(f'data get entity {uid} Health') == 20
+            assert number(saddle, True) == 1 and number(passenger, True) == int(occupied)
+            held = reply(f'data get entity {name} SelectedItem')
+            assert ('minecraft:shears' in held) == (not empty)
+            if not empty:
+                assert number(f'data get entity {name} SelectedItem.count') == 1
+                assert number(f'data get entity {name} SelectedItem.components."minecraft:damage"') == 0
+            assert number(f'execute if entity @a[name={name},gamemode=survival,nbt={{Pos:[4.5d,100d,4.5d]}}]', True) == 1
+            assert number('execute if entity @e[type=item,nbt={Item:{id:"minecraft:saddle"}}]') == 0
+            player.raw('look-at', 6.5, 100.4, 4.5)
+            player.wait(2)
+            picked = player('state')['looking_at']
+            assert picked['kind'] == 'entity' and picked['entity']['type'] == 'minecraft:pig', picked
+            player.raw('interact-entity', picked['entity']['id'])
+            command_says(player, 'time query gametime')  # same-connection interaction barrier
+            step(1)
+            player.wait(2)
+            rows.append({'case': label, 'saddle': number(saddle, True),
+                         'drops': number('execute if entity @e[type=item,nbt={Item:{id:"minecraft:saddle",count:1}}]'),
+                         'wear': number(f'data get entity {name} SelectedItem.components."minecraft:damage"'),
+                         'riding': player('status').get('riding') is not None,
+                         'passenger': number(passenger, True), 'health': number(f'data get entity {uid} Health'),
+                         'live': number(f'execute if entity {uid}', True)})
+        (out / 'pig-saddle-shears.json').write_text(json.dumps(rows, indent=2))
+        expected = [dict(case='unoccupied', saddle=0, drops=1, wear=1, riding=False, passenger=0, health=20, live=1),
+                    dict(case='occupied', saddle=1, drops=0, wear=0, riding=False, passenger=1, health=20, live=1),
+                    dict(case='mount-control', saddle=1, drops=0, wear=0, riding=True, passenger=0, health=20, live=1)]
+        assert rows == expected, rows
+        return rows
+    finally:
+        reply(f'ride {name} dismount')
+        reply('kill @e[tag=pig_shear_subject]')
+        reply('kill @e[tag=pig_shear_rider]')
+        reply('kill @e[type=item]')
+        reply(f'scoreboard objectives remove {objective}')
+        reply('forceload remove 0 0')
+        reply('tick unfreeze')
+        for actor, position in ((host.player, old_host), (name, old_player)):
+            reply(f'gamemode survival {actor}')
+            reply(f'tp {actor} '+' '.join(map(str, position)))
+
+
+CHECKS += ['pig-saddle-shears']
+CHECK_FNS['pig-saddle-shears'] = check_pig_saddle_shears
+
+
 if __name__ == '__main__':
     main()

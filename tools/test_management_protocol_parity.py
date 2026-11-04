@@ -288,6 +288,16 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":206,"method":"minecraft:gamerules/update","params":[{"key":"minecraft:nope","value":true}]}',
     '{"jsonrpc":"2.0","id":207,"method":"minecraft:gamerules/update","params":[{"value":true}]}',
     '{"jsonrpc":"2.0","id":208,"method":"minecraft:gamerules"}',
+    '{"jsonrpc":"2.0","id":400,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":401,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
+    '{"jsonrpc":"2.0","id":402,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":403,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":404,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    # -5 cancels the running 30 s heartbeat and schedules none; ManagementServer keeps the cancelled future,
+    # so the set to 30 that follows is refused (cancel(true) returns false) and -5 is what is saved.
+    '{"jsonrpc":"2.0","id":405,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[-5]}',
+    '{"jsonrpc":"2.0","id":406,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":407,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
     '{"jsonrpc":"2.0","id":120,"method":"minecraft:serversettings/player_idle_timeout"}',
     '{"jsonrpc":"2.0","id":121,"method":"minecraft:serversettings/player_idle_timeout/set","params":[10]}',
     '{"jsonrpc":"2.0","id":122,"method":"minecraft:serversettings/player_idle_timeout"}',
@@ -563,6 +573,9 @@ def main():
                 sides[side]['saved_max_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('max-players=')), None)
+                sides[side]['saved_status_heartbeat_interval'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('status-heartbeat-interval=')), None)
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
@@ -670,6 +683,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_max_players'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":408,"method":"minecraft:serversettings/status_heartbeat_interval"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_heartbeat_interval'] = reply
                     ws.send('{"jsonrpc":"2.0","id":133,"method":"minecraft:serversettings/player_idle_timeout"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -793,6 +812,12 @@ def main():
         if vanilla['restarted_max_players'] != horizon['restarted_max_players'] or \
                 vanilla['restarted_max_players'] != {'jsonrpc': '2.0', 'id': 109, 'result': 30}:
             failures.append(f"restarted max players: vanilla {vanilla['restarted_max_players']!r}, Horizon {horizon['restarted_max_players']!r}")
+        if vanilla['saved_status_heartbeat_interval'] != horizon['saved_status_heartbeat_interval'] or \
+                vanilla['saved_status_heartbeat_interval'] != '-5':
+            failures.append(f"saved status heartbeat interval: vanilla {vanilla['saved_status_heartbeat_interval']!r}, Horizon {horizon['saved_status_heartbeat_interval']!r}")
+        if vanilla['restarted_status_heartbeat_interval'] != horizon['restarted_status_heartbeat_interval'] or \
+                vanilla['restarted_status_heartbeat_interval'] != {'jsonrpc': '2.0', 'id': 408, 'result': -5}:
+            failures.append(f"restarted status heartbeat interval: vanilla {vanilla['restarted_status_heartbeat_interval']!r}, Horizon {horizon['restarted_status_heartbeat_interval']!r}")
         if vanilla['saved_player_idle_timeout'] != horizon['saved_player_idle_timeout'] or \
                 vanilla['saved_player_idle_timeout'] != '30':
             failures.append(f"saved player idle timeout: vanilla {vanilla['saved_player_idle_timeout']!r}, Horizon {horizon['saved_player_idle_timeout']!r}")

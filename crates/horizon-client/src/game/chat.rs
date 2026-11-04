@@ -152,6 +152,9 @@ pub struct UiState {
     pub registries: Registries,
     pub rules: GameRules,
     pub clock: WorldClock,
+    /// Command state for registered clocks other than Overworld. Overworld's
+    /// canonical ticks stay in World.day_time and its state stays in clock.
+    pub command_clocks: BTreeMap<String, (i64, WorldClock)>,
     /// Time markers and timelines of the overworld clock.
     pub markers: BTreeMap<String, TimeMarker>,
     pub timelines: BTreeMap<String, Option<i64>>,
@@ -1418,11 +1421,13 @@ impl Game<'_> {
             _ => Difficulty::Normal,
         };
     }
-    /// Load per-world command state when a world opens.
+    /// `ServerClockManager.ServerClockInstance.loadFrom`: restore the existing
+    /// Overworld state when a world opens; clear the other command-state cache.
     pub(super) fn load_world_state(&mut self) {
         self.ui.rules =
             GameRules::load_with_features(&self.world_root, &self.level.enabled_features);
         self.ui.clock = WorldClock::default();
+        self.ui.command_clocks.clear();
         // PrimaryLevelData: the difficulty comes back from level.dat's difficulty_settings.
         self.ui.difficulty = self.level.difficulty_id();
         if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))

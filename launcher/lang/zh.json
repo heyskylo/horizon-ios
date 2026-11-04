@@ -1162,5 +1162,7 @@
   "Charged back": "已拒付",
   "Paid": "已支付",
   "Order {id}": "订单 {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "领取未成功：结账页面的地址不是 Horizon 的。"
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "领取未成功：结账页面的地址不是 Horizon 的。",
+  "Paste a friend's invite code": "粘贴好友的邀请码",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "运行 {build}，基于 Horizon {commit} 构建（{mods} 固定的提交），而不是 {version}。"
 }

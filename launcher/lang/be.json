@@ -1162,5 +1162,7 @@
   "Charged back": "Банк адмяніў плацёж",
   "Paid": "Аплачана",
   "Order {id}": "Заказ {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заяўка не прайшла: адрас старонкі аплаты не належыць Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заяўка не прайшла: адрас старонкі аплаты не належыць Horizon.",
+  "Paste a friend's invite code": "Устаўце код запрашэння сябра",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Гуляе {build}, пабудаваны на Horizon {commit}, каміце, замацаваным {mods}, а не на {version}."
 }

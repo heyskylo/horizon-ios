@@ -1162,5 +1162,7 @@
   "Charged back": "Банк кайтарып алды",
   "Paid": "Төлөндү",
   "Order {id}": "Буйрутма {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Талап өткөн жок: төлөмдүн дареги Horizon'ду эмес."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Талап өткөн жок: төлөмдүн дареги Horizon'ду эмес.",
+  "Paste a friend's invite code": "Досуңдун чакыруу кодун чаптаңыз",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ойнойт: {version} эмес, {mods} бекиткен Horizon {commit} коммитинин үстүнө курулган."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Kthyer nga banka",
   "Paid": "Paguar",
   "Order {id}": "Porosia {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Kërkesa nuk kaloi: adresa e pagesës nuk është e Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Kërkesa nuk kaloi: adresa e pagesës nuk është e Horizon.",
+  "Paste a friend's invite code": "Ngjit kodin e ftesës së një shoku",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Luan {build}, i ndërtuar në Horizon {commit}, commit-i i fiksuar nga {mods}, jo në {version}."
 }

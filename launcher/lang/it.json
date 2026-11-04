@@ -1162,5 +1162,7 @@
   "Charged back": "Stornato dalla banca",
   "Paid": "Pagato",
   "Order {id}": "Ordine {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta non è andata a buon fine: l'indirizzo del pagamento non è quello di Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta non è andata a buon fine: l'indirizzo del pagamento non è quello di Horizon.",
+  "Paste a friend's invite code": "Incolla il codice di invito di un amico",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Esegue {build}, basato su Horizon {commit}, il commit fissato da {mods}, non su {version}."
 }

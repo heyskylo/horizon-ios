@@ -1162,5 +1162,7 @@
   "Charged back": "Báŋku fas váldán",
   "Paid": "Máksojuvvon",
   "Order {id}": "Diŋga {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ohcan ii lihkostuvvan: mávsima čujuhus ii leat Horizona."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ohcan ii lihkostuvvan: mávsima čujuhus ii leat Horizona.",
+  "Paste a friend's invite code": "Bija ustiba bovdehuskoda",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spealut {build}, huksejuvvon Horizon {commit} ala, commit maid {mods} giddejit, ii {version} ala."
 }

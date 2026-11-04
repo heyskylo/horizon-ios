@@ -233,6 +233,16 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "settle" -> settle();
+                    case "use_block" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        int face = op.has("face") ? op.get("face").getAsInt() : 1;
+                        var hit = new net.minecraft.world.phys.BlockHitResult(
+                            new net.minecraft.world.phys.Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5),
+                            net.minecraft.core.Direction.from3DDataValue(face), pos, false);
+                        player.gameMode.useItemOn(player, player.level(), player.getMainHandItem(),
+                            net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                    }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
                         player.gameMode.destroyBlock(new BlockPos(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt()));

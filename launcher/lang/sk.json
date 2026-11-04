@@ -1162,5 +1162,7 @@
   "Charged back": "Vrátené bankou",
   "Paid": "Zaplatené",
   "Order {id}": "Objednávka {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Nárok sa nepodarilo uplatniť: adresa platby nepatrí Horizonu."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Nárok sa nepodarilo uplatniť: adresa platby nepatrí Horizonu.",
+  "Paste a friend's invite code": "Prilepte pozývací kód od priateľa",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hrá {build}, postavený na Horizon {commit}, commite pripnutom {mods}, nie na {version}."
 }

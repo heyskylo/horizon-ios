@@ -1162,5 +1162,7 @@
   "Charged back": "Возврат платежа банком",
   "Paid": "Оплачено",
   "Order {id}": "Заказ {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявка не прошла: адрес страницы оплаты не принадлежит Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявка не прошла: адрес страницы оплаты не принадлежит Horizon.",
+  "Paste a friend's invite code": "Вставьте код приглашения друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Играет {build}, скомпилировано на Horizon {commit} — коммите, закреплённом {mods}, а не на {version}."
 }

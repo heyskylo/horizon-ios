@@ -1162,5 +1162,7 @@
   "Charged back": "Банк скасував платіж",
   "Paid": "Оплачено",
   "Order {id}": "Замовлення {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявка не пройшла: адреса сторінки оплати не належить Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявка не пройшла: адреса сторінки оплати не належить Horizon.",
+  "Paste a friend's invite code": "Вставте код запрошення друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Грає {build}, зібрано на Horizon {commit} — коміті, закріпленому {mods}, а не на {version}."
 }

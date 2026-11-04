@@ -1162,5 +1162,7 @@
   "Charged back": "Stornât de bancje",
   "Paid": "Paiât",
   "Order {id}": "Ordin {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richieste no je lade a bon fin: l'indirizz dal paiament nol è chel di Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richieste no je lade a bon fin: l'indirizz dal paiament nol è chel di Horizon.",
+  "Paste a friend's invite code": "Incolâ il codiç di invit di un amì",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Jughe {build}, costruît su Horizon {commit}, il commit fissât di {mods}, no su {version}."
 }

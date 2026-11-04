@@ -1162,5 +1162,7 @@
   "Charged back": "Återkrävd av banken",
   "Paid": "Betald",
   "Order {id}": "Order {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Anspråket gick inte igenom: kassans adress är inte Horizons."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Anspråket gick inte igenom: kassans adress är inte Horizons.",
+  "Paste a friend's invite code": "Klistra in en väns inbjudningskod",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spelar {build}, byggd på Horizon {commit}, commiten som {mods} låser, inte på {version}."
 }

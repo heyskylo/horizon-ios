@@ -1162,5 +1162,7 @@
   "Charged back": "Ụlọ akụ weghaara ya",
   "Paid": "Akwụọla",
   "Order {id}": "Ahịrị {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Arịrịọ ahụ agaghị nke ọma: adreesị ibe ịkwụ ụgwọ abụghị nke Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Arịrịọ ahụ agaghị nke ọma: adreesị ibe ịkwụ ụgwọ abụghị nke Horizon.",
+  "Paste a friend's invite code": "Tapawa koodu ịkpọ òkù enyi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ejije {build}, wuru na Horizon {commit}, commit nke {mods} kpọchiri, ọ bụghị na {version}."
 }

@@ -107,7 +107,9 @@ pub(super) struct Mods {
     native_notice: Option<(SourceId, String, Option<Project>)>,
     /// The selected instance's native build state, and the `native_status::fingerprint` it was
     /// read for: read again only when that changes.
-    native_state: std::cell::RefCell<Option<(String, native_status::State)>>,
+    /// With it, the mods turned on that pin the commit an older build compiled
+    /// (`native_status::pinning`, for builds that didn't record it).
+    native_state: std::cell::RefCell<Option<(String, native_status::State, Vec<String>)>>,
     native_files: std::cell::RefCell<Option<(String, Vec<native_status::Installed>)>>,
     /// Java mods' checks, by source and project.
     pub(super) checks: HashMap<(SourceId, String), Checking>,
@@ -1512,21 +1514,35 @@ impl Launcher {
         let version = self.version_of(instance).cloned();
         let home = self.mods.home();
         let key = native_status::fingerprint(&home, version.as_deref());
+        let build = version.as_deref().and_then(|v| self.native_build_of(v));
         let mut memo = self.mods.native_state.borrow_mut();
-        let state = match memo.as_ref() {
-            Some((k, state)) if *k == key => *state,
+        let (state, pinned) = match memo.as_ref() {
+            Some((k, state, pinned)) if *k == key => (*state, pinned.clone()),
             _ => {
                 let built = version.as_deref().and_then(native_status::built);
                 let state = native_status::state(&native_status::enabled(&home), built.as_deref());
-                *memo = Some((key, state));
-                state
+                let pinned = match &build {
+                    Some(b) if b.pinned_unknown => native_status::pinning(&home, &b.horizon),
+                    _ => Vec::new(),
+                };
+                *memo = Some((key, state, pinned.clone()));
+                (state, pinned)
             }
         };
-        let build = version.as_deref().and_then(|v| self.native_build_of(v));
+        let pinned = match &build {
+            Some(b) if !b.pinned_by.is_empty() => b.pinned_by.clone(),
+            _ => pinned,
+        };
+        // Rebuilding on a newer Horizon, or on the build's own one when mods pinned another
+        // commit, builds every mod on that Horizon's commit (`on_base`).
         let update = build
             .as_ref()
             .filter(|_| state != State::NoMods)
-            .and_then(|b| native_mods::newer_than(&b.base, &self.installed));
+            .and_then(|b| {
+                native_mods::newer_than(&b.base, &self.installed).or_else(|| {
+                    (!pinned.is_empty() && self.installed.contains(&b.base)).then(|| b.base.clone())
+                })
+            });
         let mine = self.native_for.as_deref() == Some(instance.id.as_str());
         let step = self.native_step.as_ref().filter(|_| mine);
         let error = self.native_error.as_ref().filter(|_| mine);
@@ -1569,10 +1585,22 @@ impl Launcher {
             detail = detail.child(div().text_color(t.muted).child(done.clone()));
         }
         if let (Some(tag), Some(build)) = (&version, &build) {
-            detail = detail.child(div().text_color(t.muted).child(trf(
-                "Plays {build}, built on Horizon {version}.",
-                &[("build", tag), ("version", &build.horizon())],
-            )));
+            let said = match pinned.is_empty() {
+                true => trf(
+                    "Plays {build}, built on Horizon {version}.",
+                    &[("build", tag), ("version", &build.horizon())],
+                ),
+                false => trf(
+                    "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.",
+                    &[
+                        ("build", tag),
+                        ("commit", &build.horizon[..build.horizon.len().min(7)]),
+                        ("mods", &pinned.join(", ")),
+                        ("version", &build.horizon()),
+                    ],
+                ),
+            };
+            detail = detail.child(div().text_color(t.muted).child(said));
         }
         if self.native_step.is_some() && !mine {
             let other = self
@@ -1611,6 +1639,7 @@ impl Launcher {
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.native_update = Some(newer.clone());
+                    this.native_on_base = true;
                     this.native_confirm = Some(this.native_mods_to_build().map(|(_, b)| b));
                     cx.notify();
                 })),
@@ -1620,6 +1649,7 @@ impl Launcher {
             right = right.child(button("native-build", "Build", Kind::Primary, &t).on_click(
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.native_update = None;
+                    this.native_on_base = false;
                     this.native_confirm = Some(this.native_mods_to_build().map(|(_, b)| b));
                     cx.notify();
                 }),
