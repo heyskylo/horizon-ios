@@ -20,6 +20,11 @@ const FEATURES: [&str; 8] = [
     "SSBO",
 ];
 
+/// Whether `name` is one of [`FEATURES`], in any case.
+fn is_feature(name: &str) -> bool {
+    FEATURES.iter().any(|f| f.eq_ignore_ascii_case(name))
+}
+
 /// `MC_VERSION` of the version Horizon plays: 26.3 → 260300.
 pub const MC_VERSION: u32 = mc_version(horizon_core::version::VERSION_ID);
 
@@ -139,7 +144,9 @@ impl Macros {
     }
 
     /// `iris.features.optional`'s features Horizon has, as `IRIS_FEATURE_<name>`; a note for
-    /// each feature `iris.features.required` names that it lacks.
+    /// each feature `iris.features.required` names that it lacks. As in Iris 1.11.7, a name
+    /// matches in any case, and the macro keeps the name as the pack wrote it (`ssbo` defines
+    /// `IRIS_FEATURE_ssbo`).
     pub fn define_features(&mut self, properties: &crate::Properties) -> Vec<String> {
         let words = |key: &str| {
             properties
@@ -148,13 +155,13 @@ impl Macros {
                 .unwrap_or_default()
         };
         for feature in words("iris.features.optional") {
-            if FEATURES.contains(&feature.as_str()) {
+            if is_feature(&feature) {
                 self.define(format!("IRIS_FEATURE_{feature}"), "");
             }
         }
         words("iris.features.required")
             .into_iter()
-            .filter(|f| !FEATURES.contains(&f.as_str()))
+            .filter(|f| !is_feature(f))
             .map(|f| format!("the pack requires `{f}`, which is not supported yet"))
             .collect()
     }
@@ -457,6 +464,32 @@ mod tests {
             &Macros::default(),
         ));
         assert!(m.is_defined("IRIS_FEATURE_HIGHER_SHADOWCOLOR") && notes.is_empty());
+    }
+
+    /// Iris 1.11.7, with probe packs of our own (#8996): a feature name matches in any case, and
+    /// an optional one defines the macro with the name as written, not in upper case.
+    #[test]
+    fn feature_names_match_in_any_case() {
+        let mut m = Macros::standard();
+        let notes = m.define_features(&crate::Properties::parse(
+            "iris.features.optional = ssbo Custom_Images\n\
+             iris.features.required = compute_shaders ssbo custom_images Not_A_Feature\n",
+            &Macros::standard(),
+        ));
+        assert!(m.is_defined("IRIS_FEATURE_ssbo"));
+        assert!(m.is_defined("IRIS_FEATURE_Custom_Images"));
+        for absent in [
+            "IRIS_FEATURE_SSBO",
+            "IRIS_FEATURE_CUSTOM_IMAGES",
+            "IRIS_FEATURE_compute_shaders",
+            "IRIS_FEATURE_COMPUTE_SHADERS",
+        ] {
+            assert!(!m.is_defined(absent), "{absent}");
+        }
+        assert_eq!(
+            notes,
+            ["the pack requires `Not_A_Feature`, which is not supported yet"]
+        );
     }
 
     #[test]
