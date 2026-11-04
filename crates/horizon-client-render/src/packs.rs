@@ -542,15 +542,25 @@ fn pack_files(pack: &Pack) -> io::Result<BTreeMap<String, Provided>> {
         Source::Dir(d) => {
             for root in &roots {
                 let base = d.join(root.trim_end_matches('/'));
-                let mut stack = vec![base.join("assets")];
-                while let Some(dir) = stack.pop() {
+                let mut stack = vec![(base.join("assets"), Vec::<PathBuf>::new())];
+                while let Some((dir, mut ancestors)) = stack.pop() {
                     let Ok(entries) = fs::read_dir(&dir) else {
                         continue;
                     };
+                    let canonical = fs::canonicalize(&dir)?;
+                    if ancestors.contains(&canonical) {
+                        // Vanilla does not follow nested directory links. Keep
+                        // this pack's ordinary files instead of expanding a
+                        // cyclic alias until the OS symlink limit is reached.
+                        continue;
+                    }
+                    ancestors.push(canonical);
                     for e in entries.flatten() {
                         let p = e.path();
                         if p.is_dir() {
-                            stack.push(p);
+                            // Track this branch, not every visited directory:
+                            // separate aliases of the same resources are valid.
+                            stack.push((p, ancestors.clone()));
                         } else if let Ok(rel) = p.strip_prefix(&base) {
                             let rel = rel.to_string_lossy().replace('\\', "/");
                             out.insert(rel.clone(), (Some(p.clone()), format!("{root}{rel}")));
@@ -1713,6 +1723,50 @@ mod tests {
         assert_eq!(built, expected);
         let _ = fs::remove_dir_all(base);
     }
+    #[cfg(unix)]
+    #[test]
+    fn directory_pack_cycles_do_not_hide_ordinary_files_or_noncyclic_aliases() {
+        let base = std::env::temp_dir().join(format!("horizon-pack-cycle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let directory = base.join("pack");
+        fs::create_dir_all(directory.join("assets/shared")).unwrap();
+        fs::write(
+            directory.join("pack.mcmeta"),
+            br#"{"pack":{"description":"d","pack_format":97}}"#,
+        )
+        .unwrap();
+        fs::write(directory.join("assets/shared/probe.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink("shared", directory.join("assets/alias")).unwrap();
+        let pack = pack(
+            "test".into(),
+            Text::literal("test"),
+            Source::Dir(directory.clone()),
+        )
+        .unwrap();
+        let files = pack_files(&pack).unwrap();
+        assert_eq!(files.len(), 2);
+        for name in ["assets/shared/probe.json", "assets/alias/probe.json"] {
+            assert_eq!(fs::read(files[name].0.as_ref().unwrap()).unwrap(), b"{}");
+        }
+        // Two back edges amplify repeated visits exponentially before the OS
+        // reaches its symlink limit; the directory walk must detect the cycle.
+        std::os::unix::fs::symlink(".", directory.join("assets/one")).unwrap();
+        std::os::unix::fs::symlink(".", directory.join("assets/two")).unwrap();
+        let cyclic = pack_files(&pack).unwrap();
+        assert_eq!(
+            cyclic.keys().collect::<Vec<_>>(),
+            files.keys().collect::<Vec<_>>()
+        );
+        let vanilla = base.join("vanilla");
+        let out = base.join("overlay");
+        fs::create_dir_all(&vanilla).unwrap();
+        build_overlay(&vanilla, &[pack], &out).unwrap();
+        for name in ["assets/shared/probe.json", "assets/alias/probe.json"] {
+            assert_eq!(fs::read(out.join(name)).unwrap(), b"{}");
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn zip_entries_never_leave_the_overlay() {
         use std::io::Write as _;

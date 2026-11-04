@@ -795,6 +795,12 @@ fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
         .ok_or("sprite RGBA pixels exceed the sprite array memory limit")?;
     let mut bytes = vec![0; output_size];
     let info = reader.next_frame(&mut bytes)?;
+    if info.color_type == png::ColorType::Rgba {
+        // EXPAND/STRIP_16 already produced the final RGBA8 texels. Keep that
+        // allocation instead of briefly holding two complete sprite images.
+        bytes.truncate(info.buffer_size());
+        return Ok((info.width, info.height, bytes));
+    }
     let channels = info.color_type.samples();
     let mut pixels = Vec::with_capacity(rgba_size);
     for pixel in bytes[..info.buffer_size()].chunks_exact(channels) {
@@ -940,6 +946,84 @@ mod tests {
         }
         bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn png_colour_expansion_preserves_rgba_pixels_and_alpha() {
+        use png::{BitDepth as Depth, ColorType as Color};
+        let root =
+            std::env::temp_dir().join(format!("horizon-png-expansion-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        for (name, color, depth, source, expected) in [
+            (
+                "rgba",
+                Color::Rgba,
+                Depth::Eight,
+                vec![11, 97, 213, 17, 3, 4, 5, 0],
+                vec![11, 97, 213, 17, 3, 4, 5, 0],
+            ),
+            (
+                "rgba16",
+                Color::Rgba,
+                Depth::Sixteen,
+                vec![
+                    0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0xfe, 0xdc, 0xba, 0x98, 0x76,
+                    0x54, 0x32, 0x10,
+                ],
+                vec![0x12, 0x56, 0x9a, 0xde, 0xfe, 0xba, 0x76, 0x32],
+            ),
+            (
+                "rgb",
+                Color::Rgb,
+                Depth::Eight,
+                vec![1, 2, 3, 4, 5, 6],
+                vec![1, 2, 3, 255, 4, 5, 6, 255],
+            ),
+            (
+                "gray",
+                Color::Grayscale,
+                Depth::Eight,
+                vec![7, 199],
+                vec![7, 7, 7, 255, 199, 199, 199, 255],
+            ),
+            (
+                "gray_alpha",
+                Color::GrayscaleAlpha,
+                Depth::Eight,
+                vec![7, 33, 199, 0],
+                vec![7, 7, 7, 33, 199, 199, 199, 0],
+            ),
+            (
+                "palette",
+                Color::Indexed,
+                Depth::Eight,
+                vec![1, 0],
+                vec![90, 80, 70, 191, 12, 34, 56, 0],
+            ),
+            (
+                "gray1",
+                Color::Grayscale,
+                Depth::One,
+                vec![0b0100_0000],
+                vec![0, 0, 0, 255, 255, 255, 255, 255],
+            ),
+        ] {
+            let path = root.join(format!("{name}.png"));
+            let mut encoder = png::Encoder::new(File::create(&path).unwrap(), 2, 1);
+            encoder.set_color(color);
+            encoder.set_depth(depth);
+            if color == Color::Indexed {
+                encoder.set_palette(vec![12, 34, 56, 90, 80, 70]);
+                encoder.set_trns(vec![0, 191]);
+            }
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&source).unwrap();
+            writer.finish().unwrap();
+            let (width, height, pixels) = read_rgba(&path).unwrap();
+            assert_eq!((width, height), (2, 1), "{name}");
+            assert_eq!(pixels, expected, "{name}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
