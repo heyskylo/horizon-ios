@@ -4794,7 +4794,8 @@ def check_piston_slide(host, guest, out):
     the tick after the retraction put the base back, a repeating command block puts a stone in the head's cell
     and its chain powers the piston, and the client must have both the base and the stone (not the moving block
     the push makes of it) to run that extension itself. The host reads its own copy of the head's cell once a
-    tick (each read follows the client tick that saw what arrived), at /tick rate 1.
+    tick (each read follows the client tick that saw what arrived), at /tick rate 1, and whether the client
+    animates the move itself (`block`'s `moving`).
     """
     x, y, z = (int(v // 1) for v in pos_of(host))
     y += 3
@@ -4821,14 +4822,16 @@ def check_piston_slide(host, guest, out):
         host('command', command=f'fill {x - 1} {y - 1} {z - 2} {x + 3} {y + 1} {z} minecraft:air')
 
     def moves(replies):
-        seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))
+        seen = [(status['ticks'], block['block'].removeprefix('minecraft:'), 'moving' in block)
                 for block, status in zip(replies[1::3], replies[2::3])]
-        moving = next((tick for tick, name in seen if name == 'moving_piston'), None)
-        landed = next((tick for tick, name in seen if name == 'piston_head'), None)
-        return {'seen': seen, 'ticks_moving': None if moving is None or landed is None else landed - moving}
+        moving = next(((tick, own) for tick, name, own in seen if name == 'moving_piston'), None)
+        landed = next((tick for tick, name, _ in seen if name == 'piston_head'), None)
+        return {'seen': seen, 'own': moving is not None and moving[1],
+                'ticks_moving': None if moving is None or landed is None else landed - moving[0]}
 
     result = {'extend': moves(replies[1:19]), 'extend_again': moves(replies[20:])}
     for label, move in result.items():
+        assert move['own'], f'{label}: the client did not move the head itself: {result}'
         assert move['ticks_moving'] == 3, (
             f'{label}: the landed head came {move["ticks_moving"]} ticks after the move: {result}')
     return result
