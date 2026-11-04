@@ -50,6 +50,7 @@ mod microsoft;
 mod modpacks_page;
 mod mods_page;
 mod mods_project;
+mod motion;
 mod multiplayer_page;
 mod native_log_page;
 mod new_instance;
@@ -1956,7 +1957,7 @@ fn hover_fade(
     let key = |dir: &str, at: Instant| {
         ElementId::named_usize(format!("{id}-{dir}"), (at - start).as_micros() as usize)
     };
-    let ease = || Animation::new(theme::QUICK).with_easing(ease_out_quint());
+    let ease = || motion::eased(horizon_theme::QUICK);
     if let Some((_, at)) = state.on.as_ref().filter(|(h, _)| h == id) {
         return layer()
             .with_animation(key("in", *at), ease(), paint)
@@ -5028,7 +5029,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
-        // The new page fades in and rises a few pixels.
+        // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()
             .w_full()
@@ -5037,8 +5038,8 @@ impl Render for Launcher {
             .child(content)
             .with_animation(
                 ElementId::named_usize("page", self.switches),
-                Animation::new(theme::ENTER).with_easing(ease_out_quint()),
-                |d, p| d.opacity(p).top(px(theme::RISE * (1. - p))),
+                motion::eased(motion::POP),
+                |d, p| d.opacity(p).top(px(motion::POP_RISE * (1. - p))),
             );
         let (reveal, held) = self.opening_phase(window);
         let ui = ease_out_cubic((reveal - 0.3) / 0.7);

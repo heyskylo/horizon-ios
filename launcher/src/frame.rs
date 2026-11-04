@@ -803,7 +803,11 @@ impl Launcher {
             ),
         ));
         Some(deferred(
-            div().absolute().top(px(52.)).right_0().child(menu),
+            div()
+                .absolute()
+                .top(px(52.))
+                .right_0()
+                .child(crate::motion::pop("account-menu-pop", menu)),
         ))
     }
 
@@ -934,7 +938,11 @@ impl Launcher {
         };
         menu = menu.child(div().mt(px(4.)).child(delete));
         Some(
-            deferred(anchored().position(point(px(x), px(y))).child(menu))
+            deferred(
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .child(crate::motion::pop("row-menu-pop", menu)),
+            )
                 .with_priority(1)
                 .into_any_element(),
         )

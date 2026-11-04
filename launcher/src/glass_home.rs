@@ -255,6 +255,14 @@ impl Launcher {
             _ => None,
         };
         let open = self.home_menu == HomeMenu::Play;
+        // What is drawn on the accent takes its own ink (white on the default violet), in the
+        // light look too, where `white` is the page's dark ink; Stop sits on a quiet fill.
+        let on_accent = ui::color(self.look.on_accent);
+        let glyph = if running && busy.is_none() {
+            white(ink::FULL)
+        } else {
+            on_accent
+        };
         let more = div()
             .id("play-more")
             .absolute()
@@ -267,7 +275,7 @@ impl Launcher {
             .cursor_pointer()
             .when(open, |d| d.bg(gpui::black().opacity(0.2)))
             .hover(|s| s.bg(gpui::black().opacity(0.2)))
-            .child(ui::icon("more-horizontal", 20., white(ink::FULL)))
+            .child(ui::icon("more-horizontal", 20., glyph))
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                 if !this.closed_by_this_press(event) {
                     this.home_menu = match this.home_menu {
@@ -297,7 +305,7 @@ impl Launcher {
                 .font_family(horizon_theme::glass::FONT)
                 .text_size(px(18.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(ui::icon(icon, 20., white(ink::FULL)))
+                .child(ui::icon(icon, 20., glyph))
                 .child(label)
         };
         let group = match busy {
@@ -319,6 +327,7 @@ impl Launcher {
                         .flex_1()
                         .justify_center()
                         .pr(px(40.))
+                        .text_color(on_accent)
                         .font_family(horizon_theme::glass::FONT)
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -368,7 +377,7 @@ impl Launcher {
                     (None, PlayPress::Nothing) => main.opacity(0.5).cursor_default(),
                 };
                 base.bg(accent)
-                    .text_color(ui::color(self.look.on_accent))
+                    .text_color(on_accent)
                     .hover(|s| s.opacity(0.92))
                     .child(main)
             }
@@ -475,7 +484,7 @@ impl Launcher {
                 });
             }
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(menu)).with_priority(1),
+                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("play-menu-pop", menu))).with_priority(1),
             );
         }
         wrap
@@ -588,7 +597,7 @@ impl Launcher {
                 })),
             );
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(menu)).with_priority(1),
+                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("version-menu-pop", menu))).with_priority(1),
             );
         }
         wrap
@@ -715,7 +724,7 @@ impl Launcher {
                 ));
             }
             wrap = wrap.child(
-                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(menu)).with_priority(1),
+                deferred(div().absolute().top(px(TALL + 8.)).left_0().child(crate::motion::pop("folder-menu-pop", menu))).with_priority(1),
             );
         }
         Some(wrap)

@@ -284,7 +284,13 @@ impl Launcher {
                 );
             }
             wrap = wrap.child(
-                gpui::deferred(div().absolute().top(px(52.)).right_0().child(menu))
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .top(px(52.))
+                        .right_0()
+                        .child(crate::motion::pop("mods-sort-pop", menu)),
+                )
                     .with_priority(1),
             );
         }
