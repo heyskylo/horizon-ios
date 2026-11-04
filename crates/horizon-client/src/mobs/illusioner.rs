@@ -272,4 +272,33 @@ mod tests {
     fn wobble_is_small() {
         assert!(wobble(1, 10.0).iter().all(|c| c.abs() <= 0.025));
     }
+
+    /// `SpellcasterIllager.customServerAiStep` counts a cast down once a
+    /// tick for the illusioner as for the evoker (`Illusioner` has no override).
+    /// Without it the count stayed at 20 after the first spell, so the
+    /// illusioner kept casting: no second spell and no bow.
+    #[test]
+    fn the_cast_counts_down() {
+        use crate::mobs::world::with_test_world;
+        use std::sync::Arc;
+        let mut left = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:illusioner"].clone()),
+                horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.extra.counter = 20;
+            let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+            for _ in 0..5 {
+                crate::mobs::ai::tick(&mut m, w, &mut lr, &mut events);
+            }
+            left = Some(m.extra.counter);
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(left, Some(15));
+    }
 }
