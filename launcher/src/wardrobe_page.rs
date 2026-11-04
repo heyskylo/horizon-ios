@@ -22,7 +22,9 @@ use horizon_theme::glass::{fill, ink, radius};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod marks;
 mod purchases;
+pub(super) use marks::Marks;
 
 /// The still picture's size, in points.
 const W: f32 = 180.;
@@ -647,11 +649,11 @@ impl Launcher {
         Some(baked)
     }
 
-    /// A name tag style's mark, baked once.
-    fn wardrobe_mark(&self, item: &Item) -> Arc<RenderImage> {
+    /// A name tag style's mark (`Marks` keeps it).
+    fn wardrobe_mark(item: &Item, scale: f32) -> Arc<RenderImage> {
         let t = &item.texture;
         let texels: Vec<[u8; 4]> = t.rgba.as_chunks::<4>().0.to_vec();
-        art::bake(&texels, t.width as usize, t.height as usize, 2., self.scale)
+        art::bake(&texels, t.width as usize, t.height as usize, 2., scale)
     }
 
     pub(super) fn wardrobe_page(&mut self, cx: &mut Context<Self>) -> Div {
@@ -801,15 +803,24 @@ impl Launcher {
             );
         }
         // The player, with the name tag style over the head.
-        let tag = me
-            .equipped
-            .get("name_tag")
+        let tag_id = me.equipped.get("name_tag");
+        let tag = tag_id
             .and_then(|id| w.items.get(id))
             .filter(|i| i.tag.is_some());
         let line = tag
             .and_then(|i| i.tag)
             .map(|g| gpui::rgb(u32::from_be_bytes([0, g.line[0], g.line[1], g.line[2]])));
-        let mark = tag.map(|i| self.wardrobe_mark(i));
+        let mark = tag.zip(tag_id).map(|(i, id)| {
+            let scale = self.scale;
+            // The catalogue's hash names the item's file: a new file under the id is a new mark.
+            let hash = entries
+                .iter()
+                .find(|e| &e.id == id)
+                .map_or("", |e| e.hash.as_str());
+            self.wardrobe_marks
+                .get_or_bake(id, hash, scale, || Self::wardrobe_mark(i, scale))
+                .clone()
+        });
         let name_tag = div()
             .flex()
             .items_center()
