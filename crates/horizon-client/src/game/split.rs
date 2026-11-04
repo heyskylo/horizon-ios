@@ -289,37 +289,7 @@ impl<'a> Split<'a> {
         if next != self.focus {
             self.turn(self.focus);
             if let Some(game) = self.game_mut(self.focus) {
-                for key in std::mem::take(&mut game.physical_keys) {
-                    game.native_key_event(key, false, false);
-                }
-                for key in std::mem::take(&mut game.keys) {
-                    if let Err(e) = game.mapped_key(key, false, false, key) {
-                        log::warn!("Horizon: splitscreen: releasing input: {e}");
-                    }
-                }
-                for button in std::mem::take(&mut game.physical_buttons) {
-                    game.extras_mouse(button, false);
-                }
-                game.drag_button = None;
-                game.modifiers = Default::default();
-                game.left = false;
-                game.right = false;
-                game.inventory_mouse_release(false);
-                game.inventory_mouse_release(true);
-                game.inventory_pick_release();
-                game.loom_release();
-                game.creative_screen.release();
-                game.ui.options.release();
-                game.dragging = false;
-                game.stats_release();
-                game.world_options_release();
-                game.advancements_mouse(false, [0, 0]);
-                if let Some(title) = &mut game.title {
-                    title.release();
-                    title.release_field();
-                }
-                game.capture(false);
-                game.keyboard_mouse = false;
+                game.release_keyboard_mouse();
             }
         }
         self.focus = next;
@@ -869,5 +839,52 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         self.turn(0);
+    }
+}
+
+impl Game<'_> {
+    /// Keyboard and mouse go to another player: release everything they held here.
+    pub(super) fn release_keyboard_mouse(&mut self) {
+        for key in std::mem::take(&mut self.physical_keys) {
+            self.native_key_event(key, false, false);
+        }
+        // Only what the keyboard held: this player's pad keeps its presses.
+        for key in self
+            .keys
+            .release_source(horizon_client::held::Source::Keyboard)
+        {
+            if let Err(e) = self.mapped_key(
+                key,
+                false,
+                false,
+                key,
+                horizon_client::held::Source::Keyboard,
+            ) {
+                log::warn!("Horizon: splitscreen: releasing input: {e}");
+            }
+        }
+        for button in std::mem::take(&mut self.physical_buttons) {
+            self.extras_mouse(button, false);
+        }
+        self.drag_button = None;
+        self.modifiers = Default::default();
+        self.left = false;
+        self.right = false;
+        self.inventory_mouse_release(false);
+        self.inventory_mouse_release(true);
+        self.inventory_pick_release();
+        self.loom_release();
+        self.creative_screen.release();
+        self.ui.options.release();
+        self.dragging = false;
+        self.stats_release();
+        self.world_options_release();
+        self.advancements_mouse(false, [0, 0]);
+        if let Some(title) = &mut self.title {
+            title.release();
+            title.release_field();
+        }
+        self.capture(false);
+        self.keyboard_mouse = false;
     }
 }
