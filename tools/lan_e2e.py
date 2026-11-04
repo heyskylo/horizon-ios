@@ -7363,6 +7363,62 @@ def check_signs(host, guest, out):
     return seen
 
 
+def check_sign_copy(host, guest, out):
+    """A sign copied with Ctrl + Pick Block keeps its text when placed, for the host and the guest:
+    the client's own BlockItem.place gives the predicted sign the item's sign_text_front
+    (updateBlockEntityComponents), so the editor that opens shows the copied lines and Done sends
+    them back unchanged (#8102)."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    lines = ['Line one', 'Line two', 'Line three', 'Line four']
+    seen = {}
+    for game, other, dz in ((host, guest, -3), (guest, host, 3)):
+        for viewer in (game, other):
+            back_to_game(viewer)
+        source, copy = (hx + 2, hy, hz + dz), (hx + 4, hy, hz + dz)
+        host('command', command=f'fill {hx - 1} {hy - 1} {hz + dz - 2} {hx + 6} {hy - 1} {hz + dz + 2} minecraft:stone')
+        host('command', command=f'fill {hx - 1} {hy} {hz + dz - 2} {hx + 6} {hy + 3} {hz + dz + 2} minecraft:air')
+        messages = ','.join(f'"{line}"' for line in lines)
+        host('command', command=f'setblock {source[0]} {source[1]} {source[2]} minecraft:oak_sign[rotation=8]'
+             f'{{front_text:{{messages:[{messages}]}}}}')
+        # Two blocks in front of the signs, towards the middle.
+        at = (hx + 3.5, hy, hz + dz + 0.5 - (2 if dz > 0 else -2))
+        game('command', command=f'tp @s {at[0]} {at[1]} {at[2]}')
+        game.until(lambda: pos_of(game), lambda p: math.dist(p, at) < 0.1)
+        game('command', command='gamemode creative')
+        game('command', command='clear @s')
+        game.wait(10)
+        # Ctrl + middle click: ServerboundPickItemFromBlockPacket with includeData.
+        game.raw('look-at', 'block', *source)
+        game.raw('select', 1)
+        game.raw('key', 'ctrl', 'down')
+        game.wait(3)
+        game.raw('mouse', 'middle', 'click')
+        game.wait(3)
+        game.raw('key', 'ctrl', 'up')
+        picked = game.until(lambda: game('inventory').get('held') or {},
+                            lambda h: h.get('item') == 'minecraft:oak_sign', ticks=20)
+        game.raw('place', *copy)
+        game.until(lambda: game('state').get('screen'), lambda s: s == 'sign', ticks=10)
+        game.shot(out, 'sign-copy-editor')
+        game.raw('key', 'esc', 'tap')
+        game.until(lambda: game('state').get('screen'), lambda s: s == 'playing', ticks=20)
+        reply = server_reply(game, f'data get block {copy[0]} {copy[1]} {copy[2]} front_text.messages',
+                             'following block data')
+        shown = {g.name: g.until(lambda: (g.raw('block', *copy).get('sign') or {}).get('front'),
+                                lambda front: front == lines, ticks=20)
+                 for g in (game, other)}
+        seen[game.name] = {'picked': picked, 'server': reply, 'shown': shown}
+        other.shot(out, 'sign-copy-shown')
+    for name, s in seen.items():
+        assert all(line in s['server'] for line in lines), f'{name}: {seen}'
+        assert all(front == lines for front in s['shown'].values()), f'{name}: {seen}'
+    return seen
+
+
+CHECKS += ['sign_copy']
+CHECK_FNS.update(sign_copy=check_sign_copy)
+
+
 def book_screen(game):
     """The open book (`book`'s page and page count), once `game` shows it."""
     game.raw('wait-for', 'screen', 'book', '--timeout', 10)
@@ -12697,6 +12753,162 @@ def check_damage_attacker(host, guest, out):
 
 CHECKS += ['damage-attacker']
 CHECK_FNS['damage-attacker'] = check_damage_attacker
+
+
+def check_spectator_container(host, guest, out):
+    """A spectator inspects a container without its lid, its sound or a lid left open (#8517).
+
+    `ChestBlockEntity.startOpen` returns at once for a spectator, and
+    `stopOpen` skips it the same way, so `ContainerOpenersCounter` never counts
+    one: the menu opens (a spectator does look inside), while the lid, its
+    block event and the open and close sounds stay away and nothing is left
+    open when the menu closes.
+    """
+    opened_sound, closed_sound = 'minecraft:block.chest.open', 'minecraft:block.chest.close'
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    chest = (x, y, z + 2)
+    guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:chest')
+    guest('command', command='gamemode spectator')
+    guest.wait(10)
+    before = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    try:
+        guest.raw('interact', *chest)
+        screen = guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
+        guest.wait(20)
+        opened = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+        guest.shot(out, 'spectator-container-open')
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(20)
+        closed = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+    finally:
+        guest('command', command='gamemode survival')
+        guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:air')
+    after = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    sounds = {name: (after[name][0] - before[name][0], after[name][1] - before[name][1]) for name in after}
+    assert screen, 'the spectator did not get the container screen'
+    assert all(v < 0.1 for v in opened.values()), f'the lid while a spectator looked inside: {opened}'
+    assert all(v < 0.1 for v in closed.values()), f'the lid after the spectator closed it: {closed}'
+    assert not any(any(heard_at) for heard_at in sounds.values()), f'the sounds a spectator caused: {sounds}'
+    return {'opened': opened, 'closed': closed, 'sounds': sounds}
+
+
+CHECKS += ['spectator-container']
+CHECK_FNS['spectator-container'] = check_spectator_container
+
+
+def check_trident_stack_durability(host, guest, out):
+    """#8911: stack max_damage gates trident use/release and its capped wear."""
+    player = host
+    objective = 'trident_clock'
+    old_pos = pos_of(player)
+    rows, failures, component_failures = {}, [], []
+
+    def reply(text):
+        # The host command control request returns this command's authoritative replies.
+        return '\n'.join(player('command', command=text)['chat'])
+
+    def ticks(n):
+        def clock():
+            line = reply(f'scoreboard players get @s {objective}')
+            match = re.search(r'has (-?\d+) ', line)
+            assert match, f'prerequisite: no player clock: {line}'
+            return int(match.group(1))
+        start = clock()
+        deadline = time.monotonic() + 30
+        while clock() - start < n:
+            assert time.monotonic() < deadline, 'prerequisite: player clock stalled'
+            player.wait(1)
+
+    try:
+        for command in ['tick freeze', 'weather clear', 'difficulty normal',
+                        'gamerule spawn_mobs false', 'forceload add 0 0 15 15',
+                        'fill 0 199 0 8 204 8 stone strict',
+                        f'scoreboard objectives add {objective} minecraft.custom:minecraft.play_time']:
+            player('command', command=command)
+        cases = [('small', 10, 9, True, False, True, False),
+                 ('large', 500, 249, True, False, True, True),
+                 ('default-near', None, 249, True, False, True, False),
+                 ('default', None, 0, True, False, True, True),
+                 ('dry', 500, 249, False, False, True, False),
+                 ('creative-near', 10, 9, True, True, True, False),
+                 ('throw-near', 10, 9, True, False, False, False),
+                 ('throw', 500, 249, True, False, False, True)]
+        for label, maximum, damage, wet, creative, riptide, admitted in cases:
+            player.raw('release')
+            player('command', command='kill @e[tag=trident_durability]')
+            player('command', command='kill @e[type=trident]')
+            # Frozen death animations still occupy the spin's collision route.
+            start = int(re.search(r'\d+', reply('time query gametime')).group())
+            player('command', command='tick step 25')
+            deadline = time.monotonic() + 30
+            while int(re.search(r'\d+', reply('time query gametime')).group()) < start + 25:
+                assert time.monotonic() < deadline, 'prerequisite: cleanup ticks stalled'
+                player.wait(1)
+            # A one-block column keeps the charge and first spin contact in the same loaded cell.
+            player('command', command='fill 3 200 3 5 204 5 stone strict')
+            player('command', command='fill 4 200 4 4 203 4 '+('water' if wet else 'air')+' strict')
+            player('command', command='gamemode '+('creative' if creative else 'survival'))
+            player('command', command='clear @s')
+            player('command', command='tp @s 4.5 200 4.5 0 0')
+            components = [f'damage={damage}']
+            if maximum is not None:
+                components.append(f'max_damage={maximum}')
+            if riptide:
+                components.append('enchantments={"minecraft:riptide":1}')
+            item = 'minecraft:trident[' + ','.join(components) + ']'
+            player('command', command='item replace entity @s weapon.mainhand with '+item)
+            player.raw('key', '1', 'tap')
+            ticks(24)
+            predicate = item.replace('damage=0,', '').replace('[damage=0]', '')
+            assert 'Test passed' in reply(f'execute if items entity @s weapon.mainhand {predicate}'), label
+            mode = 'creative' if creative else 'survival'
+            assert 'Test passed' in reply(f'execute if entity @s[gamemode={mode}]'), label
+            assert 'Test passed' in reply('execute positioned 4.5 200 4.5 if entity @s[distance=..0.75]'), label
+            assert 'Test passed' in reply('execute if block 4 200 4 '+('water' if wet else 'air')), label
+            client_components = player('state')['held'].get('components', '')
+            if maximum is not None and f'"minecraft:max_damage":{maximum}' not in client_components.replace(' ', ''):
+                component_failures.append(label)
+            player.raw('mouse', 'right', 'down')
+            ticks(20)
+            using = player('state').get('using')
+            # Charge is observed, not inferred from a wall-clock sleep.
+            charge = using is not None and using['ticks'] >= 10
+            if riptide:
+                player('command', command='summon zombie 4.5 200 4.5 '
+                       f'{{NoAI:1b,NoGravity:1b,Silent:1b,Tags:["trident_durability","trident_{label}"]}}')
+                assert 'Test passed' in reply(f'execute if entity @e[tag=trident_{label}]'), label
+            player.raw('mouse', 'right', 'up')
+            ticks(10)
+            hand = reply('data get entity @s SelectedItem')
+            row = {'charge': charge, 'using': using, 'hand': hand, 'client_components': client_components}
+            if riptide:
+                health = reply(f'data get entity @e[tag=trident_{label},limit=1] Health 1000')
+                row['health'] = health
+                hit = 'is 12128' in health
+                healthy = 'is 20000' in health
+                checks = [charge == admitted, hit if admitted else healthy,
+                          (f'"minecraft:damage": {damage + (2 if admitted else 0)}' in hand
+                           if damage or admitted else '"minecraft:damage"' not in hand)]
+            else:
+                thrown = reply('execute if entity @e[type=trident]')
+                row['thrown'] = thrown
+                checks = [charge == admitted, ('Test passed' in thrown) == admitted]
+            rows[label] = row
+            failures += [f'{label}/{i}' for i, passed in enumerate(checks) if not passed]
+        detail = {'cases': rows, 'failures': failures, 'component_failures': component_failures}
+        (out / 'trident-stack-durability.json').write_text(json.dumps(detail, indent=2)+'\n')
+        assert not failures and not component_failures, detail
+        return detail
+    finally:
+        player.raw('release')
+        for command in ['clear @s', 'kill @e[tag=trident_durability]', 'kill @e[type=trident]',
+                        f'scoreboard objectives remove {objective}', 'forceload remove 0 0',
+                        'tick unfreeze', 'gamemode survival', 'tp @s '+' '.join(map(str, old_pos))]:
+            player('command', command=command)
+
+
+CHECKS += ['trident-durability']
+CHECK_FNS['trident-durability'] = check_trident_stack_durability
 
 
 if __name__ == '__main__':

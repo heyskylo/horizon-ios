@@ -121,6 +121,17 @@ pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
         Ok(line) => line,
         Err(e) => return Response::error(400, &e),
     };
+    if shared.phase() == Phase::Stopped
+        && let Some((command, args)) = stopped_command(action, &body)
+    {
+        return match crate::lists::edit_stopped(&shared.dir, command, &args) {
+            Ok(edit) => Response::json(
+                200,
+                &json!({ "changed": edit.changed, "output": [edit.message] }),
+            ),
+            Err(e) => Response::error(409, &e),
+        };
+    }
     let mut game = match running(shared) {
         Ok(game) => game,
         Err(response) => return response,
@@ -158,11 +169,63 @@ pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
     )
 }
 
+/// The actions that can edit files without a game process.
+fn stopped_command(action: Action, body: &Value) -> Option<(&'static str, Vec<&str>)> {
+    match action {
+        Action::Op => Some(("op", vec![body["name"].as_str()?])),
+        Action::Deop => Some(("deop", vec![body["name"].as_str()?])),
+        Action::WhitelistAdd => Some(("whitelist", vec!["add", body["name"].as_str()?])),
+        Action::WhitelistRemove => Some(("whitelist", vec!["remove", body["name"].as_str()?])),
+        Action::Whitelist => Some((
+            "whitelist",
+            vec![if body["enabled"].as_bool()? {
+                "on"
+            } else {
+                "off"
+            }],
+        )),
+        _ => None,
+    }
+}
+
 /// A list from its file in the server folder; missing or broken reads as empty, as the game would start.
 fn load<E: horizon_server_files::user_lists::Entry>(dir: &Path, file: &str) -> UserList<E> {
     let mut list = UserList::new(dir.join(file));
     let _ = list.load();
     list
+}
+
+/// `GET /api/v1/mods`: the native mods the game program was built with. The launcher writes them to
+/// `native-mods.json` beside a build it makes; a release or Nightly has none, so the list is empty.
+pub fn mods(shared: &Shared) -> Response {
+    let built = crate::config::Config::load(&shared.dir)
+        .ok()
+        .and_then(|c| engine::program_in(&c, &shared.dir, shared.install.as_ref()).ok())
+        .and_then(|p| std::fs::read_to_string(p.with_file_name("native-mods.json")).ok());
+    Response::json(200, &built_with(built.as_deref()))
+}
+
+/// [`mods`]' answer for the text of a `native-mods.json` (None: no program, or no such file).
+fn built_with(built: Option<&str>) -> Value {
+    let info: Value = built
+        .and_then(|b| serde_json::from_str(b).ok())
+        .unwrap_or(Value::Null);
+    let native: Vec<Value> = info["mods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| json!({ "id": m["id"], "version": m["version"], "sha256": m["sha256"] }))
+        .collect();
+    json!({
+        "engine": {
+            "found": built.is_some(),
+            "target": info["target"],
+            "base": info["base"],
+            "horizon": info["horizon"],
+            "hooks": info["hooks"],
+        },
+        "native": native,
+    })
 }
 
 /// `GET /api/v1/players`: who is online, and vanilla's lists.
@@ -402,6 +465,79 @@ mod tests {
         assert!(line(Action::Kick, json!({ "name": "Kim0", "reason": "a\nstop" })).is_err());
         assert!(line(Action::PardonIp, json!({ "ip": "Kim0" })).is_err());
         assert!(line(Action::Whitelist, json!({})).is_err());
+    }
+
+    #[test]
+    fn stopped_actions_edit_file_backed_lists() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-admin-stopped-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        crate::config::update(&dir, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+        crate::config::update(&dir, "server", "whitelist", toml::Value::Boolean(false)).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+
+        let call = |action, body| {
+            let response = act(&shared, action, body);
+            assert_eq!(response.status, 200, "{}", response.body);
+            serde_json::from_str::<Value>(&response.body).unwrap()
+        };
+        assert_eq!(
+            call(Action::Op, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Made Alex a server operator"] })
+        );
+        assert_eq!(
+            call(Action::WhitelistAdd, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Added Alex to the whitelist"] })
+        );
+        assert_eq!(
+            call(Action::Whitelist, br#"{"enabled":true}"#),
+            json!({ "changed": true, "output": ["Whitelist is now turned on"] })
+        );
+        assert_eq!(
+            call(Action::Deop, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Made Alex no longer a server operator"] })
+        );
+        assert_eq!(
+            call(Action::WhitelistRemove, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Removed Alex from the whitelist"] })
+        );
+        assert!(
+            !std::fs::read_to_string(dir.join("ops.json"))
+                .unwrap()
+                .contains("Alex")
+        );
+        assert!(
+            !std::fs::read_to_string(dir.join("whitelist.json"))
+                .unwrap()
+                .contains("Alex")
+        );
+        assert!(crate::config::Config::load(&dir).unwrap().server.whitelist);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mods_come_from_the_build_record() {
+        let none = built_with(None);
+        assert_eq!(
+            (none["engine"]["found"].clone(), none["native"].clone()),
+            (json!(false), json!([]))
+        );
+        let record = r#"{"base":"v1","horizon":"abc","target":"server","hooks":326,"mods":[{"id":"m","version":"1.0","sha256":"ff"}]}"#;
+        let some = built_with(Some(record));
+        assert_eq!(some["engine"]["target"], "server");
+        assert_eq!(some["engine"]["found"], true);
+        assert_eq!(
+            some["native"],
+            json!([{ "id": "m", "version": "1.0", "sha256": "ff" }])
+        );
+        // A release has no record's mods; a broken file is no mods.
+        assert_eq!(built_with(Some("{}"))["native"], json!([]));
+        assert_eq!(built_with(Some("nope"))["native"], json!([]));
     }
 
     #[test]

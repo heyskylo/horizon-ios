@@ -86,8 +86,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAcce
 raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-# The computer's memory, the end of the Launch panel's memory slider; already in the lockfile.
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+# The computer's memory, the end of the Launch panel's memory slider; the uninstaller's running
+# copy hidden and deleted at restart (installer::step_aside). Already in the lockfile.
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 # Shortcuts written by the shell itself (shortcut::write_windows_link): the hand-laid Shell Link has
 # no target ID list, so Explorer shows an empty target and starts nothing.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }

@@ -11,7 +11,7 @@ use crate::{
 };
 use horizon_server_files::properties::{ServerProperties, SystemEntropy};
 use serde_json::{Value, json};
-use std::{path::Path, sync::atomic::Ordering};
+use std::path::Path;
 
 /// A method's result (`short`: its name without `minecraft:`).
 pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Result<Value, Failure> {
@@ -28,8 +28,9 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             game.console(if flush { "save-all flush" } else { "save-all" })?;
             Ok(json!(true))
         }
+        // `ServerStateService.stop` submits `MinecraftServer.halt(false)`: the server stops and its process exits.
         "server/stop" => {
-            shared.stop.store(true, Ordering::SeqCst);
+            shared.shut_down();
             Ok(json!(true))
         }
         "server/system_message" => game.system_message(argument),
@@ -81,6 +82,20 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/view_distance" => game.view_distance(client, None),
+        "serversettings/view_distance/set" => {
+            game.view_distance(client, Some(management_int(argument)?))
+        }
+        "serversettings/simulation_distance" => game.simulation_distance(client, None),
+        "serversettings/simulation_distance/set" => {
+            game.simulation_distance(client, Some(management_int(argument)?))
+        }
+        "serversettings/operator_user_permission_level" => {
+            game.operator_user_permission_level(client, None)
+        }
+        "serversettings/operator_user_permission_level/set" => {
+            game.operator_user_permission_level(client, Some(management_int(argument)?))
+        }
         "serversettings/force_game_mode" => game.force_game_mode(client, None),
         "serversettings/force_game_mode/set" => game.force_game_mode(
             client,
@@ -90,6 +105,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
             ),
         ),
+        "serversettings/spawn_protection_radius" => game.spawn_protection_radius(client, None),
+        "serversettings/spawn_protection_radius/set" => {
+            game.spawn_protection_radius(client, Some(management_int(argument)?))
+        }
         "serversettings/allow_flight" => game.allow_flight(client, None),
         "serversettings/allow_flight/set" => game.allow_flight(
             client,
@@ -114,6 +133,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
         "serversettings/status_heartbeat_interval/set" => {
             status_heartbeat_interval(shared, management_int(argument)?)
         }
+        "serversettings/status_replies" => game.status_replies(client, None),
+        "serversettings/status_replies/set" => game.status_replies(
+            client,
+            Some(
+                argument
+                    .as_bool()
+                    .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
+            ),
+        ),
         "serversettings/player_idle_timeout" => game.player_idle_timeout(client, None),
         "serversettings/player_idle_timeout/set" => {
             game.player_idle_timeout(client, Some(management_int(argument)?))
@@ -563,6 +591,29 @@ impl Game<'_> {
         Ok(reply["value"].clone())
     }
 
+    /// `MinecraftServerSettingsServiceImpl.getSpawnProtectionRadius` and `setSpawnProtectionRadius`.
+    fn spawn_protection_radius(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/spawn_protection_radius" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/spawn_protection_radius/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "spawn-protection",
+                toml::Value::Integer(i64::from(value)),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     /// `MinecraftServerSettingsServiceImpl.allowFlight` and `setAllowFlight`.
     fn allow_flight(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
         let mut request = json!({ "method": "serversettings/allow_flight" });
@@ -602,6 +653,29 @@ impl Game<'_> {
                 &self.shared.dir,
                 "properties",
                 "hide-online-players",
+                toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.repliesToStatus` and `setRepliesToStatus`.
+    fn status_replies(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/status_replies" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/status_replies/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "enable-status",
                 toml::Value::Boolean(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
@@ -678,6 +752,37 @@ impl Game<'_> {
         Ok(reply["value"].clone())
     }
 
+    /// `MinecraftServerSettingsServiceImpl.getOperatorUserPermissions` and
+    /// `setOperatorUserPermissionLevel`.
+    fn operator_user_permission_level(
+        &self,
+        client: u32,
+        value: Option<i32>,
+    ) -> Result<Value, Failure> {
+        let mut request = json!({
+            "method": "serversettings/operator_user_permission_level"
+        });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/operator_user_permission_level/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            let value = reply["value"].as_i64().unwrap_or(i64::from(value));
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "op-permission-level",
+                toml::Value::Integer(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     /// `MinecraftServerSettingsServiceImpl.getMotd` and `setMotd`: the live server-list message.
     fn motd(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
         let mut request = json!({ "method": "serversettings/motd" });
@@ -719,6 +824,52 @@ impl Game<'_> {
                 "world",
                 "difficulty",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getViewDistance` and `setViewDistance`.
+    fn view_distance(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/view_distance" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/view_distance/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "view_distance",
+                toml::Value::Integer(i64::from(value)),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getSimulationDistance` and `setSimulationDistance`.
+    fn simulation_distance(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/simulation_distance" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/simulation_distance/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "simulation_distance",
+                toml::Value::Integer(i64::from(value)),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }
