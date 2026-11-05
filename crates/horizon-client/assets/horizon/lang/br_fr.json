@@ -419,6 +419,7 @@
   "Frame Generation": "Krouiñ frammoù",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Diskouez a ra ur framm savet etre pep daou hini gwirion : eeunoc'h, un tamm muioc'h a zilez.",
   "Shadow Cache": "Grubuilh skeud",
+  "Shader Packs...": "Pakadoù skeudennoù...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Adimplij ar gartenn skeud pakad pa glot an heol, ar gwel hag ar bed. Diweredekaet dre ziouer.",
   "Find BlueMap": "Kavout BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "War ar servijerioù e kaver o gartenn web BlueMap evit an tachennoù pell. Kemer perzh da heul.",

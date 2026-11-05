@@ -6,8 +6,10 @@ off by default: a fresh install looks exactly like vanilla 26.3, and turning one
 ## Fair play
 
 Nothing here tells the player more than vanilla does or plays for them, so the game stays fine on servers
-that ban unfair clients. That rules out, on purpose: a reach display, entities on the minimap, freelook,
-auto-clicking or any other automatic action, seeing through walls, and hitboxes beyond vanilla's F3+B.
+that ban unfair clients. That rules out, on purpose: entities on the minimap, freelook, auto-clicking or any
+other automatic action, seeing through walls, and hitboxes beyond vanilla's F3+B. The HUD widgets read only
+what this client already has: they send no packet and ask the server nothing, so an anticheat sees nothing new.
+The reach widget measures your own last hit and never changes reach.
 Three options do see further than vanilla would at that moment, and some strict servers ban fog or light
 changes: clear water and clear lava (below), and a fixed time of day, whose sky light brightens a night.
 They are off by default; check a server's rules before turning them on there.
@@ -74,6 +76,26 @@ box's quads. With nothing changing, a frame allocates nothing.
   as the damage's direct entity (`ClientboundDamageEventPacket`: melee and spear hits, not arrows or fire). A
   report that names no attacker counts once, within a second of a swing at that entity. Back to 0 when you are hurt or
   3 seconds pass without a hit. It counts what the game already shows (the target's hurt flash).
+- **FPS** (`hudFps`, top left): the frames drawn in the last second, as F3's first line counts them.
+- **Clicks per second** (`hudCps`, top left): your left and right presses in the last second, "CPS: 8 | 3".
+  Counted from the mouse buttons while playing (no screen open); nothing is sent for them.
+- **Keystrokes** (`hudKeys`, bottom left): W A S D, both mouse buttons with their clicks per second, and jump,
+  lit while held. The letters follow your key bindings.
+- **Clock** (`hudClock`, top right): your computer's local time, HH:MM.
+- **Reach** (`hudReach`, top left): for 3 seconds after you hit an entity, how far from your eyes the hit
+  landed (the pick's distance to its box), "Reach: 2.87". It reads the pick the attack already used.
+- **Speed** (`hudSpeed`, top left): your speed across the ground in blocks per second, over the last quarter
+  second; a teleport reads 0.
+
+Each `hud…` option has a `hud…Corner` beside it. With every widget off, a frame costs one test of the options.
+
+Style, for every widget: **Background opacity** (`hudOpacity`, 0 to 100, default 47, under the background
+switch), **Text colour** (`hudTextColour`, default white; coloured lines such as durability keep their colour)
+and **Text shadow** (`hudShadow`, default on).
+
+Layout: a widget moved by hand stays where it was put, as `hudPlace:<widget>,<x>,<y>,<scale>` lines (`x` and `y`
+are fractions of the room the screen leaves beside the widget, so it stays on screen after a resize; `corner` instead of them keeps the corner; scale in
+percent, 50 to 200). Widgets without such a line keep their corner. `pvp_hud::Layout`, `pvp_hud::snap`.
 
 ## Enchantment levels as numbers (`numericEnchants`, default off)
 

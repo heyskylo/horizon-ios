@@ -540,7 +540,9 @@ impl Launcher {
         if !p.author.is_empty() {
             by.push(trf("by {author}", &[("author", &p.author)]));
         }
-        by.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            by.push(trf("from {source}", &[("source", source)]));
+        }
         if !p.license.is_empty() {
             by.push(p.license.clone());
         }

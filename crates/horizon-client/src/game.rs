@@ -119,6 +119,9 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+mod enderman;
+#[cfg(test)]
+mod enderman_placement_tests;
 mod entity;
 mod entity_culling;
 mod entity_sounds;
@@ -490,6 +493,8 @@ struct Options {
     seed: i64,
     creative: bool,
     test_terrain: bool,
+    /// `--pregen`: enable the command even when the saved Extras switch is off.
+    pregen: bool,
     frames: Option<u64>,
     /// A splitscreen player: the split window paces every player's frames, not each its own.
     paced_by_split: bool,
@@ -647,6 +652,7 @@ impl Options {
             seed: 0,
             creative: false,
             test_terrain: false,
+            pregen: false,
             frames: None,
             paced_by_split: false,
             split_guest: false,
@@ -719,7 +725,10 @@ impl Options {
                     "Horizon: {arg} was removed: single player runs on its server thread."
                 ),
                 // Horizon's own commands (/pregen), off by default as on vanilla.
-                "--pregen" => horizon_client::command::vanilla::set_horizon_commands(true),
+                "--pregen" => {
+                    o.pregen = true;
+                    horizon_client::command::vanilla::set_horizon_commands(true);
+                }
                 _ => {
                     let value = args
                         .next()
@@ -2016,15 +2025,20 @@ struct WorldTables {
     /// The values of the data map types native mods registered
     /// (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
-    /// The entity type, biome and damage type tags with the packs' over the
-    /// game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
+    /// The entity type, biome, structure and damage type tags with the packs'
+    /// over the game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
     /// what the predicates' `#tag`s of those registries read.
     pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
 }
 
 impl WorldTables {
     /// The registries [`WorldTables::pack_tags`] holds.
-    const PACK_TAG_REGISTRIES: [&'static str; 3] = ["entity_type", "worldgen/biome", "damage_type"];
+    const PACK_TAG_REGISTRIES: [&'static str; 4] = [
+        "entity_type",
+        "worldgen/biome",
+        "worldgen/structure",
+        "damage_type",
+    ];
 }
 
 impl Resources {
@@ -5926,7 +5940,15 @@ impl Game<'_> {
             // EnderChestBlock.useWithoutItem
             self.award_custom_stat("open_enderchest", 1);
             self.anger_piglins(true);
+            // EnderChestBlockEntity.startOpen: the first opener's CONTAINER_OPEN
+            // (ContainerOpenersCounter.incrementOpeners), as for chests below.
             if self.container_opener_event(key, true) {
+                self.post_block_game_event(
+                    "minecraft:container_open",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
                 self.container_edge_sound(key, true);
             }
         } else if &*name == "minecraft:beacon" && self.open_station(pos, &name) {
@@ -17017,6 +17039,9 @@ impl Game<'_> {
     }
     /// A mouse button while playing (window or control socket).
     fn play_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+        if pressed {
+            self.pvp_click(button);
+        }
         if self.sleeping.is_some() {
             return Ok(());
         }

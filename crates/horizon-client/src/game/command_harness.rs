@@ -247,6 +247,18 @@ impl Game<'_> {
             std::thread::sleep(Duration::from_millis(2));
         }
         self.harness_owner(|g| g.harness_settle(deadline, None))?;
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_TICK_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_tick_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_BOBBING_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_bobbing_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_FALLBACK_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_fallback_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
         let mut out = String::new();
         for line in std::fs::read_to_string(script)?.lines() {
             if line.trim().is_empty() {
@@ -266,14 +278,20 @@ impl Game<'_> {
                     })?;
                     let messages = self.chat_capture.take().unwrap_or_default();
                     let results = self.cmds.results.take().unwrap_or_default();
-                    if op["record"].as_bool() != Some(false) {
+                    if op["record"].as_bool() != Some(false) || op["trace"].as_bool() == Some(true)
+                    {
                         let record = json!({
                             "cmd": command,
                             "messages": messages.iter().map(spans).collect::<Vec<_>>(),
                             "results": results.iter().map(|(s, v)| json!([s, v])).collect::<Vec<_>>(),
                         });
-                        out.push_str(&record.to_string());
-                        out.push('\n');
+                        if op["trace"].as_bool() == Some(true) {
+                            eprintln!("command trace: {record}");
+                        }
+                        if op["record"].as_bool() != Some(false) {
+                            out.push_str(&record.to_string());
+                            out.push('\n');
+                        }
                     }
                 }
                 "mob_anger" => {

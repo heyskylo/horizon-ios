@@ -412,6 +412,7 @@
   "Frame Generation": "Rammuættarlið",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Vísir eina gjørda rammu millum hvønn tveir veruligar: slættari, eitt sindur meira lag.",
   "Shadow Cache": "Skuggagoymsla",
+  "Shader Packs...": "Skuggapakkar...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Endurnýtir pakka skuggakortið, tá sól, útsýni og heimur passa saman. Sløkt sum standard.",
   "Find BlueMap": "Finn Blákort",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Á ambætarum, finnur teirra BlueMap vevkort fyri fjart lendi. Næsta melda teg til.",

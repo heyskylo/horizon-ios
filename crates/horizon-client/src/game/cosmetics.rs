@@ -302,6 +302,26 @@ fn covered(m: &Mob, slot: Slot) -> bool {
     }
 }
 
+/// How high the tallest item drawn on a body gets above the neck (pixels, `Item::top`): what
+/// lifts the wearer's name tag. None when nothing is drawn on it: the wearer's own cosmetics hidden
+/// (`worn` is None), another player's at "name tags only" or hidden, or every item `covered` (a
+/// helmet over a hat). One max over at most five items, read when the item was parsed.
+fn body_top(
+    extras: &horizon_client::extras::Extras,
+    own: bool,
+    worn: Option<&horizon_cosmetics::Worn>,
+    covered: impl Fn(Slot) -> bool,
+) -> Option<f32> {
+    if !own && extras.effective_others() != Others::Shown {
+        return None;
+    }
+    worn?
+        .iter()
+        .filter(|i| !covered(i.slot))
+        .map(|i| i.top)
+        .reduce(f32::max)
+}
+
 impl Game<'_> {
     /// Once a frame, before drawing: starts the service's client on first use and puts the
     /// textures the last frame wanted into the atlas.
@@ -385,9 +405,9 @@ impl Game<'_> {
         self.cosmetics.local
     }
 
-    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), and the
-    /// name tag style they wear if cosmetics are shown for them (name tags only counts). One
-    /// look in the cache for both.
+    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), the
+    /// name tag style they wear if cosmetics are shown for them (name tags only counts), and how
+    /// high what is drawn on their body gets (`body_top`). One look in the cache for all three.
     pub(super) fn cosmetics_marks(&self, m: &Mob, own: bool) -> super::names::Marks {
         let mut marks = super::names::Marks::default();
         let extras = &self.settings.extras;
@@ -407,6 +427,9 @@ impl Game<'_> {
         marks.horizon = extras.horizon_marks && frame.horizon(uuid);
         let worn = if styles { frame.worn(uuid) } else { None };
         drop(frame);
+        if !horizon_client::mobs::trader::is_invisible(m) {
+            marks.top = body_top(extras, own, worn.as_ref(), |slot| covered(m, slot));
+        }
         marks.style = worn.and_then(|w| self.cosmetics_tag(&w));
         marks
     }
@@ -600,9 +623,26 @@ mod tests {
         "texture": {"png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="},
         "tag": {"line": "#a98fff"}}"##;
 
-    /// The service: every player asked about wears `TAG`; each request is logged.
-    #[derive(Clone, Default)]
-    struct Service(Arc<Mutex<Vec<String>>>);
+    /// A crown whose star tops out 20 pixels above the neck: a 2-pixel box on a head item
+    /// attached 18 pixels up (a 16×16 texture).
+    const CROWN: &str = r##"{"format": 1, "id": "crown", "slot": "head", "bone": "head",
+        "attach": {"offset": [0, -18, 0]},
+        "texture": {"png": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGklEQVR4nGM4scXmPyWYYdSAUQNGDRguBgAA+D23H0jXFFsAAAAASUVORK5CYII="},
+        "parts": [{"name": "star", "cubes": [{"origin": [-1, -2, -1], "size": [2, 2, 2], "uv": [0, 0]}]}]}"##;
+
+    /// The service: every player asked about wears its items (`TAG` by default); each request is
+    /// logged.
+    #[derive(Clone)]
+    struct Service(
+        Arc<Mutex<Vec<String>>>,
+        &'static [(&'static str, &'static str)],
+    );
+
+    impl Default for Service {
+        fn default() -> Self {
+            Service(Arc::default(), &[("tag", TAG)])
+        }
+    }
 
     impl horizon_cosmetics::Transport for Service {
         fn post(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
@@ -614,7 +654,10 @@ mod tests {
                 .iter()
                 .map(|p| {
                     let p = p.as_str().unwrap().to_owned();
-                    (p, serde_json::json!([{"id": "tag", "hash": "h"}]))
+                    let items: Vec<_> = (self.1.iter())
+                        .map(|(id, _)| serde_json::json!({"id": id, "hash": "h"}))
+                        .collect();
+                    (p, serde_json::Value::from(items))
                 })
                 .collect();
             Ok(serde_json::json!({"ttl": 60, "players": players})
@@ -624,7 +667,10 @@ mod tests {
 
         fn get(&self, path: &str) -> Result<Vec<u8>, String> {
             self.0.lock().unwrap().push(format!("GET {path}"));
-            Ok(TAG.as_bytes().to_vec())
+            let (_, file) = (self.1.iter())
+                .find(|(id, _)| path.starts_with(&format!("/v1/items/{id}?")))
+                .ok_or_else(|| format!("no item at {path}"))?;
+            Ok(file.as_bytes().to_vec())
         }
     }
 
@@ -636,7 +682,14 @@ mod tests {
         extras: &Extras,
         patience: Duration,
     ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
-        let service = Service::default();
+        other_player_from(Service::default(), extras, patience)
+    }
+
+    fn other_player_from(
+        service: Service,
+        extras: &Extras,
+        patience: Duration,
+    ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
         let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
         let deadline = Instant::now() + patience;
         let worn = loop {
@@ -729,5 +782,62 @@ mod tests {
         );
         // An offline account in single player: nothing to ask about.
         assert_eq!(own_uuid(Some(OFFLINE), true, true, || None), None);
+    }
+
+    #[test]
+    fn a_tall_cosmetic_lifts_the_name_tag_only_while_it_is_drawn() {
+        use super::super::names::{NAME_TAG_UNIT, cosmetic_lift};
+        use horizon_cosmetics::prefs::Others;
+        // Vanilla: EntityAttachment.NAME_TAG of a standing player, 1.8 + 0.5 above the feet;
+        // the tag's lowest pixel 10 text pixels under it.
+        const VANILLA: f64 = 2.3;
+        let unit = f64::from(NAME_TAG_UNIT);
+        let tag = |top: Option<f32>| VANILLA + top.map_or(0.0, |t| cosmetic_lift(t, 1.0));
+        // The star's top: 20 pixels above the neck, which is 1.501 blocks up the model, scaled
+        // by the avatar's 0.9375.
+        let star = 0.9375 * (1.501 + 20.0 / 16.0);
+        let both: &'static [(&str, &str)] = &[("tag", TAG), ("crown", CROWN)];
+        let shown = Extras {
+            cosmetics_others: Some(Others::Shown),
+            ..Extras::default()
+        };
+        let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
+        let top_of = |extras: &Extras, patience| {
+            let (worn, _) = other_player_from(Service(Arc::default(), both), extras, patience);
+            body_top(extras, false, worn.as_ref(), |_| false)
+        };
+        // No cosmetics drawn on the body (a name tag style only): vanilla's height exactly.
+        let (worn, _) = other_player(&shown, long);
+        assert!(worn.is_some());
+        assert_eq!(
+            tag(body_top(&shown, false, worn.as_ref(), |_| false)),
+            VANILLA
+        );
+        // A small hat under the tag: vanilla's height too.
+        assert_eq!(cosmetic_lift(10.0, 1.0), 0.0);
+        // The crown: the whole tag just over the star.
+        let crowned = tag(top_of(&shown, long));
+        let bottom = crowned - 10.0 * unit;
+        assert!(
+            bottom > star && bottom < star + 2.0 * unit,
+            "{bottom} over {star}"
+        );
+        // A helmet over it: vanilla's height.
+        let (worn, _) = other_player_from(Service(Arc::default(), both), &shown, long);
+        let helmet = body_top(&shown, false, worn.as_ref(), |slot| slot == Slot::Head);
+        assert_eq!(tag(helmet), VANILLA);
+        // Others' cosmetics on name tags only, or hidden: nothing on the body, vanilla's height.
+        for others in [Others::NameTags, Others::Hidden] {
+            let extras = Extras {
+                cosmetics_others: Some(others),
+                ..Extras::default()
+            };
+            let patience = if others == Others::Hidden {
+                short
+            } else {
+                long
+            };
+            assert_eq!(tag(top_of(&extras, patience)), VANILLA, "{others:?}");
+        }
     }
 }

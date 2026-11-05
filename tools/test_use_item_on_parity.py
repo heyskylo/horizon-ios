@@ -750,6 +750,66 @@ def used_stat_cases(facts, count, seed):
         yield case
 
 
+# Entities an item places, each with its ENTITY_PLACE game event and used statistic (#9776):
+# paintings and item frames on a wall, armor stands, end crystals on obsidian or bedrock, minecarts
+# on rails.
+HANGING = ['painting', 'painting', 'item_frame', 'glow_item_frame']
+RAILS = ['rail', 'powered_rail', 'detector_rail', 'activator_rail']
+CARTS = ['minecart', 'chest_minecart', 'furnace_minecart', 'tnt_minecart', 'hopper_minecart']
+
+
+def placement_case(rng, states, case):
+    """An item that places an entity, clicked where it fits or does not."""
+    roll = rng.random()
+    if roll < 0.35:
+        # A wall facing the player (south), up to 4x4 so the larger paintings fit; the click on its
+        # south face, or another face.
+        width, height = rng.choice([(1, 1), (2, 2), (4, 3), (4, 4)])
+        wall = rng.choice(['stone', 'oak_planks', 'glass', 'stone'])
+        cells = [[x, y, 0, states.get(wall)] for x in range(-(width // 2), width - width // 2)
+                 for y in range(height)]
+        item = rng.choice(HANGING)
+        # Something in front of the wall, for the frames only: a painting picks among the largest
+        # variants that fit with its own (unseeded) random, so each wall here fits one size alone.
+        if item != 'painting' and rng.random() < 0.3:
+            cells.append([0, 1 if height > 1 else 0, 1, states.get(rng.choice(['torch', 'stone', 'oak_slab']))])
+        case['use_item'] = {'item': d.plain(item, 1), 'face': rng.choice(['south', 'south', 'south', 'up', 'east'])}
+    elif roll < 0.6:
+        cells = [[0, 0, 0, states.get(rng.choice(['stone', 'grass_block', 'short_grass', 'oak_slab']))]]
+        if rng.random() < 0.3:
+            cells.append([0, rng.choice([1, 2]), 0, states.get(rng.choice(['stone', 'glass']))])
+        case['use_item'] = {'item': d.plain('armor_stand', 1)}
+    elif roll < 0.8:
+        cells = [[0, 0, 0, states.get(rng.choice(['obsidian', 'obsidian', 'bedrock', 'stone']))]]
+        if rng.random() < 0.25:
+            cells.append([0, 1, 0, states.get(rng.choice(['fire', 'stone']))])
+        case['use_item'] = {'item': d.plain('end_crystal', 1)}
+    else:
+        rail = rng.choice(RAILS)
+        cells = [[0, -1, 0, states.get('stone')], [0, 0, 0, states.any(rng, rail)]]
+        case['use_item'] = {'item': d.plain(rng.choice(CARTS), 1)}
+    case['cells'] = cells
+    case['use_item'].update(creative=rng.random() < 0.2, sneaking=rng.random() < 0.15, food=20,
+                            yaw=rng.choice([0.0, 90.0, 180.0, 270.0, 33.0]))
+    if rng.random() < 0.25:
+        held = case['use_item']['item']
+        case['use_item'].update(offhand=held, item=rng.choice(['-', '-', d.plain('stick', 1)]))
+
+
+def placement_cases(facts, count, seed):
+    """`placement_case`s, from a stream of their own."""
+    rng = random.Random(f'placed {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        placement_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -778,7 +838,8 @@ def main():
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = [*cases(facts, args.count, args.seed), *wake_cases(facts, max(args.count // 10, 1), args.seed),
-                 *used_stat_cases(facts, max(args.count // 10, 1), args.seed)]
+                 *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
+                 *placement_cases(facts, max(args.count // 10, 1), args.seed)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)

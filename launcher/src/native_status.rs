@@ -137,12 +137,19 @@ pub fn enabled(home: &Path) -> Vec<Mod> {
 /// The native mods turned on in game folder `home` that pin Horizon commit `revision` (those naming
 /// a hook points' version follow the others, so they pin nothing).
 pub fn pinning(home: &Path, revision: &str) -> Vec<String> {
+    bundles_on(home)
+        .into_iter()
+        .filter(|b| b.manifest.hooks.is_none() && b.manifest.horizon == revision)
+        .map(|b| b.manifest.id)
+        .collect()
+}
+
+/// The readable native mods turned on in game folder `home`.
+pub fn bundles_on(home: &Path) -> Vec<horizon_mods::index::native::Bundle> {
     hnmods(home)
         .into_iter()
         .filter_map(|path| horizon_mods::index::native::Bundle::read(&path).ok())
-        .filter(|b| b.manifest.hooks.is_none() && b.manifest.horizon == revision)
         .filter(|b| java::is_enabled(home, &b.manifest.id))
-        .map(|b| b.manifest.id)
         .collect()
 }
 
