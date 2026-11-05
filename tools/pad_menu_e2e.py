@@ -56,6 +56,10 @@ EXE = '.exe' if os.name == 'nt' else ''
 SETTLE = 0.5
 
 
+WINDOW_ASPECT = 16 / 9
+WINDOW_ASPECT_SLACK = 0.1
+
+
 class Game:
     def __init__(self, args, name, world=False, seed=None):
         self.args = args
@@ -76,6 +80,14 @@ class Game:
         if world:
             self.launch += ['--world', 'Menus', '--creative', '--no-pause', '--wait']
         self.ctl(*self.launch, timeout=500)
+        self.warn_if_reshaped()
+
+    def warn_if_reshaped(self):
+        """Hidden or not, a tiling compositor sizes the window, and these cases assume 16:9."""
+        width, height = self.ctl('ui')['gui_size']
+        if abs(width / height - WINDOW_ASPECT) > WINDOW_ASPECT_SLACK:
+            print(f'warning: the window is {width:g}x{height:g} GUI pixels, not 16:9, and cases that scroll will '
+                  "fail. On a tiling compositor, float the app id 'horizon'.", file=sys.stderr, flush=True)
 
     def restart(self):
         """Quit and start again on the same files."""
@@ -148,11 +160,12 @@ class Game:
         # A long list scrolls under the D-pad on the way past.
         for _ in range(60):
             was = self.focus()
-            bounds = next(tuple(w['bounds']) for w in self.widgets() if w['id'] == wanted)
+            # Scrolled out of view, it isn't drawn yet.
+            bounds = next((tuple(w['bounds']) for w in self.widgets() if w['id'] == wanted), None)
             if was == bounds:
                 return
             # In the row of the focus, it's beside it.
-            if was and was[1] == bounds[1] and was[0] < bounds[0]:
+            if bounds and was and was[1] == bounds[1] and was[0] < bounds[0]:
                 self.pad('right')
                 continue
             self.pad('down')
@@ -365,6 +378,9 @@ def lock_question(args, name):
     return check.failures
 
 
+OPTIMIZE_REGIONS = 60000
+
+
 def open_optimize_confirm(game):
     """From the title, with one saved world, to the screen with the Erase Cached Data box."""
     game.pad('south')
@@ -385,10 +401,11 @@ def optimize_world(args, name):
         click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Save and Quit to Title'))
         game.wait_targets()
         game.title_buttons()
-        # A small world is done in a moment: enough regions to read that it takes a while.
+        # A small world is done in a moment, and a fast machine does thousands of regions in one:
+        # enough to read that it takes a while. Links, as copies this many would take longer than the job.
         source = max((game.game_home / 'saves' / 'Menus').rglob('region/*.mca'), key=lambda f: f.stat().st_size)
-        for i in range(400):
-            shutil.copy(source, source.parent / f'r.{100 + i}.100.mca')
+        for i in range(OPTIMIZE_REGIONS):
+            os.link(source, source.parent / f'r.{100 + i}.100.mca')
         open_optimize_confirm(game)
         click_widget(game, next(w for w in game.widgets() if w.get('label') == "I Know What I'm Doing!"))
         check(game.widgets()[0].get('label') == 'Cancel', f'not on Optimize World: {labels(game)}')
