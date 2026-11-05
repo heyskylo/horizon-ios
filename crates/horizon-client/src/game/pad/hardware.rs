@@ -9,6 +9,8 @@ use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, Trigge
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
+mod face_buttons;
+
 /// The controllers gilrs sees and the DualSense's output.
 #[derive(Default)]
 pub(super) struct Devices {
@@ -164,9 +166,11 @@ impl Pads {
 /// A pad's buttons, sticks and triggers now.
 fn state_of(pad: &gilrs::Gamepad) -> PadState {
     let mut state = PadState::default();
+    let crossed = face_buttons::crossed(pad);
     for button in Button::ALL {
         if !matches!(button, Button::LeftTrigger | Button::RightTrigger) {
-            state.set(button, pad.is_pressed(gilrs_button(button)));
+            let named = face_buttons::named(gilrs_button(button), crossed);
+            state.set(button, pad.is_pressed(named));
         }
     }
     let axis = |a| pad.value(a);
@@ -249,9 +253,10 @@ impl PadRouter {
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
+                    let crossed = face_buttons::crossed(&gilrs.gamepad(id));
                     if let Some(button) = Button::ALL
                         .into_iter()
-                        .find(|&b| gilrs_button(b) == pressed)
+                        .find(|&b| face_buttons::named(gilrs_button(b), crossed) == pressed)
                     {
                         events.push(PadEvent::Press(id, button));
                     }
