@@ -602,14 +602,11 @@ pub enum Item {
 /// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
+    // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
+    // are on the graphics screen's Quality page (`graphics_ui::rows`), not here.
     let mut rows = vec![
-        Err("horizon.extras.header.lighting"),
-        Ok(Fullbright),
-        Ok(DynamicLights),
         Err("horizon.extras.header.third_person"),
         Ok(OwnNameTag),
-        Err("horizon.extras.header.particles"),
-        Ok(HideBlockParticles),
         Err("horizon.extras.header.inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),

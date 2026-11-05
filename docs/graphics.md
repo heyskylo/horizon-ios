@@ -2,7 +2,7 @@
 
 ## Settings
 
-Horizon's graphics settings are one screen, opened from the top of **Video Settings** (**Horizon Graphics...** opens it at General, **Advanced Graphics...** at Advanced) or from **Options → Horizon Settings...**. Vanilla's Video Settings screen stays as vanilla draws it.
+Horizon's graphics settings are one screen, and **Options → Video Settings...** opens it, as Sodium's video screen replaces vanilla's: it holds every row of vanilla's Video Settings (with vanilla's names and values, kept in `options.txt` under vanilla's keys), Horizon's own graphics settings, the extras that change the picture (fullbright, dynamic lights, hiding block-break particles) and the shader packs. Each setting is in one place: FOV stays on the Options screen and View Bobbing in Accessibility, where vanilla has them; vanilla's Graphics API button is Advanced's Graphics API. The HDR shortcut key opens it at HDR. `horizon-ctl options video-vanilla` still shows vanilla's own Video Settings layout, which no menu opens.
 
 The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks palette (`docs/design-system.md`), on see-through panels so the world stays in view:
 
@@ -16,14 +16,14 @@ Tab, the arrows, Enter and Space work it from the keyboard (Left and Right step 
 
 Every setting applies at once, except worker threads, the graphics API and translucent batching, which apply at the next start. A preset sets the quality settings together; changing one of them turns it into Custom. Display preferences (FOV, framerate, VSync, GUI scale, fullscreen, present mode, pacing) leave the preset as it is.
 
-![Video Settings, with Horizon's buttons at the top](media/settings-simple.png)
 ![The graphics settings screen](media/settings-graphics.png)
 
 | Page | Setting | Stored in |
 | --- | --- | --- |
-| General | render distance, simulation distance, brightness, GUI scale, fullscreen, VSync, max framerate, inactivity framerate, FOV, view bobbing, attack indicator, autosave indicator | `options.txt` (vanilla keys) |
+| General | vanilla's graphics preset, render distance, simulation distance, brightness, GUI scale, fullscreen, exclusive fullscreen and its mode, VSync, max framerate, inactivity framerate, menu background blur, attack indicator, autosave indicator | `options.txt` (vanilla keys) |
 | | preset, LOD distance, far detail, BlueMap finding and radius (on servers, at the next join) | `horizon-graphics.txt` |
-| Quality | clouds, cloud distance, weather radius, particles, smooth lighting, biome blend, entity distance, entity shadows, vignette, chunk fade, mipmap levels, cutout leaves, improved transparency | `options.txt` |
+| Quality | clouds, cloud distance, weather radius, particles, smooth lighting, biome blend, entity distance, entity shadows, vignette, chunk fade, mipmap levels, texture filtering, max anisotropy, cutout leaves, improved transparency | `options.txt` |
+| | hide block-break particles, dynamic lights, fullbright ([extras.md](extras.md)) | `horizon-extras.txt` |
 | | sky, fog, weather, animated textures, distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up), resolution scale, anti-aliasing (FXAA or TAA), TAA upscaling, screenshot quality, frame generation | `horizon-graphics.txt` |
 | Performance | chunk builder | `options.txt` |
 | | chunk updates and upload budget per frame, worker threads, cave culling, GPU culling, entity and particle culling modes, leaf culling, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
