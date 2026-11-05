@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "تحتوي هذه النسخة على لعبة ببنية {installed}، لكن الإعدادات تحدد {selected}. ثبّت النسخة المحددة من صفحة الإصدارات قبل التشغيل.",
   "Automatic": "تلقائي",
   "{tag} has no build for the selected game architecture.": "لا تتوفر لـ {tag} نسخة متوافقة مع بنية اللعبة المحددة.",
-  "Unknown": "غير معروف"
+  "Unknown": "غير معروف",
+  "Claim for free": "احصل عليه مجانًا",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "مزوّد الدفع في المتجر لا يخدم بلدك، لذا يمكنك الحصول على طقم المؤسسين هنا مجانًا.",
+  "The Founder Set is yours.": "طقم المؤسسين أصبح لك."
 }

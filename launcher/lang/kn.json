@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "ಉಚಿತವಾಗಿ ಪಡೆಯಿರಿ",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ಅಂಗಡಿಯ ಪಾವತಿ ಸೇವೆ ನಿಮ್ಮ ದೇಶದಲ್ಲಿ ಲಭ್ಯವಿಲ್ಲ, ಆದ್ದರಿಂದ ಸ್ಥಾಪಕ ಸೆಟ್ ಅನ್ನು ಇಲ್ಲಿ ಉಚಿತವಾಗಿ ಪಡೆಯಬಹುದು.",
+  "The Founder Set is yours.": "ಸ್ಥಾಪಕ ಸೆಟ್ ಈಗ ನಿಮ್ಮದು."
 }

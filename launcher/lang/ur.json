@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "مفت حاصل کریں",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "دکان کا ادائیگی فراہم کنندہ آپ کے ملک میں خدمات نہیں دیتا، اس لیے آپ بانی سیٹ یہاں مفت حاصل کر سکتے ہیں۔",
+  "The Founder Set is yours.": "بانی سیٹ اب آپ کا ہے۔"
 }

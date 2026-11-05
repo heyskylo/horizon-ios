@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Gratis kriege",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "De betaalprovider van de winkel bedient dien land neet, dus kins se de Oprichter set hie gratis kriege.",
+  "The Founder Set is yours.": "De Oprichter set is van dich."
 }

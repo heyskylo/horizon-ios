@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "此版本的游戏为 {installed} 架构，但设置中选择了 {selected}。启动前请在“版本”中安装所选版本。",
   "Automatic": "自动",
   "{tag} has no build for the selected game architecture.": "{tag} 没有适用于所选游戏架构的版本。",
-  "Unknown": "未知"
+  "Unknown": "未知",
+  "Claim for free": "免费领取",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "商店的支付服务商不在你所在的国家提供服务，因此你可以在这里免费领取创始者套装。",
+  "The Founder Set is yours.": "创始者套装已归你所有。"
 }

@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Bu sürümde {installed} oyun derlemesi var ancak Ayarlar'da {selected} seçili. Başlatmadan önce Sürümler'den seçili derlemeyi yükleyin.",
   "Automatic": "Otomatik",
   "{tag} has no build for the selected game architecture.": "{tag} için seçili oyun mimarisine uygun bir derleme yok.",
-  "Unknown": "Bilinmiyor"
+  "Unknown": "Bilinmiyor",
+  "Claim for free": "Ücretsiz al",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Mağazanın ödeme sağlayıcısı ülkende hizmet vermiyor, bu yüzden Kurucu setini burada ücretsiz alabilirsin.",
+  "The Founder Set is yours.": "Kurucu seti artık senin."
 }

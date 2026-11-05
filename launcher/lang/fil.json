@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Kunin nang libre",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Hindi nagseserbisyo sa bansa mo ang payment provider ng shop, kaya puwede mong kunin dito nang libre ang Set ng founder.",
+  "The Founder Set is yours.": "Sa iyo na ang Set ng founder."
 }

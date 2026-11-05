@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Απόκτησέ το δωρεάν",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ο πάροχος πληρωμών του καταστήματος δεν εξυπηρετεί τη χώρα σου, οπότε μπορείς να αποκτήσεις το Ιδρυτικό σύνολο εδώ δωρεάν.",
+  "The Founder Set is yours.": "Το Ιδρυτικό σύνολο είναι δικό σου."
 }

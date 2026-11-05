@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Nara ya n'efu",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Onye na-enye ịkwụ ụgwọ nke ụlọ ahịa anaghị arụ ọrụ na mba gị, ya mere ị nwere ike ịnara Ntọala ntọala ebe a n'efu.",
+  "The Founder Set is yours.": "Ntọala ntọala bụ nke gị."
 }

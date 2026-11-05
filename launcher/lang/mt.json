@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Ħudu b'xejn",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il-fornitur tal-ħlas tal-ħanut ma jaqdix lil pajjiżek, għalhekk tista' tieħu s-Sett tal-fundatur hawn b'xejn.",
+  "The Founder Set is yours.": "Is-Sett tal-fundatur huwa tiegħek."
 }

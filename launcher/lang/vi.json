@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Nhận miễn phí",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Nhà cung cấp thanh toán của cửa hàng không phục vụ quốc gia của bạn, nên bạn có thể nhận Bộ sáng lập tại đây miễn phí.",
+  "The Founder Set is yours.": "Bộ sáng lập giờ là của bạn."
 }

@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Otten di bant",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il furnidôr di paiaments de buteghe nol servìs il to paîs, alore tu puedis otignî achì di bant l'Insiemi di fondadôrs.",
+  "The Founder Set is yours.": "L'Insiemi di fondadôrs al è to."
 }

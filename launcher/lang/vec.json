@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Ciapa gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "El fornidor de pagamenti del negozio no el lavora nel to paese, cussì te pol ciapar qua gratis el Set fondador.",
+  "The Founder Set is yours.": "El Set fondador el xe tuo."
 }

@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "इस संस्करण में {installed} गेम बिल्ड है, लेकिन सेटिंग्स में {selected} चुना गया है। शुरू करने से पहले Versions से चुना हुआ बिल्ड इंस्टॉल करें।",
   "Automatic": "स्वचालित",
   "{tag} has no build for the selected game architecture.": "{tag} के लिए चुने हुए गेम आर्किटेक्चर का बिल्ड उपलब्ध नहीं है।",
-  "Unknown": "अज्ञात"
+  "Unknown": "अज्ञात",
+  "Claim for free": "मुफ़्त पाएँ",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "दुकान का भुगतान प्रदाता आपके देश में सेवा नहीं देता, इसलिए आप फ़ाउंडर सेट यहाँ मुफ़्त पा सकते हैं।",
+  "The Founder Set is yours.": "फ़ाउंडर सेट अब आपका है।"
 }

@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Sækja ókeypis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Greiðsluþjónusta verslunarinnar þjónar ekki þínu landi, svo þú getur sótt Stofnandi settið hér ókeypis.",
+  "The Founder Set is yours.": "Stofnandi settið er þitt."
 }

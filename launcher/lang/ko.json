@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "이 버전의 게임은 {installed}이지만 설정에서는 {selected}를 선택했습니다. 실행하기 전에 버전에서 선택한 빌드를 설치하세요.",
   "Automatic": "자동",
   "{tag} has no build for the selected game architecture.": "{tag}에는 선택한 게임 아키텍처용 빌드가 없습니다.",
-  "Unknown": "알 수 없음"
+  "Unknown": "알 수 없음",
+  "Claim for free": "무료로 받기",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "상점의 결제 서비스가 회원님의 국가를 지원하지 않으므로 창립자 세트를 여기에서 무료로 받을 수 있습니다.",
+  "The Founder Set is yours.": "창립자 세트를 받았습니다."
 }

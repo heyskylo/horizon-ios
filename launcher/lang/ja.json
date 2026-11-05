@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "このバージョンのゲームは {installed} ですが、設定では {selected} が選択されています。起動前に「バージョン」から選択したビルドをインストールしてください。",
   "Automatic": "自動",
   "{tag} has no build for the selected game architecture.": "{tag} には選択したゲームアーキテクチャ用のビルドがありません。",
-  "Unknown": "不明"
+  "Unknown": "不明",
+  "Claim for free": "無料で受け取る",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ショップの決済サービスはお住まいの国に対応していないため、ファウンダーセットをここで無料で受け取れます。",
+  "The Founder Set is yours.": "ファウンダーセットはあなたのものです。"
 }

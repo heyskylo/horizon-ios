@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Cette version contient un jeu {installed}, mais les paramètres sélectionnent {selected}. Installez la version sélectionnée depuis Versions avant de lancer le jeu.",
   "Automatic": "Automatique",
   "{tag} has no build for the selected game architecture.": "{tag} ne propose aucune version pour l’architecture de jeu sélectionnée.",
-  "Unknown": "Inconnu"
+  "Unknown": "Inconnu",
+  "Claim for free": "Obtenir gratuitement",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Le prestataire de paiement de la boutique n'opère pas dans votre pays : vous pouvez donc obtenir le Set fondateur ici gratuitement.",
+  "The Founder Set is yours.": "Le Set fondateur est à vous."
 }

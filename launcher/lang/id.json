@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
   "Automatic": "Automatic",
   "{tag} has no build for the selected game architecture.": "{tag} has no build for the selected game architecture.",
-  "Unknown": "Unknown"
+  "Unknown": "Unknown",
+  "Claim for free": "Klaim gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Penyedia pembayaran toko tidak melayani negaramu, jadi kamu bisa mengklaim Set pendiri di sini secara gratis.",
+  "The Founder Set is yours.": "Set pendiri kini milikmu."
 }

@@ -1129,5 +1129,8 @@
   "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "В этой версии установлена сборка игры {installed}, а в настройках выбрана {selected}. Перед запуском установите выбранную сборку на странице «Версии».",
   "Automatic": "Автоматически",
   "{tag} has no build for the selected game architecture.": "Для {tag} нет сборки для выбранной архитектуры игры.",
-  "Unknown": "Неизвестно"
+  "Unknown": "Неизвестно",
+  "Claim for free": "Получить бесплатно",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Платёжный сервис магазина не работает в вашей стране, поэтому Набор основателя можно получить здесь бесплатно.",
+  "The Founder Set is yours.": "Набор основателя теперь ваш."
 }
