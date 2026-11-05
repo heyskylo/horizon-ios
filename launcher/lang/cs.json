@@ -1174,5 +1174,16 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "{source} isn't set up.": "{source} isn't set up.",
+  "Installed {mods}, checksums checked.": "Installed {mods}, checksums checked.",
+  "Pick the world the data pack goes into first.": "Pick the world the data pack goes into first.",
+  "Put {pack} {version} in {world}'s data packs, checksum checked: the game turns it on when the world opens. {coverage}": "Put {pack} {version} in {world}'s data packs, checksum checked: the game turns it on when the world opens. {coverage}",
+  "Installed {pack} {version} as its own profile with {mods}, each checked. Play it from the list above.": "Installed {pack} {version} as its own profile with {mods}, each checked. Play it from the list above.",
+  "Play it from the list above.": "Play it from the list above.",
+  "Installed {mods} into {instance}. Build to play with it.": "Installed {mods} into {instance}. Build to play with it.",
+  "Installed {mods} into horizon-mods and turned it on, checksum checked (Options > Mods in the game).": "Installed {mods} into horizon-mods and turned it on, checksum checked (Options > Mods in the game).",
+  "Ported {mods} into horizon-mods and turned on (Options > Mods in the game).": "Ported {mods} into horizon-mods and turned on (Options > Mods in the game).",
+  "What didn't port is listed under Installed.": "What didn't port is listed under Installed.",
+  "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.": "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs."
 }
