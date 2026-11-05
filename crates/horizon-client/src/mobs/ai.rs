@@ -2458,11 +2458,26 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     }
     0.0
 }
+/// `Allay.hurtServer`'s liked-player guard for verified player sources.
+/// Other species and unresolved callers retain their existing filters.
+pub fn accepts_damage_from_player(
+    m: &mut Mob,
+    source: &Damage,
+    amount: f32,
+    uuid: [i32; 4],
+) -> bool {
+    if m.species() == Species::Allay {
+        !super::allay::is_liked_player(m, source.attacker, uuid)
+    } else {
+        accepts_damage(m, source, amount)
+    }
+}
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
         Species::Breeze => super::breeze::accepts_damage(m, source),
-        // Allay.hurtServer: its liked player cannot hurt it.
+        // Compatibility for unresolved player sources; verified UUID routes
+        // use accepts_damage_from_player instead (this is not UUID parity).
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
         Species::Wither => super::wither::accepts(m, source.kind, source.attacker, false),

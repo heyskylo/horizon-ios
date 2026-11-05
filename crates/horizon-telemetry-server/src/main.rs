@@ -15,14 +15,34 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
     let store = Store::open(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let app = App::new(store, Config::from_env());
+    let config = Config::from_env();
+    if let Some(why) = config.client_ip_refusal() {
+        eprintln!("horizon-telemetry-server: {why}");
+        std::process::exit(1);
+    }
+    if let Some(warning) = config.client_ip_warning() {
+        eprintln!("horizon-telemetry-server: WARNING: {warning}");
+    }
+    if std::env::var("HORIZON_TELEMETRY_AGGREGATE_DAYS").is_ok_and(|v| !v.trim().is_empty())
+        && config.aggregate_days.is_none()
+    {
+        eprintln!(
+            "horizon-telemetry-server: HORIZON_TELEMETRY_AGGREGATE_DAYS isn't a list of days from 1 to 366: \
+             /v1/aggregate takes any value"
+        );
+    }
+    let app = App::new(store, config);
     let upkeep = app.clone();
     tokio::spawn(async move {
         let mut every = tokio::time::interval(Duration::from_secs(600));
         loop {
             every.tick().await;
-            if let Err(e) = upkeep.maintain() {
-                eprintln!("horizon-telemetry-server: upkeep failed: {e}");
+            // Off the async workers: the upkeep rebuilds totals and deletes rows (SQLite, blocking).
+            let worker = upkeep.clone();
+            match tokio::task::spawn_blocking(move || worker.maintain()).await {
+                Ok(Err(e)) => eprintln!("horizon-telemetry-server: upkeep failed: {e}"),
+                Err(e) => eprintln!("horizon-telemetry-server: upkeep stopped: {e}"),
+                Ok(Ok(_)) => {}
             }
             // The hub's reports GitHub refused before: their issues, off the async workers.
             let filing = upkeep.clone();
@@ -41,7 +61,8 @@ async fn main() {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             every.tick().await;
-            if let Err(e) = recorder.record_live() {
+            let worker = recorder.clone();
+            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || worker.record_live()).await {
                 eprintln!("horizon-telemetry-server: could not record the live count: {e}");
             }
             // The official server's count: a status ping, off the async workers.

@@ -1140,5 +1140,6 @@
   "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "Zakladatelský set je váš.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
   "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}."
 }

@@ -1140,5 +1140,6 @@
   "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "창립자 세트를 받았습니다.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
   "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "네이티브 모드는 지원되는 Windows 아키텍처가 서로 일치해야 합니다. 게임: {game_arch}; 빌드 도구 체인: {toolchain_arch}."
 }
