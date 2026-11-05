@@ -335,7 +335,6 @@
   "horizon.osk.close": "Затвори",
   "horizon.extras.chat_animation.tooltip": "Нова линија за ћаскање клизи са леве стране док бледи, уместо да изгледа цела.",
   "horizon.extras.chat_indicator.tooltip": "Трака у боји лево од линије за ћаскање.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Точкић за померање преко дугмета у подешавањима мења своју вредност, као код ваниле. Искључено, точкић само помера листу.",
   "horizon.extras.pack_browser.tooltip": "„Изабери пакете ресурса“ добија дугме „Додај“ које претражује Modrinth и инсталира пакет у фасциклу пакета. Када је искључено, игра никада не контактира Modrinth.",
   "horizon.extras.splitscreen.tooltip": "У свету, други контролор може да се придружи као нови играч: притисните А када то затражи, а затим изаберите профил и где да играте.",
   "horizon.splitscreen.setup.monitor": "Монитор %s",

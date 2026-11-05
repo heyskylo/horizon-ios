@@ -305,6 +305,7 @@ impl Opt {
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
+            Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::ModelPart(i) => [
@@ -385,6 +386,7 @@ impl Opt {
             Opt::PadRepeatInterval => unit(s.controller.repeat_interval, 0.03, 0.3),
             Opt::PadMoveDeadzone => unit(s.controller.move_deadzone, 0.0, 0.5),
             Opt::PadLookDeadzone => unit(s.controller.look_deadzone, 0.0, 0.5),
+            Opt::PadTriggerThreshold => unit(s.controller.trigger_threshold, 0.1, 0.9),
             Opt::SprintWindow => unit(s.sprint_window as f32, 0.0, 10.0),
             _ => Kind::Cycle,
         }
@@ -449,6 +451,7 @@ impl Opt {
             Opt::MenuBlur => Some(10),
             Opt::NotificationDisplayTime => Some(95),
             Opt::PadMoveDeadzone | Opt::PadLookDeadzone => Some(50),
+            Opt::PadTriggerThreshold => Some(80),
             Opt::SprintWindow => Some(10),
             _ => None,
         }
@@ -658,11 +661,11 @@ impl Opt {
                     )],
                 ),
             ),
-            Opt::PadMoveDeadzone | Opt::PadLookDeadzone => {
-                let v = if self == Opt::PadMoveDeadzone {
-                    s.controller.move_deadzone
-                } else {
-                    s.controller.look_deadzone
+            Opt::PadMoveDeadzone | Opt::PadLookDeadzone | Opt::PadTriggerThreshold => {
+                let v = match self {
+                    Opt::PadMoveDeadzone => s.controller.move_deadzone,
+                    Opt::PadLookDeadzone => s.controller.look_deadzone,
+                    _ => s.controller.trigger_threshold,
                 };
                 Text::translate(
                     "options.percent_value",
@@ -921,6 +924,7 @@ impl Opt {
             Opt::PadRepeatInterval => s.controller.repeat_interval = step(30.0, 300.0) / 1000.0,
             Opt::PadMoveDeadzone => s.controller.move_deadzone = step(0.0, 50.0) / 100.0,
             Opt::PadLookDeadzone => s.controller.look_deadzone = step(0.0, 50.0) / 100.0,
+            Opt::PadTriggerThreshold => s.controller.trigger_threshold = step(10.0, 90.0) / 100.0,
             Opt::SprintWindow => s.sprint_window = step(0.0, 10.0) as i32,
             _ => {}
         }
@@ -1604,7 +1608,7 @@ pub struct OptionsUi {
     pub selected_key: Option<&'static str>,
     /// The native mod's key waiting: (mod, key) in `mods.installed`.
     selected_native_key: Option<(usize, usize)>,
-    /// Controller Binds: the action waiting for a pad button.
+    /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
@@ -4717,19 +4721,19 @@ impl OptionsUi {
         }
         events
     }
-    /// The mouse wheel at the cursor. Vanilla scrolls the list
-    /// (`AbstractScrollArea.mouseScrolled`), except that a hovered cycle button
-    /// takes the step and keeps the wheel (`CycleButton.mouseScrolled`: up goes
-    /// back); `AbstractSliderButton` does not override it, so a slider under the
-    /// cursor lets the list scroll.
+    /// The mouse wheel at the cursor. A vanilla list keeps the wheel for itself:
+    /// `AbstractContainerWidget` inherits `AbstractScrollArea.mouseScrolled`, which
+    /// scrolls and never reaches the list's rows. A cycle button outside a list is
+    /// the screen's own child, so it takes the step (`CycleButton.mouseScrolled`: up
+    /// goes back). `AbstractSliderButton` does not override it, so a slider outside
+    /// a list does nothing.
     ///
-    /// **Horizon improvement (diverges from Vanilla 26.3):** a slider or cycle
-    /// button focused by the keyboard (Tab, the arrows, a pad) steps or cycles on
-    /// the wheel wherever the cursor is. Vanilla 26.3 does not intercept the wheel
-    /// for sliders at all; this makes keyboard navigation far more usable. Focus
-    /// left by a click does not count (`focus_from_keyboard`): vanilla's wheel
-    /// ignores it, and honouring it toggled the clicked option on every later wheel
-    /// event, from anywhere on the screen, while the list never scrolled.
+    /// **Horizon extra (diverges from Vanilla 26.3, off by default):** "Scroll wheel
+    /// changes settings" lets a hovered list row take the step too, and a slider or
+    /// cycle button focused by the keyboard (Tab, the arrows, a pad) step on the
+    /// wheel wherever the cursor is. Focus left by a click does not count
+    /// (`focus_from_keyboard`): honouring it toggled the clicked option on every
+    /// later wheel event, from anywhere on the screen, while the list never scrolled.
     /// The graphics screen has its own wheel (`GraphicsUi::wheel`).
     pub fn wheel(
         &mut self,
@@ -4755,17 +4759,17 @@ impl OptionsUi {
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
-        // The "Scroll wheel changes settings" extra off: the wheel only scrolls.
-        if !plain || !s.extras.wheel_cycles_settings {
+        if !plain {
             self.scroll_at(s, size, cursor, amount);
             return Vec::new();
         }
-        // Horizon improvement: a keyboard-focused slider or cycle button
-        // intercepts the wheel before hover detection (see doc-comment above).
-        // A click focuses its widget for the highlight too, and vanilla's wheel
-        // must not act on that: it would toggle the clicked option from anywhere
-        // on the screen and the list would never scroll.
-        if amount != 0.0 && self.focus_from_keyboard {
+        let extra = s.extras.wheel_cycles_settings;
+        // The extra: a keyboard-focused slider or cycle button intercepts the
+        // wheel before hover detection (see doc-comment above). A click focuses
+        // its widget for the highlight too, and the wheel must not act on that:
+        // it would toggle the clicked option from anywhere on the screen and the
+        // list would never scroll.
+        if extra && amount != 0.0 && self.focus_from_keyboard {
             let (widgets, _, _, _) = self.layout(s, size.0, size.1);
             match &self.focus {
                 Some(FocusId::Slider(opt)) => {
@@ -4794,25 +4798,22 @@ impl OptionsUi {
             Extra(crate::extras::Item),
         }
         let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);
+        // A list's row takes the wheel only with the extra on.
+        let takes_wheel = |wd: &Widget| {
+            ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                && (!wd.list || (extra && cursor.1 >= top && cursor.1 < bottom))
+        };
         let hovered = widgets.iter().find_map(|wd| match &wd.kind {
             WKind::Button {
                 active: true,
                 act: Act::Cycle(opt),
                 ..
-            } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
-            {
-                Some(HoveredControl::Cycle(*opt))
-            }
+            } if takes_wheel(wd) => Some(HoveredControl::Cycle(*opt)),
             WKind::Button {
                 active: true,
                 act: Act::Extra(item),
                 ..
-            } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
-            {
-                Some(HoveredControl::Extra(*item))
-            }
+            } if takes_wheel(wd) => Some(HoveredControl::Extra(*item)),
             _ => None,
         });
         match hovered {
@@ -8290,7 +8291,8 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
 
-        // 1. Extras page: scrolling wheel on Sort switch cycles it
+        // 1. Extras page: with the wheel extra on, the wheel on the Sort switch cycles it
+        s.extras.wheel_cycles_settings = true;
         ui.show(Page::Extras);
         let size = (480.0, 600.0);
         let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
@@ -8354,9 +8356,9 @@ mod tests {
         assert_eq!(s.horizon.chunk_updates, 11);
     }
 
-    /// Vanilla's wheel scrolls the list (`AbstractScrollArea.mouseScrolled`); only a
-    /// widget focused by the keyboard takes the step from anywhere on the screen.
-    /// A click focuses its widget for the highlight, and honouring that focus made a
+    /// Vanilla's wheel scrolls the list (`AbstractScrollArea.mouseScrolled`); with the
+    /// extra on, a widget focused by the keyboard takes the step from anywhere on the
+    /// screen. A click focuses its widget for the highlight, and honouring that focus made a
     /// clicked option toggle on every later wheel event while the list never scrolled.
     #[test]
     fn a_clicked_option_lets_the_wheel_scroll_the_list() {
@@ -8418,8 +8420,9 @@ mod tests {
         assert!(!events.contains(&Event::Changed));
         assert!(ui.scroll > start, "the list scrolls down instead");
 
-        // Keyboard focus keeps the documented divergence: the wheel steps it
-        // wherever the cursor is, even off the widget.
+        // With the extra on, keyboard focus keeps the documented divergence: the
+        // wheel steps it wherever the cursor is, even off the widget.
+        s.extras.wheel_cycles_settings = true;
         ui.focus = Some(FocusId::Cycle(Opt::ViewBobbing));
         ui.focus_from_keyboard = true;
         let events = ui.wheel(&mut s, size, cursor, framebuffer, -1.0);
@@ -8429,7 +8432,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_only_scrolls_with_the_extra_off() {
+    fn the_wheel_scrolls_a_list_past_its_cycle_buttons_with_the_extra_off() {
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
         ui.show(Page::Video);
@@ -8440,20 +8443,22 @@ mod tests {
             content > bottom - top,
             "the video page scrolls at this size"
         );
-        let (opt, over) = widgets
+        let (opt, over, list) = widgets
             .iter()
             .find_map(|wd| match wd.kind {
                 WKind::Button {
                     act: Act::Cycle(opt),
                     ..
-                } if !wd.list || (wd.y >= top && wd.y + wd.h <= bottom) => {
-                    Some((opt, (wd.x + 5.0, wd.y + 5.0)))
+                } if wd.y >= top && wd.y + wd.h <= bottom => {
+                    Some((opt, (wd.x + 5.0, wd.y + 5.0), wd.list))
                 }
                 _ => None,
             })
             .expect("a visible cycle button");
 
-        s.extras.wheel_cycles_settings = false;
+        assert!(list, "{opt:?} is a row of the video list");
+        // The default, as in vanilla (#9633).
+        assert!(!s.extras.wheel_cycles_settings);
         let before = format!("{s:?}");
         let start = ui.scroll;
         let events = ui.wheel(&mut s, size, over, framebuffer, -1.0);
@@ -8469,7 +8474,7 @@ mod tests {
         ui.wheel(&mut s, size, over, framebuffer, -1.0);
         assert_eq!(format!("{s:?}"), before);
 
-        // On (the default), vanilla's CycleButton.mouseScrolled again.
+        // On, the row under the cursor takes the step.
         s.extras.wheel_cycles_settings = true;
         let before = format!("{s:?}");
         let events = ui.wheel(&mut s, size, over, framebuffer, -1.0);
@@ -8495,6 +8500,7 @@ mod tests {
             Opt::NotificationDisplayTime,
             Opt::PadMoveDeadzone,
             Opt::PadLookDeadzone,
+            Opt::PadTriggerThreshold,
             Opt::SprintWindow,
         ];
         for opt in stepped_opts {

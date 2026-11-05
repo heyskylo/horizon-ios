@@ -293,7 +293,6 @@
   "horizon.osk.close": "Agħlaq",
   "horizon.extras.chat_animation.tooltip": "Linja ta' chat ġdida tiżżerżaq 'il ġewwa mix-xellug waqt li tgħib, minflok tidher sħiħa.",
   "horizon.extras.chat_indicator.tooltip": "Il-bar ikkulurit fuq ix-xellug ta 'chat line.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ir-rota tal-iscroll fuq buttuna fis-settings tibdel il-valur tagħha, bħal fil-vanilla. Mitfija, ir-rota tiskrollja biss il-lista.",
   "horizon.extras.pack_browser.tooltip": "Agħżel Pakketti tar-Riżorsi tikseb buttuna Żid li tfittex Modrinth u tinstalla pakkett fil-folder tal-pakketti tiegħek. Mitfija, il-logħba qatt ma tikkuntattja Modrinth.",
   "horizon.extras.splitscreen.tooltip": "F'dinja, kontrollur ieħor jista' jingħaqad bħala plejer ġdid: agħfas A meta jitlob, imbagħad agħżel profil u fejn tilgħab.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

@@ -697,7 +697,7 @@ fn detected_controller_style(
     fallback: horizon_client::gamepad::GlyphStyle,
 ) -> horizon_client::gamepad::GlyphStyle {
     device.map_or(fallback, |d| {
-        horizon_client::gamepad::GlyphStyle::of_vendor(d.vendor)
+        horizon_client::gamepad::GlyphStyle::of_device(d.vendor, d.product)
     })
 }
 

@@ -77,6 +77,7 @@ pub mod pack_browser;
 pub mod pack_screen;
 pub mod packs;
 pub mod pad_cursor;
+pub mod pad_glyph;
 pub mod par;
 pub mod particles;
 pub mod poi_sections;

@@ -478,15 +478,21 @@ def main():
     parser.add_argument('--out', default=str(lab.LOCAL / 'wire-stream-parity'))
     parser.add_argument('--scenarios', default=','.join(SCENARIOS), type=lambda s: s.split(','))
     parser.add_argument('--clients', default='vanilla,horizon', type=lambda s: s.split(','),
-                        help='the reference client and the one compared with it: vanilla, horizon, horizon-legacy')
+                        help='the reference client and the one compared with it, of vanilla, horizon and '
+                             'horizon-legacy; one alone is only captured (a loaded machine whose vanilla client fails '
+                             'to log in: rerun horizon alone, copy an earlier vanilla.jsonl into --out, then '
+                             '--compare-only)')
     parser.add_argument('--compare-only', action='store_true', help='compare the captures already in --out')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folders')
     args = parser.parse_args()
     unknown = [s for s in args.scenarios if s not in SCENARIOS]
     if unknown:
         parser.error(f'unknown scenarios {unknown}; known: {", ".join(SCENARIOS)}')
-    if len(args.clients) != 2 or len(set(args.clients)) != 2 or not set(args.clients) <= set(CLIENTS):
-        parser.error(f'--clients takes two of {", ".join(CLIENTS)}')
+    if len(args.clients) not in (1, 2) or len(set(args.clients)) != len(args.clients) \
+            or not set(args.clients) <= set(CLIENTS):
+        parser.error(f'--clients takes one or two of {", ".join(CLIENTS)}')
+    if args.compare_only and len(args.clients) != 2:
+        parser.error('--compare-only compares two clients: name both in --clients')
     out = Path(args.out)
     if args.compare_only:
         captures = {who: out / f'{who}.jsonl' for who in args.clients}
@@ -497,6 +503,9 @@ def main():
             captures = run(args, out)
         except Failed as e:
             sys.exit(f'FAIL: {e}')
+        if len(captures) < 2:
+            print(f'captured {", ".join(captures)} in {out}; nothing to compare it with')
+            return
     try:
         results = compare(captures, args.scenarios)
     except Failed as e:

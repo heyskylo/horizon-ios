@@ -1666,6 +1666,9 @@ impl Launcher {
                 ),
             };
             detail = detail.child(div().text_color(t.muted).child(said));
+            for left in &build.left_out {
+                detail = detail.child(div().text_color(t.warn).child(left.label()));
+            }
         }
         if self.native_step.is_some() && !mine {
             let other = self
