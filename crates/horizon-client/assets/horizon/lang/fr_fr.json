@@ -389,7 +389,7 @@
   "horizon.extras.cosmetics.shown": "Affichés",
   "horizon.extras.cosmetics.hidden": "Masqués",
   "horizon.extras.cosmetics.name_tags": "Étiquettes seulement",
-  "horizon.extras.cosmetics_solo": "Cosmétiques en solo",
+  "horizon.extras.cosmetics_solo": "En solo",
   "horizon.extras.cosmetics_solo.tooltip": "Afficher aussi vos cosmétiques et le badge de votre nom dans vos mondes solo (votre pseudo avec « Mon pseudo »). Désactivé : seulement sur les serveurs.",
   "horizon.extras.horizon_marks": "Logos Horizon",
   "horizon.extras.horizon_marks.tooltip": "Afficher le logo Horizon à côté des joueurs Horizon : un petit logo devant le nom des autres joueurs qui utilisent Horizon, au-dessus de leur tête et dans la liste des joueurs. Seuls les joueurs Horizon le voient : les serveurs ne reçoivent rien.",

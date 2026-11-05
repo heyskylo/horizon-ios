@@ -152,7 +152,7 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     *My cosmetics*, *Show me as Horizon*) runs at a time (Mojang keeps one joined server id per
     account). `HORIZON_COSMETICS_LOCAL` counts as owning.
   - *Others' auras and trails*, off by default (no item of that kind exists yet).
-  - *Cosmetics in single player*, off by default, the game's only (`cosmeticsSolo`). The
+  - *In single player*, off by default, the game's only (`cosmeticsSolo`). The
     window's own server names the player by their offline profile, which the service doesn't
     know, so in single player (open to LAN too) the game draws and asks nothing for the player's
     own model. On, it asks by the signed-in account's UUID: their cosmetics, their name tag style

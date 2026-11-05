@@ -740,7 +740,7 @@ impl Item {
             Item::CosmeticsMine => "My cosmetics",
             Item::CosmeticsOthers => "Other players' cosmetics",
             Item::CosmeticsAuras => "Others' auras and trails",
-            Item::CosmeticsSolo => "Cosmetics in single player",
+            Item::CosmeticsSolo => "In single player",
             Item::HorizonMarks => "Horizon logos",
             Item::HorizonMe => "Show me as Horizon",
             Item::Pvp(o) => o.caption(),
