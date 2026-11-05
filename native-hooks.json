@@ -655,6 +655,84 @@
       "name": "recipe_book_category",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_book_category",
       "mod_api": {}
+    },
+    {
+      "name": "screen_pos",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_pos",
+      "mod_api": {}
+    },
+    {
+      "name": "screen_extra_data",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_extra_data",
+      "mod_api": {}
+    },
+    {
+      "name": "send_chat",
+      "target": "horizon_client::game::native_net::Game<'_>::native_send_chat"
+    },
+    {
+      "name": "send_packet",
+      "target": "horizon_client::game::native_net::Game<'_>::native_send_packet"
+    },
+    {
+      "name": "client_state",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_state"
+    },
+    {
+      "name": "client_entities",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_entities"
+    },
+    {
+      "name": "client_heads",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_heads"
+    },
+    {
+      "name": "client_profiles",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_profiles"
+    },
+    {
+      "name": "client_visual_clear",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_visual_clear"
+    },
+    {
+      "name": "client_block_obstruction",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_block_obstruction"
+    },
+    {
+      "name": "gui_paint",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_gui_paint"
+    },
+    {
+      "name": "gui_nine_slice",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_gui_nine_slice"
+    },
+    {
+      "name": "gui_tooltip",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_gui_tooltip"
+    },
+    {
+      "name": "set_mod_key",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_set_mod_key"
+    },
+    {
+      "name": "client_action_bar",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_client_action_bar"
+    },
+    {
+      "name": "text_width",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_text_width"
+    },
+    {
+      "name": "playing",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_playing"
+    },
+    {
+      "name": "window",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_window"
+    },
+    {
+      "name": "player",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player"
     }
   ],
   "hooks": [
@@ -4874,6 +4952,131 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_tooltip_color",
       "neoforge": "RenderTooltipEvent.Texture",
       "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "camera_pose",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_camera_pose",
+      "neoforge": "ViewportEvent.ComputeCameraAngles",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_chat_received",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_chat_received",
+      "neoforge": "ClientChatReceivedEvent",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    },
+    {
+      "name": "client_packet",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_packet",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "menu_extra_data",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_extra_data",
+      "neoforge": "IPlayerExtension.openMenu(MenuProvider, Consumer<RegistryFriendlyByteBuf>)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "replace",
+        "out": "data"
+      }
+    },
+    {
+      "name": "merchant_offer_traded",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_merchant_offer_traded",
+      "neoforge": "none (NeoForge has no such event; Bukkit's PlayerTradeEvent#getTrade is mutable)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "collect",
+        "out": "offer"
+      }
+    },
+    {
+      "name": "add_server_reload_listeners",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_add_server_reload_listeners",
+      "neoforge": "AddServerReloadListenersEvent",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "listeners"
+      }
+    },
+    {
+      "name": "server_reload_listener_apply",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_reload_listener_apply",
+      "neoforge": "SimpleJsonResourceReloadListener.apply",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_start",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_start",
+      "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_disconnecting",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_disconnecting",
+      "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_stopping",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_stopping",
+      "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "menu_background",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_background",
+      "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "gui_render_post",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_gui_render_post",
+      "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }

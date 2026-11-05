@@ -400,6 +400,7 @@ impl Game<'_> {
         // is an empty stack (no match) when the shots broke it.
         if let Some(stack) = self.held().cloned() {
             self.trigger_item("minecraft:shot_crossbow", &stack);
+            self.award_stat("used", &stack.item, 1);
         }
     }
 }
@@ -468,8 +469,8 @@ mod tests {
         let shot = game.audio.capture.take().unwrap_or_default();
         let at: Vec<_> = shot
             .iter()
-            .filter(|s| s.0 == "minecraft:entity.arrow.shoot")
-            .map(|s| s.1)
+            .filter(|s| s.event == "minecraft:entity.arrow.shoot")
+            .map(|s| s.position)
             .collect();
         assert_eq!(at, vec![feet]);
 
@@ -481,8 +482,8 @@ mod tests {
         let shot = game.audio.capture.take().unwrap_or_default();
         let at: Vec<_> = shot
             .iter()
-            .filter(|s| s.0 == "minecraft:item.crossbow.shoot")
-            .map(|s| s.1)
+            .filter(|s| s.event == "minecraft:item.crossbow.shoot")
+            .map(|s| s.position)
             .collect();
         assert_eq!(at, vec![feet]);
     }

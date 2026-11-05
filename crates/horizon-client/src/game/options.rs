@@ -174,10 +174,30 @@ impl Game<'_> {
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
         self.watch_pack_folder();
+        let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
+        if ui.controller_open() {
+            ui.controller.context = context;
+        }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);
+    }
+    /// Whose controller settings these are and what this game sees (`controller_ui`): the
+    /// player's badge in splitscreen with its name, and its own controller.
+    fn controller_settings_context(&self) -> horizon_client::controller_ui::Context {
+        let name = self.options.player_name();
+        let player = match &self.split_hud.badge {
+            Some(badge) if *badge != name => format!("{badge} · {name}"),
+            _ => name,
+        };
+        horizon_client::controller_ui::Context {
+            player,
+            device: self.pad.device_or_virtual(),
+            detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
+            style: self.ui.options.pad_style,
+            by_letter: self.ui.options.pad_by_letter,
+        }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
     /// window goes fullscreen for it and back after, if it wasn't already.
@@ -287,6 +307,13 @@ impl Game<'_> {
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+        if self.pad_stick_scroll() {
+            let size = self.gui_size();
+            self.ui
+                .options
+                .scroll_at(&self.settings, size, self.cursor, amount);
+            return Ok(());
+        }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
         });
@@ -319,6 +346,7 @@ impl Game<'_> {
                 Event::Changed => {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
+                    self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
                 }
@@ -424,6 +452,11 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioFolder => {
+                    let dir = std::path::PathBuf::from("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::packs::open_folder(&dir);
+                }
             }
         }
         Ok(())
@@ -500,6 +533,9 @@ impl Game<'_> {
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
+            r.set_hdr_lighting(s.horizon.hdr_lighting);
+            // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
+            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,
@@ -645,6 +681,16 @@ impl Game<'_> {
     }
 }
 
+/// The named device can be a connected pad that has not driven the game yet.
+fn detected_controller_style(
+    device: Option<&horizon_client::controller_ui::Device>,
+    fallback: horizon_client::gamepad::GlyphStyle,
+) -> horizon_client::gamepad::GlyphStyle {
+    device.map_or(fallback, |d| {
+        horizon_client::gamepad::GlyphStyle::of_vendor(d.vendor)
+    })
+}
+
 /// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
 /// monitor's size) is a window again: its border back and, still covering the monitor, the game's
 /// first size (854 x 480) in the middle of it, to be moved and sized.
@@ -667,5 +713,33 @@ fn windowed_again(w: &winit::window::Window) {
             at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
             at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
         ));
+    }
+}
+
+#[cfg(test)]
+mod controller_context_tests {
+    use super::detected_controller_style;
+    use horizon_client::{controller_ui::Device, gamepad::GlyphStyle};
+
+    #[test]
+    fn detected_style_follows_the_named_device_even_before_it_is_used() {
+        let mut device = Device {
+            name: "pad".into(),
+            vendor: Some(0x054c),
+            product: None,
+        };
+        assert_eq!(
+            detected_controller_style(Some(&device), GlyphStyle::Xbox),
+            GlyphStyle::PlayStation
+        );
+        device.vendor = Some(0x057e);
+        assert_eq!(
+            detected_controller_style(Some(&device), GlyphStyle::PlayStation),
+            GlyphStyle::Nintendo
+        );
+        assert_eq!(
+            detected_controller_style(None, GlyphStyle::PlayStation),
+            GlyphStyle::PlayStation
+        );
     }
 }

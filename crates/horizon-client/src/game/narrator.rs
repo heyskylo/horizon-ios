@@ -200,7 +200,11 @@ impl Game<'_> {
     }
     /// The narrator option changed, on the options screen or by its hotkey.
     pub(super) fn narrator_status_changed(&mut self) {
+        let new = self.narrator_toast.is_none();
         update_status(self.settings.narrator(), &mut self.narrator_toast);
+        if new && !self.toast_allowed("system", "narrator_toggle") {
+            self.narrator_toast = None;
+        }
     }
     /// The narrator hotkey on a key press or repeat, before the screen or
     /// the game takes the key (it doesn't consume it): the next status,

@@ -144,8 +144,8 @@ const POST_RESOURCES: [Resource; 12] = [
     Resource {
         binding: 11,
         name: "scene_surface",
-        ty: "var scene_surface: texture_2d<f32>",
-        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
+        ty: "var scene_surface: texture_2d<u32>",
+        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`; its texels are the bits of floats, so `bitcast<vec4<f32>>` them): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
     },
 ];
 
@@ -340,7 +340,7 @@ struct SurfaceData {
 fn surface_at(texel: vec2<i32>) -> SurfaceData {
     let size = vec2<i32>(textureDimensions(scene_surface));
     let t = clamp(texel, vec2<i32>(0), size - 1);
-    let s = textureLoad(scene_surface, t, 0);
+    let s = bitcast<vec4<f32>>(textureLoad(scene_surface, t, 0));
     let depth_size = vec2<i32>(textureDimensions(scene_depth));
     let depth = textureLoad(scene_depth, clamp(texel, vec2<i32>(0), depth_size - 1), 0);
     // The terrain's own depth is stored with it: anything drawn nearer since hides it.

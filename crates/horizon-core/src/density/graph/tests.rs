@@ -550,3 +550,56 @@ fn compiler_reduces_uniform_axes_and_preserves_strided_vertical_samples() {
     assert_eq!(output[volume.size()], 17.0);
     assert_eq!(compiler.graph().domain_axes(root), Ok(2));
 }
+
+#[test]
+fn positive_y_bounds_read_a_y_range_choice_with_a_nonpositive_fallback() {
+    let mut graph = DensityGraph::new();
+    let gradient = graph
+        .insert(GraphNode::Gradient {
+            axis: Axis::Y,
+            tiling: TilingMode::ClampToEdge,
+            from: -4064,
+            to: 4062,
+            low: -4064.0,
+            high: 4062.0,
+        })
+        .unwrap();
+    let y = graph
+        .register_function("minecraft:y".into(), gradient)
+        .unwrap();
+    let noise_like = graph.insert(GraphNode::Constant(0.7)).unwrap();
+    let minus_one = graph.insert(GraphNode::Constant(-1.0)).unwrap();
+    let plus_one = graph.insert(GraphNode::Constant(1.0)).unwrap();
+    let choice = |graph: &mut DensityGraph, input, min, max, outside| {
+        graph
+            .insert(GraphNode::Choice {
+                input,
+                min,
+                max,
+                inside: noise_like,
+                outside,
+            })
+            .unwrap()
+    };
+    let vein = choice(&mut graph, y, 0.0, 50.0, minus_one);
+    let named = graph
+        .register_function("horizon:vein".into(), vein)
+        .unwrap();
+    assert_eq!(graph.positive_y_bounds(named), Ok(Some([0, 49])));
+    let half = choice(&mut graph, y, -59.5, -8.0, minus_one);
+    assert_eq!(graph.positive_y_bounds(half), Ok(Some([-59, -9])));
+    // The clamped gradient stays in range below its first coordinate.
+    let open = choice(&mut graph, y, f32::NEG_INFINITY, 10.0, minus_one);
+    assert_eq!(graph.positive_y_bounds(open), Ok(Some([i32::MIN, 9])));
+    let never = choice(&mut graph, y, 5000.0, 6000.0, minus_one);
+    assert_eq!(
+        graph.positive_y_bounds(never),
+        Ok(Some([i32::MAX, i32::MIN]))
+    );
+    // A positive fallback, or an input other than y, gives no bounds.
+    let positive = choice(&mut graph, y, 0.0, 50.0, plus_one);
+    assert_eq!(graph.positive_y_bounds(positive), Ok(None));
+    let not_y = choice(&mut graph, noise_like, 0.0, 50.0, minus_one);
+    assert_eq!(graph.positive_y_bounds(not_y), Ok(None));
+    assert_eq!(graph.positive_y_bounds(gradient), Ok(None));
+}

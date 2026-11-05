@@ -194,9 +194,7 @@ impl Launcher {
                 };
                 let mut line = published(&release.date, &release.time);
                 let right = self.glass_release_action(&release, cx);
-                // `gap-2.5`: the bottom margin `column` counts each row's gap in.
                 self.glass_version_card(&release.tag, title, &mut line, i == 0, on_disk, right)
-                    .mb(px(10.))
             },
         );
         page.child(list)
@@ -305,6 +303,24 @@ impl Launcher {
                 .into_any_element();
         }
         if self.installed.contains(&tag) {
+            if backend::needs_game_architecture_install(&tag, release) {
+                let b = ui::quiet(
+                    SharedString::from(format!("install-selected-architecture-{tag}")),
+                    tr("Install selected build"),
+                    36.,
+                    &t,
+                );
+                if self.installing.is_some() {
+                    return b.opacity(0.4).cursor_default().into_any_element();
+                }
+                let release = release.clone();
+                return b
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.install(&release);
+                        cx.notify();
+                    }))
+                    .into_any_element();
+            }
             return self.glass_version_actions(&tag, cx).into_any_element();
         }
         if release.asset.is_none() {

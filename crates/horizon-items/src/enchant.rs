@@ -9,8 +9,18 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+/// Levels as numbers in enchantment names ("Sharpness 5"): Horizon's PvP & HUD option, off by
+/// default (vanilla's numerals).
+static NUMERIC_LEVELS: AtomicBool = AtomicBool::new(false);
+pub fn set_numeric_levels(on: bool) {
+    NUMERIC_LEVELS.store(on, Ordering::Relaxed);
+}
 
 /// `Enchantment.Cost`: base + per_level_above_first * (level - 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,7 +73,7 @@ pub struct ItemProps {
     /// `minecraft:brewing_fuel` present.
     pub brewing_fuel: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Enchantments {
     pub list: Vec<Enchantment>,
     index: HashMap<Arc<str>, usize>,
@@ -130,7 +140,59 @@ pub fn level_name(level: u32) -> String {
         .map_or_else(|| level.to_string(), |s| (*s).to_owned())
 }
 
+/// One registry entry from its definition (`Enchantment.DIRECT_CODEC`).
+fn parse_entry(
+    id: &str,
+    v: &Value,
+    tags: &HashMap<String, Vec<Arc<str>>>,
+    lang: &HashMap<String, String>,
+) -> Enchantment {
+    let exclusive = match &v["exclusive_set"] {
+        Value::String(s) if s.starts_with('#') => tags.get(&s[1..]).cloned().unwrap_or_default(),
+        other => string_list(other)
+            .into_iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect(),
+    };
+    let key = v["description"]["translate"].as_str().unwrap_or("");
+    Enchantment {
+        id: Arc::from(id),
+        description: lang.get(key).cloned().unwrap_or_else(|| {
+            // A data pack's entry may name itself with a literal component
+            // rather than a translation key.
+            if key.is_empty() && !v["description"].is_null() {
+                horizon_client_core::scoreboard::comp_text(&v["description"]).plain()
+            } else {
+                id.trim_start_matches("minecraft:").replace('_', " ")
+            }
+        }),
+        description_key: key.to_owned(),
+        max_level: v["max_level"].as_u64().unwrap_or(1) as u32,
+        weight: v["weight"].as_u64().unwrap_or(1) as u32,
+        anvil_cost: v["anvil_cost"].as_u64().unwrap_or(0) as u32,
+        min_cost: Cost::parse(&v["min_cost"]),
+        max_cost: Cost::parse(&v["max_cost"]),
+        supported: string_list(&v["supported_items"]),
+        primary: v.get("primary_items").map(string_list),
+        exclusive: exclusive.into_iter().collect(),
+        slots: string_list(&v["slots"]),
+        effects: v["effects"].clone(),
+    }
+}
+
 impl Enchantments {
+    /// Use the same frozen registry and resolved tags as player damage.
+    pub fn bind_damage_catalog(&mut self, catalog: &horizon_world::damage_source::Catalog) {
+        self.damage_tags = catalog
+            .tags()
+            .map(|tag| {
+                (
+                    tag.to_owned(),
+                    catalog.tag_members(tag).map(str::to_owned).collect(),
+                )
+            })
+            .collect();
+    }
     pub fn load(root: &Path) -> Self {
         Self::load_with(root, &horizon_world::loot::PackOverlay::NONE)
     }
@@ -180,7 +242,19 @@ impl Enchantments {
                 .collect()
         };
         let entity_tags = unordered(read_tag_dir(&data.join("tags/entity_type")));
-        let damage_tags = unordered(read_tag_dir(&data.join("tags/damage_type")));
+        let damage_tags = match horizon_world::damage_source::Catalog::load(root, overlay) {
+            Ok(catalog) => catalog
+                .tags()
+                .map(|tag| {
+                    (
+                        tag.to_owned(),
+                        catalog.tag_members(tag).map(str::to_owned).collect(),
+                    )
+                })
+                .collect(),
+            // Small tools/fixtures may not carry the prepared catalog.
+            Err(_) => unordered(read_tag_dir(&data.join("tags/damage_type"))),
+        };
         // The registry lists entries sorted by id, like the data-pack loader.
         let mut files: BTreeMap<String, Value> = BTreeMap::new();
         // The folder's own files, not its subfolders'.
@@ -219,37 +293,10 @@ impl Enchantments {
                         || k.starts_with("recipe.toast.")
                 })
                 .collect();
-        let mut list = Vec::new();
-        for (id, v) in &files {
-            let exclusive = match &v["exclusive_set"] {
-                Value::String(s) if s.starts_with('#') => {
-                    tags.get(&s[1..]).cloned().unwrap_or_default()
-                }
-                other => string_list(other)
-                    .into_iter()
-                    .map(|s| Arc::from(s.as_str()))
-                    .collect(),
-            };
-            let key = v["description"]["translate"].as_str().unwrap_or("");
-            list.push(Enchantment {
-                id: Arc::from(id.as_str()),
-                description: lang
-                    .get(key)
-                    .cloned()
-                    .unwrap_or_else(|| id.trim_start_matches("minecraft:").replace('_', " ")),
-                description_key: key.to_owned(),
-                max_level: v["max_level"].as_u64().unwrap_or(1) as u32,
-                weight: v["weight"].as_u64().unwrap_or(1) as u32,
-                anvil_cost: v["anvil_cost"].as_u64().unwrap_or(0) as u32,
-                min_cost: Cost::parse(&v["min_cost"]),
-                max_cost: Cost::parse(&v["max_cost"]),
-                supported: string_list(&v["supported_items"]),
-                primary: v.get("primary_items").map(string_list),
-                exclusive: exclusive.into_iter().collect(),
-                slots: string_list(&v["slots"]),
-                effects: v["effects"].clone(),
-            });
-        }
+        let list = files
+            .iter()
+            .map(|(id, v)| parse_entry(id, v, &tags, &lang))
+            .collect::<Vec<_>>();
         let index = list
             .iter()
             .enumerate()
@@ -291,6 +338,26 @@ impl Enchantments {
     }
     pub fn get(&self, id: &str) -> Option<&Enchantment> {
         self.index.get(id).map(|&i| &self.list[i])
+    }
+    /// The table a client plays a server with: this one and the server's
+    /// entries it lacks (a data pack's), from the definitions the registry
+    /// sync sent; `None` when there are none. The names then come from the
+    /// entries' own `description`, as `Enchantment.getFullname` reads it.
+    pub fn with_entries<'a>(
+        &self,
+        entries: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    ) -> Option<Self> {
+        let mut table = None::<Self>;
+        for (id, v) in entries {
+            if self.index.contains_key(id) {
+                continue;
+            }
+            let t = table.get_or_insert_with(|| self.clone());
+            let e = parse_entry(id, v, &t.tags, &t.lang);
+            t.index.insert(e.id.clone(), t.list.len());
+            t.list.push(e);
+        }
+        table
     }
     /// The longest `minecraft:ignite` the attacker's `minecraft:post_attack`
     /// effects (Fire Aspect) set on the victim, in seconds: the effects whose
@@ -385,12 +452,26 @@ impl Enchantments {
         id: &str,
         level: u32,
     ) -> (String, bool) {
+        let numeric = NUMERIC_LEVELS.load(Ordering::Relaxed);
+        self.full_name_with(language, id, level, numeric)
+    }
+    /// [`Enchantments::full_name_in`] with the level as a number when `numeric`.
+    fn full_name_with(
+        &self,
+        language: Option<&horizon_client_core::lang::Language>,
+        id: &str,
+        level: u32,
+        numeric: bool,
+    ) -> (String, bool) {
         let tr = |key: &str| language.and_then(|l| l.get(key).map(str::to_owned));
         let Some(e) = self.get(id) else {
             return (format!("{id} {}", level_name(level)), false);
         };
         let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
-        if level != 1 || e.max_level != 1 {
+        if (level != 1 || e.max_level != 1) && numeric {
+            name.push(' ');
+            name.push_str(&level.to_string());
+        } else if level != 1 || e.max_level != 1 {
             name.push(' ');
             let key = format!("enchantment.level.{level}");
             let suffix = tr(&key)
@@ -1168,6 +1249,12 @@ pub mod tests {
         let e = sample();
         assert_eq!(e.full_name("minecraft:mending", 1).0, "mending");
         assert_eq!(e.full_name("minecraft:sharpness", 1).0, "sharpness I");
+        // PvP & HUD's numbers: any level, past vanilla's numerals too; a one-level
+        // enchantment still has none.
+        let number = |id, level| e.full_name_with(None, id, level, true).0;
+        assert_eq!(number("minecraft:sharpness", 5), "sharpness 5");
+        assert_eq!(number("minecraft:sharpness", 255), "sharpness 255");
+        assert_eq!(number("minecraft:mending", 1), "mending");
         let levels = vec![
             (Arc::from("minecraft:unbreaking"), 3),
             (Arc::from("minecraft:mending"), 1),
@@ -1193,6 +1280,33 @@ pub mod tests {
             e.full_name_in(None, "minecraft:sharpness", 11).0,
             "sharpness XI"
         );
+    }
+
+    /// A server's data-pack enchantment the game lacks is named by the
+    /// `description` it sent (`Enchantment.getFullname`), with the level
+    /// numeral unless both the level and the maximum are 1; the game's own
+    /// entries keep their tables.
+    #[test]
+    fn synced_entries_name_themselves() {
+        let e = sample();
+        assert_eq!(e.full_name("enchex:drill", 2).0, "enchex:drill II");
+        let drill = json!({"description":{"text":"Drill"},"max_level":3,"supported_items":"#minecraft:enchantable/mining"});
+        let hex = json!({"description":"Hex","max_level":1});
+        let other = json!({"description":{"text":"Other"},"max_level":5});
+        let synced = e
+            .with_entries([
+                ("enchex:drill", &drill),
+                ("enchex:hex", &hex),
+                ("minecraft:sharpness", &other),
+            ])
+            .unwrap();
+        assert_eq!(synced.full_name("enchex:drill", 2).0, "Drill II");
+        assert_eq!(synced.full_name("enchex:drill", 1).0, "Drill I");
+        assert_eq!(synced.full_name("enchex:hex", 1).0, "Hex");
+        assert_eq!(synced.full_name("minecraft:sharpness", 1).0, "sharpness I");
+        assert_eq!(synced.list.len(), e.list.len() + 2);
+        // Nothing new: the game's table stays in use.
+        assert!(e.with_entries([("minecraft:sharpness", &other)]).is_none());
     }
 
     /// The enchantment's name and its level come from the selected language,

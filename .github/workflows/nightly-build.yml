@@ -92,7 +92,7 @@ jobs:
       source_tag: ${{ steps.pick.outputs.source_tag }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -124,14 +124,14 @@ jobs:
         env:
           SHA: ${{ steps.pick.outputs.sha }}
         run: git archive --format=tar.gz --prefix="horizon-${SHA:0:7}/" -o horizon-source.tar.gz "$SHA"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.pick.outputs.build == 'true'
         with:
           name: horizon-source
           path: horizon-source.tar.gz
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nightly-notes
           path: nightly-notes.md
@@ -155,32 +155,42 @@ jobs:
     # The key's only job: main's sign_release.sh hashes the archives and signs with the runner's OpenSSL.
     environment: ${{ needs.pick.outputs.dry_run != 'true' && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: tools/ci/sign_release.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: horizon-*
           merge-multiple: true
-      - name: Sign the checksums (SHA256SUMS, SHA256SUMS.sig) for the nightly channel
+      - name: Sign the checksums for the nightly channel (SHA256SUMS.sig) and for this build (SHA256SUMS.v2.sig)
+        # SHA256SUMS.sig is for launchers from before v2 (signed for "nightly"); SHA256SUMS.v2.sig is signed for
+        # nightly-<date>-<commit>, the version the release title names, which current launchers and servers
+        # require (docs/security.md, "Nightly signatures"). The publish step titles the release from the same values.
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           RELEASE_SIGNING_KEY_NEXT: ${{ secrets.RELEASE_SIGNING_KEY_NEXT }}
           EPHEMERAL: ${{ needs.pick.outputs.dry_run == 'true' && 'yes' || '' }}
+          ALSO_FOR: nightly-${{ needs.pick.outputs.date }}-${{ needs.pick.outputs.short }}
         run: |
+          # Windows ARM64's build may fail without holding the Nightly (game-build.yml): then it is left out.
+          arm64=(); if [[ -f dist/horizon-windows-arm64.zip ]]; then arm64=(dist/horizon-windows-arm64.zip)
+          else echo "::warning::horizon-windows-arm64.zip is missing: SHA256SUMS goes out without it"; fi
+          musl=(); if [[ -f dist/horizon-linux-musl-x86_64.tar.gz ]]; then musl=(dist/horizon-linux-musl-x86_64.tar.gz)
+          else echo "::warning::horizon-linux-musl-x86_64.tar.gz is missing: SHA256SUMS goes out without it"; fi
           bash tools/ci/sign_release.sh nightly dist/horizon-linux-x86_64.tar.gz dist/horizon-windows-x64.zip \
+            "${arm64[@]}" "${musl[@]}" \
             dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-server-linux-x86_64.tar.gz \
             dist/horizon-source.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signature
           path: dist/SHA256SUMS*
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.pick.outputs.dry_run == 'true'
         with:
           name: ephemeral.pub
@@ -195,19 +205,24 @@ jobs:
       contents: write
       issues: read          # the open release-blocker issues (gate)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - name: The signature, checked as launchers check it
+      - name: The signatures, checked as launchers check them
         env:
           EPHEMERAL: ${{ needs.pick.outputs.dry_run == 'true' && 'yes' || '' }}
+          DATE: ${{ needs.pick.outputs.date }}
+          SHORT: ${{ needs.pick.outputs.short }}
         run: |
           key=(); [[ -n "$EPHEMERAL" ]] && key=(--key "$(cat dist/ephemeral.pub)")
           cargo run --locked --quiet -p horizon-release-sign -- verify --tag nightly --publishing "${key[@]}" dist
+          # The version's own signature, which current launchers require: the title below names the same version.
+          cargo run --locked --quiet -p horizon-release-sign -- verify --tag "nightly-${DATE}-${SHORT}" \
+            --signature SHA256SUMS.v2.sig --publishing "${key[@]}" dist
       - name: Ready to publish (the smoke test drew a world, no release-blocker is open)
         # Right before publishing, as for a release: an issue labelled while the builds ran still holds it. A dry run
         # only reports what a real run would do (that is how a blocker's fix is tried).
@@ -224,18 +239,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.pick.outputs.sha }}
+          SHORT: ${{ needs.pick.outputs.short }}
           DATE: ${{ needs.pick.outputs.date }}
           SOURCE_TAG: ${{ needs.pick.outputs.source_tag }}
         run: |
           set -euo pipefail
           python3 tools/ci/nightly.py rotate
           signature=(); [[ -f dist/SHA256SUMS.sig ]] && signature=(dist/SHA256SUMS.sig)
+          [[ -f dist/SHA256SUMS.v2.sig ]] && signature+=(dist/SHA256SUMS.v2.sig)
+          # The title is what launchers parse (strictly) into the version SHA256SUMS.v2.sig is signed for.
+          [[ "${SHA:0:7}" == "$SHORT" ]] || { echo "::error::the build's commit isn't the one signed"; exit 1; }
+          # The ARM64 archive only when its build succeeded (the sign job left it out of SHA256SUMS otherwise).
+          arm64=()
+          if [[ -f dist/horizon-windows-arm64.zip ]]; then
+            arm64=("dist/horizon-windows-arm64.zip#Game files the launcher installs (Nightly): Windows ARM64 (horizon-windows-arm64.zip)")
+          else
+            echo "::warning::horizon-windows-arm64.zip is missing: the Nightly goes out without it (ARM64 launchers install the x64 build)"
+          fi
+          musl=()
+          if [[ -f dist/horizon-linux-musl-x86_64.tar.gz ]]; then
+            musl=("dist/horizon-linux-musl-x86_64.tar.gz#Game files for musl Linux (horizon-linux-musl-x86_64.tar.gz)")
+          else
+            echo "::warning::horizon-linux-musl-x86_64.tar.gz is missing: the Nightly goes out without it"
+          fi
           # A pre-release, never GitHub's latest: the latest stays the last vX.Y.Z, which launchers and servers from
           # before the Nightly-only switch keep (they don't read Nightlies).
           gh release create nightly --prerelease --latest=false --target "$SHA" \
             --title "Nightly $DATE · ${SHA:0:7}" --notes-file dist/nightly-notes.md \
             "dist/horizon-linux-x86_64.tar.gz#Game files the launcher installs (Nightly): Linux (horizon-linux-x86_64.tar.gz)" \
+            "${musl[@]}" \
             "dist/horizon-windows-x64.zip#Game files the launcher installs (Nightly): Windows (horizon-windows-x64.zip)" \
+            "${arm64[@]}" \
             "dist/horizon-macos-arm64.zip#Game files the launcher installs (Nightly): macOS on Apple Silicon (horizon-macos-arm64.zip)" \
             "dist/horizon-macos-x64.zip#Game files the launcher installs (Nightly): macOS on Intel (horizon-macos-x64.zip)" \
             "dist/horizon-server-linux-x86_64.tar.gz#Nightly dedicated server for Linux (horizon-server-linux-x86_64.tar.gz)" \

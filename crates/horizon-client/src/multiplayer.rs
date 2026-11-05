@@ -130,6 +130,8 @@ pub enum Screen {
         reason: String,
         /// Auto-reconnect's next attempt, until it is cancelled.
         retry: Option<crate::reconnect::Retry>,
+        /// Wrapped reason lines, set by the last draw; the buttons sit below them.
+        lines: std::cell::Cell<usize>,
     },
 }
 /// What a click asks the title screen to do.
@@ -137,6 +139,17 @@ pub enum Outcome {
     None,
     Back,
     Connect { address: String, lan: bool },
+}
+
+/// The job of [`Screen::buttons`]'s button `id`, for the controller.
+pub fn button_action(id: u8) -> Option<crate::widgets::Action> {
+    use crate::widgets::Action;
+    match id {
+        46 => Some(Action::Back),
+        50 => Some(Action::Done),
+        51 | 53 | 57 | 59 => Some(Action::Cancel),
+        _ => None,
+    }
 }
 
 impl Screen {
@@ -389,6 +402,55 @@ pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
         servers::prepend(&file, &ServerEntry::new(name, address))?;
     }
     std::fs::write(marker, format!("{address}\n"))
+}
+
+/// Servers Horizon partners with, offered once below the official server: a name (with the
+/// players it is for) and an address like any entry.
+pub const PARTNER_SERVERS: &[(&str, &str)] =
+    &[("Afri-Network (South Africa)", "afri-network.co.za")];
+/// Beside servers.dat: the partner addresses already offered, one per line, so a player who
+/// deletes one never gets it back.
+const PARTNER_MARKER: &str = "horizon_partner_servers.txt";
+
+/// Adds each partner server not offered before to the list in `game_dir`, just below the
+/// official server (last when the list doesn't have it), unless the list has its address.
+pub fn add_partner_servers(game_dir: &Path) -> std::io::Result<()> {
+    let marker = game_dir.join(PARTNER_MARKER);
+    let offered = match std::fs::read_to_string(&marker) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Can't tell what was offered: offer nothing rather than twice.
+        Err(_) => return Ok(()),
+    };
+    let was_offered = |a: &str| offered.lines().any(|l| address_key(l) == address_key(a));
+    let new: Vec<_> = PARTNER_SERVERS
+        .iter()
+        .filter(|(_, a)| !was_offered(a))
+        .collect();
+    if new.is_empty() {
+        return Ok(());
+    }
+    let file = game_dir.join("servers.dat");
+    let _guard = SAVING.lock();
+    // Each new partner goes below the one before it, the first below the official server.
+    let mut anchor = address_key(OFFICIAL_SERVER.1);
+    for (name, address) in &new {
+        if !servers::load(&file)
+            .iter()
+            .any(|s| address_key(&s.ip) == address_key(address))
+        {
+            servers::insert_after(&file, &ServerEntry::new(name, address), |ip| {
+                address_key(ip) == anchor
+            })?;
+            anchor = address_key(address);
+        }
+    }
+    let mut text = offered;
+    for (_, address) in &new {
+        text.push_str(address);
+        text.push('\n');
+    }
+    std::fs::write(marker, text)
 }
 
 /// Points the entries for an earlier official address at `address`, each
@@ -816,10 +878,11 @@ impl Screen {
                     57,
                 ),
             ],
-            Self::Disconnected { retry, .. } => {
+            Self::Disconnected { retry, lines, .. } => {
+                let btn = disconnected_layout(h, lines.get(), retry.is_some()).buttons;
                 let mut v = vec![b(
                     half(w) - 100.0,
-                    half(h) + 30.0,
+                    btn,
                     200.0,
                     &crate::lang::get_or("gui.toMenu", "Back to Server List"),
                     true,
@@ -828,7 +891,7 @@ impl Screen {
                 if retry.is_some() {
                     v.push(b(
                         half(w) - 100.0,
-                        half(h) + 54.0,
+                        btn + 24.0,
                         200.0,
                         &crate::lang::get_or(
                             "horizon.multiplayer.cancel_reconnecting",
@@ -1394,19 +1457,27 @@ impl Screen {
                     *focus == 1,
                 );
             }
-            Self::Disconnected { reason, retry } => {
+            Self::Disconnected {
+                reason,
+                retry,
+                lines,
+            } => {
+                // DisconnectedScreen: the reason wraps to width - 50.
+                let wrapped = wrap(reason, (w.ceil() - 50.0).max(1.0), atlas);
+                lines.set(wrapped.len());
+                let l = disconnected_layout(h, wrapped.len(), retry.is_some());
                 centered(
                     batch,
                     &crate::lang::get_or("disconnect.lost", "Connection Lost"),
-                    half(h) - 40.0,
+                    l.title,
                     rgba(170, 170, 170, 255),
                 );
-                for (i, line) in wrap(reason, 300.0, atlas).iter().enumerate() {
-                    centered(batch, line, half(h) - 16.0 + i as f32 * 9.0, u32::MAX);
+                for (i, line) in wrapped.iter().enumerate() {
+                    centered(batch, line, l.message + i as f32 * 9.0, u32::MAX);
                 }
                 if let Some(r) = retry {
                     let text = r.text(std::time::Instant::now());
-                    centered(batch, &text, half(h) + 16.0, rgba(170, 170, 170, 255));
+                    centered(batch, &text, l.retry, rgba(170, 170, 170, 255));
                 }
             }
         }
@@ -1952,6 +2023,29 @@ fn direct_address(address: &str) -> String {
         address.trim().to_owned()
     }
 }
+/// Y positions on the disconnect screen.
+struct DisconnectedLayout {
+    title: f32,
+    message: f32,
+    retry: f32,
+    buttons: f32,
+}
+/// `DisconnectedScreen.init`: a vertical layout centred on the screen. The
+/// title and message cells pad 10 on each side, the buttons 2; the message
+/// is `lines` rows of 9, so the buttons always sit below it.
+fn disconnected_layout(h: f32, lines: usize, retry: bool) -> DisconnectedLayout {
+    let message_h = lines as f32 * 9.0 + 20.0;
+    let retry_h = if retry { 13.0 } else { 0.0 };
+    let buttons = if retry { 48.0 } else { 24.0 };
+    let top = half(h - (29.0 + message_h + retry_h + buttons));
+    DisconnectedLayout {
+        title: top + 10.0,
+        message: top + 39.0,
+        retry: top + 29.0 + message_h + 2.0,
+        buttons: top + 29.0 + message_h + retry_h + 2.0,
+    }
+}
+
 /// Greedy word wrap to a pixel width.
 pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
     let mut lines = Vec::new();
@@ -2126,8 +2220,14 @@ mod tests {
         let lost = Screen::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         };
-        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 156.0)]);
+        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 145.0)]);
+        // Taller messages push the button down instead of under the text.
+        let l1 = disconnected_layout(253.0, 1, false);
+        let l6 = disconnected_layout(253.0, 6, false);
+        assert!(l6.buttons >= l6.message + 6.0 * 9.0);
+        assert!(l1.buttons >= l1.message + 9.0);
         // centeredText: `width / 2 - font.width(text) / 2`.
         assert_eq!(centered_x(427.0, 85.0), 171.0);
         assert_eq!(centered_x(320.0, 84.0), 118.0);
@@ -2311,6 +2411,53 @@ mod tests {
         servers::save(&file, &mine).unwrap();
         add_official_server(&dir).unwrap();
         assert_eq!(ips(), ["127.0.0.1:2", "example.org"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partner_servers_are_offered_once_below_the_official_server() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-partner-{}", std::process::id()));
+        let official = OFFICIAL_SERVER.1;
+        let (name, partner) = PARTNER_SERVERS[0];
+        let file = dir.join("servers.dat");
+        let ips = || -> Vec<String> { servers::load(&file).into_iter().map(|s| s.ip).collect() };
+        let fresh = |list: &[ServerEntry]| {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            if !list.is_empty() {
+                servers::save(&file, list).unwrap();
+            }
+        };
+        // A first start: the official server on top, the partner just below it.
+        fresh(&[ServerEntry::new("Mine", "127.0.0.1:2")]);
+        add_official_server(&dir).unwrap();
+        add_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), [official, partner, "127.0.0.1:2"]);
+        assert_eq!(servers::load(&file)[1].name, name);
+        // Once only.
+        add_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), [official, partner, "127.0.0.1:2"]);
+        // A player who already had the official server moved it down: the partner follows it.
+        fresh(&[
+            ServerEntry::new("Mine", "127.0.0.1:2"),
+            ServerEntry::new("SMP", official),
+            ServerEntry::new("Last", "example.org"),
+        ]);
+        add_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), ["127.0.0.1:2", official, partner, "example.org"]);
+        // No official server: last. Already listed in another spelling: not duplicated.
+        fresh(&[ServerEntry::new("Mine", "127.0.0.1:2")]);
+        add_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), ["127.0.0.1:2", partner]);
+        fresh(&[ServerEntry::new("ZA", "Afri-Network.co.za:25565")]);
+        add_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), ["Afri-Network.co.za:25565"]);
+        // Deleted by the player: never back.
+        fresh(&[]);
+        add_partner_servers(&dir).unwrap();
+        servers::save(&file, &[]).unwrap();
+        add_partner_servers(&dir).unwrap();
+        assert!(ips().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

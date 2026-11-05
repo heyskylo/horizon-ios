@@ -1,4 +1,7 @@
-//! The one account setting the game changes itself: "Show my cosmetics" (`PUT /v1/visible`).
+//! What the game asks the service about its own account: whether it owns a cosmetic (`GET
+//! /v1/me`: no other player's cosmetics show for one that owns none, unless the player asks), and
+//! the settings it changes itself, "Show my cosmetics" (`PUT /v1/visible`) and "Show me as a
+//! Horizon player" (`POST /v1/presence`, also sent every `PRESENCE_EVERY` while on).
 //!
 //! The game signs in the way an online-mode server checks a player: the service hands out a
 //! one-time server id, the game tells Mojang's session server it joins it (`join`, with the
@@ -37,14 +40,35 @@ impl Call for crate::Http {
     }
 }
 
-/// Turns "Show my cosmetics" on or off for the account `name`; `join` tells Mojang that account
-/// joins the server id the service chose. Returns what the service now keeps.
-pub fn set_visible(
+/// How often a running game tells the service its player plays Horizon (the service's
+/// `PRESENCE_EVERY`; it forgets them some hours after the last time).
+pub const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// "Show me as a Horizon player": listed, other Horizon players see the mark by `name`'s name for
+/// a while (sent again every `PRESENCE_EVERY`); not listed, the service forgets it at once.
+pub fn set_listed(
     service: &impl Call,
     name: &str,
     join: impl FnOnce(&str) -> Result<(), String>,
-    visible: bool,
+    listed: bool,
 ) -> Result<bool, String> {
+    let session = sign_in(service, name, join)?;
+    let answer = service.call(
+        "POST",
+        "/v1/presence",
+        Some(&session),
+        &json!({ "listed": listed }),
+    )?;
+    answer["listed"].as_bool().ok_or_else(|| "no answer".into())
+}
+
+/// A session of the service's own for the account `name`; `join` tells Mojang that account joins
+/// the server id the service chose.
+fn sign_in(
+    service: &impl Call,
+    name: &str,
+    join: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<String, String> {
     let start = service.call("POST", "/v1/auth/start", None, &json!({}))?;
     let server_id = start["server_id"].as_str().ok_or("no server id")?;
     join(server_id)?;
@@ -54,7 +78,31 @@ pub fn set_visible(
         None,
         &json!({ "server_id": server_id, "name": name }),
     )?;
-    let session = finish["session"].as_str().ok_or("no session")?;
+    Ok(finish["session"].as_str().ok_or("no session")?.to_owned())
+}
+
+/// Whether the account `name` owns at least one cosmetic (signed in as `set_visible` does).
+pub fn owns(
+    service: &impl Call,
+    name: &str,
+    join: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<bool, String> {
+    let session = sign_in(service, name, join)?;
+    let me = service.call("GET", "/v1/me", Some(&session), &Value::Null)?;
+    let owned = me["owned"].as_array().ok_or("no answer")?;
+    Ok(!owned.is_empty())
+}
+
+/// Turns "Show my cosmetics" on or off for the account `name`; `join` tells Mojang that account
+/// joins the server id the service chose. Returns what the service now keeps.
+pub fn set_visible(
+    service: &impl Call,
+    name: &str,
+    join: impl FnOnce(&str) -> Result<(), String>,
+    visible: bool,
+) -> Result<bool, String> {
+    let session = sign_in(service, name, join)?;
+    let session = session.as_str();
     let me = service.call(
         "PUT",
         "/v1/visible",
@@ -74,6 +122,8 @@ mod tests {
     struct Service {
         sent: RefCell<Vec<(String, String, Option<String>, Value)>>,
         joined: RefCell<Option<String>>,
+        /// What `GET /v1/me` lists as owned.
+        owned: Vec<&'static str>,
     }
 
     impl Call for Service {
@@ -97,6 +147,8 @@ mod tests {
                 }
                 "/v1/auth/finish" => Err("HTTP 401".into()),
                 "/v1/visible" if s == Some("svc") => Ok(json!({"visible": body["visible"]})),
+                "/v1/me" if s == Some("svc") => Ok(json!({"owned": self.owned})),
+                "/v1/presence" if s == Some("svc") => Ok(json!({"listed": body["listed"]})),
                 _ => Err("HTTP 401".into()),
             }
         }
@@ -125,6 +177,32 @@ mod tests {
     }
 
     #[test]
+    fn ownership_is_whether_the_accounts_own_list_has_anything() {
+        fn joined(service: &Service) -> impl FnOnce(&str) -> Result<(), String> + '_ {
+            move |id| {
+                *service.joined.borrow_mut() = Some(id.to_owned());
+                Ok(())
+            }
+        }
+        let none = Service::default();
+        assert_eq!(owns(&none, "Alex", joined(&none)), Ok(false));
+        let founder = Service {
+            owned: vec!["founder_visor"],
+            ..Service::default()
+        };
+        assert_eq!(owns(&founder, "Alex", joined(&founder)), Ok(true));
+        let sent = founder.sent.borrow();
+        assert_eq!(
+            sent.last()
+                .map(|c| (c.0.as_str(), c.1.as_str(), c.2.as_deref())),
+            Some(("GET", "/v1/me", Some("svc")))
+        );
+        drop(sent);
+        // Mojang refusing the join: no answer, so the game keeps the vanilla look.
+        assert!(owns(&founder, "Alex", |_| Err("403".into())).is_err());
+    }
+
+    #[test]
     fn mojang_refusing_stops_before_the_service_is_asked_to_trust_it() {
         let service = Service::default();
         let refused = set_visible(&service, "Alex", |_| Err("403".into()), false);
@@ -132,5 +210,21 @@ mod tests {
         assert_eq!(service.sent.borrow().len(), 1);
         // A join Mojang never saw: the service refuses the id.
         assert!(set_visible(&service, "Alex", |_| Ok(()), false).is_err());
+    }
+
+    #[test]
+    fn leaving_the_list_signs_in_the_same_way() {
+        let service = Service::default();
+        let join = |id: &str| {
+            *service.joined.borrow_mut() = Some(id.to_owned());
+            Ok(())
+        };
+        assert_eq!(set_listed(&service, "Alex", join, false), Ok(false));
+        let sent = service.sent.borrow();
+        assert_eq!(sent[2].1, "/v1/presence");
+        assert_eq!(
+            (sent[2].2.as_deref(), &sent[2].3),
+            (Some("svc"), &json!({"listed": false}))
+        );
     }
 }

@@ -26,6 +26,25 @@ struct EntityFluidWorld<'a> {
     world: &'a World,
     fluids: &'a FluidResources,
 }
+/// `FluidState.getFlow(level, pos)`: the current of the fluid at `pos`, the
+/// one that pushes an item or a boat in it, normalised (zero where there is no
+/// fluid or it doesn't move: a source with only sources and walls around it).
+/// A falling fluid's current points down.
+pub fn fluid_flow(world: &World, fluids: &FluidResources, pos: [i32; 3]) -> [f64; 3] {
+    let mut velocity = Vec3::ZERO;
+    let mut scene = EntityFluidWorld {
+        bounds: Aabb::new(Vec3::ZERO, Vec3::ZERO),
+        position: Vec3::ZERO,
+        eye_y: 0.0,
+        velocity: &mut velocity,
+        world,
+        fluids,
+    };
+    let at = BlockPos::new(pos[0], pos[1], pos[2]);
+    let state = fluids.fluid(world.block(pos[0], pos[1], pos[2]));
+    let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
+    [flow.x, flow.y, flow.z]
+}
 /// `Entity.baseTick`'s fluid step for an entity that is pushed by fluid: its
 /// immersion heights, then the current of each fluid it sits in, added to
 /// `velocity` with vanilla's scales (water 0.014, lava 0.007 fast or
@@ -215,6 +234,45 @@ impl FluidFlowWorld for EntityFluidWorld<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `FluidState.getFlow`: water running out of a pool flows away from it,
+    /// while the pool itself, its edge on a solid floor and the air beside it
+    /// have no current.
+    #[test]
+    fn fluid_flow_runs_away_from_a_pool_and_is_zero_in_still_water() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = FluidResources::new(&assets, &facts).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let water = assets.registry.default_state("minecraft:water").unwrap();
+        let mut state = assets.registry.state(water).unwrap().clone();
+        state.properties.insert("level".into(), "1".into());
+        let flowing = assets.registry.resolve(&state).unwrap();
+        for x in 16..=22 {
+            for z in 16..=20 {
+                world.set(x, 3, z, stone).unwrap();
+            }
+        }
+        for x in 17..=19 {
+            for z in 17..=19 {
+                world.set(x, 4, z, water).unwrap();
+            }
+        }
+        world.set(20, 4, 18, flowing).unwrap();
+        // A level-1 flow beside sources: the source is 1/9 higher to the west,
+        // the air to the east on stone gives nothing, so the current is +x.
+        assert_eq!(fluid_flow(&world, &fluids, [20, 4, 18]), [1.0, 0.0, 0.0]);
+        for still in [[18, 4, 18], [17, 4, 17], [21, 4, 18]] {
+            assert_eq!(fluid_flow(&world, &fluids, still), [0.0; 3], "{still:?}");
+        }
+    }
     #[test]
     fn items_follow_flowing_water_but_still_water_has_no_horizontal_push() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -242,6 +300,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -278,6 +337,7 @@ mod tests {
             false,
             &fluids,
             &[],
+            None,
             None
         ));
         assert_eq!(still.position.x, at.x);
@@ -292,6 +352,7 @@ mod tests {
             false,
             &fluids,
             &[],
+            None,
             None
         ));
         // First push is damped by buoyancy before motion, second follows drag.
@@ -306,6 +367,7 @@ mod tests {
                 false,
                 &fluids,
                 &[],
+                None,
                 None,
             );
         }
@@ -342,6 +404,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let orb = ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -365,6 +428,7 @@ mod tests {
             &mut || 0.0,
             None,
             &fluids,
+            &mut |_, _| {},
         ));
         assert_eq!(still.position.x, at.x);
         assert_eq!(still.velocity.x, 0.0);
@@ -379,11 +443,14 @@ mod tests {
             &mut || 0.0,
             None,
             &fluids,
+            &mut |_, _| {},
         ));
-        // Current pushes the orb, underwater drag damps before motion, then air
-        // drag: `ExperienceOrb.tick`'s `0.98F`, a float widened to double.
-        assert!((carried.position.x - at.x - 0.014 * 0.99).abs() < 1e-12);
-        assert!((carried.velocity.x - 0.014 * 0.99 * f64::from(0.98_f32)).abs() < 1e-12);
+        // Current pushes the orb, then underwater and air drag each widen
+        // their float constants before multiplying the double motion.
+        assert!((carried.position.x - at.x - 0.014 * f64::from(0.99_f32)).abs() < 1e-12);
+        assert!(
+            (carried.velocity.x - 0.014 * f64::from(0.99_f32) * f64::from(0.98_f32)).abs() < 1e-12
+        );
         for _ in 0..20 {
             carried.tick(
                 &world,
@@ -394,6 +461,7 @@ mod tests {
                 &mut || 0.0,
                 None,
                 &fluids,
+                &mut |_, _| {},
             );
         }
         assert!(carried.position.x > at.x + 0.5);

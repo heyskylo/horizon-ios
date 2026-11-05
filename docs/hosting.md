@@ -46,13 +46,14 @@ Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64), in PowerShell:
+Windows (x64 or ARM64), in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+the current Horizon Nightly from GitHub (the only build Horizon ships;
 `--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
@@ -301,8 +302,9 @@ horizon-server rollback [--timeout SECONDS]
 ```
 
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
-console commands do. While it's stopped, they edit vanilla's files directly. `kick`, `ban`, `pardon`, `ban-ip`
-and `pardon-ip` run the vanilla command on the running server, through its control API; `players` reads the
+console commands do. While it's stopped, they edit vanilla's files directly. `kick` runs the vanilla command
+on the running server, through its control API; `ban`, `pardon`, `ban-ip` and `pardon-ip` do the same while it
+is running and edit the vanilla files directly while it is stopped. `players` reads the
 lists from the files when the server is stopped. Any console command works through
 `cmd`: `horizon-server cmd ban Griefer`, `horizon-server cmd say Restarting in 5 minutes`.
 #### Temporary bans
@@ -317,7 +319,9 @@ is online is kicked with the reason and the time the ban ends, and the same mess
 try to join. A player who is already banned (and whose ban has not ended) is left as they are: `pardon` first to
 change a ban. The player may be offline if the server has seen them. The console logs it as
 `[tempban] <operator> banned <player> for <duration>`, and the event stream (`GET /api/v1/events`) gets a `ban`
-event with `reason`, `by` and `until`. It is not in the command tree, so it has no completions, like `/mute`.
+event with `reason`, `by` and `until`. `tempbanlist` lists the bans that end by themselves, soonest first, with
+who banned, the time left, the end and the reason. Both are in operators' command tree (level 3 and above), so
+their clients complete them, as they do the [mute commands](chat-filter.md#muting-by-hand).
 
 To generate the world around spawn ahead of the players, Horizon has its own `pregen` command, off until
 `server.toml` has `horizon-pregen = true` under `[properties]`: `horizon-server cmd pregen start 2500`
@@ -537,6 +541,28 @@ and the oldest automatic ones beyond `keep` are deleted. Backups you make by han
 world aside to `backups/replaced-<time>/` (never deleted), puts the backup in place, and restarts the server if
 it was running. Add `--dimension ID` (like `minecraft:the_nether`) to bring back only that dimension and leave
 the rest of the world as it is. The panel does the same with one click.
+
+### A smaller world: `[prune_chunks]`
+
+Players who travel far leave a trail of chunks nobody comes back to. This deletes the chunks players spent
+less than a minute near (vanilla's `InhabitedTime`, 1200 ticks), so they generate again from the seed, as they
+were, if someone returns. Back up first. Add to `server.toml`, then restart:
+
+```toml
+[prune_chunks]
+mode = "dry-run"             # "dry-run": only the report, the game starts at once; "delete": before the game starts
+min_inhabited_ticks = 1200   # chunks players spent less than this near go
+spawn_radius = 32            # chunks this close to the spawn stay (0 0 in the Nether and the End)
+ring = 1                     # chunks this close to a kept chunk stay, so no seam opens beside a build
+keep_files = ["horizon-smp/claims.json", "horizon-smp/places.json"]   # in the world folder: claims, homes
+```
+
+After the run, `mode` is set back to `"off"` and `logs/prune-chunks-<time>.txt` says, per dimension, how many
+chunks went (or would go) and how much disk was freed. The chunk's entities and points of interest go with it;
+region files are rewritten compacted (vanilla still reads them) and a file left empty is deleted. Chunks that
+can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
+`x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
+stops the prune before anything is deleted.
 
 ## 8. Start it with the computer
 

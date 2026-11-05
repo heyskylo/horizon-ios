@@ -3,6 +3,7 @@
 //! click-button Respawn`) or any widget by its id in [`tree`] (`horizon-ctl
 //! click done`), whatever screen drew it. Also the mouse cursor the widget
 //! under the mouse asks for.
+use crate::gamepad::ScrollArea;
 use std::cell::{Cell, RefCell};
 
 /// The mouse cursor a frame's widgets asked for (`CursorTypes`; the others
@@ -96,6 +97,14 @@ thread_local! {
     /// on-screen keyboard's keys), labelled or not: where a controller can move focus. Drawn since
     /// `end_frame`, the last frame's, and how many frames rotated.
     static TARGETS: RefCell<(Vec<Target>, Vec<Target>, u64)> = const { RefCell::new((Vec::new(), Vec::new(), 0)) };
+    /// The buttons drawn since the last `end_frame` that declared their job, and the last frame's.
+    static ACTIONS: RefCell<(Vec<DeclaredAction>, Vec<DeclaredAction>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+    /// The pad drives, so declared buttons show their glyph (labels leave it room).
+    static ACTION_GLYPHS: Cell<bool> = const { Cell::new(false) };
+    /// The screen the buttons in `ACTIONS` were declared on, the same two frames.
+    static ACTION_SCREENS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// The lists drawn with a scrollbar since `end_frame`, and the last frame's.
+    static SCROLL_AREAS: RefCell<(Vec<ScrollArea>, Vec<ScrollArea>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
 /// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
@@ -104,17 +113,97 @@ thread_local! {
 pub struct Saved(
     (Vec<Widget>, Vec<Widget>, u64),
     (Vec<Target>, Vec<Target>, u64),
+    (Vec<DeclaredAction>, Vec<DeclaredAction>),
+    bool,
+    (u64, u64),
+    (Vec<ScrollArea>, Vec<ScrollArea>),
 );
 
 /// This thread's buttons and targets, leaving none.
 pub fn take() -> Saved {
-    Saved(WIDGETS.take(), TARGETS.take())
+    Saved(
+        WIDGETS.take(),
+        TARGETS.take(),
+        ACTIONS.take(),
+        ACTION_GLYPHS.take(),
+        ACTION_SCREENS.take(),
+        SCROLL_AREAS.take(),
+    )
 }
 
 /// Bring back what [`take`] kept.
 pub fn put(saved: Saved) {
     WIDGETS.set(saved.0);
     TARGETS.set(saved.1);
+    SCROLL_AREAS.set(saved.5);
+    ACTIONS.set(saved.2);
+    ACTION_GLYPHS.set(saved.3);
+    ACTION_SCREENS.set(saved.4);
+}
+
+/// A button's job on its screen. A screen declares it ([`crate::ui::action_button`]) and the
+/// controller's button, its glyph and its place on every pad follow (docs/controllers.md,
+/// "Adding a screen").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Leaves the screen, keeping what was set.
+    Done,
+    /// Goes back one screen.
+    Back,
+    /// Leaves the screen, dropping what was set.
+    Cancel,
+    /// Applies what was set and stays or leaves as the screen does.
+    Apply,
+    /// Opens the options.
+    Options,
+    /// Leaves the game or the world: the pad moves the focus here, and A confirms.
+    Exit,
+}
+
+/// A button that declared its job, as last drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeclaredAction {
+    pub action: Action,
+    pub rect: [f32; 4],
+    pub enabled: bool,
+}
+
+/// `rect` is the button doing `action` on this screen; see [`crate::ui::action_button`], for a
+/// screen that draws its buttons itself.
+pub fn declare_action(action: Action, rect: [f32; 4], enabled: bool) {
+    ACTIONS.with_borrow_mut(|(current, _)| {
+        if current.len() < 16 {
+            current.push(DeclaredAction {
+                action,
+                rect,
+                enabled,
+            });
+        }
+    });
+}
+
+/// The buttons of the last drawn frame that declared their job, if it drew `screen`: until the
+/// screen just opened is drawn, the one it replaced can't be pressed.
+pub fn last_actions(screen: u64) -> Vec<DeclaredAction> {
+    if ACTION_SCREENS.get().1 != screen {
+        return Vec::new();
+    }
+    ACTIONS.with_borrow(|(_, last)| last.clone())
+}
+
+/// The frame being drawn shows `screen` (the controller's own key for it).
+pub fn set_action_screen(screen: u64) {
+    ACTION_SCREENS.set((screen, ACTION_SCREENS.get().1));
+}
+
+/// Whether declared buttons are showing their glyph: only while the pad drives.
+pub fn set_action_glyphs(on: bool) {
+    ACTION_GLYPHS.set(on);
+}
+
+/// How much of a declared button's left the glyph takes from its label.
+pub fn action_glyph_room() -> f32 {
+    if ACTION_GLYPHS.get() { 14.0 } else { 0.0 }
 }
 
 /// An interactive rectangle (GUI pixels) a controller can focus and click.
@@ -153,6 +242,37 @@ pub fn clip_targets(mark: usize, y0: f32, y1: f32) {
             }
         }
     });
+}
+
+/// This frame drew a list with something to scroll, in `rect`, scrolled `amount`
+/// of `max`: a focus step goes through its hidden rows before it leaves
+/// (`gamepad::list_step`).
+pub fn scroll_area(rect: [f32; 4], amount: f32, max: f32) {
+    let area = ScrollArea {
+        rect,
+        amount,
+        up: amount > 0.5,
+        down: amount < max - 0.5,
+    };
+    SCROLL_AREAS.with_borrow_mut(|(current, _)| current.push(area));
+}
+
+/// The lists the last drawn frame could scroll.
+pub fn last_scroll_areas() -> Vec<ScrollArea> {
+    SCROLL_AREAS.with_borrow(|(_, last)| last.clone())
+}
+
+/// A point the open screen's list scrolls under: `at` when it is over one, else
+/// the same column at the list's middle. For the right stick, which scrolls the
+/// list wherever the hidden pointer is.
+pub fn over_scroll_area(at: (f32, f32)) -> (f32, f32) {
+    SCROLL_AREAS.with_borrow(|(_, last)| {
+        let over = |a: &ScrollArea| (a.rect[1]..a.rect[1] + a.rect[3]).contains(&at.1);
+        match last.first() {
+            Some(area) if !last.iter().any(over) => (at.0, area.rect[1] + area.rect[3] / 2.0),
+            _ => at,
+        }
+    })
 }
 
 /// The focus targets of the last drawn frame.
@@ -224,6 +344,13 @@ pub fn end_frame(frames: u64) {
             TARGETS.with_borrow_mut(|(current, last, generation)| {
                 *last = std::mem::take(current);
                 *generation += 1;
+            });
+            ACTIONS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
+            });
+            ACTION_SCREENS.set((ACTION_SCREENS.get().0, ACTION_SCREENS.get().0));
+            SCROLL_AREAS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
             });
             NARRATION.with_borrow_mut(|(current, last)| {
                 *last = std::mem::replace(current, Narration::EMPTY);
@@ -700,8 +827,10 @@ pub fn narrating() -> bool {
 
 /// The screen being drawn: what it narrates and which one it is. The
 /// narratables recorded before it in the frame are dropped: the last screen
-/// drawn (an overlay over the screen under it) is the one narrated.
+/// drawn (an overlay over the screen under it) is the one narrated. So are the
+/// jobs declared before it: a popup's buried buttons can't be pressed.
 pub fn begin_screen(info: impl FnOnce() -> ScreenInfo) {
+    ACTIONS.with_borrow_mut(|(current, _)| current.clear());
     if NARRATING.get() {
         NARRATION.with_borrow_mut(|(current, _)| {
             current.screen = Some(info());
@@ -1151,6 +1280,29 @@ mod tests {
         assert_eq!(slug("Music & Sounds..."), "music-sounds");
         assert_eq!(slug("Difficulty: Normal"), "difficulty");
         assert_eq!(slug("Économie"), "économie");
+    }
+
+    #[test]
+    fn declared_buttons_are_only_those_of_the_screen_drawn() {
+        let done = |x| declare_action(Action::Done, [x, 0.0, 5.0, 5.0], true);
+        done(0.0);
+        set_action_screen(7);
+        end_frame(200);
+        assert_eq!(last_actions(7).len(), 1);
+        // Another screen opened and hasn't been drawn yet.
+        assert!(last_actions(8).is_empty());
+    }
+
+    #[test]
+    fn a_popup_drops_the_buttons_declared_under_it() {
+        declare_action(Action::Done, [0.0, 0.0, 5.0, 5.0], true);
+        begin_screen(|| ScreenInfo::new("popup", ""));
+        declare_action(Action::Cancel, [9.0, 0.0, 5.0, 5.0], true);
+        set_action_screen(7);
+        end_frame(300);
+        let actions = last_actions(7);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, Action::Cancel);
     }
 
     #[test]

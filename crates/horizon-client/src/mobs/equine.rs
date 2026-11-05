@@ -80,6 +80,11 @@ pub fn is_equine(s: Species) -> bool {
             | Species::TraderLlama
     )
 }
+/// `Entity.canSprint`: false everywhere but the camel (`Camel.canSprint`). A
+/// rider's `LocalPlayer.isSprintingPossible` asks its vehicle.
+pub fn can_sprint(s: Species) -> bool {
+    matches!(s, Species::Camel | Species::CamelHusk)
+}
 /// `AbstractHorse.getMaxTemper`: 100, 30 for llamas.
 pub fn max_temper(s: Species) -> i32 {
     if super::llama::is_llama(s) {

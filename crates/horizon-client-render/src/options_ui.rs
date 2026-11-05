@@ -1273,11 +1273,15 @@ pub enum Page {
     Controller,
     PadBinds,
     Extras,
+    /// PvP & HUD (`pvp`): the extras a PvP player sets, on their own page.
+    Pvp,
     /// CreditsAndAttributionScreen.
     Credits,
     /// Horizon Settings: every page Horizon adds, as a mod's settings
     /// screen hangs off vanilla's Options.
     Horizon,
+    /// Replay Studio: saved recordings browser and 3D video editor launcher.
+    Studio,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
     /// SkinCustomizationScreen: the skin layers and Main Hand.
@@ -1302,11 +1306,9 @@ enum Act {
     Key(&'static str),
     ResetKey(&'static str),
     ResetKeys,
-    /// Controller binds: wait for a button, reset one, reset all.
-    PadKey(&'static str),
-    ResetPadKey(&'static str),
-    ResetPadKeys,
     ToggleMod(usize),
+    /// PvP & HUD's PvP preset (`pvp::apply_preset`).
+    PvpPreset,
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
@@ -1503,6 +1505,8 @@ pub enum Event {
     ListMusicTracks,
     /// A Music page row: play this track of this event now.
     PlayMusicTrack(String, String),
+    /// Open the recordings folder in the system file browser.
+    OpenStudioFolder,
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1564,6 +1568,12 @@ pub struct OptionsUi {
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
+    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
+    /// Nintendo's: each part shows the letter of the button playing it.
+    pub pad_by_letter: bool,
+    /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
+    /// under the widget instead of beside the pointer.
+    pub pad_driving: bool,
     pub languages: Vec<LanguageInfo>,
     language_choice: Option<String>,
     language_search: ui::EditBox,
@@ -1595,12 +1605,14 @@ pub struct OptionsUi {
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
     pub graphics: crate::graphics_ui::GraphicsUi,
+    pub controller: crate::controller_ui::ControllerUi,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
     pub calibration: Option<crate::hdr_calibration::Calibration>,
     /// Whether the window was fullscreen before calibration made it so (the game keeps it).
     pub calibration_fullscreen: Option<bool>,
     pub split_setup: crate::split_ui::SplitUi,
+    pub studio: crate::studio_ui::StudioUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
     /// A repro recording is running: the AI Agent page's button says stop.
@@ -1645,6 +1657,8 @@ impl Default for OptionsUi {
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
+            pad_by_letter: false,
+            pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
             language_search: search,
@@ -1663,10 +1677,12 @@ impl Default for OptionsUi {
             minecart_improvements: false,
             center_language: false,
             graphics: Default::default(),
+            controller: Default::default(),
             split_profiles: Default::default(),
             calibration: None,
             calibration_fullscreen: None,
             split_setup: Default::default(),
+            studio: Default::default(),
             agent_status: Vec::new(),
             agent_recording: false,
             music_groups: Vec::new(),
@@ -1732,10 +1748,12 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
         Page::Horizon => "horizon.pages.settings.tooltip",
+        Page::Studio => "horizon.pages.studio.tooltip",
         Page::Graphics => "horizon.pages.graphics.tooltip",
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
         Page::Extras => "horizon.pages.extras.tooltip",
+        Page::Pvp => "horizon.pages.pvp.tooltip",
         Page::Agent => "horizon.pages.agent.tooltip",
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
@@ -1936,6 +1954,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
         Act::Cycle(opt) => Some(opt.tooltip_key(s)),
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
+        Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
         _ => None,
     };
     if let Some(key) = key.filter(|key| lang::has(key)) {
@@ -2038,25 +2057,9 @@ fn narrate_widget(
                     active,
                 };
             }
-            Act::PadKey(action) => {
-                let bound = s.controller.binding(action).is_some();
-                n.what = What::Named {
-                    title: bind(tr(gamepad::action_caption(action)), bound),
-                    active,
-                };
-            }
             Act::ResetKey(name) => {
                 n.what = What::Named {
                     title: t("narrator.controls.reset", &[tr(name)]),
-                    active,
-                };
-            }
-            Act::ResetPadKey(action) => {
-                n.what = What::Named {
-                    title: t(
-                        "narrator.controls.reset",
-                        &[tr(gamepad::action_caption(action))],
-                    ),
                     active,
                 };
             }
@@ -2151,6 +2154,7 @@ impl OptionsUi {
                 Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr => {
                     self.graphics.typing()
                 }
+                Page::Controller | Page::PadBinds => self.controller.typing(),
                 _ => self.settings_search_active(),
             }
     }
@@ -2270,11 +2274,17 @@ impl OptionsUi {
         if let Some(at) = Self::graphics_page(page) {
             self.graphics.open(at);
         }
+        if let Some(at) = Self::controller_page(page) {
+            self.controller.open(at);
+        }
         if page == Page::SplitSetup {
             self.split_setup.reset();
         }
         if page == Page::SplitProfiles {
             self.split_profiles.reset();
+        }
+        if page == Page::Studio {
+            self.studio.refresh();
         }
     }
     /// What the graphics screen's actions do to these options.
@@ -2299,6 +2309,37 @@ impl OptionsUi {
             }
         }
         events
+    }
+    /// What the controller screen's actions do to these options.
+    fn controller_events(
+        &mut self,
+        s: &mut Settings,
+        actions: Vec<crate::controller_ui::Action>,
+    ) -> Vec<Event> {
+        use crate::controller_ui::Action;
+        let mut events = Vec::new();
+        for action in actions {
+            match action {
+                Action::ButtonClick => events.push(Event::ButtonClick),
+                Action::Changed => events.push(Event::Changed),
+                Action::SliderDrag => events.push(Event::SliderDrag),
+                Action::BindPad(action) => self.selected_pad_action = Some(action),
+                Action::Done => events.extend(self.back(s)),
+            }
+        }
+        events
+    }
+    /// Where the controller screen opens for `page`, if it is one of its pages.
+    fn controller_page(page: Page) -> Option<crate::controller_ui::Page> {
+        match page {
+            Page::Controller => Some(crate::controller_ui::Page::General),
+            Page::PadBinds => Some(crate::controller_ui::Page::Bindings),
+            _ => None,
+        }
+    }
+    /// Whether the controller screen is open: a controller button pressed now may bind.
+    pub fn controller_open(&self) -> bool {
+        Self::controller_page(self.page()).is_some()
     }
     /// Where the graphics screen opens for `page`, if it is one of its pages.
     fn graphics_page(page: Page) -> Option<crate::graphics_ui::Page> {
@@ -2339,11 +2380,12 @@ impl OptionsUi {
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
-            Page::Controller => "horizon.pages.controller",
-            Page::PadBinds => "horizon.pages.controller_binds",
+            Page::Controller | Page::PadBinds => "horizon.pages.controller",
             Page::Extras => "horizon.pages.extras",
+            Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
+            Page::Studio => "horizon.pages.studio",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
             Page::SplitSetup => "horizon.pages.split_setup",
@@ -2353,7 +2395,7 @@ impl OptionsUi {
     fn scrollbar_x(&self, width: f32) -> f32 {
         (width / 2.0).floor()
             + match self.page() {
-                Page::KeyBinds | Page::PadBinds => 178.0,
+                Page::KeyBinds => 178.0,
                 Page::Language => 118.0,
                 _ => 163.0,
             }
@@ -2438,7 +2480,7 @@ impl OptionsUi {
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
             Page::SplitSetup => Vec::new(),
-            Page::Extras => {
+            Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
                 let extra = |item: crate::extras::Item| {
@@ -2465,7 +2507,20 @@ impl OptionsUi {
                         widget
                     }
                 };
-                let mut rows = Vec::new();
+                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
+                let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
+                let mut rows = vec![Row::Buttons(
+                    preset,
+                    (self.page() == Page::Extras).then(|| {
+                        button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.pages.open.pvp"),
+                            Act::Push(Page::Pvp),
+                        )
+                    }),
+                )];
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     rows.extend(
@@ -2475,7 +2530,14 @@ impl OptionsUi {
                     );
                     section.clear();
                 };
-                for row in crate::extras::rows() {
+                let page_rows = match self.page() {
+                    Page::Pvp => crate::pvp::rows()
+                        .into_iter()
+                        .map(|r| r.map(crate::extras::Item::Pvp))
+                        .collect(),
+                    _ => crate::extras::rows(),
+                };
+                for row in page_rows {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
@@ -2517,8 +2579,9 @@ impl OptionsUi {
                                 Page::SplitSetup
                             },
                         ),
-                        None,
+                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
                     ),
+                    Row::Buttons(open("horizon.pages.open.studio", Page::Studio), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -2739,37 +2802,6 @@ impl OptionsUi {
                     None,
                 ));
                 self.filter_option_rows(rows)
-            }
-            Page::Controller => {
-                let mut rows = vec![Row::Buttons(
-                    button(
-                        0.0,
-                        0.0,
-                        310.0,
-                        tr("horizon.pages.open.controller_binds"),
-                        Act::Push(Page::PadBinds),
-                    ),
-                    None,
-                )];
-                rows.extend(pairs(&[
-                    Opt::PadEnabled,
-                    Opt::PadVibration,
-                    Opt::PadAdaptiveTriggers,
-                    Opt::PadLightbar,
-                    Opt::PadLookSensitivity,
-                    Opt::PadToggleSneak,
-                    Opt::PadInvertX,
-                    Opt::PadInvertY,
-                    Opt::PadMoveDeadzone,
-                    Opt::PadLookDeadzone,
-                    Opt::PadGlyphs,
-                    Opt::PadKeyboard,
-                    Opt::PadPointerSpeed,
-                    Opt::PadScrollSpeed,
-                    Opt::PadRepeatDelay,
-                    Opt::PadRepeatInterval,
-                ]));
-                rows
             }
             Page::Mouse => pairs(MOUSE_OPTIONS),
             Page::Chat => pairs(&[
@@ -3197,92 +3229,6 @@ impl OptionsUi {
                 ));
                 out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
             }
-            Page::PadBinds => {
-                out.push(Widget {
-                    x: 0.0,
-                    y: 12.0,
-                    w,
-                    h: 9.0,
-                    kind: WKind::Text {
-                        text: tr(Self::title(page)),
-                        color: u32::MAX,
-                        centered: true,
-                    },
-                    list: false,
-                    row: 0,
-                });
-                let row_left = cx - 170.0;
-                let scrollbar_x = row_left + 340.0 + 6.0 + 2.0;
-                let list_start = out.len();
-                let mut y = top + 2.0 - self.scroll;
-                let pad = &s.controller;
-                for (action, _) in gamepad::ACTIONS {
-                    rows.begin(&out, y);
-                    out.push(Widget {
-                        x: row_left + 2.0,
-                        y: y + 6.0,
-                        w: 200.0,
-                        h: 9.0,
-                        kind: WKind::Text {
-                            text: tr(gamepad::action_caption(action)),
-                            color: u32::MAX,
-                            centered: false,
-                        },
-                        list: false,
-                        row: 0,
-                    });
-                    let mut message = match pad.binding(action) {
-                        Some(b) => {
-                            let [r, g, bl] = b.color(self.pad_style);
-                            Text::literal(b.label(self.pad_style))
-                                .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
-                        }
-                        None => tr("key.keyboard.unknown"),
-                    };
-                    if pad.conflicts(action) {
-                        message = Text::literal("[ ")
-                            .append(message)
-                            .append(" ]")
-                            .with_color(text::YELLOW);
-                    }
-                    if self.selected_pad_action == Some(*action) {
-                        message = Text::literal("> ")
-                            .append(message.with_style(&Style {
-                                underlined: Some(true),
-                                ..Style::default()
-                            }))
-                            .append(" <")
-                            .with_color(text::YELLOW);
-                    }
-                    let reset_x = scrollbar_x - 50.0 - 10.0;
-                    let change_x = reset_x - 5.0 - 75.0;
-                    out.push(button(change_x, y, 75.0, message, Act::PadKey(action)));
-                    let reset = button(
-                        reset_x,
-                        y,
-                        50.0,
-                        tr("controls.reset"),
-                        Act::ResetPadKey(action),
-                    );
-                    out.push(if pad.is_default(action) {
-                        inactive(reset)
-                    } else {
-                        reset
-                    });
-                    y += 20.0;
-                    rows.end(&mut out, y);
-                }
-                content = y + self.scroll - top + 2.0;
-                out[list_start..].iter_mut().for_each(|w| w.list = true);
-                out.push(button(
-                    cx - 154.0,
-                    h - 27.0,
-                    150.0,
-                    tr("controls.resetAll"),
-                    Act::ResetPadKeys,
-                ));
-                out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
-            }
             Page::Language => {
                 top = 36.0;
                 bottom = h - 53.0;
@@ -3538,7 +3484,7 @@ impl OptionsUi {
             return;
         }
         // OptionsList rows are 310 wide, KeyBindsList's 340.
-        let half = if matches!(self.page(), Page::KeyBinds | Page::PadBinds) {
+        let half = if self.page() == Page::KeyBinds {
             170.0
         } else {
             155.0
@@ -3592,9 +3538,10 @@ impl OptionsUi {
                     true,
                 );
             }
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                crate::widgets::Action::Done,
                 w / 2.0 - 100.0,
                 h - 28.0,
                 200.0,
@@ -3624,6 +3571,11 @@ impl OptionsUi {
             self.graphics.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
+        if Self::controller_page(self.page()).is_some() {
+            self.controller.binding = self.selected_pad_action;
+            self.controller.draw(s, batch, atlas, cursor, self.in_world);
+            return;
+        }
         if self.page() == Page::SplitSetup {
             self.split_setup.on = s.extras.splitscreen;
             // The controller picks a tile up between presses: the screen's size from the draw.
@@ -3634,6 +3586,10 @@ impl OptionsUi {
         if self.page() == Page::SplitProfiles {
             self.split_profiles
                 .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+            return;
+        }
+        if self.page() == Page::Studio {
+            self.studio.draw(batch, atlas, cursor, self.in_world);
             return;
         }
         if self.page() == Page::Packs {
@@ -3730,7 +3686,8 @@ impl OptionsUi {
                     .collect();
                 if !lines.is_empty() {
                     tooltip = Some(lines);
-                    tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
+                    tooltip_rect =
+                        (!pointer_over || self.pad_driving).then_some([wd.x, wd.y, wd.w, wd.h]);
                 }
             }
             if tip_hover && let Some(tip) = tooltip_text(s, wd) {
@@ -3745,12 +3702,28 @@ impl OptionsUi {
                         .collect::<Vec<_>>(),
                     _ => atlas.font.split(&tip, 170.0),
                 });
-                tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
+                tooltip_rect =
+                    (!pointer_over || self.pad_driving).then_some([wd.x, wd.y, wd.w, wd.h]);
             }
             match &wd.kind {
-                WKind::Button { label, active, .. } => {
+                WKind::Button { label, active, act } => {
                     let label = fitted.as_ref().map_or(label, |f| &f.0);
-                    ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    if matches!(act, Act::Done) {
+                        ui::action_button(
+                            batch,
+                            atlas,
+                            crate::widgets::Action::Done,
+                            wd.x,
+                            wd.y,
+                            wd.w,
+                            wd.h,
+                            label,
+                            *active,
+                            hover,
+                        );
+                    } else {
+                        ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    }
                     crate::widgets::last_narratable(|n| {
                         narrate_widget(n, s, wd, hover, list_key, framebuffer);
                     });
@@ -3946,6 +3919,7 @@ impl OptionsUi {
         }
         if let Some(lines) = tooltip {
             match tooltip_rect {
+                Some(rect) if self.pad_driving => ui::tooltip_under(batch, atlas, &lines, rect),
                 Some(rect) => ui::tooltip_menu(batch, atlas, &lines, cursor, rect),
                 None => ui::tooltip(batch, atlas, &lines, cursor),
             }
@@ -4008,6 +3982,22 @@ impl OptionsUi {
                 }
             };
         }
+        if self.page() == Page::Studio {
+            if right || drag {
+                return Vec::new();
+            }
+            use crate::studio_ui::StudioAction;
+            return match self.studio.click((x, y), size) {
+                StudioAction::None => Vec::new(),
+                StudioAction::Refresh => vec![Event::ButtonClick],
+                StudioAction::OpenFolder => vec![Event::ButtonClick, Event::OpenStudioFolder],
+                StudioAction::Back => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
+        }
         if self.page() == Page::HdrCalibration
             && let Some(c) = &mut self.calibration
         {
@@ -4031,6 +4021,16 @@ impl OptionsUi {
                 self.graphics
                     .click(s, (x, y), size, framebuffer, drag, right, self.shift);
             return self.graphics_events(s, actions);
+        }
+        if Self::controller_page(self.page()).is_some() {
+            // Waiting on a button: a click cancels the wait.
+            if !drag && self.selected_pad_action.take().is_some() {
+                return Vec::new();
+            }
+            let actions =
+                self.controller
+                    .click(s, (x, y), size, framebuffer, drag, right, self.shift);
+            return self.controller_events(s, actions);
         }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
@@ -4139,10 +4139,6 @@ impl OptionsUi {
                 self.slider_value = Some((opt, v, Instant::now()));
                 drag_slider(opt, s, v, &mut events);
             }
-            return events;
-        }
-        // Controller Binds: a click cancels the wait.
-        if self.selected_pad_action.take().is_some() {
             return events;
         }
         // Key Binds: a mouse button pressed while waiting binds it.
@@ -4263,16 +4259,6 @@ impl OptionsUi {
                             s.keys.reset_all();
                             events.push(Event::Changed);
                         }
-                        Act::PadKey(action) => self.selected_pad_action = Some(action),
-                        Act::ResetPadKey(action) => {
-                            s.controller
-                                .bind(action, gamepad::PadSettings::default_of(action));
-                            events.push(Event::Changed);
-                        }
-                        Act::ResetPadKeys => {
-                            s.controller.reset_bindings();
-                            events.push(Event::Changed);
-                        }
                         Act::ToggleMod(i) => {
                             s.mods.toggle(i);
                             events.push(Event::Changed);
@@ -4288,6 +4274,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -4420,7 +4410,7 @@ impl OptionsUi {
         let pack = self.pack_dragging.take();
         let slider =
             self.dragging.take().is_some() | self.shader_dragging.take().is_some() | pack.is_some();
-        let graphics_slider = self.graphics.release();
+        let graphics_slider = self.graphics.release() | self.controller.release();
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
         if slider || graphics_slider || calibration_slider {
@@ -4503,6 +4493,14 @@ impl OptionsUi {
         if Self::graphics_page(self.page()).is_some() {
             let actions = self.graphics.wheel(s, size, cursor, framebuffer, amount);
             return self.graphics_events(s, actions);
+        }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
+            return Vec::new();
+        }
+        if Self::controller_page(self.page()).is_some() {
+            let actions = self.controller.wheel(s, size, cursor, framebuffer, amount);
+            return self.controller_events(s, actions);
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
@@ -4588,6 +4586,10 @@ impl OptionsUi {
         }
         if Self::graphics_page(self.page()).is_some() {
             self.graphics.scroll(s, size, amount);
+            return;
+        }
+        if Self::controller_page(self.page()).is_some() {
+            self.controller.scroll(s, size, amount);
             return;
         }
         match &mut self.pack_screen {
@@ -4772,6 +4774,8 @@ impl OptionsUi {
             self.split_profiles.type_text(text);
         } else if Self::graphics_page(self.page()).is_some() && self.graphics.typing() {
             self.graphics.type_text(text);
+        } else if Self::controller_page(self.page()).is_some() && self.controller.typing() {
+            self.controller.type_text(text);
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
@@ -4805,6 +4809,9 @@ impl OptionsUi {
         }
         if Self::graphics_page(self.page()).is_some() {
             return self.graphics.shortcut(shortcut, clipboard);
+        }
+        if Self::controller_page(self.page()).is_some() {
+            return self.controller.shortcut(shortcut, clipboard);
         }
         if self.settings_search_active() {
             if self.settings_search.shortcut(shortcut, clipboard) {
@@ -4927,6 +4934,16 @@ impl OptionsUi {
             }
             if handled {
                 return events;
+            }
+            return events;
+        }
+        if Self::controller_page(self.page()).is_some() {
+            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
+            let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
+            let (actions, _) = self.controller.key_modifiers(s, key, text, shift, size, fb);
+            let mut events = self.controller_events(s, actions);
+            if key == K::Escape {
+                events.extend(self.back(s));
             }
             return events;
         }
@@ -5202,16 +5219,6 @@ impl OptionsUi {
                             s.keys.reset_all();
                             events.push(Event::Changed);
                         }
-                        Act::PadKey(action) => self.selected_pad_action = Some(action),
-                        Act::ResetPadKey(action) => {
-                            s.controller
-                                .bind(action, gamepad::PadSettings::default_of(action));
-                            events.push(Event::Changed);
-                        }
-                        Act::ResetPadKeys => {
-                            s.controller.reset_bindings();
-                            events.push(Event::Changed);
-                        }
                         Act::ToggleMod(i) => {
                             s.mods.toggle(i);
                             events.push(Event::Changed);
@@ -5229,6 +5236,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -5914,6 +5925,9 @@ mod tests {
                         | WKind::Text { text: t, .. } => texts.push(t.plain()),
                         _ => {}
                     }
+                }
+                if ui.controller_open() {
+                    texts.extend(ui.controller.row_names(&s));
                 }
             }
             texts
@@ -6701,6 +6715,11 @@ mod tests {
         );
         assert!(s.extras.sort);
         assert_eq!(
+            click(&mut ui, &mut s, Act::Extra(crate::extras::Item::Pregen)),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert!(s.extras.pregen);
+        assert_eq!(
             click(&mut ui, &mut s, Act::Extra(crate::extras::Item::SortKey)),
             vec![Event::ButtonClick]
         );
@@ -7271,7 +7290,7 @@ mod tests {
     fn classic_scrollbar_drag_is_bounded_silent_and_stops_on_release() {
         let atlas = atlas();
         let size = (480.0, 160.0);
-        for page in [Page::KeyBinds, Page::PadBinds, Page::Language, Page::Chat] {
+        for page in [Page::KeyBinds, Page::Language, Page::Chat] {
             let mut s = Settings::default();
             let mut ui = OptionsUi {
                 languages: languages(),
@@ -7584,6 +7603,8 @@ mod tests {
                 Page::Extras,
                 Page::Mods,
                 Page::SplitSetup,
+                Page::Pvp,
+                Page::Studio,
                 Page::Agent,
             ]
         );
@@ -8323,20 +8344,22 @@ mod tests {
                 .unwrap();
             let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
             use horizon_cosmetics::prefs::Others;
-            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+            // Not chosen, nothing owned: shows Hidden.
+            assert_eq!(s.extras.cosmetics_others, None);
+            assert_eq!(s.extras.effective_others(), Others::Hidden);
 
-            // Forward
+            // Forward (wraps to Shown), now a choice
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::NameTags);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::Shown));
 
             // Backward with shift
             ui.shift = true;
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::Hidden));
 
-            // Wrap-around backward with shift
+            // Backward again
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::Hidden);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::NameTags));
             ui.shift = false;
         }
     }

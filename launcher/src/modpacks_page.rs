@@ -482,11 +482,24 @@ impl Launcher {
             } else {
                 format!("{}  ({})", r.name, r.key)
             };
-            let detail = format!("{} · {} · {}: {}", r.class, r.tier, r.license, r.reason);
+            // What it means in plain words, then the technical terms for modders. A report an
+            // older build wrote has no plain words.
+            let technical = format!("{} · {} · {}: {}", r.class, r.tier, r.license, r.reason);
+            let detail = if r.plain.is_empty() {
+                technical.into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().text_color(t.ink_soft).child(modpacks::row_plain(r)))
+                    .child(technical)
+                    .into_any_element()
+            };
             index_row(
                 i + 1,
                 name,
-                Some(detail.into_any_element()),
+                Some(detail),
                 Some(
                     caps(status_label)
                         .flex_none()
@@ -496,6 +509,7 @@ impl Launcher {
                 &t,
             )
         };
+        let headline = p.headline();
         let list = self.mods.report_list.column(
             &self.content_scroll.handle,
             rows.len(),
@@ -520,6 +534,20 @@ impl Launcher {
                         )
                         .child(text(theme::UI).text_color(t.muted).child(p.summary())),
                 )
+                .children((!headline.is_empty()).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .max_w(px(720.))
+                        .children(headline.into_iter().enumerate().map(|(i, line)| {
+                            if i == 0 {
+                                text(theme::UI).text_color(t.ink).child(line)
+                            } else {
+                                text(theme::CAPTION).text_color(t.muted).child(line)
+                            }
+                        }))
+                }))
                 .child(counts)
                 .child(buttons)
                 .children(self.client_error.clone().map(|e| notice(e, &t)))

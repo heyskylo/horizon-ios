@@ -13,6 +13,8 @@ use crate::sculk::{self, Context, Info};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
 
+pub mod interaction;
+
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
@@ -21,6 +23,11 @@ use horizon_core::geometry::{Aabb, Vec3};
 // spinning (1).
 pub const HOLD: usize = 0;
 pub const SPIN: usize = 1;
+/// `Allay.isLikedPlayer`: compare the supplied verified player UUID with
+/// the live liked-player memory; identity is supplied by the Game context.
+pub fn is_liked_player(m: &Mob, attacker: Option<super::Who>, uuid: [i32; 4]) -> bool {
+    attacker == Some(super::Who::Player) && m.extra.tame && m.extra.owner == Some(uuid)
+}
 /// `Allay.VibrationUser.VIBRATION_EVENT_LISTENER_RANGE`.
 const LISTENER_RADIUS: i64 = 16;
 
@@ -408,9 +415,7 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
 }
 /// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
 pub fn ai_step(m: &mut Mob) {
-    if m.alive() && m.age.is_multiple_of(10) {
-        m.heal(1.0);
-    }
+    passive_heal(m);
     for i in [2, 3] {
         if m.extra.ints[i] > 0 {
             m.extra.ints[i] -= 1;
@@ -418,6 +423,12 @@ pub fn ai_step(m: &mut Mob) {
     }
     update_duplication_cooldown(m);
     animate(m);
+}
+/// `Allay.aiStep`: server-side healing runs independently of the AI gate.
+pub fn passive_heal(m: &mut Mob) {
+    if m.alive() && m.age.is_multiple_of(10) {
+        m.heal(1.0);
+    }
 }
 /// `Allay.updateDuplicationCooldown`: the server decrements positive counters,
 /// independently of the AI goal gate.

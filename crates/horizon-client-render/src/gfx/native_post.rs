@@ -366,6 +366,8 @@ impl NativeFrame {
             // the sun's azimuth while the sun is low.
             distance: None,
             unculled: None,
+            every_face: false,
+            view_casters: false,
         })
     }
 
@@ -509,15 +511,24 @@ impl NativeFrame {
 
     /// Writes this frame's inputs, for a world of `size`.
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
-        let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
+        // Under `HORIZON_STILL` the world's ticks are the clock (`PackInputs::still_ticks`), and
+        // eased values sit at their targets.
+        let still = frame.pack.still_ticks;
+        let seconds = still.map_or_else(
+            || self.start.elapsed().as_secs_f32() % 3600.0,
+            |ticks| (ticks as f32 / 20.0) % 3600.0,
+        );
         let now = std::time::Instant::now();
-        let since = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
+        let since = match still {
+            Some(_) => f32::INFINITY,
+            None => self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32()),
+        };
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(
             frame,
             size,
             seconds,
-            self.frames,
+            still.map_or(self.frames, |ticks| ticks as u32),
             self.shadow_camera.as_ref(),
         );
         inputs.wetness = self.wetness.0;
@@ -550,7 +561,13 @@ impl NativeFrame {
             (f32::from(u8::from(inputs.eye_in == 1)), 0.25),
             (f32::from(u8::from(inputs.eye_in == 2)), 0.25),
         ];
-        let dt = inputs.delta_time;
+        let dt = match still {
+            Some(_) => {
+                inputs.delta_time = 0.05;
+                f32::INFINITY
+            }
+            None => inputs.delta_time,
+        };
         for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
             *value = eased(*value, target, half_life, dt);
         }
@@ -686,7 +703,7 @@ impl NativePost {
             texture_entry(8, float),
             texture_entry(9, wgpu::TextureSampleType::Depth),
             texture_entry(10, float),
-            texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
+            texture_entry(11, wgpu::TextureSampleType::Uint),
         ];
         entries.extend(pack_texture_entries(frame.textures.len()));
         entries
@@ -1545,5 +1562,308 @@ file = \"b.wgsl\"
             fourth[..3].iter().all(|&v| v.abs_diff(128) <= 1),
             "{fourth:?}"
         );
+    }
+
+    /// OpenGL refuses `Rgba32Float` as a render attachment (GLES 3 semantics, absent
+    /// `EXT_color_buffer_float`) but always renders to the integer formats, so the surface
+    /// is an integer format, and `surface_at` gets the floats back from the stored bits.
+    #[test]
+    fn the_surface_is_an_integer_target_that_the_post_stage_reads_bit_exact() {
+        assert_eq!(
+            super::super::native_material::SURFACE_FORMAT.sample_type(None, None),
+            Some(wgpu::TextureSampleType::Uint)
+        );
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
+            [[post]]\nfile = \"a.wgsl\"\n";
+        // The surface's fields on the colour: normal x, smoothness, data, and 1 when present.
+        let a = "fn post(input: PostInput) -> vec4<f32> {\n    \
+            let s = surface_at(vec2<i32>(input.pixel));\n    \
+            return vec4<f32>(s.normal.x, s.smoothness, s.data, select(0.0, 1.0, s.present));\n}\n";
+        let files = [(MANIFEST, manifest), ("a.wgsl", a)]
+            .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+            .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let mut post = NativePost::new(
+            &device,
+            report.stages,
+            &report.manifest,
+            &[],
+            format,
+            &frame,
+        )
+        .unwrap();
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = texture(&device, format, usage).create_view(&Default::default());
+        let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage)
+            .create_view(&Default::default());
+        let screen = texture(
+            &device,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = screen.create_view(&Default::default());
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // What the material stage stores, as the bits of floats: the normal +x (octahedral
+        // (1, 0), two snorm16), smoothness 0.75, data 0.25 and the fragment's depth 0.5.
+        let writer = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(
+                "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+                    return vec4<f32>(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
+                }
+                @fragment fn fs() -> @location(0) vec4<u32> {
+                    return bitcast<vec4<u32>>(vec4<f32>(
+                        bitcast<f32>(pack2x16snorm(vec2<f32>(1.0, 0.0))), 0.75, 0.25, 0.5));
+                }"
+                .into(),
+            ),
+        });
+        let writer = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &writer,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &writer,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: super::super::native_material::SURFACE_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mut read = |depth_of_world: f64| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &frame.surface_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&writer);
+                pass.draw(0..3, 0..1);
+            }
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(depth_of_world as f32),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            post.run(
+                &device,
+                &mut encoder,
+                (&color, &depth, &frame.surface_view),
+                &view,
+                [4, 4],
+                true,
+                None,
+            );
+            encoder.copy_texture_to_buffer(
+                screen.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                        rows_per_image: Some(4),
+                    },
+                },
+                screen.size(),
+            );
+            queue.submit([encoder.finish()]);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let pixel = buffer.slice(..).get_mapped_range().unwrap()[..4].to_vec();
+            buffer.unmap();
+            pixel
+        };
+        // Present where the world's depth is the stored one: +x, 0.75, 0.25 as 8-bit. No value
+        // here sits halfway between two 8-bit levels, where drivers round either way.
+        assert_eq!(read(0.5), [255, 191, 64, 255]);
+        // Hidden by something nearer drawn since: the stored values no longer show.
+        assert_eq!(read(0.25), [0, 0, 0, 0]);
+    }
+
+    /// The surface holds float bit patterns, some of which are NaNs (a normal's two snorm16
+    /// can form one). The material stage writes `bitcast<vec4<u32>>(vec4<f32>(..))`; this
+    /// runs that same expression (not the whole material fragment, which needs a full terrain
+    /// pipeline) on bits fed as integers and checks the texture holds them exactly: payloads,
+    /// signs and denormals included.
+    #[test]
+    fn the_surface_keeps_every_bit_of_the_floats_written_through_the_material_stage_bitcast() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let cases: [[u32; 4]; 4] = [
+            [0x7fc0_1234, 0xffbf_ffff, 0x7fff_8001, 0x7f80_0001],
+            [0x8000_0000, 0x0000_0001, 0x007f_ffff, 0x8000_0001],
+            [0xffff_ffff, 0x7f80_0000, 0xff80_0000, 0x3f80_0000],
+            [0x7fff_8001, 0x0000_0000, 0x1234_5678, 0xdead_beef],
+        ];
+        let mut bits = [[0u32; 4]; 16];
+        bits[..4].copy_from_slice(&cases);
+        let inputs = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&inputs, 0, bytemuck::cast_slice(&bits));
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(
+                "@group(0) @binding(0) var<uniform> bits: array<vec4<u32>, 16>;
+                @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+                    return vec4<f32>(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
+                }
+                @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+                    let v = bitcast<vec4<f32>>(bits[u32(p.y) * 4u + u32(p.x)]);
+                    return bitcast<vec4<u32>>(v);
+                }"
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: super::super::native_material::SURFACE_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: inputs.as_entire_binding(),
+            }],
+        });
+        let surface = texture(
+            &device,
+            super::super::native_material::SURFACE_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let row = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: row * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let view = surface.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            surface.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                    rows_per_image: Some(4),
+                },
+            },
+            surface.size(),
+        );
+        queue.submit([encoder.finish()]);
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+        buffer.unmap();
+        for (i, expected) in bits.iter().enumerate() {
+            let (x, y) = (i % 4, i / 4);
+            let at = y * row as usize + x * 16;
+            let got: [u32; 4] = std::array::from_fn(|c| {
+                u32::from_ne_bytes(data[at + c * 4..at + c * 4 + 4].try_into().unwrap())
+            });
+            assert_eq!(
+                got.map(|v| format!("{v:08x}")),
+                expected.map(|v| format!("{v:08x}")),
+                "texel {x},{y}"
+            );
+        }
     }
 }

@@ -243,6 +243,12 @@ impl Game<'_> {
         let setting = entry.as_ref().and_then(|e| e.accept_textures);
         state.address = entry.map(|e| e.ip);
         state.packs.connect(Prompt::for_server(setting));
+        // GetServerDetailsTask.scheduleResourcePackDownload: the Realm's own pack, which the
+        // player agreed to before connecting (`allowServerPacks`, then `pushPack`).
+        if let Some(pack) = horizon_client::realms::take_pending_pack(address) {
+            state.packs.allow();
+            state.packs.push(pack.id, &pack.url, parse_sha1(&pack.hash));
+        }
     }
     /// `Minecraft.clearDownloadedResourcePacks`: every server pack goes at once.
     pub(super) fn server_packs_disconnect(&mut self) {
@@ -357,7 +363,19 @@ impl Game<'_> {
     /// that finished, the ones to start, a resource reload when the active
     /// packs change, and the statuses for the server.
     pub(super) fn tick_server_packs(&mut self) {
-        self.server_packs.notifiers.retain_mut(PackNotifier::poll);
+        // SystemToast.addOrUpdate's addToast: mods hear each new toast, so a
+        // cancelled one is asked again at the batch's next change.
+        let mut notifiers = std::mem::take(&mut self.server_packs.notifiers);
+        notifiers.retain_mut(|n| {
+            let new = n.toast.is_none();
+            let keep = n.poll();
+            if new && n.toast.is_some() && !self.toast_allowed("system", "pack_download") {
+                n.toast = None;
+            }
+            keep
+        });
+        notifiers.append(&mut self.server_packs.notifiers);
+        self.server_packs.notifiers = notifiers;
         // A reload waits for the world's resources (`reload_packs`).
         if self.rest_loader.is_some() {
             return;
@@ -500,11 +518,13 @@ impl Game<'_> {
                 .save_failure
                 .map(|(x, z)| horizon_client::chunk_io::save_failure_toast(x, z)),
         ];
-        for (slot, new) in self.server_packs.chunk_io.iter_mut().zip(toasts) {
-            match (slot.as_mut(), new) {
-                (Some(shown), Some(new)) => shown.reset_from(new),
-                (None, Some(new)) => *slot = Some(new),
-                _ => {}
+        let ids = ["low_disk_space", "chunk_load_failure", "chunk_save_failure"];
+        for (i, (new, id)) in toasts.into_iter().zip(ids).enumerate() {
+            let Some(new) = new else { continue };
+            if let Some(shown) = self.server_packs.chunk_io[i].as_mut() {
+                shown.reset_from(new);
+            } else if self.toast_allowed("system", id) {
+                self.server_packs.chunk_io[i] = Some(new);
             }
         }
     }
