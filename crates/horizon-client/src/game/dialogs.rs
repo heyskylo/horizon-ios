@@ -418,12 +418,9 @@ impl Game<'_> {
                     widgets::join_for_narration(&[&title.plain(), &message.plain()]),
                 )
             });
-            Confirm::new(&atlas.font, (w, h), &title, &message).draw(
-                batch,
-                atlas,
-                cursor,
-                [&disconnect, &back],
-            );
+            let confirm = Confirm::new(&atlas.font, (w, h), &title, &message);
+            confirm.declare_no();
+            confirm.draw(batch, atlas, cursor, [&disconnect, &back]);
             return;
         }
         if let Some(since) = self.dialogs.waiting {
@@ -450,7 +447,18 @@ impl Game<'_> {
             if visible {
                 let (bx, by) = (((w - 200.0) / 2.0).trunc(), top + 33.0);
                 let hover = ui::hovered(cursor, bx, by, 200.0, 20.0);
-                ui::button(batch, atlas, bx, by, 200.0, 20.0, &label, active, hover);
+                ui::action_button(
+                    batch,
+                    atlas,
+                    widgets::Action::Back,
+                    bx,
+                    by,
+                    200.0,
+                    20.0,
+                    &label,
+                    active,
+                    hover,
+                );
             }
             return;
         }
@@ -672,6 +680,9 @@ impl Game<'_> {
                     let hover =
                         (!clipped || in_area(cursor.1)) && ui::hovered(cursor, x, y, bw, bh);
                     let b = buttons[index];
+                    if open.dialog.escape_button() == Some(index) {
+                        widgets::declare_action(widgets::Action::Cancel, rect, true);
+                    }
                     ui::button(batch, atlas, x, y, bw, bh, &b.label, true, hover);
                     if let Some(t) = &b.tooltip {
                         widgets::last_narratable(|n| n.hint = Some(t.plain()));

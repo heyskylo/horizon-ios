@@ -367,6 +367,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         id,
         icon: None,
         trailing: None,
+        action: None,
     };
     let (gx, gy) = grid(w, h, o.tab);
     let mut buttons = match o.tab {
@@ -458,14 +459,17 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         true,
         21,
     ));
-    buttons.push(b(
-        x + 158.0,
-        h - 27.0,
-        150.0,
-        crate::lang::get_or("gui.cancel", "Cancel"),
-        true,
-        22,
-    ));
+    buttons.push(
+        b(
+            x + 158.0,
+            h - 27.0,
+            150.0,
+            crate::lang::get_or("gui.cancel", "Cancel"),
+            true,
+            22,
+        )
+        .does(crate::widgets::Action::Cancel),
+    );
     buttons
 }
 
