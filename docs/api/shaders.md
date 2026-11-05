@@ -162,6 +162,8 @@ the same way every time (files in path order, fixed dates), so a pack's SHA-256 
 ## Stability
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md).
+While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
+([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
 ## Not there yet
 
