@@ -415,6 +415,7 @@
   "Frame Generation": "Raam Generasie",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Toon 'n opgemaakte raam tussen elke twee regte: gladder, 'n bietjie meer vertraging.",
   "Shadow Cache": "Skadu-kas",
+  "Shader Packs...": "Shader-pakke...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Hergebruik die pakskadukaart wanneer son, uitsig en wêreld ooreenstem. Af by verstek.",
   "Find BlueMap": "Vind BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Op bedieners, vind hul BlueMap-webkaart vir ver terrein. Sluit volgende aan.",

@@ -462,6 +462,7 @@
   "Copying…": "מעתיק...",
   "Filters": "מסננים",
   "{count} followers": "{count} עוקבים",
+  "{count} stars on GitHub": "{count} כוכבים ב-GitHub",
   "Connect an AI agent": "חבר סוכן AI",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "כל מתג כבוי אלא אם כן אתה מפעיל אותו. מה שהוא שולח נמצא מתחתיו; דף הפרטיות ב-playhorizon.dev אומר כמה זמן הוא נשמר.",
   "Players": "שחקנים",
@@ -646,6 +647,7 @@
   "Default skin": "עור ברירת מחדל",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "קישור למאגר (מהדורה האחרונה שלו), מהדורה, סניף או תג, או התחייבות. המשגר מתקין קובץ שחרור או commit אחד מדויק, אף פעם לא ענף שזז.",
   "Sign in with GitHub to rate": "היכנס באמצעות GitHub כדי לדרג",
+  "Star on GitHub": "סמנו בכוכב ב-GitHub",
   "Up to date: {instance} plays these mods.": "מעודכן: {instance} מנגן את האופנים האלה.",
   "On this computer": "במחשב הזה",
   "Needs preparing": "צריך הכנה",
@@ -1144,7 +1146,7 @@
   "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
-  "Open the shop": "פתיחת החנות",
+  "Get more cosmetics on playhorizon.dev": "עוד קוסמטיקה ב-playhorizon.dev",
   "You don't own any cosmetics yet.": "עדיין אין לך קוסמטיקה.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
   "Game architecture": "Game architecture",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "תגיות"
 }

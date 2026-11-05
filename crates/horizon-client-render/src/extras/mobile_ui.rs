@@ -60,8 +60,6 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
     use self::Item::*;
     let mut rows = vec![
         Err("Lighting"),
-        Ok(Fullbright),
-        Ok(DynamicLights),
         Ok(OwnNameTag),
         Err("Zoom"),
         Ok(Zoom),
@@ -91,7 +89,6 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
-        Ok(HideBlockParticles),
         Ok(UiSoundReserve),
         Ok(MusicPage),
         Ok(PackBrowser),
@@ -167,8 +164,63 @@ impl Item {
             .map_or_else(|| self.caption().into(), |item| item.caption_text())
     }
     pub fn description_text(self) -> String {
-        self.shared()
-            .map_or_else(|| self.description().into(), |item| item.description_text())
+        self.shared().map_or_else(
+            || crate::lang::get_or(self.description_key(), self.description()),
+            |item| item.description_text(),
+        )
+    }
+
+    /// Shared controls retain their upstream keys; native controls have their own keys
+    /// with English fallbacks in `description`, ready for the same language catalogs.
+    pub fn description_key(self) -> &'static str {
+        match self {
+            Item::Zoom => "horizon.extras.zoom.tooltip",
+            Item::ZoomKey => "horizon.extras.zoom_key.tooltip",
+            Item::ZoomLevel => "horizon.extras.zoom_level.tooltip",
+            Item::ZoomSmooth => "horizon.extras.zoom_smooth.tooltip",
+            Item::ZoomSensitivity => "horizon.extras.zoom_sensitivity.tooltip",
+            Item::Fps => "horizon.extras.fps.tooltip",
+            Item::FpsCorner | Item::KeystrokesCorner | Item::MinimapCorner => {
+                "horizon.extras.overlay_corner.tooltip"
+            }
+            Item::FpsLows => "horizon.extras.fps_lows.tooltip",
+            Item::Keystrokes => "horizon.extras.keystrokes.tooltip",
+            Item::KeystrokesCps => "horizon.extras.keystrokes_cps.tooltip",
+            Item::Minimap => "horizon.extras.minimap.tooltip",
+            Item::MinimapSize => "horizon.extras.minimap_size.tooltip",
+            Item::MinimapShape => "horizon.extras.minimap_shape.tooltip",
+            Item::MinimapZoom => "horizon.extras.minimap_zoom.tooltip",
+            Item::MinimapRotate => "horizon.extras.minimap_rotate.tooltip",
+
+            Item::Fullbright => "horizon.extras.fullbright.tooltip",
+            Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
+            Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
+            Item::HideBlockParticles => "horizon.extras.hide_block_particles.tooltip",
+            Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
+            Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
+            Item::MusicPage => "horizon.extras.music_page.tooltip",
+            Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
+            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
+            Item::Sort => "horizon.extras.sort.tooltip",
+            Item::SortKey => "horizon.extras.sort_key.tooltip",
+            Item::NoAi => "horizon.extras.no_ai.tooltip",
+            Item::AgentControl => "horizon.extras.agent_control.tooltip",
+            Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
+            Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
+            Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
+            Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
+            Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
+            Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings.tooltip",
+            Item::PackBrowser => "horizon.extras.pack_browser.tooltip",
+            Item::Pregen => "horizon.extras.pregen.tooltip",
+            Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
+            Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
+            Item::CosmeticsAuras => "horizon.extras.cosmetics_auras.tooltip",
+            Item::CosmeticsSolo => "horizon.extras.cosmetics_solo.tooltip",
+            Item::HorizonMarks => "horizon.extras.horizon_marks.tooltip",
+            Item::HorizonMe => "horizon.extras.horizon_me.tooltip",
+            Item::Pvp(o) => o.description_key(),
+        }
     }
 
     pub fn caption(self) -> &'static str {
@@ -459,6 +511,126 @@ impl Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_rows_keep_native_controls_and_place_graphics_extras_only_in_quality() {
+        let mobile: Vec<_> = rows().into_iter().filter_map(Result::ok).collect();
+        for item in [
+            Item::Zoom,
+            Item::ZoomKey,
+            Item::ZoomLevel,
+            Item::ZoomSmooth,
+            Item::ZoomSensitivity,
+            Item::Fps,
+            Item::FpsCorner,
+            Item::FpsLows,
+            Item::Keystrokes,
+            Item::KeystrokesCorner,
+            Item::KeystrokesCps,
+            Item::Minimap,
+            Item::MinimapCorner,
+            Item::MinimapSize,
+            Item::MinimapShape,
+            Item::MinimapZoom,
+            Item::MinimapRotate,
+            Item::OwnNameTag,
+        ] {
+            assert_eq!(
+                mobile.iter().filter(|&&row| row == item).count(),
+                1,
+                "{item:?}"
+            );
+        }
+        for item in [
+            Item::Fullbright,
+            Item::DynamicLights,
+            Item::HideBlockParticles,
+        ] {
+            assert!(!mobile.contains(&item));
+        }
+        for extra in [
+            crate::extras::Item::Fullbright,
+            crate::extras::Item::DynamicLights,
+            crate::extras::Item::HideBlockParticles,
+        ] {
+            let pages: Vec<_> = crate::graphics_ui::rows()
+                .into_iter()
+                .flat_map(|(page, groups)| {
+                    groups.into_iter().flat_map(move |(_, rows)| {
+                        rows.into_iter().map(move |row| (page, row.item))
+                    })
+                })
+                .filter_map(|(page, item)| {
+                    (item == crate::graphics_ui::Item::Extra(extra)).then_some(page)
+                })
+                .collect();
+            assert_eq!(pages, [crate::graphics_ui::Page::Quality]);
+        }
+    }
+
+    #[test]
+    fn mobile_native_controls_still_change_and_round_trip_their_settings() {
+        let mut extras = Extras::default();
+        for item in [
+            Item::Zoom,
+            Item::ZoomLevel,
+            Item::ZoomSmooth,
+            Item::ZoomSensitivity,
+            Item::Fps,
+            Item::FpsCorner,
+            Item::FpsLows,
+            Item::Keystrokes,
+            Item::KeystrokesCorner,
+            Item::KeystrokesCps,
+            Item::Minimap,
+            Item::MinimapCorner,
+            Item::MinimapSize,
+            Item::MinimapShape,
+            Item::MinimapZoom,
+            Item::MinimapRotate,
+        ] {
+            let before = extras.clone();
+            item.cycle(&mut extras, false);
+            assert_ne!(
+                extras, before,
+                "{item:?} must still edit its native setting"
+            );
+            assert_eq!(Extras::parse(&extras.serialize()), extras, "{item:?}");
+            item.cycle(&mut extras, true);
+            assert_eq!(extras, before, "{item:?} must still cycle backwards");
+        }
+        #[cfg(target_os = "ios")]
+        assert!(extras.set_key(ZOOM_KEY, "key.keyboard.c".into()));
+        #[cfg(not(target_os = "ios"))]
+        {
+            extras.zoom_key = "key.keyboard.c".into();
+        }
+        assert_eq!(
+            Extras::parse(&extras.serialize()).zoom_key,
+            "key.keyboard.c"
+        );
+    }
+
+    #[test]
+    fn mobile_descriptions_keep_shared_keys_and_native_fallbacks() {
+        for item in rows().into_iter().filter_map(Result::ok).chain([
+            Item::Fullbright,
+            Item::DynamicLights,
+            Item::HideBlockParticles,
+        ]) {
+            assert!(!item.description().is_empty(), "{item:?}");
+            assert!(!item.description_text().is_empty(), "{item:?}");
+            if let Some(shared) = item.shared() {
+                assert_eq!(item.description_key(), shared.description_key());
+                assert_eq!(item.description_text(), shared.description_text());
+            } else {
+                assert!(
+                    item.description_key().starts_with("horizon.extras."),
+                    "{item:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn mobile_cosmetic_switches_round_trip_the_service_and_singleplayer_choices() {

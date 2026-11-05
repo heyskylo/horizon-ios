@@ -462,6 +462,7 @@
   "Copying…": "Копирование…",
   "Filters": "Фильтры",
   "{count} followers": "{count} подписчиков",
+  "{count} stars on GitHub": "{count} звёзд на GitHub",
   "Connect an AI agent": "Connect an AI agent",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.",
   "Players": "Игроки",
@@ -646,6 +647,7 @@
   "Default skin": "Скин по умолчанию",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Ссылка на репозиторий (его последний релиз), релиз, ветку, тег или коммит. Лаунчер устанавливает точный файл релиза или коммит, а не изменяющуюся ветку.",
   "Sign in with GitHub to rate": "Войдите через GitHub, чтобы оценить",
+  "Star on GitHub": "Поставить звезду на GitHub",
   "Up to date: {instance} plays these mods.": "Актуально: {instance} играет с этими модами.",
   "On this computer": "На этом компьютере",
   "Needs preparing": "Нужна подготовка",
@@ -1144,7 +1146,7 @@
   "Move…": "Перенести…",
   "Move and restart": "Перенести и перезапустить",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Открыть магазин",
+  "Get more cosmetics on playhorizon.dev": "Больше косметики на playhorizon.dev",
   "You don't own any cosmetics yet.": "У вас пока нет косметики.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Автоматически использует архитектуру этого лаунчера. В Windows на ARM можно выбрать x64 или ARM64. В выпусках без ARM64 используется подписанная сборка x64.",
   "Game architecture": "Архитектура игры",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Нужны нативные точки подключения v{needs}, в вашей версии Horizon есть v{has}: сначала обновите Horizon",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Сделан для Horizon {pin}, но {mods} привязаны к другому коммиту: сборка попросит «Всё равно собрать» и может не скомпилироваться",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Сделан для Horizon {pin}, вы играете на {yours}: лаунчер соберёт игру на {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Теги"
 }

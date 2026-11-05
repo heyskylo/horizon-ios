@@ -422,6 +422,12 @@ impl Game<'_> {
     /// persistent: the despawn rule holds it like any other mob, and only
     /// its NBT can make it persistent.
     pub(super) fn spawn_mob_spawned(&mut self, kind: &str, at: [f64; 3]) -> Option<u32> {
+        // Ender Dragons have their own entity implementation rather than a
+        // `Mob` entry.  Spawn eggs still go through `SpawnEggItem.spawnMob`,
+        // so route this special entity through the same spawned-entity path.
+        if matches!(kind, "ender_dragon" | "minecraft:ender_dragon") {
+            return self.spawn_dragon_spawned(at);
+        }
         // The spawn is not a natural one (no jockeys, the patrol leader roll
         // stays), but the mob is not persistent.
         let id = self.spawn_mob_for(kind, at, true, false)?;
@@ -6743,15 +6749,7 @@ impl Game<'_> {
         let Some(id) = self.spawn_mob_spawned(&kind, at) else {
             return Ok(false);
         };
-        // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then
-        // `PostSpawnProcessor` puts the egg's components on it.
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            horizon_client::entity_nbt::apply_item_components(m, stack);
-        }
-        self.apply_spawn_egg_entity_data(id, stack);
-        self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
-        self.award_stat("used", &stack.item, 1);
-        self.swing_arm();
+        self.finish_spawn_egg(id, stack)?;
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
         {
@@ -6760,13 +6758,30 @@ impl Game<'_> {
                 *self.held_mut() = None;
             }
         }
+        self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
+        self.award_stat("used", &stack.item, 1);
+        self.swing_arm();
         Ok(true)
+    }
+    /// EntityType.spawn applies components and permitted typed data before
+    /// Mob.playAmbientSound, for a hand and a dispenser alike.
+    pub(super) fn finish_spawn_egg(&mut self, id: u32, stack: &ItemStack) -> Result<()> {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            horizon_client::entity_nbt::apply_item_components(m, stack);
+        } else {
+            self.apply_dragon_item_components(id, stack);
+        }
+        self.apply_spawn_egg_entity_data(id, stack);
+        self.mob_ambient(id)
     }
     /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
     /// the mob it spawned, once the guards let it through, as
     /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
     /// it, loaded back into the same mob (`/data merge entity`'s loader).
     pub(super) fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+        if self.apply_dragon_spawn_egg_data(id, stack) {
+            return;
+        }
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };

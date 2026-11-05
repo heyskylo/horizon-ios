@@ -460,6 +460,7 @@
   "Copying…": "Kopiearje...",
   "Filters": "Filters",
   "{count} followers": "{count} folgers",
+  "{count} stars on GitHub": "{count} stjerren op GitHub",
   "Connect an AI agent": "Ferbine in AI-agint",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Elke skeakel is út, útsein as jo it oansette. Wat it stjoert is derûnder; de privacy side op playhorizon.dev seit hoe lang it wurdt bewarre.",
   "Players": "Spilers",
@@ -644,6 +645,7 @@
   "Default skin": "Standert skin",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "In keppeling nei in repository (syn lêste release), in release, in branch of tag, of in commit. De launcher ynstalleart ien eksakte releasebestân of commit, nea in tûke dy't beweecht.",
   "Sign in with GitHub to rate": "Meld jo oan mei GitHub om te beoardieljen",
+  "Star on GitHub": "Jou in stjer op GitHub",
   "Up to date: {instance} plays these mods.": "Bywurke: {instance} spilet dizze mods.",
   "On this computer": "Op dizze kompjûter",
   "Needs preparing": "Needs tariede",
@@ -1144,7 +1146,7 @@
   "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
-  "Open the shop": "Iepenje de winkel",
+  "Get more cosmetics on playhorizon.dev": "Mear kosmetika op playhorizon.dev",
   "You don't own any cosmetics yet.": "Jo hawwe noch gjin kosmetika.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
   "Game architecture": "Game architecture",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Labels"
 }

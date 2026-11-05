@@ -460,6 +460,7 @@
   "Copying…": "நகலெடுக்கிறது…",
   "Filters": "வடிப்பான்கள்",
   "{count} followers": "{count} பின்தொடர்பவர்கள்",
+  "{count} stars on GitHub": "GitHub இல் {count} நட்சத்திரங்கள்",
   "Connect an AI agent": "AI முகவரை இணைக்கவும்",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "நீங்கள் அதை இயக்காத வரை ஒவ்வொரு சுவிட்சும் அணைக்கப்படும். அது அனுப்புவது அதன் கீழே உள்ளது; playhorizon.dev இல் உள்ள தனியுரிமைப் பக்கம் எவ்வளவு காலம் வைக்கப்படுகிறது என்று கூறுகிறது.",
   "Players": "வீரர்கள்",
@@ -644,6 +645,7 @@
   "Default skin": "இயல்புநிலை தோல்",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "ஒரு களஞ்சியத்திற்கான இணைப்பு (அதன் சமீபத்திய வெளியீடு), ஒரு வெளியீடு, ஒரு கிளை அல்லது குறிச்சொல் அல்லது ஒரு உறுதி. துவக்கி ஒரு துல்லியமான வெளியீட்டு கோப்பை நிறுவுகிறது அல்லது உறுதியளிக்கிறது, ஒருபோதும் நகரும் ஒரு கிளை.",
   "Sign in with GitHub to rate": "மதிப்பிடுவதற்கு GitHub மூலம் உள்நுழையவும்",
+  "Star on GitHub": "GitHub இல் நட்சத்திரம் இடுங்கள்",
   "Up to date: {instance} plays these mods.": "இன்றுவரை: {instance} இந்த மோட்களை இயக்குகிறது.",
   "On this computer": "இந்த கணினியில்",
   "Needs preparing": "தயார் செய்ய வேண்டும்",
@@ -1144,7 +1146,7 @@
   "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
-  "Open the shop": "கடையைத் திற",
+  "Get more cosmetics on playhorizon.dev": "playhorizon.dev இல் மேலும் அழகுப் பொருட்களைப் பெறுங்கள்",
   "You don't own any cosmetics yet.": "உங்களிடம் இன்னும் அழகுசாதனப் பொருட்கள் எதுவும் இல்லை.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
   "Game architecture": "Game architecture",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "குறிச்சொற்கள்"
 }

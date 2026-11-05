@@ -412,6 +412,7 @@
   "Frame Generation": "Frama Generacio",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Montras elfaritan kadron inter ĉiu du realaj: pli glata, iom pli da malfruo.",
   "Shadow Cache": "Ombra Deponejo",
+  "Shader Packs...": "Shader-Pakoj...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Reuzas la pak-ombromapon kiam suno, vido kaj mondo kongruas. Malŝaltita defaŭlte.",
   "Find BlueMap": "Trovu BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Sur serviloj, trovas ilian BlueMap-retmapon por malproksima tereno. Poste aliĝu.",

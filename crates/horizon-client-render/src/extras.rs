@@ -447,11 +447,13 @@ impl Extras {
             self.three_d_skin_layers = value == "true";
         }
     }
-    /// Binds the extra key `name` (`SORT_KEY`); false for
+    /// Binds an extra key (`SORT_KEY`, and native mobile zoom); false for
     /// another name (a vanilla mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
+            #[cfg(target_os = "ios")]
+            ZOOM_KEY => self.zoom_key = value,
             _ => return false,
         }
         true
@@ -612,13 +614,8 @@ mod desktop_ui {
     pub fn rows() -> Vec<Result<Item, &'static str>> {
         use Item::*;
         let mut rows = vec![
-            Err("horizon.extras.header.lighting"),
-            Ok(Fullbright),
-            Ok(DynamicLights),
             Err("horizon.extras.header.third_person"),
             Ok(OwnNameTag),
-            Err("horizon.extras.header.particles"),
-            Ok(HideBlockParticles),
             Err("horizon.extras.header.inventory"),
             Ok(MouseTweaks),
             Ok(MouseTweaksWheel),

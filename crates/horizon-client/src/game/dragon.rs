@@ -3426,20 +3426,29 @@ impl Dragon {
         tag
     }
     pub(super) fn from_nbt(tag: &Tag, seed: i64) -> Option<Self> {
-        let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
+        let (position, _, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         let mut d = Self::new(position, yaw, seed);
-        d.velocity = velocity;
+        d.read_saved_fields(tag)?;
+        Some(d)
+    }
+    fn read_saved_fields(&mut self, tag: &Tag) -> Option<()> {
+        let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
+        self.position = position;
+        self.previous = position;
+        self.velocity = velocity;
+        self.yaw = yaw;
+        self.previous_yaw = yaw;
         if let Some(Tag::Float(h)) = tag.get("Health") {
-            d.health = f32::from_bits(*h);
+            self.health = f32::from_bits(*h);
         }
         if let Some(Tag::Int(p)) = tag.get("DragonPhase") {
-            d.phase = Phase::from_id(*p);
+            self.phase = Phase::from_id(*p);
         }
         if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
-            d.death_time = *t;
+            self.death_time = *t;
         }
-        d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
-        Some(d)
+        self.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
+        Some(())
     }
 }
 impl Crystal {
@@ -3658,7 +3667,10 @@ impl Game<'_> {
         if self.entity_in(room) {
             return false;
         }
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
+        let time = super::dispenser::entity_random()
+            .next_int_bound(100_000)
+            .unwrap_or(0);
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
@@ -3670,6 +3682,8 @@ impl Game<'_> {
             beam: None,
             invulnerable: false,
         });
+        // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
+        self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
         if self.dim == Dim::End {
             self.try_respawn();
@@ -3677,6 +3691,8 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -4161,6 +4177,117 @@ impl Game<'_> {
 /// sends its moves, health and phase; the client flaps its wings, keeps
 /// its flight history and places its parts, so it can be drawn and hit.
 impl Game<'_> {
+    /// `Mob.playAmbientSound` when EntityType.spawn places a dragon.
+    pub(super) fn dragon_spawn_ambient(&mut self, id: u32) -> bool {
+        let silent = self.dragon_silent();
+        let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+            return false;
+        };
+        let at = [d.position.x, d.position.y, d.position.z];
+        let pitch = (d.random.next_float() - d.random.next_float()) * 0.2 + 1.0;
+        // getVoicePitch is evaluated even when Entity.playSound is silent.
+        if silent {
+            return true;
+        }
+        self.audio.play(
+            "minecraft:entity.ender_dragon.ambient",
+            Some(at),
+            5.0,
+            pitch,
+        );
+        true
+    }
+
+    /// Entity.applyComponentsFromItemStack's custom name on the separated dragon.
+    pub(super) fn apply_dragon_item_components(
+        &mut self,
+        id: u32,
+        stack: &horizon_client::items::ItemStack,
+    ) {
+        if !self.dragon.as_ref().is_some_and(|d| d.id == id) {
+            return;
+        }
+        let Some(name) = stack.data().and_then(|d| d.custom_name.as_ref()) else {
+            return;
+        };
+        let raw = self
+            .persist
+            .raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Default::default()));
+        if let Tag::Compound(fields) = raw {
+            fields.insert("CustomName".into(), name.clone());
+        }
+    }
+
+    /// TypedEntityData.loadInto loads over the entity's own saved fields and
+    /// restores its UUID. Keep runtime part IDs and its existing entity RNG.
+    pub(super) fn apply_dragon_spawn_egg_data(
+        &mut self,
+        id: u32,
+        stack: &horizon_client::items::ItemStack,
+    ) -> bool {
+        if !self.dragon.as_ref().is_some_and(|d| d.id == id) {
+            return false;
+        }
+        let Some(data) = horizon_client::block_entity_item::spawn_egg_entity_data(
+            stack,
+            "minecraft:ender_dragon",
+            self.acting_player_is_op(),
+        ) else {
+            return true;
+        };
+        let uuid = self.uuid_for(id);
+        let own = self
+            .dragon
+            .as_ref()
+            .unwrap()
+            .to_nbt(uuid, self.persist.raw.get(&id));
+        let mut tag = horizon_client::data_cmd::merged(&own, data);
+        if let Tag::Compound(fields) = &mut tag {
+            fields.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+        }
+        if self
+            .dragon
+            .as_mut()
+            .unwrap()
+            .read_saved_fields(&tag)
+            .is_some()
+        {
+            self.persist.raw.insert(id, tag);
+            self.place_dragon_parts();
+        }
+        true
+    }
+
+    /// `EntityType.create` for an Ender Dragon from a spawn egg, by hand or from a dispenser
+    /// (`SpawnEggItem.spawnMob`, `SpawnEggItemBehavior`). Unlike the End fight's dragon, this
+    /// one is not the fight's (`EnderDragon.aiStep` adopts it only when its UUID is the fight's),
+    /// so it can be spawned in any dimension. Horizon keeps one dragon per level, as `/summon`
+    /// and loading do: with one already there, nothing spawns and the egg stays.
+    pub(super) fn spawn_dragon_spawned(&mut self, at: [f64; 3]) -> Option<u32> {
+        if self.dragon.is_some() {
+            return None;
+        }
+        let position = Vec3::new(at[0], at[1], at[2]);
+        // EntityType.create: `snapTo(.., Mth.wrapDegrees(level.getRandom().nextFloat() * 360))`.
+        let yaw = horizon_client::camera::wrap_degrees(self.world.random.next_float() * 360.0);
+        // Mob.finalizeSpawn (EnderDragon keeps it): the follow range's
+        // `random.triangle(0, 0.11485)`, then `setLeftHanded(nextFloat() < 0.05)`, from the
+        // level's random. Neither changes how the dragon flies.
+        let _ = self.world.random.triangle(0.0, 0.114_850_000_000_000_01);
+        let _ = self.world.random.next_float();
+        // The dragon's own random (`Entity.random`), not the level's.
+        let seed = super::dispenser::entity_random().next_long();
+        let mut dragon = Dragon::new(position, yaw, seed);
+        dragon.id = self.next_entity + 1;
+        self.next_entity += 9;
+        let id = dragon.id;
+        self.dragon = Some(dragon);
+        self.place_dragon_parts();
+        Some(id)
+    }
+
     /// `handleAddEntity` for `minecraft:ender_dragon`. Its constructor
     /// sets the full health and the hovering phase until the server's
     /// synched data says otherwise.
@@ -5271,5 +5398,294 @@ mod tests {
         let hurt = d.hurt(0, 5.0, HIT, false);
         assert_eq!(hurt, Hurt::Landed { full: true });
         assert_eq!(d.hurt_time, 10);
+    }
+}
+
+#[cfg(test)]
+mod spawn_egg_processing_tests {
+    use super::*;
+    use crate::game::{
+        Audio, Game, GuestUse, Hit, Options, Progress, Screen, Settings, load_resources,
+    };
+    use horizon_client::{
+        chunk::Chunk, first_person::Hand, item_data::StackData, items::ItemStack,
+    };
+    use horizon_core::geometry::Direction;
+    use std::sync::Arc;
+
+    fn fixture() -> Game<'static> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(
+            [
+                "--game-dir".to_owned(),
+                std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+            .into_iter(),
+        )
+        .unwrap()
+        .unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(6, 199, 6, stone).unwrap();
+        game.title = None;
+        game.screen = Screen::Playing;
+        game.ui.difficulty = 2;
+        game
+    }
+
+    fn egg(kind: &str, config: u8) -> ItemStack {
+        let mut stack = ItemStack::new(&format!("minecraft:{kind}_spawn_egg"), 2);
+        let mut components = StackData::default();
+        if config > 0 {
+            components.custom_name =
+                Some(Tag::compound([("text", Tag::String("Item Name".into()))]));
+        }
+        if config == 2 {
+            components.other.push((
+                "minecraft:entity_data".into(),
+                Tag::compound([
+                    (
+                        "id",
+                        Tag::String(format!("minecraft:{kind}").as_str().into()),
+                    ),
+                    ("NoAI", Tag::Byte(1)),
+                    ("Health", Tag::Float(50.0f32.to_bits())),
+                    ("Silent", Tag::Byte(1)),
+                    (
+                        "CustomName",
+                        Tag::compound([("text", Tag::String("Tag Name".into()))]),
+                    ),
+                    ("UUID", Tag::IntArray(vec![1, 2, 3, 4])),
+                    (
+                        "Pos",
+                        Tag::List(vec![
+                            Tag::Double(10.5f64.to_bits()),
+                            Tag::Double(201.0f64.to_bits()),
+                            Tag::Double(10.5f64.to_bits()),
+                        ]),
+                    ),
+                ]),
+            ));
+        }
+        if config > 0 {
+            stack.extra = Some(Box::new(components));
+        }
+        stack
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn hand_and_dispenser_eggs_apply_components_data_identity_and_silent_sound() {
+        let mut game = fixture();
+        let mut failures = Vec::new();
+        for kind in ["ender_dragon", "wither"] {
+            assert_eq!(
+                game.res
+                    .mob_types()
+                    .contains_key(&format!("minecraft:{kind}")),
+                kind == "wither"
+            );
+            for route in ["op-hand", "guest-hand", "dispenser"] {
+                for config in 0..3 {
+                    game.dragon = None;
+                    game.mobs.clear();
+                    game.player = None;
+                    game.forced_hit = None;
+                    game.guest_use = None;
+                    game.ui.registries.permission = if route == "op-hand" { 2 } else { 0 };
+                    game.audio.capture = Some(Vec::new());
+                    let before = game.next_entity;
+                    let stack = egg(kind, config);
+                    let left = if route == "dispenser" {
+                        game.dispense_item((6, 200, 5), Direction::South, stack)
+                            .unwrap()
+                            .map_or(0, |s| s.count)
+                    } else {
+                        game.player = Some(
+                            horizon_client::motion::PlayerMotion::new(
+                                &game.motion,
+                                Vec3::new(6.5, 200.0, 9.5),
+                            )
+                            .unwrap(),
+                        );
+                        game.mode = horizon_client::command::args::GameMode::Survival;
+                        game.creative = false;
+                        game.selected = 0;
+                        game.inventory[0] = Some(stack);
+                        game.use_delay = 0;
+                        game.use_failed = false;
+                        game.forced_hit = Some(Hit {
+                            pos: [6, 199, 6],
+                            face: [0, 1, 0],
+                            point: [6.5, 200.0, 6.5],
+                        });
+                        game.guest_use = Some(GuestUse::OnBlock(Hand::Main));
+                        let used = game.use_item().unwrap();
+                        if used.is_none() {
+                            failures.push(format!(
+                                "{kind}/{route}/{config}: hand did not consume action"
+                            ));
+                        }
+                        game.inventory[0].as_ref().map_or(0, |s| s.count)
+                    };
+                    let id = if kind == "ender_dragon" {
+                        game.dragon.as_ref().expect("spawned dragon").id
+                    } else {
+                        match game.mobs.last() {
+                            Some(m) => m.id,
+                            None => {
+                                failures.push(format!(
+                                    "{kind}/{route}/{config}: expected live Mob was not spawned"
+                                ));
+                                continue;
+                            }
+                        }
+                    };
+                    let assigned = game.uuid_for(id);
+                    let tag = if kind == "ender_dragon" {
+                        let d = game.dragon.as_ref().unwrap();
+                        d.to_nbt(assigned, game.persist.raw.get(&id))
+                    } else {
+                        let i = game.mobs.iter().position(|m| m.id == id).unwrap();
+                        game.mob_tree_nbt(i)
+                    };
+                    let (no_ai, health, silent, position) = if kind == "ender_dragon" {
+                        let d = game.dragon.as_ref().unwrap();
+                        (d.no_ai, d.health, game.dragon_silent(), d.position)
+                    } else {
+                        let m = game.mobs.iter().find(|m| m.id == id).unwrap();
+                        (m.no_ai, m.health, m.silent, m.position)
+                    };
+                    let name = tag
+                        .get("CustomName")
+                        .map(horizon_client::entity_nbt::name_text)
+                        .map(|t| t.plain())
+                        .unwrap_or_default();
+                    let expected_name = match config {
+                        0 => "",
+                        1 => "Item Name",
+                        _ => "Tag Name",
+                    };
+                    let expected_health = if config == 2 {
+                        50.0
+                    } else if kind == "ender_dragon" {
+                        200.0
+                    } else {
+                        300.0
+                    };
+                    let expected_pos = if config == 2 {
+                        Vec3::new(10.5, 201.0, 10.5)
+                    } else {
+                        Vec3::new(6.5, 200.0, 6.5)
+                    };
+                    let event = format!("minecraft:entity.{kind}.ambient");
+                    let sounds = game
+                        .audio
+                        .capture
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .filter(|s| s.event == event)
+                        .count();
+                    let expected_sounds = usize::from(config != 2);
+                    let okay = left == 1
+                        && id == before + 1
+                        && game.next_entity == before + if kind == "ender_dragon" { 9 } else { 1 }
+                        && assigned != [1, 2, 3, 4]
+                        && no_ai == (config == 2)
+                        && health == expected_health
+                        && silent == (config == 2)
+                        && position == expected_pos
+                        && name == expected_name
+                        && sounds == expected_sounds;
+                    if !okay {
+                        failures.push(format!("{kind}/{route}/{config}: left={left} id={id}/{before} assigned={assigned:?} ai={no_ai} health={health} silent={silent} pos={position:?} name={name:?} sounds={sounds}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn egg_data_keeps_dragon_uuid_part_ids_and_entity_rng_through_silent_voice() {
+        let mut game = fixture();
+        for silent in [false, true] {
+            game.dragon = None;
+            let id = game.spawn_dragon_spawned([6.5, 200.0, 6.5]).unwrap();
+            let uuid = game.uuid_for(id);
+            let counter = game.next_entity;
+            game.dragon.as_mut().unwrap().random = LegacyRandom::new(42);
+            let mut level = game.world.random.clone();
+            let mut stack = egg("ender_dragon", 2);
+            let Tag::Compound(data) = &mut stack.extra.as_mut().unwrap().other[0].1 else {
+                unreachable!()
+            };
+            data.insert("Silent".into(), Tag::Byte(if silent { 1 } else { 0 }));
+            game.audio.capture = Some(Vec::new());
+            game.finish_spawn_egg(id, &stack).unwrap();
+            let d = game.dragon.as_mut().unwrap();
+            assert_eq!(d.id, id);
+            assert_eq!(d.parts.len(), 8);
+            // Actual pinned native playAmbientSound seeded42: both silent and
+            // audible evaluate the two voice-pitch draws before playSound.
+            assert_eq!(d.random.next_long(), -5843495416241995736);
+            assert_eq!(game.next_entity, counter);
+            assert_eq!(game.uuid_for(id), uuid);
+            assert_eq!(
+                game.world.random.next_long(),
+                level.next_long(),
+                "postprocessing never uses the level RNG"
+            );
+            assert_eq!(
+                game.audio
+                    .capture
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .filter(|s| s.event == "minecraft:entity.ender_dragon.ambient")
+                    .count(),
+                usize::from(!silent)
+            );
+        }
     }
 }

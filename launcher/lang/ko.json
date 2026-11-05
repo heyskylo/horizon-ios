@@ -462,6 +462,7 @@
   "Copying…": "복사 중...",
   "Filters": "필터",
   "{count} followers": "팔로워 {count}명",
+  "{count} stars on GitHub": "GitHub 스타 {count}개",
   "Connect an AI agent": "AI 에이전트 연결",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "모든 스위치는 켜기 전까지 꺼져 있습니다. 전송되는 데이터는 아래에 명시되어 있으며, 보관 기간은 playhorizon.dev의 개인정보 보호 페이지를 참조하세요.",
   "Players": "플레이어",
@@ -646,6 +647,7 @@
   "Default skin": "기본 스킨",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "저장소 링크(최신 릴리스), 릴리스, 브랜치, 태그 또는 커밋입니다. 런처는 변동되는 브랜치가 아닌 정확한 릴리스 파일이나 커밋 하나를 설치합니다.",
   "Sign in with GitHub to rate": "평가하려면 GitHub로 로그인하세요.",
+  "Star on GitHub": "GitHub에서 스타 주기",
   "Up to date: {instance} plays these mods.": "최신 상태: {instance}에서 이 모드들을 플레이합니다.",
   "On this computer": "이 컴퓨터에서",
   "Needs preparing": "준비 필요",
@@ -1144,7 +1146,7 @@
   "Move…": "이동…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "데이터를 복사하고 검증하는 동안 런처가 종료되며, 완료되면 다시 열립니다. 기존 폴더는 그대로 보관되며, 이동이 정상적으로 완료되었는지 확인한 후 직접 삭제할 때까지 디스크 공간을 계속 차지합니다.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "상점 열기",
+  "Get more cosmetics on playhorizon.dev": "playhorizon.dev에서 코스메틱 더 보기",
   "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "자동은 이 런처의 아키텍처를 따릅니다. Windows ARM에서는 x64 또는 ARM64를 선택할 수 있습니다. ARM64가 없는 릴리스는 서명된 x64 빌드를 사용합니다.",
   "Game architecture": "게임 아키텍처",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "네이티브 훅 포인트 v{needs}이(가) 필요하지만 플레이 중인 Horizon은 v{has}입니다: 먼저 Horizon을 업데이트하세요",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Horizon {pin}용이지만 {mods}은(는) 다른 커밋에 고정되어 있습니다: 빌드 시 '계속 빌드'를 묻고 컴파일에 실패할 수 있습니다",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Horizon {pin}용이며 플레이 중인 버전은 {yours}입니다: 런처가 게임을 {pin}에서 빌드합니다",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "태그"
 }

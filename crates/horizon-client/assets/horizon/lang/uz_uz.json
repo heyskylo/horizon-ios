@@ -406,6 +406,7 @@
   "Frame Generation": "Ramka yaratish",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Har ikki haqiqiy ramka o'rtasida tuzilgan ramkani ko'rsatadi: silliqroq, biroz kechikish.",
   "Shadow Cache": "Soya keshi",
+  "Shader Packs...": "Shader toʻplamlari...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Quyosh, ko'rinish va dunyo mos kelganda to'plam soya xaritasidan qayta foydalanadi. Sukut boʻyicha oʻchirilgan.",
   "Find BlueMap": "BlueMap-ni toping",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Serverlarda uzoq erlar uchun BlueMap veb-xaritasini topadi. Keyingi qo'shilish.",

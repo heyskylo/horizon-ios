@@ -462,6 +462,7 @@
   "Copying…": "Copiando…",
   "Filters": "Filtros",
   "{count} followers": "{count} seguidores",
+  "{count} stars on GitHub": "{count} estrellas en GitHub",
   "Connect an AI agent": "Conectar un agente de IA",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Cada opción está desactivada a menos que la actives. Debajo de cada una se detalla qué envía; la página de privacidad en playhorizon.dev indica cuánto tiempo se conserva.",
   "Players": "Jugadores",
@@ -646,6 +647,7 @@
   "Default skin": "Aspecto por defecto",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Un enlace a un repositorio (su última versión), una versión, una rama o etiqueta, o un commit. El lanzador instala un archivo de versión o commit exacto, nunca una rama cambiante.",
   "Sign in with GitHub to rate": "Inicia sesión con GitHub para valorar",
+  "Star on GitHub": "Dar una estrella en GitHub",
   "Up to date: {instance} plays these mods.": "Al día: {instance} juega con estos mods.",
   "On this computer": "En este equipo",
   "Needs preparing": "Requiere preparación",
@@ -1144,7 +1146,7 @@
   "Move…": "Mover…",
   "Move and restart": "Mover y reiniciar",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Abrir la tienda",
+  "Get more cosmetics on playhorizon.dev": "Consigue más cosméticos en playhorizon.dev",
   "You don't own any cosmetics yet.": "Aún no tienes ningún cosmético.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automático usa la arquitectura de este lanzador. En Windows ARM, elige x64 o ARM64. Las versiones sin ARM64 usan la compilación x64 firmada.",
   "Game architecture": "Arquitectura del juego",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Necesita los puntos de enganche nativos v{needs}, el Horizon que juegas tiene la v{has}: actualiza Horizon primero",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Hecho para Horizon {pin}, pero {mods} fijan otro commit: la compilación te pedirá «Compilar de todos modos» y puede fallar",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Hecho para Horizon {pin}, juegas {yours}: el launcher compila tu juego en {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Etiquetas"
 }

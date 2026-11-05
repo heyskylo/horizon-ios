@@ -2063,9 +2063,19 @@ impl Game<'_> {
                 [cart.position.x, cart.position.y, cart.position.z],
             );
         }
+        // MinecartItem.useOn: ENTITY_PLACE at the rail, by the player, with the block under it.
+        let below = self.world.block(hit.pos[0], hit.pos[1] - 1, hit.pos[2]);
+        self.post_block_game_event(
+            "minecraft:entity_place",
+            hit.pos,
+            self.sculk_actor(),
+            Some(below),
+        );
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }

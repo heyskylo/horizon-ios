@@ -462,6 +462,7 @@
   "Copying…": "Copiar...",
   "Filters": "Filtri",
   "{count} followers": "{count} seguitor",
+  "{count} stars on GitHub": "{count} stèll su GitHub",
   "Connect an AI agent": "Culegà un agent IA",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Ogni interruttor l’è spent a men che l’è minga accenduu. Quell qe al manda l’è de sota; la pagina di privacy sü playhorizon.dev dis quant temp l’è mantegnuuda.",
   "Players": "Giocadur",
@@ -646,6 +647,7 @@
   "Default skin": "Pell predefinì",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Un link a un repositori (la sò ültima version), una version, un ram o un tag o un commit. El lanciador instala un file de version esatt o un commit, mai un ram che se mœuf.",
   "Sign in with GitHub to rate": "Accedi cun GitHub per valutar",
+  "Star on GitHub": "Dà una stèla su GitHub",
   "Up to date: {instance} plays these mods.": "Aggiornato: {instance} gioca questi mods.",
   "On this computer": "Sü chestu urdinaduur",
   "Needs preparing": "Bisogna preparass",
@@ -1144,7 +1146,7 @@
   "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
-  "Open the shop": "Avèrt el negozi",
+  "Get more cosmetics on playhorizon.dev": "Pussee cosmetich su playhorizon.dev",
   "You don't own any cosmetics yet.": "Te gh'è ancamò nissun cosmetich.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
   "Game architecture": "Game architecture",
@@ -1178,5 +1180,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Tag"
 }

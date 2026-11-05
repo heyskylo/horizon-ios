@@ -1,7 +1,7 @@
 //! One of Horizon's own shader packs while it runs (docs/shaders.md): the frame its stages
 //! read, its sky, material and post stages, and the timer of their passes.
 
-use horizon_shader_api::{Report, StageKind};
+use horizon_shader_api::{Api, Blend, Report, StageKind};
 
 use super::displace::Displacement;
 use super::native_material::{DisplacedShape, NativeMaterial, TerrainShape};
@@ -78,6 +78,52 @@ fn chosen_shadow(
     })
 }
 
+/// The checker knows more API lines than this renderer can execute. Keep the
+/// runtime failure classified until the public constructor returns its diagnostic.
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeRefusal {
+    Api(Api),
+    LinearBlend,
+    Stage(StageKind),
+}
+
+impl std::fmt::Display for RuntimeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Api(api) => write!(
+                f,
+                "shader API {api} is checked but not drawn by this renderer; use shader API 0.1"
+            ),
+            Self::LinearBlend => {
+                f.write_str("[frame] blend = \"linear\" is checked but not drawn by this renderer")
+            }
+            Self::Stage(stage) => write!(
+                f,
+                "[{}] is checked but not drawn by this renderer",
+                stage.name()
+            ),
+        }
+    }
+}
+
+fn runtime_support(report: &Report) -> Result<(), RuntimeRefusal> {
+    if report.manifest.blend == Blend::Linear {
+        return Err(RuntimeRefusal::LinearBlend);
+    }
+    if report.manifest.tonemap.is_some()
+        || report
+            .stages
+            .iter()
+            .any(|stage| stage.kind == StageKind::Tonemap)
+    {
+        return Err(RuntimeRefusal::Stage(StageKind::Tonemap));
+    }
+    if report.manifest.api != Api::V0_1 {
+        return Err(RuntimeRefusal::Api(report.manifest.api));
+    }
+    Ok(())
+}
+
 impl NativePack {
     /// The pack of the checked stages `report` with the option values `constants`, drawing
     /// onto the world's targets as `terrain` describes; the sky reads the terrain's group 0.
@@ -91,6 +137,9 @@ impl NativePack {
         constants: &[(String, f64)],
         lights: super::block_light::LightTable,
     ) -> Result<(Self, Vec<String>), String> {
+        // Refuse unsupported semantics before allocating GPU state. In particular a checked
+        // tonemap-only pack must not become an empty pack that replaces the previous one.
+        runtime_support(&report).map_err(|error| error.to_string())?;
         let (globals, format) = (terrain.globals, terrain.format);
         let textures = super::native_post::pack_textures(device, queue, &report);
         // `[shadow]`, unless its option is off, at the size its options pick.
@@ -320,3 +369,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "native_pack/runtime_api_tests.rs"]
+mod runtime_api_tests;
