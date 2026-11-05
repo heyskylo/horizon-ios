@@ -13,7 +13,7 @@ use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
     PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmWorldOptions,
-    RealmsClient, RealmsError, RegionDataDto, Subscription,
+    RealmsClient, RealmsError, RegionDataDto, RegionSelectionPreferenceDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -174,29 +174,28 @@ fn extend_link(server: &RealmServer, profile: u128) -> String {
 pub struct SettingsDraft {
     pub name: String,
     pub description: String,
-    /// `RegionSelectionPreference`'s name: `AUTOMATIC_PLAYER`, `AUTOMATIC_OWNER` or
-    /// `MANUAL` (the service's default when none was chosen).
-    pub preference: String,
-    /// The `RealmsRegion`'s name, while `preference` is `MANUAL`.
+    /// `RegionSelectionPreference`'s id: [`client::AUTOMATIC_PLAYER`],
+    /// [`client::AUTOMATIC_OWNER`] or [`client::MANUAL`].
+    pub preference: i32,
+    /// The `RealmsRegion`'s `nameId`, while `preference` is `MANUAL`.
     pub region: Option<String>,
     /// The field with the caret: the name (false) or the description (true).
     pub on_description: bool,
 }
 
 impl SettingsDraft {
-    /// The draft the tab opens with (`RealmsSettingsTab.updateData`).
+    /// The draft the tab opens with (`RealmsSettingsTab.updateData`): a Realm without a
+    /// preference has `RegionSelectionPreferenceDto.DEFAULT`, automatic by owner.
     fn of(server: &RealmServer) -> Self {
-        let preference = server
-            .region_selection_preference
-            .as_ref()
-            .map(|p| p.region_selection_preference.clone())
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| "AUTOMATIC_PLAYER".to_owned());
-        let region = server
-            .region_selection_preference
-            .as_ref()
-            .and_then(|p| p.preferred_region.clone())
-            .filter(|r| !r.is_empty());
+        let (preference, region) = server.region_selection_preference.as_ref().map_or(
+            (client::AUTOMATIC_OWNER, None),
+            |p| {
+                (
+                    p.region_selection_preference,
+                    p.preferred_region.clone().filter(|r| !r.is_empty()),
+                )
+            },
+        );
         Self {
             name: server.name.clone(),
             description: server.motd.clone(),
@@ -205,14 +204,38 @@ impl SettingsDraft {
             on_description: false,
         }
     }
-    /// `RegionSelectionPreference`'s translation key.
-    fn preference_key(&self) -> &'static str {
-        match self.preference.as_str() {
-            "AUTOMATIC_OWNER" => "mco.configure.world.region_preference.automatic_owner",
-            "MANUAL" => "mco.configure.world.region_preference.manual",
-            _ => "mco.configure.world.region_preference.automatic_player",
+    /// The preference as `RegionSelectionPreferenceDto`: the region only for `MANUAL`.
+    fn preference_dto(&self) -> RegionSelectionPreferenceDto {
+        RegionSelectionPreferenceDto {
+            region_selection_preference: self.preference,
+            preferred_region: self
+                .region
+                .clone()
+                .filter(|_| self.preference == client::MANUAL),
         }
     }
+}
+
+/// `RealmsSettingsTab.getTranslatableFromPreference`: a manual choice shows its region,
+/// the automatic ones their own name.
+fn preference_label(preference: i32, region: Option<&str>) -> String {
+    let t = crate::lang::get;
+    match (preference, region) {
+        (client::MANUAL, Some(region)) => {
+            client::region_translation_key(region).map_or_else(|| region.to_owned(), t)
+        }
+        (client::AUTOMATIC_PLAYER, _) => t("realms.configuration.region_preference.automatic_player"),
+        _ => t("realms.configuration.region_preference.automatic_owner"),
+    }
+}
+
+/// `RealmsPreferredRegionSelectionScreen.RegionSelectionList`'s rows: automatic by player,
+/// automatic by owner, then every region as a manual choice.
+fn region_rows(regions: &[RegionDataDto]) -> Vec<(i32, Option<String>)> {
+    [(client::AUTOMATIC_PLAYER, None), (client::AUTOMATIC_OWNER, None)]
+        .into_iter()
+        .chain(regions.iter().map(|r| (client::MANUAL, Some(r.region.clone()))))
+        .collect()
 }
 
 /// `RealmsConfigureWorldScreen`'s tabs, in `MenuTabBar` order.
@@ -418,7 +441,7 @@ pub enum SubScreen {
         settings: SettingsDraft,
         regions: Vec<RegionDataDto>,
         /// The highlighted row: `(preference, region)`.
-        selected: Option<(String, Option<String>)>,
+        selected: Option<(i32, Option<String>)>,
     },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
@@ -647,6 +670,7 @@ impl Screen {
                             if let Some(draft) = settings.as_ref() {
                                 server.name = draft.name.trim().to_owned();
                                 server.motd = draft.description.clone();
+                                server.region_selection_preference = Some(draft.preference_dto());
                             }
                             refetch_detail = true;
                         }
@@ -991,13 +1015,11 @@ impl Screen {
         if saving.is_some() {
             return;
         }
-        let current = server.region_selection_preference.as_ref();
-        let region_changed = current
-            .map(|p| {
-                p.region_selection_preference != draft.preference
-                    || (draft.preference == "MANUAL" && p.preferred_region != draft.region)
-            })
-            .unwrap_or_else(|| draft.preference != "AUTOMATIC_PLAYER");
+        let wanted = draft.preference_dto();
+        let region_changed = server.region_selection_preference.as_ref().map_or(
+            wanted.region_selection_preference != client::AUTOMATIC_OWNER,
+            |p| *p != wanted,
+        );
         let changed =
             draft.name.trim() != server.name || draft.description != server.motd || region_changed;
         if !changed {
@@ -1015,23 +1037,8 @@ impl Screen {
                 draft.name.trim().to_owned(),
                 draft.description.clone(),
             );
-            let (preference, region) = (
-                draft.preference.clone(),
-                if draft.preference == "MANUAL" {
-                    draft.region.clone()
-                } else {
-                    None
-                },
-            );
             *saving = Some(spawn(move || {
-                client.update_configuration(
-                    id,
-                    &name,
-                    &description,
-                    &preference,
-                    region.as_deref(),
-                    &slot,
-                )
+                client.update_configuration(id, &name, &description, &wanted, &slot)
             }));
         }
     }
@@ -1048,7 +1055,7 @@ impl Screen {
             return;
         };
         let (server, settings, regions) = (server.clone(), draft.clone(), list.clone());
-        let selected = Some((settings.preference.clone(), settings.region.clone()));
+        let selected = Some((settings.preference, settings.region.clone()));
         self.subscreen = SubScreen::RegionPreference {
             server,
             settings,
@@ -1363,7 +1370,7 @@ impl Screen {
                 {
                     let server = server.clone();
                     let mut settings = settings.clone();
-                    settings.preference = preference.clone();
+                    settings.preference = *preference;
                     settings.region = region.clone();
                     self.back_to_settings(server, settings);
                 }
@@ -1399,7 +1406,7 @@ impl Screen {
                         } = &self.subscreen
                         {
                             let regions = regions.clone();
-                            let selected = Some((draft.preference.clone(), draft.region.clone()));
+                            let selected = Some((draft.preference, draft.region.clone()));
                             self.subscreen = SubScreen::RegionPreference {
                                 server,
                                 settings: draft,
@@ -1617,15 +1624,7 @@ impl Screen {
                     regions, selected, ..
                 } = &mut self.subscreen
                 {
-                    let rows: Vec<(String, Option<String>)> =
-                        std::iter::once(("AUTOMATIC_PLAYER".to_owned(), None))
-                            .chain(std::iter::once(("AUTOMATIC_OWNER".to_owned(), None)))
-                            .chain(
-                                regions
-                                    .iter()
-                                    .map(|r| ("MANUAL".to_owned(), Some(r.region.clone()))),
-                            )
-                            .collect();
+                    let rows = region_rows(regions);
                     let top = 40.0;
                     let row = ((y - top) / 16.0).floor() as usize;
                     if y >= top
@@ -2630,10 +2629,8 @@ impl Screen {
                                 GREY,
                                 true,
                             );
-                            let current = match &draft.region {
-                                Some(region) if draft.preference == "MANUAL" => region.clone(),
-                                _ => t(draft.preference_key()),
-                            };
+                            let current =
+                                preference_label(draft.preference, draft.region.as_deref());
                             batch.text(atlas, &current, left, 126.0, GREY, true);
                             if saving.is_some() {
                                 centered(
@@ -2693,30 +2690,14 @@ impl Screen {
                     u32::MAX,
                 );
                 let top = 40.0;
-                let rows: Vec<(String, Option<String>)> =
-                    std::iter::once(("AUTOMATIC_PLAYER".to_owned(), None))
-                        .chain(std::iter::once(("AUTOMATIC_OWNER".to_owned(), None)))
-                        .chain(
-                            regions
-                                .iter()
-                                .map(|r| ("MANUAL".to_owned(), Some(r.region.clone()))),
-                        )
-                        .collect();
+                let rows = region_rows(regions);
                 let left = ((w - 300.0) / 2.0).floor();
                 for (i, (preference, region)) in rows.iter().enumerate() {
                     let y = top + i as f32 * 16.0;
                     let picked = selected
                         .as_ref()
                         .is_some_and(|(p, r)| p == preference && *r == *region);
-                    let label = match region {
-                        Some(region) => region.clone(),
-                        None => t(match preference.as_str() {
-                            "AUTOMATIC_OWNER" => {
-                                "mco.configure.world.region_preference.automatic_owner"
-                            }
-                            _ => "mco.configure.world.region_preference.automatic_player",
-                        }),
-                    };
+                    let label = preference_label(*preference, region.as_deref());
                     if picked {
                         batch.fill(atlas, left, y, 300.0, 14.0, 0xFF30_3030);
                     }
@@ -3241,36 +3222,22 @@ mod tests {
     }
 
     /// `RealmsSettingsTab.updateData`: the draft starts from the Realm's own name,
-    /// description and region preference, defaulting to automatic by player.
+    /// description and region preference; a Realm without one is automatic by owner
+    /// (`RegionSelectionPreferenceDto.DEFAULT`), and only a manual choice sends its region.
     #[test]
     fn the_settings_draft_starts_from_the_realm() {
-        let server = RealmServer {
-            name: "Mine".into(),
-            motd: "Hello".into(),
-            ..Default::default()
-        };
-        let draft = SettingsDraft::of(&server);
-        assert_eq!(draft.name, "Mine");
-        assert_eq!(draft.description, "Hello");
-        assert_eq!(draft.preference, "AUTOMATIC_PLAYER");
-        assert_eq!(draft.region, None);
-        assert!(!draft.on_description);
-        assert_eq!(
-            draft.preference_key(),
-            "mco.configure.world.region_preference.automatic_player"
-        );
-        let mut manual = draft.clone();
-        manual.preference = "MANUAL".to_owned();
-        assert_eq!(
-            manual.preference_key(),
-            "mco.configure.world.region_preference.manual"
-        );
-        let mut owner = draft.clone();
-        owner.preference = "AUTOMATIC_OWNER".to_owned();
-        assert_eq!(
-            owner.preference_key(),
-            "mco.configure.world.region_preference.automatic_owner"
-        );
+        let server: RealmServer = serde_json::from_str(
+            r#"{"id":7,"name":"Mine","motd":"Hello",
+                "regionSelectionPreference":{"regionSelectionPreference":2,"preferredRegion":"EastUs2"}}"#,
+        )
+        .unwrap();
+        let mut draft = SettingsDraft::of(&server);
+        assert_eq!((draft.name.as_str(), draft.description.as_str()), ("Mine", "Hello"));
+        assert_eq!((draft.preference, draft.region.as_deref()), (2, Some("EastUs2")));
+        draft.preference = client::AUTOMATIC_PLAYER;
+        assert_eq!(draft.preference_dto().preferred_region, None);
+        let bare = SettingsDraft::of(&RealmServer::default());
+        assert_eq!((bare.preference, bare.region), (1, None));
     }
 
     /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else
