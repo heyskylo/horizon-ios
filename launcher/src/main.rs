@@ -770,6 +770,7 @@ impl Launcher {
         this.load_profile_heads();
         this.load_auth_statuses(true);
         this.fetch_startup_releases();
+        this.mods_auto_update();
         this.fetch_links();
         this.watch_shop(cx);
         if home::getting_ready_preview() {
@@ -1379,8 +1380,11 @@ impl Launcher {
                     }) {
                         Err(Ok(list)) => self.native_mismatch = Some(list),
                         Err(Err(e)) => self.native_error = Some(e),
+                        // Play waited for this build (`Mods::rebuild`).
+                        Ok(_) if std::mem::take(&mut self.mods.play_after_build) => self.play(),
                         Ok(_) => {}
                     }
+                    self.mods.play_after_build = false;
                 }
                 Msg::LauncherProgress(p) => {
                     if let SelfUpdate::Downloading(_, f) = &mut self.self_update {
@@ -1774,6 +1778,20 @@ impl Launcher {
         if !self.can_start(&tag) {
             return;
         }
+        // Native mods the start's automatic update moved on: the game they are built into is
+        // built again first (the Mods page's Build), then plays.
+        let rebuild = self
+            .selected_instance()
+            .map(|i| i.id.clone())
+            .filter(|id| self.mods.rebuild.contains(id));
+        if let Some(id) = rebuild.filter(|_| self.native_step.is_none()) {
+            self.mods.rebuild.retain(|r| *r != id);
+            if native_mods::is_native(&tag) {
+                self.mods.play_after_build = true;
+                self.build_native(false);
+                return;
+            }
+        }
         self.starting_pack = None;
         self.start_client(tag);
     }
@@ -1841,8 +1859,25 @@ impl Launcher {
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
         let offline_without_owner = self.settings.dev_offline;
+        // Registry mods update before the game reads them (`horizon::auto`); native mods only
+        // at start, where a build can follow.
+        let auto = self
+            .selected_instance()
+            .filter(|_| self.settings.auto_updates_mods() && self.starting_pack.is_none())
+            .map(|i| mods_page::AutoTarget {
+                instance: i.clone(),
+                level: Some(backend::mod_api_level(&tag)),
+                natives: false,
+            });
+        let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
+            if let Some(auto) = auto {
+                let (lines, _) = mods_page::auto_update(&[auto]);
+                if !lines.is_empty() {
+                    let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
+                }
+            }
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
             let _ = tx.send(Msg::Session(session));
         });
