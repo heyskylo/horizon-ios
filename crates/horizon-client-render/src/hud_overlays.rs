@@ -1294,3 +1294,91 @@ mod subtitle_tests {
     }
 }
 
+#[cfg(test)]
+mod text_position_tests {
+    use super::*;
+    use crate::{font::Font, hud::Rect};
+    use std::{collections::HashMap, path::Path};
+
+    /// The missing-glyph metrics let these tests run without game assets.
+    fn font() -> Font {
+        Font::load(
+            Path::new("/nonexistent-horizon-hud-test-resources"),
+            &HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        )
+    }
+
+    fn held() -> HeldName {
+        HeldName {
+            item: "minecraft:stone".into(),
+            hover_name: Text::literal("Stone"),
+            rarity_color: 0xFFFF_FFFF,
+            custom_name: false,
+        }
+    }
+
+    fn text_top(draws: &[GuiDraw]) -> Option<i32> {
+        draws.iter().find_map(|d| match d {
+            GuiDraw::Text { y, .. } => Some(*y),
+            _ => None,
+        })
+    }
+
+    /// `Hud.extractSelectedItemName`: `guiHeight - 59`, then `+ 14` when the
+    /// game mode cannot hurt the player. The health, food, air and mount rows
+    /// above the hotbar never move it: with armor and a second row of hearts
+    /// they reach 69 pixels, and the name stays where vanilla draws it.
+    #[test]
+    fn the_selected_item_name_sits_fifty_nine_above_the_bottom_edge() {
+        let mut highlight = ToolHighlight {
+            last: Some(held()),
+            timer: 40,
+        };
+        let f = font();
+        let draws = highlight.draw(320, 240, true, &f, 0);
+        assert_eq!(text_top(&draws), Some(240 - 59));
+        // Creative and spectator add the fourteen pixels the experience bar
+        // and the food row would have taken.
+        let draws = highlight.draw(320, 240, false, &f, 0);
+        assert_eq!(text_top(&draws), Some(240 - 59 + 14));
+        // No timer, no name.
+        highlight.timer = 0;
+        assert!(highlight.draw(320, 240, true, &f, 0).is_empty());
+    }
+
+    /// `Hud.extractOverlayMessage`: the action bar and its text translate to
+    /// `guiHeight - 68` and `-4`, again wherever the bars above the hotbar
+    /// reach.
+    #[test]
+    fn the_action_bar_sits_sixty_eight_above_the_bottom_edge() {
+        let mut titles = Titles::default();
+        titles.set_overlay(Text::literal("Action bar"), false);
+        let f = font();
+        let draws = titles.overlay_message(320, 240, 0.0, &f, 0);
+        let translate = draws.iter().find_map(|d| match d {
+            GuiDraw::Push(ops) => ops.iter().find_map(|op| match op {
+                PoseOp::Translate(_, y) => Some(*y),
+                _ => None,
+            }),
+            _ => None,
+        });
+        assert_eq!(translate, Some((240 - 68) as f32));
+        // The text is drawn four pixels below that origin, as vanilla's is.
+        let relative = draws.iter().find_map(|d| match d {
+            GuiDraw::Text { y, .. } => Some(*y),
+            _ => None,
+        });
+        assert_eq!(relative, Some(-4));
+    }
+}
