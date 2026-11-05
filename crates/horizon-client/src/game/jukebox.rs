@@ -325,6 +325,11 @@ impl Game<'_> {
             self.start_song(pos, &song);
         }
         if ticks % 20 == 0 {
+            // `JukeboxSongPlayer.tick`: `gameEvent(JUKEBOX_PLAY, pos,
+            // Context.of(state))` every twenty ticks while a song plays, for
+            // the sculk listeners and the allays around it.
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            self.post_block_game_event("minecraft:jukebox_play", pos, None, Some(state));
             let color = f64::from(self.world.random.next_int_bound(4).unwrap_or(0)) / 24.0;
             let at = [
                 f64::from(pos[0]) + 0.5,
