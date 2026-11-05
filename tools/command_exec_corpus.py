@@ -4806,10 +4806,12 @@ def groups():
         from .loaded_cloud_corpus import loaded_clouds
         from .carpet_farm_corpus import carpet_farms
         from .passenger_teleport_corpus import passenger_teleports
+        from .gateway_passenger_corpus import gateway_passengers
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
         from carpet_farm_corpus import carpet_farms
         from passenger_teleport_corpus import passenger_teleports
+        from gateway_passenger_corpus import gateway_passengers
     return [
         ('setup', group_setup()),
         ('bell server glow', bell_server_glow()),
@@ -4864,6 +4866,7 @@ def groups():
         ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
+        ('gateway passengers', gateway_passengers(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
