@@ -12,8 +12,8 @@ pub mod client;
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmsClient, RealmsError,
-    Subscription,
+    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmWorldOptions,
+    RealmsClient, RealmsError, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +34,23 @@ const INFO: u32 = 0xFFBE_887D;
 
 const REALMS_INVITE_CODE: crate::clipboard::FieldId = ("realms.invite_code", 0);
 const REALMS_PLAYER_NAME: crate::clipboard::FieldId = ("realms.player_name", 0);
+const REALMS_SLOT_NAME: crate::clipboard::FieldId = ("realms.slot_name", 0);
+
+/// `RealmsSlotOptionsScreen.DIFFICULTIES` and `GAME_MODES`, in menu order (the index
+/// is what the service stores).
+const DIFFICULTIES: [&str; 4] = [
+    "options.difficulty.peaceful",
+    "options.difficulty.easy",
+    "options.difficulty.normal",
+    "options.difficulty.hard",
+];
+const GAME_MODES: [&str; 3] = [
+    "selectWorld.gameMode.survival",
+    "selectWorld.gameMode.creative",
+    "selectWorld.gameMode.adventure",
+];
+const DIFFICULTY_DEFAULT: usize = 2;
+const GAME_MODE_DEFAULT: usize = 0;
 
 /// `CommonLinks.BUY_REALMS`.
 const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
@@ -192,6 +209,37 @@ fn tab_geometry(w: f32) -> (f32, f32) {
     (x, tab)
 }
 
+/// `RealmsWorldsTab`'s four slot buttons: the active slot is 80 square, the others 50,
+/// spaced 16 and centred (`GridLayout.spacing(16)`).
+fn slot_boxes(w: f32, active_slot: i32) -> [(f32, f32, i32); 4] {
+    let sizes: [f32; 4] = std::array::from_fn(|i| {
+        if i as i32 + 1 == active_slot {
+            80.0
+        } else {
+            50.0
+        }
+    });
+    let total: f32 = sizes.iter().sum::<f32>() + 16.0 * 3.0;
+    let mut x = ((w - total) / 2.0).floor();
+    std::array::from_fn(|i| {
+        let at = (x, sizes[i], i as i32 + 1);
+        x += sizes[i] + 16.0;
+        at
+    })
+}
+
+/// `RealmsWorldOptions.getSlotName`: the player's own name, else the empty marker, else
+/// "World N" by the slot's number.
+fn slot_name(options: &RealmWorldOptions, slot: i32) -> String {
+    if !options.slot_name.trim().is_empty() {
+        return options.slot_name.clone();
+    }
+    if options.empty {
+        return crate::lang::get("mco.configure.world.slot.empty");
+    }
+    crate::lang::tr("mco.configure.world.slot", &[&slot])
+}
+
 /// `RealmsSubscriptionTab.daysLeftPresentation`: what the days-left line says, in the
 /// caller's language; empty when nothing is left to say.
 fn days_left_text(days_left: i32, expired: bool) -> String {
@@ -261,6 +309,8 @@ pub enum Popup {
         server: RealmServer,
         player: PlayerInfo,
     },
+    /// `RealmsWorldsTab.switchToFullSlot`'s question, then `RealmsClient.switchSlot`.
+    SwitchSlot { server: RealmServer, slot: i32 },
 }
 
 #[derive(Clone, Debug)]
@@ -291,6 +341,19 @@ pub enum SubScreen {
         error: Option<String>,
         /// `RealmsClient.open`/`close` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
+    },
+    /// `RealmsSlotOptionsScreen`: the active slot's name and world options.
+    SlotOptions {
+        server: RealmServer,
+        slot: RealmSlot,
+        name: String,
+        difficulty: usize,
+        game_mode: usize,
+        force_game_mode: bool,
+        spawn_protection: i32,
+        /// `RealmsClient.updateSlot` on a worker.
+        job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
     },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
@@ -435,6 +498,7 @@ impl Screen {
         }
         let mut refresh = false;
         let mut refetch_detail = false;
+        let mut slot_options_saved = false;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -508,6 +572,16 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::SlotOptions { job, error, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        // `saveSlotSettings`'s `setScreen(this)`.
+                        Ok(()) => slot_options_saved = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
             SubScreen::Invite {
                 server, job, error, ..
             } => {
@@ -539,6 +613,9 @@ impl Screen {
             }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
+        }
+        if slot_options_saved {
+            self.back_to_worlds();
         }
         if refetch_detail {
             self.start_configure_detail();
@@ -610,6 +687,7 @@ impl Screen {
         match &self.subscreen {
             SubScreen::JoinCode { .. } => Some([(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0]),
             SubScreen::Invite { .. } => Some([(w / 2.0).floor() - 100.0, 62.0, 200.0, 20.0]),
+            SubScreen::SlotOptions { .. } => Some([(w / 2.0).floor() - 154.0, 62.0, 152.0, 20.0]),
             _ => None,
         }
     }
@@ -618,6 +696,7 @@ impl Screen {
         match &mut self.subscreen {
             SubScreen::JoinCode { code, .. } => Some((REALMS_INVITE_CODE, code, 128)),
             SubScreen::Invite { name, .. } => Some((REALMS_PLAYER_NAME, name, 16)),
+            SubScreen::SlotOptions { name, .. } => Some((REALMS_SLOT_NAME, name, 16)),
             _ => None,
         }
     }
@@ -747,6 +826,91 @@ impl Screen {
                 *error = None;
                 *job = Some(spawn(move || client.invite_player(id, &name)));
             }
+        }
+    }
+
+    /// `RealmsSlotOptionsScreen.onClose`: back to the worlds tab.
+    fn back_to_worlds(&mut self) {
+        let SubScreen::SlotOptions { server, .. } = &self.subscreen else {
+            return;
+        };
+        let server = server.clone();
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Worlds,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
+    /// `RealmsSlotOptionsScreen.saveSettings`: the edited slot, saved on a worker. A world
+    /// that is not NORMAL keeps its stored spawn protection and force-game-mode, as
+    /// vanilla does.
+    fn save_slot_options(&mut self) {
+        let SubScreen::SlotOptions {
+            server,
+            slot,
+            name,
+            difficulty,
+            game_mode,
+            force_game_mode,
+            spawn_protection,
+            job,
+            ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if job.is_some() {
+            return;
+        }
+        let normal = server.world_type == "NORMAL";
+        // `setWorldName`: the default name is stored as empty.
+        let default_name = crate::lang::tr(
+            "mco.configure.world.slot",
+            &[&slot.slot_id as &dyn std::fmt::Display],
+        );
+        let trimmed = name.trim();
+        let slot_name = if trimmed == default_name {
+            String::new()
+        } else {
+            trimmed.to_owned()
+        };
+        let updated = RealmSlot {
+            slot_id: slot.slot_id,
+            options: RealmWorldOptions {
+                spawn_protection: if normal {
+                    *spawn_protection
+                } else {
+                    slot.options.spawn_protection
+                },
+                force_game_mode: if normal {
+                    *force_game_mode
+                } else {
+                    slot.options.force_game_mode
+                },
+                difficulty: *difficulty as i32,
+                game_mode: *game_mode as i32,
+                slot_name,
+                version: slot.options.version.clone(),
+                compatibility: slot.options.compatibility.clone(),
+                template_id: slot.options.template_id,
+                template_image: slot.options.template_image.clone(),
+                empty: slot.options.empty,
+            },
+            settings: slot.settings.clone(),
+        };
+        if let Some(client) = client() {
+            let id = server.id;
+            *job = Some(spawn(move || client.update_slot(id, &updated)));
         }
     }
 
@@ -913,6 +1077,83 @@ impl Screen {
                 }
                 Outcome::None
             }
+            // RealmsSlotOptionsScreen: the active slot's options.
+            Some(94) => {
+                if let SubScreen::Configure {
+                    server,
+                    detail: Some(Ok(detail)),
+                    ..
+                } = &self.subscreen
+                    && let Some(slot) = detail.slots.get(&detail.active_slot)
+                {
+                    let normal = server.world_type == "NORMAL";
+                    self.subscreen = SubScreen::SlotOptions {
+                        server: server.clone(),
+                        slot: slot.clone(),
+                        name: slot.options.slot_name.clone(),
+                        difficulty: usize::try_from(slot.options.difficulty)
+                            .ok()
+                            .filter(|d| *d < DIFFICULTIES.len())
+                            .unwrap_or(DIFFICULTY_DEFAULT),
+                        game_mode: usize::try_from(slot.options.game_mode)
+                            .ok()
+                            .filter(|m| *m < GAME_MODES.len())
+                            .unwrap_or(GAME_MODE_DEFAULT),
+                        force_game_mode: normal && slot.options.force_game_mode,
+                        spawn_protection: if normal {
+                            slot.options.spawn_protection
+                        } else {
+                            0
+                        },
+                        job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsSlotOptionsScreen: cycle, toggle, Done and Cancel.
+            Some(95) => {
+                if let SubScreen::SlotOptions {
+                    slot, difficulty, ..
+                } = &mut self.subscreen
+                    && !slot.is_hardcore()
+                {
+                    *difficulty = (*difficulty + 1) % DIFFICULTIES.len();
+                }
+                Outcome::None
+            }
+            Some(96) => {
+                if let SubScreen::SlotOptions {
+                    slot, game_mode, ..
+                } = &mut self.subscreen
+                    && !slot.is_hardcore()
+                {
+                    *game_mode = (*game_mode + 1) % GAME_MODES.len();
+                }
+                Outcome::None
+            }
+            Some(97) => {
+                if let SubScreen::SlotOptions {
+                    server,
+                    slot,
+                    force_game_mode,
+                    ..
+                } = &mut self.subscreen
+                    && server.world_type == "NORMAL"
+                    && !slot.is_hardcore()
+                {
+                    *force_game_mode = !*force_game_mode;
+                }
+                Outcome::None
+            }
+            Some(98) => {
+                self.save_slot_options();
+                Outcome::None
+            }
+            Some(99) => {
+                self.back_to_worlds();
+                Outcome::None
+            }
             // RealmsInviteScreen: Invite (80) and Back (81).
             Some(80) => {
                 self.invite_clicked();
@@ -1026,6 +1267,51 @@ impl Screen {
                     {
                         *tab = *wanted;
                     }
+                    return Outcome::None;
+                }
+                // RealmsSlotOptionsScreen's spawn-protection slider: a click on the track
+                // sets the value (there is no drag event on this screen yet).
+                if let SubScreen::SlotOptions {
+                    server,
+                    slot,
+                    spawn_protection,
+                    ..
+                } = &mut self.subscreen
+                    && server.world_type == "NORMAL"
+                    && !slot.is_hardcore()
+                {
+                    let (sx, sw) = (((w / 2.0).floor()) + 2.0, 152.0);
+                    if (118.0..138.0).contains(&y) && (sx..sx + sw).contains(&x) {
+                        let value = crate::ui::slider_value(sx, sw, x);
+                        *spawn_protection = (value * 16.0).round() as i32;
+                        return Outcome::None;
+                    }
+                }
+                // RealmsWorldsTab's slot buttons: a different slot asks before switching.
+                let switch = match &self.subscreen {
+                    SubScreen::Configure {
+                        server,
+                        tab: ConfigureTab::Worlds,
+                        detail: Some(Ok(detail)),
+                        ..
+                    } => slot_boxes(w, detail.active_slot)
+                        .into_iter()
+                        .find(|(bx, size, slot)| {
+                            x >= *bx
+                                && x < bx + size
+                                && y >= 44.0
+                                && y < 44.0 + size
+                                && *slot != detail.active_slot
+                                && detail
+                                    .slots
+                                    .get(slot)
+                                    .is_some_and(|entry| !entry.options.empty)
+                        })
+                        .map(|(_, _, slot)| (server.clone(), slot)),
+                    _ => None,
+                };
+                if let Some((server, slot)) = switch {
+                    self.subscreen = SubScreen::Popup(Popup::SwitchSlot { server, slot });
                 }
                 Outcome::None
             }
@@ -1067,6 +1353,29 @@ impl Screen {
                     *slot = Some(pack);
                 }
                 Outcome::Connect(address)
+            }
+            // RealmsWorldsTab.switchToFullSlot, answered: `RealmsClient.switchSlot` on a
+            // worker, then the detail reads again.
+            Popup::SwitchSlot { server, slot } => {
+                let Some(client) = client() else {
+                    return Outcome::None;
+                };
+                let id = server.id;
+                self.subscreen = SubScreen::Configure {
+                    server,
+                    tab: ConfigureTab::Worlds,
+                    subscription: None,
+                    subscription_job: None,
+                    detail: None,
+                    detail_job: None,
+                    deleting: None,
+                    member_job: Some(spawn(move || client.switch_slot(id, slot).map(drop))),
+                    error: None,
+                    job: None,
+                };
+                self.start_configure_subscription();
+                self.start_configure_detail();
+                Outcome::None
             }
             // RealmsPlayersTab.PlayerEntry.uninvite, answered: the player goes and the
             // list reads again.
@@ -1260,6 +1569,22 @@ impl Screen {
                         None,
                     ));
                 }
+                // RealmsWorldsTab: World Options (Backup and Reset follow in their PRs).
+                if *tab == ConfigureTab::Worlds
+                    && let Some(Ok(detail)) = detail
+                    && let Some(slot) = detail.slots.get(&detail.active_slot)
+                    && !slot.options.empty
+                {
+                    buttons.push((
+                        cx - 76.0,
+                        h - 96.0,
+                        152.0,
+                        t("mco.configure.world.buttons.options"),
+                        !server.expired,
+                        94,
+                        None,
+                    ));
+                }
                 // RealmsPlayersTab: a row's Op/Deop/Remove, then Invite Player.
                 if *tab == ConfigureTab::Players
                     && let Some(Ok(detail)) = detail
@@ -1300,6 +1625,76 @@ impl Screen {
                         None,
                     ));
                 }
+            }
+            SubScreen::SlotOptions {
+                server,
+                slot,
+                difficulty,
+                game_mode,
+                force_game_mode,
+                job,
+                ..
+            } => {
+                // `RealmsSlotOptionsScreen`: the two cycle buttons, the on/off and the
+                // footer (the name field and the spawn-protection slider are drawn).
+                let normal = server.world_type == "NORMAL";
+                let hardcore = slot.is_hardcore();
+                let on_off = |on: bool| {
+                    if on {
+                        t("options.on")
+                    } else {
+                        t("options.off")
+                    }
+                };
+                buttons.push((
+                    cx - 154.0,
+                    90.0,
+                    152.0,
+                    crate::lang::tr(
+                        "options.generic_value",
+                        &[&t("options.difficulty"), &t(DIFFICULTIES[*difficulty])],
+                    ),
+                    !hardcore,
+                    95,
+                    None,
+                ));
+                buttons.push((
+                    cx + 2.0,
+                    90.0,
+                    152.0,
+                    crate::lang::tr(
+                        "options.generic_value",
+                        &[&t("selectWorld.gameMode"), &t(GAME_MODES[*game_mode])],
+                    ),
+                    !hardcore,
+                    96,
+                    None,
+                ));
+                buttons.push((
+                    cx - 154.0,
+                    118.0,
+                    152.0,
+                    crate::lang::tr(
+                        "options.generic_value",
+                        &[
+                            &t("mco.configure.world.forceGameMode"),
+                            &on_off(*force_game_mode),
+                        ],
+                    ),
+                    normal && !hardcore,
+                    97,
+                    None,
+                ));
+                buttons.push((
+                    cx - 102.0,
+                    h - 36.0,
+                    100.0,
+                    t("gui.done"),
+                    job.is_none(),
+                    98,
+                    None,
+                ));
+                buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 99, None));
             }
             SubScreen::Invite { job, .. } => {
                 buttons.push((
@@ -1713,6 +2108,44 @@ impl Screen {
                             u32::MAX,
                         ),
                     },
+                    ConfigureTab::Worlds => match detail {
+                        Some(Ok(detail)) => {
+                            let boxes = slot_boxes(w, detail.active_slot);
+                            let top = 44.0;
+                            for (bx, size, slot) in boxes {
+                                let active = slot == detail.active_slot;
+                                let color = if active { 0xFFB0_B0B0 } else { 0xFF70_7070 };
+                                batch.fill(atlas, bx, top, size, size, color);
+                                if let Some(entry) = detail.slots.get(&slot) {
+                                    let name = slot_name(&entry.options, slot);
+                                    let tw = HudBatch::text_width(atlas, &name);
+                                    batch.text(
+                                        atlas,
+                                        &name,
+                                        bx + ((size - tw) / 2.0).floor(),
+                                        top + size - 12.0,
+                                        if active { u32::MAX } else { GREY },
+                                        true,
+                                    );
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            for (i, line) in
+                                wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate()
+                            {
+                                centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                            }
+                        }
+                        None => centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.loading"),
+                            cx,
+                            60.0,
+                            u32::MAX,
+                        ),
+                    },
                     ConfigureTab::Players => match detail {
                         Some(Ok(detail)) => {
                             let invited = crate::lang::tr(
@@ -1785,6 +2218,72 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::SlotOptions {
+                server,
+                slot,
+                name,
+                spawn_protection,
+                error,
+                ..
+            } => {
+                // `RealmsSlotOptionsScreen`: the title, the name field (labelled) and
+                // the spawn-protection slider; the cycle buttons are widgets.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.buttons.options"),
+                    cx,
+                    20.0,
+                    u32::MAX,
+                );
+                batch.text(
+                    atlas,
+                    &t("mco.configure.world.edit.slot.name"),
+                    cx - 154.0,
+                    50.0,
+                    GREY,
+                    true,
+                );
+                caret.draw(
+                    batch,
+                    atlas,
+                    (REALMS_SLOT_NAME, name, 16),
+                    [cx - 154.0, 62.0, 152.0, 20.0],
+                    true,
+                    focused_at,
+                );
+                let normal = server.world_type == "NORMAL";
+                let off = *spawn_protection == 0;
+                let label = crate::lang::tr(
+                    "options.generic_value",
+                    &[
+                        &t("mco.configure.world.spawnProtection"),
+                        &if off {
+                            t("options.off")
+                        } else {
+                            spawn_protection.to_string()
+                        },
+                    ],
+                );
+                let value = *spawn_protection as f32 / 16.0;
+                crate::ui::slider(
+                    batch,
+                    atlas,
+                    cx + 2.0,
+                    118.0,
+                    152.0,
+                    &Text::literal(&label),
+                    value,
+                    crate::ui::hovered(cursor, cx + 2.0, 118.0, 152.0, 20.0),
+                    normal && !slot.is_hardcore(),
+                    false,
+                );
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
             SubScreen::Invite {
                 name, job, error, ..
             } => {
@@ -1845,6 +2344,7 @@ impl Screen {
                     Popup::Leave(_) => t("mco.configure.world.leave.question.line1"),
                     Popup::ResourcePack { .. } => t("mco.configure.world.resourcepack.question"),
                     Popup::Delete(_) => t("mco.configure.world.delete.question.line1"),
+                    Popup::SwitchSlot { .. } => t("mco.configure.world.slot.switch.question.line1"),
                     Popup::Uninvite { player, .. } => crate::lang::tr(
                         "mco.configure.world.uninvite.player",
                         &[&player.name as &dyn std::fmt::Display],
@@ -2235,6 +2735,42 @@ mod tests {
         assert_eq!(enabled(15), Some(false), "invites");
     }
 
+    /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else
+    /// "World N" by the slot.
+    #[test]
+    fn a_slot_without_a_name_says_world_n_or_empty() {
+        let options = RealmWorldOptions::default();
+        assert_eq!(
+            slot_name(&options, 3),
+            crate::lang::tr("mco.configure.world.slot", &[&3])
+        );
+        let empty = RealmWorldOptions {
+            empty: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            slot_name(&empty, 2),
+            crate::lang::get("mco.configure.world.slot.empty")
+        );
+        let named = RealmWorldOptions {
+            slot_name: "Base".into(),
+            ..Default::default()
+        };
+        assert_eq!(slot_name(&named, 1), "Base");
+    }
+
+    /// `RealmsWorldsTab`: the active slot is 80 square, the others 50, 16 apart, centred.
+    #[test]
+    fn the_slot_buttons_give_the_active_slot_eighty_pixels() {
+        let boxes = slot_boxes(427.0, 2);
+        // 80 + 50*3 + 16*3 = 278 wide, centred on 427 starts at 74.
+        assert_eq!(boxes[0], (74.0, 50.0, 1));
+        assert_eq!(boxes[1].0, 140.0);
+        assert_eq!(boxes[1].1, 80.0);
+        assert_eq!(boxes[1].2, 2);
+        assert_eq!(boxes[3].1, 50.0);
+    }
+
     /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
     /// before any request.
     #[test]
@@ -2328,6 +2864,37 @@ mod tests {
         // A window narrower than 400 keeps its own width less the bar's margins:
         // 272 inner width over four tabs, 14 from the left.
         assert_eq!(tab_geometry(300.0), (14.0, 68.0));
+    }
+
+    /// `RealmsWorldsTab`'s four slot buttons: the active slot is 80 square, the others 50,
+    /// spaced 16 and centred (`GridLayout.spacing(16)`).
+    fn slot_boxes(w: f32, active_slot: i32) -> [(f32, f32, i32); 4] {
+        let sizes: [f32; 4] = std::array::from_fn(|i| {
+            if i as i32 + 1 == active_slot {
+                80.0
+            } else {
+                50.0
+            }
+        });
+        let total: f32 = sizes.iter().sum::<f32>() + 16.0 * 3.0;
+        let mut x = ((w - total) / 2.0).floor();
+        std::array::from_fn(|i| {
+            let at = (x, sizes[i], i as i32 + 1);
+            x += sizes[i] + 16.0;
+            at
+        })
+    }
+
+    /// `RealmsWorldOptions.getSlotName`: the player's own name, else the empty marker, else
+    /// "World N" by the slot's number.
+    fn slot_name(options: &RealmWorldOptions, slot: i32) -> String {
+        if !options.slot_name.trim().is_empty() {
+            return options.slot_name.clone();
+        }
+        if options.empty {
+            return crate::lang::get("mco.configure.world.slot.empty");
+        }
+        crate::lang::tr("mco.configure.world.slot", &[&slot])
     }
 
     /// `RealmsSubscriptionTab.daysLeftPresentation`, compared with the same translations
