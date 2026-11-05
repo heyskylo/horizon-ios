@@ -94,10 +94,12 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             ("vaColor".into(), "hz_Color".into()),
             ("vaNormal".into(), "hz_Normal".into()),
         ],
-        // At the far plane: the sky shows only where nothing else drew, and it writes no depth.
-        after: "    gl_Position.z = gl_Position.w;\n".into(),
+        // Tested at the far plane: the sky shows only where nothing else drew, and it writes no
+        // depth. Its fragments read their own depth, as in Iris.
+        after: String::new(),
         alpha_test: None,
         item_id_declared: false,
+        far_depth: true,
     }
 }
 
@@ -121,9 +123,10 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
             ("vaColor".into(), "hz_Color".into()),
             ("vaNormal".into(), "hz_Normal".into()),
         ],
-        after: "    gl_Position.z = gl_Position.w;\n".into(),
+        after: String::new(),
         alpha_test: None,
         item_id_declared: false,
+        far_depth: true,
     }
 }
 
