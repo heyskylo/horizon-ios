@@ -14,15 +14,19 @@ def program(case):
     pvp = (ROOT / 'crates/horizon-client/src/game/pvp.rs').read_text()
     options = (ROOT / 'crates/horizon-client/src/game/options.rs').read_text()
     hud = (ROOT / 'crates/horizon-client-render/src/pvp_hud.rs').read_text().split('#[cfg(test)]')[0]
-    start = pvp.index('#[derive(Default)]')
-    end = pvp.index('\n}', start) + 2
-    state = pvp[start:end].replace('pub(super) ', '')
+    states = []
+    for name in ('PvpState', 'Keystrokes'):
+        declaration = pvp.index(f'struct {name} {{')
+        start = pvp.rfind('#[derive(Default)]', 0, declaration)
+        end = pvp.index('\n}', declaration) + 2
+        states.append(pvp[start:end].replace('pub(super) ', ''))
+    state = '\n'.join(states)
     methods = method(options, 'load_language') + method(pvp, 'pvp_effects_shown')
     if 'fn invalidate_pvp_hud(' in pvp:
         methods += method(pvp, 'invalidate_pvp_hud')
     else:
         methods += 'fn invalidate_pvp_hud(&mut self) {}'
-    return STUBS + '\nmod pvp_hud {\n' + hud + '}\nuse pvp_hud::{Combo, Widget, Line, Icon};\n' + state + '\nimpl Game {\n' + methods + '}\n' + HELPERS + case
+    return STUBS + '\nmod pvp_hud {\n' + hud + '}\nuse pvp_hud::{Combo, Widget, Line, Icon};\nuse text::Text;\n' + state + '\nimpl Game {\n' + methods + '}\n' + HELPERS + case
 
 
 STUBS = r'''
@@ -50,9 +54,11 @@ impl Game{
 
 HELPERS = r'''
 fn refresh<K:PartialEq+Default>(w:&mut Widget<K>)->bool{w.refresh(|_,lines|{let label=LANGUAGE.lock().unwrap().clone();lines.push(Line::new(Icon::None,label,&|s|s.len() as f32*WIDTH.load(Ordering::SeqCst)as f32));})}
-fn seed(s:&mut PvpState){refresh(&mut s.armour);refresh(&mut s.effects);refresh(&mut s.held);refresh(&mut s.ping);refresh(&mut s.coords);refresh(&mut s.server);refresh(&mut s.combo_count);}
+fn seed(s:&mut PvpState){refresh(&mut s.armour);refresh(&mut s.effects);refresh(&mut s.held);refresh(&mut s.ping);refresh(&mut s.coords);refresh(&mut s.server);refresh(&mut s.combo_count);refresh(&mut s.fps);refresh(&mut s.cps);refresh(&mut s.keys.cps);refresh(&mut s.clock);refresh(&mut s.reach_shown);refresh(&mut s.speed_shown);}
 fn verify(s:&mut PvpState){
  assert!(refresh(&mut s.armour));assert!(refresh(&mut s.effects));assert!(refresh(&mut s.held));assert!(refresh(&mut s.ping));assert!(refresh(&mut s.coords));assert!(refresh(&mut s.server));assert!(refresh(&mut s.combo_count));
+ assert!(refresh(&mut s.fps));assert!(refresh(&mut s.cps));assert!(refresh(&mut s.keys.cps));assert!(refresh(&mut s.clock));assert!(refresh(&mut s.reach_shown));assert!(refresh(&mut s.speed_shown));
+ assert!(s.keys.labels.is_empty());assert_eq!(s.keys.held,[true;7]);assert_eq!(s.keys.bound[0],"key.keyboard.w");
  assert_eq!(s.effects.lines[0].text.plain(),"de");
  assert!(s.chat_search);assert_eq!(s.chat_search_aside,"/warp");assert_eq!(s.combo.count(0.1),1);
 }
@@ -61,6 +67,7 @@ fn verify(s:&mut PvpState){
 CACHE_CASE = r'''
 fn main(){
  let mut g=Game::new();*LANGUAGE.lock().unwrap()="en".into();seed(&mut g.pvp);
+ g.pvp.keys.held=[true;7];g.pvp.keys.bound[0]="key.keyboard.w".into();g.pvp.keys.labels.push((Text::literal("Attack"),6.0));
  g.pvp.chat_search=true;g.pvp.chat_search_aside="/warp".into();g.pvp.combo.hurt(7,Some(true),0.0);
  g.load_language("de");verify(&mut g.pvp);
  assert_eq!(g.pvp.effects.lines[0].text_width,2.0);

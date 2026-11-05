@@ -167,6 +167,7 @@ impl Pads {
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
             self.menu.armed = None;
+            self.owner_epoch = self.owner_epoch.wrapping_add(1);
         }
         let Some(pad) = self
             .devices

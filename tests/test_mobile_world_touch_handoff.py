@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def program():
     touch = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
     pad = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
+    emote = (ROOT / 'crates/horizon-client/src/game/emote_wheel.rs').read_text()
     modules = f'#[path="{ROOT / "crates/horizon-client/src/touch.rs"}"]mod touch;\n'
-    return STUBS + modules + '\nimpl Game {\n' + method(touch, 'touch_event') + '\n' + method(pad, 'pad_yield_input') + '\n}\n' + CASES
+    return STUBS + modules + '\nimpl Game {\n' + method(touch, 'touch_event') + '\n' + method(pad, 'pad_yield_input') + '\n' + method(emote, 'cancel_emote_controller') + '\n}\n' + CASES
 
 
 STUBS = r'''
@@ -32,9 +33,10 @@ struct Hardware;impl Hardware{fn touch(&mut self){}}
 struct MenuFinger{id:u64}
 struct TouchInput{seen:bool,hardware:Hardware,fingers:touch::Touches,menu:Option<MenuFinger>}
 struct Pad{in_use:bool,held:Vec<&'static str>,released:Vec<&'static str>}
-struct Game{touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
+struct EmoteWheel{controller:Option<()>}
+struct Game{emote_wheel:EmoteWheel,touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
 impl Game{
- fn new()->Self{Self{touch:TouchInput{seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
+ fn new()->Self{Self{emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
  fn touch_batch(&self)->Option<Batch>{Some(Batch{width:1000.,height:600.,scale:2.})}
  fn touch_playing(&self)->bool{true}
  fn touch_release_menu(&mut self,_:&dyn EventLoopCtl){self.touch.menu=None;}
@@ -51,11 +53,11 @@ fn main(){
  let layout=touch::layout(1000.,600.);let rect=layout.iter().find(|(c,_)|*c==touch::Control::Forward).unwrap().1;
  let (x,y)=(rect[0]+rect[2]/2.,rect[1]+rect[3]/2.);
  let mut g=Game::new();g.touch_event(&Loop,event(1,TouchPhase::Started,x,y)).unwrap();
- assert!(!g.pad.in_use);assert_eq!(g.pad.released,vec!["key.forward","key.attack"]);
+ assert!(!g.pad.in_use);assert!(g.emote_wheel.controller.is_none());assert_eq!(g.pad.released,vec!["key.forward","key.attack"]);
  assert_eq!(g.dispatched[0],(false,vec![touch::Out::Press(touch::Control::Forward)]));
  // End/cancel release this real held finger. Neither is a fresh takeover
  // when the player has intentionally returned to a controller meanwhile.
- g.pad.in_use=true;g.touch_event(&Loop,event(1,TouchPhase::Cancelled,x,y)).unwrap();assert!(g.pad.in_use);
+ g.pad.in_use=true;g.emote_wheel.controller=Some(());g.touch_event(&Loop,event(1,TouchPhase::Cancelled,x,y)).unwrap();assert!(g.pad.in_use);assert!(g.emote_wheel.controller.is_some(),"cancelled old finger must not cancel newly owned controller");
  assert_eq!(g.dispatched[1],(true,vec![touch::Out::Release(touch::Control::Forward)]));
  assert!(!g.touch.fingers.held(touch::Control::Forward));
  g.touch_event(&Loop,event(2,TouchPhase::Started,x,y)).unwrap();g.pad.in_use=true;

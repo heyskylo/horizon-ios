@@ -21,6 +21,8 @@ def program():
     methods += '\n' + '\n'.join('pub(crate) ' + method(pad, n) for n in ('key_focus_mouse', 'key_focus_to_mouse'))
     controller = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
     methods += '\n' + method(controller, 'pad_yield_input')
+    emote = (ROOT / 'crates/horizon-client/src/game/emote_wheel.rs').read_text()
+    methods += '\n' + method(emote, 'cancel_emote_controller')
     return STUBS + '\nmod production { use super::*; impl Game {\n' + methods + '\n}\n' + CASES + '\n}\n'
 
 
@@ -44,7 +46,8 @@ struct Target{rect:[f32;4]}
 #[derive(Default)]struct Pad{menu:Menu,in_use:bool,held_actions:Vec<&'static str>,released_actions:Vec<&'static str>}
 #[derive(Default)]struct TouchInput{synthetic:bool}
 type WindowId=u32;
-struct Game{touch:TouchInput,window:Option<Window>,pad:Pad,cursor:PhysicalPosition<f64>,clicks:Vec<PhysicalPosition<f64>>,scale:f32,airplay_scale:f32}
+#[derive(Default)]struct Wheel{controller:Option<()>}
+struct Game{emote_wheel:Wheel,touch:TouchInput,window:Option<Window>,pad:Pad,cursor:PhysicalPosition<f64>,clicks:Vec<PhysicalPosition<f64>>,scale:f32,airplay_scale:f32}
 impl Game{
  fn screen_batch(&self)->Option<Batch>{Some(Batch{scale:self.scale})}
  fn screen_point(&self,p:(f32,f32))->(f32,f32){(p.0*self.airplay_scale,p.1*self.airplay_scale)}
@@ -57,9 +60,9 @@ impl Game{
  // The action dispatcher endpoint records releases rather than running a
  // world. Input ownership itself comes from the production pad_yield_input.
  fn pad_cancel_inputs(&mut self,_:&dyn EventLoopCtl){self.pad.released_actions.append(&mut self.pad.held_actions);}
- fn controller(&mut self){self.pad.in_use=true;self.pad.held_actions=vec!["key.forward","key.attack"];}
+ fn controller(&mut self){self.emote_wheel.controller=Some(());self.pad.in_use=true;self.pad.held_actions=vec!["key.forward","key.attack"];}
  fn pad_synthetic_event(&mut self,l:&dyn EventLoopCtl,id:u32,e:WindowEvent){self.pad.menu.synthetic=true;self.handle_window_event(l,id,e,InputOrigin::Game);self.pad.menu.synthetic=false;}
- fn new()->Self{Self{touch:TouchInput::default(),window:Some(Window),pad:Pad::default(),cursor:PhysicalPosition::new(0.,0.),clicks:vec![],scale:2.,airplay_scale:1.}}
+ fn new()->Self{Self{emote_wheel:Wheel::default(),touch:TouchInput::default(),window:Some(Window),pad:Pad::default(),cursor:PhysicalPosition::new(0.,0.),clicks:vec![],scale:2.,airplay_scale:1.}}
  fn keyboard(&mut self){self.pad.menu.keyboard=true;self.pad.menu.focus=Some(Target{rect:[1.,1.,20.,20.]});self.pad.menu.pos=Some((1.,1.));self.cursor=PhysicalPosition::new(1.,1.);}
 }
 '''
@@ -67,7 +70,7 @@ CASES = r'''
 #[test]fn first_touch_after_keyboard_uses_finger_not_stale_mouse(){
  let mut g=Game::new();g.controller();g.pad.menu.real_pointer=Some(PhysicalPosition::new(900.,800.));g.keyboard();
  g.touch_pointer(&Loop,(32.,47.));g.touch_button(&Loop,true);
- assert_eq!(g.clicks,vec![PhysicalPosition::new(64.,94.)]);assert!(!g.pad.menu.keyboard);
+ assert_eq!(g.clicks,vec![PhysicalPosition::new(64.,94.)]);assert!(g.emote_wheel.controller.is_none());assert!(!g.pad.menu.keyboard);
  assert!(!g.pad.in_use);assert!(g.pad.held_actions.is_empty());assert_eq!(g.pad.released_actions,vec!["key.forward","key.attack"]);
 }
 #[test]fn repeated_keyboard_touch_switches_preserve_each_new_location(){

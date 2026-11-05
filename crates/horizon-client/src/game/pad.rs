@@ -33,6 +33,8 @@ pub(super) struct Pads {
     pub(super) feed: Option<PadState>,
     /// The pad behind `feed`.
     feed_source: Option<PadId>,
+    /// Changes when a different physical controller owns this player's input.
+    pub(super) owner_epoch: u64,
     /// The real controllers and the DualSense's output.
     #[cfg(any(feature = "controllers", target_os = "ios"))]
     devices: hardware::Devices,
@@ -200,6 +202,7 @@ impl Pads {
         if self.feed_source != source {
             self.feed_source = source;
             self.menu.armed = None;
+            self.owner_epoch = self.owner_epoch.wrapping_add(1);
         }
         self.feed = Some(state);
     }
@@ -262,6 +265,7 @@ impl Game<'_> {
         }
         self.pad.context = Some(context);
         if !self.settings.controller.enabled {
+            self.cancel_emote_controller();
             self.pad_output_off();
             self.pad_cancel_inputs(event_loop);
             self.pad.state = PadState::default();
@@ -303,6 +307,12 @@ impl Game<'_> {
             style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         let mut state = hardware.merge(&self.pad.injected);
+        let screen_before = self.screen;
+        self.poll_emote_controller(&state);
+        if self.screen != screen_before {
+            self.pad_cancel_inputs(event_loop);
+            self.pad.context = Some(self.pad_context());
+        }
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
         for (i, (stick, deadzone)) in [
             (&mut state.left, self.settings.controller.move_deadzone),
@@ -410,6 +420,7 @@ impl Game<'_> {
 
     pub(super) fn pad_yield_input(&mut self, event_loop: &dyn EventLoopCtl) {
         if self.pad.in_use {
+            self.cancel_emote_controller();
             self.pad.in_use = false;
             self.pad_cancel_inputs(event_loop);
         }
@@ -423,7 +434,7 @@ impl Game<'_> {
 
     /// Input from the pad counts while the window has focus, or always for
     /// the virtual pad (a script can't focus the window).
-    fn pad_focused(&self) -> bool {
+    pub(super) fn pad_focused(&self) -> bool {
         self.focused || self.pad.virtual_input
     }
 
@@ -459,7 +470,11 @@ impl Game<'_> {
             std::mem::take(&mut self.pad.actions[button as usize])
         };
         for action in actions {
+            let opening_emote = down && action == "key.emote" && self.screen == Screen::Playing;
             self.pad_action(action, down)?;
+            if opening_emote && self.screen == Screen::EmoteWheel {
+                self.emote_controller_opened(button);
+            }
         }
         Ok(())
     }

@@ -674,6 +674,28 @@ fn link(full: bool) -> Result<(), String> {
     }
 }
 
+/// What to do when Windows' Smart App Control refused one of the build's programs (#5911). It
+/// lets only signed programs or ones Microsoft knows run, and a build runs programs it has just
+/// compiled (every crate's build script, horizon-mixins, the game) and the toolchain's own
+/// (`dlltool.exe`). Windows refuses them with os error 4551 ("An Application Control policy has
+/// blocked this file"). Nothing is checked before the build: with Smart App Control on, a build
+/// whose programs already ran before it was turned on still succeeds.
+pub fn smart_app_control() -> String {
+    crate::i18n::tr("Windows' Smart App Control is blocking the build (os error 4551). \
+It only lets signed programs run, and a native build runs programs no one has signed: the ones it \
+compiles on this computer and some of the compiler's own. To build native mods, turn it off in \
+Windows Security > App & browser control > Smart App Control settings, then build again. On some \
+Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need \
+no build and work with it on.")
+    .to_string()
+}
+
+/// Whether `text` (a build's output, or the error starting one of its programs) is Windows
+/// refusing a program under an Application Control policy, Smart App Control's.
+pub fn blocked_by_app_control(text: &str) -> bool {
+    text.contains("os error 4551")
+}
+
 /// What a Linux build needs from the system, checked before anything is downloaded: a C compiler
 /// (the linker; `ring` and `hidapi` compile C) with the C library's headers and, for the game
 /// only (`full`), `pkg-config` and the development files of ALSA (`alsa-sys`, sound) and

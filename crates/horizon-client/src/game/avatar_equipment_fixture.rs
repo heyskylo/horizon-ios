@@ -1,6 +1,8 @@
 //! Real Game/CPU-model regression for avatar equipment. Runs without a world,
 //! renderer or window; resources, mob types, item equipment assets and posed
 //! geometry are the production ones. Only atlas rectangles identify materials.
+mod emotes;
+
 use super::Game;
 use horizon_client::{
     Result,
@@ -296,10 +298,20 @@ impl Game<'_> {
                 }
             }
         }
+        let emotes = emotes::capture(self, camera)?;
+        std::fs::write(
+            directory.join("emotes.json"),
+            serde_json::to_vec_pretty(&emotes)?,
+        )?;
         let crouch = self.avatar_crouch_geometry_fixture(camera, &regions)?;
         std::fs::write(
             directory.join("crouch.json"),
             serde_json::to_vec_pretty(&crouch)?,
+        )?;
+        let visibility = self.emote_visibility_fixture()?;
+        std::fs::write(
+            directory.join("emote_visibility.json"),
+            serde_json::to_vec_pretty(&visibility)?,
         )?;
         std::fs::write(
             directory.join("rust.json"),

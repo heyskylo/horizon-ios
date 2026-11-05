@@ -30,6 +30,7 @@ impl Screen {
             | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
+            | Self::EmoteWheel
             | Self::Chat
             | Self::Creative
             | Self::Inventory
@@ -68,9 +69,10 @@ fn pause_buttons(
     links: bool,
     additions: bool,
     split: bool,
+    emotes: bool,
 ) -> Vec<(f32, f32, f32, &'static str, u8, bool)> {
     let row3 = links || additions;
-    let (x0, y0) = pause_grid(w, h, u8::from(row3) + u8::from(split));
+    let (x0, y0) = pause_grid(w, h, u8::from(row3) + u8::from(split) + u8::from(emotes));
     let down = 24.0 * f32::from(u8::from(row3) + u8::from(split));
     let mut v = vec![
         (x0 + 4.0, y0 + 50.0, 204.0, "menu.returnToGame", 0, true),
@@ -112,6 +114,23 @@ fn pause_buttons(
             true,
         ),
     ]);
+    if emotes {
+        // A discoverable touch/controller entry, only when cosmetics are enabled.
+        // Keep the gameplay HUD unchanged and use the existing pause widgets.
+        let quit = v.last_mut().expect("the disconnect button");
+        quit.1 += 24.0;
+        v.insert(
+            v.len() - 1,
+            (
+                x0 + 4.0,
+                y0 + 146.0 + down,
+                204.0,
+                "horizon.emote_wheel.title",
+                EMOTE_ACTION,
+                true,
+            ),
+        );
+    }
     v
 }
 
@@ -124,6 +143,7 @@ const SPLIT_ICON: usize = 4;
 const SPLIT_LABEL: &str = "Splitscreen";
 const SPLIT_LEAVE_LABEL: &str = "End splitscreen";
 const SPLIT_ACTION: u8 = 31;
+const EMOTE_ACTION: u8 = 32;
 /// `CommonLinks.SNAPSHOT_BUGS_FEEDBACK`, behind `PauseScreen.REPORT_BUGS`.
 const BUGS_LINK: &str = "https://aka.ms/snapshotbugs?ref=game";
 /// `CommonLinks.RELEASE_FEEDBACK` / `SNAPSHOT_FEEDBACK`, by `WorldVersion.stable()`.
@@ -165,8 +185,13 @@ fn pause_icons(
     additions: bool,
     split: bool,
     airplay: bool,
+    emotes: bool,
 ) -> Vec<(f32, f32, &'static str)> {
-    let (x0, y0) = pause_grid(w, h, u8::from(links || additions) + u8::from(split));
+    let (x0, y0) = pause_grid(
+        w,
+        h,
+        u8::from(links || additions) + u8::from(split) + u8::from(emotes),
+    );
     let (x0, y) = (x0 + 60.0 - if airplay { 12.0 } else { 0.0 }, y0 + 98.0);
     let mut icons = vec![
         (x0, y, "gui/sprites/pause_menu/bug"),
@@ -276,6 +301,7 @@ impl Game<'_> {
             links,
             additions.is_some(),
             self.options.split_guest || self.split_hud.menu,
+            horizon_cosmetics::enabled(),
         ) {
             let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, bw, 20.0) || is_focused);
@@ -308,6 +334,7 @@ impl Game<'_> {
             additions.is_some(),
             self.options.split_guest || self.split_hud.menu,
             self.pause_split(),
+            horizon_cosmetics::enabled(),
         )
         .into_iter()
         .enumerate()
@@ -422,6 +449,10 @@ impl Game<'_> {
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
             30 => self.open_split_settings(),
+            EMOTE_ACTION if horizon_cosmetics::enabled() => {
+                self.pause_focus = None;
+                self.open_emote_wheel();
+            }
             SPLIT_ACTION => {
                 self.splitscreen.request = Some(!self.splitscreen.active);
                 self.pause_focus = None;
@@ -461,6 +492,7 @@ impl Game<'_> {
             additions.is_some(),
             self.options.split_guest || self.split_hud.menu,
             self.pause_split(),
+            horizon_cosmetics::enabled(),
         );
         let friends = icons[FRIENDS_ICON];
         let airplay = icons.get(SPLIT_ICON).copied();
@@ -471,6 +503,7 @@ impl Game<'_> {
             links,
             additions.is_some(),
             self.options.split_guest || self.split_hud.menu,
+            horizon_cosmetics::enabled(),
         )
         .into_iter()
         .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
@@ -516,6 +549,7 @@ impl Game<'_> {
             links,
             self.pause_screen_additions().is_some(),
             self.options.split_guest || self.split_hud.menu,
+            horizon_cosmetics::enabled(),
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
         let friends = self.friends_view().shown;
@@ -567,6 +601,7 @@ impl Game<'_> {
                     links,
                     self.pause_screen_additions().is_some(),
                     self.options.split_guest || self.split_hud.menu,
+                    horizon_cosmetics::enabled(),
                 );
                 let mut rects: Vec<(u8, f32, f32, f32)> = buttons
                     .into_iter()
@@ -581,6 +616,7 @@ impl Game<'_> {
                     self.pause_screen_additions().is_some(),
                     self.options.split_guest || self.split_hud.menu,
                     self.pause_split(),
+                    horizon_cosmetics::enabled(),
                 )
                 .into_iter()
                 .enumerate()
@@ -907,6 +943,24 @@ mod tests {
     use super::{Screen, death_buttons, pause_buttons, pause_icon_focus_ids, pause_icons};
 
     #[test]
+    fn cosmetics_only_adds_one_emote_row_without_overlapping_pause_actions() {
+        for (links, additions, split) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+        ] {
+            let plain = pause_buttons(320.0, 240.0, true, links, additions, split, false);
+            let enabled = pause_buttons(320.0, 240.0, true, links, additions, split, true);
+            assert!(plain.iter().all(|b| b.4 != super::EMOTE_ACTION));
+            assert_eq!(enabled.len(), plain.len() + 1);
+            let emote = enabled.iter().find(|b| b.4 == super::EMOTE_ACTION).unwrap();
+            let quit = enabled.iter().find(|b| b.4 == 2).unwrap();
+            assert!(emote.5 && emote.1 + 20.0 <= quit.1);
+            assert!(quit.1 + 20.0 <= 240.0);
+        }
+    }
+
+    #[test]
     fn death_buttons_sit_on_whole_gui_pixels() {
         // DeathScreen.init in ints: a 427x253 GUI (1709x1009 at scale 4) puts
         // Respawn at (113, 63 + 72), not (113.5, 63.25 + 72).
@@ -947,7 +1001,7 @@ mod tests {
     #[test]
     fn pause_menu_uses_disconnect_for_servers_and_keeps_world_options() {
         for (remote, label) in [(false, "menu.returnToMenu"), (true, "menu.disconnect")] {
-            let buttons = pause_buttons(427.0, 240.0, remote, false, false, false);
+            let buttons = pause_buttons(427.0, 240.0, remote, false, false, false, false);
             let quit = buttons.iter().find(|b| b.4 == 2).unwrap();
             assert_eq!(quit.3, label);
             assert!(quit.5);
@@ -958,20 +1012,20 @@ mod tests {
     #[test]
     fn airplay_icon_preserves_server_links_and_stays_centered() {
         for links in [false, true] {
-            let plain = pause_icons(640.0, 360.0, links, false, false, false);
-            let split = pause_icons(640.0, 360.0, links, false, false, true);
+            let plain = pause_icons(640.0, 360.0, links, false, false, false, false);
+            let split = pause_icons(640.0, 360.0, links, false, false, true, false);
             assert_eq!(plain.len(), 4);
             assert_eq!(split.len(), 5);
             assert_eq!(plain[0].0 - split[0].0, 12.0);
             assert_eq!(plain[0].1, split[0].1);
             assert_eq!((split[0].0 + split[4].0 + 20.0) / 2.0, 320.0);
             assert!(
-                pause_buttons(640.0, 360.0, true, links, false, false)
+                pause_buttons(640.0, 360.0, true, links, false, false, false)
                     .iter()
                     .all(|button| button.4 != super::SPLIT_ACTION)
             );
             if links {
-                let button = pause_buttons(640.0, 360.0, true, true, false, false)
+                let button = pause_buttons(640.0, 360.0, true, true, false, false, false)
                     .into_iter()
                     .find(|button| button.4 == 11)
                     .unwrap();
@@ -996,14 +1050,14 @@ mod tests {
 
     #[test]
     fn server_links_adds_a_full_width_row_above_options() {
-        let with = pause_buttons(427.0, 240.0, true, true, false, false);
-        let without = pause_buttons(427.0, 240.0, true, false, false, false);
+        let with = pause_buttons(427.0, 240.0, true, true, false, false, false);
+        let without = pause_buttons(427.0, 240.0, true, false, false, false, false);
         let links = with.iter().find(|b| b.4 == 11).unwrap();
         assert_eq!(links.2, 204.0);
         assert_eq!(links.3, "menu.server_links");
         assert!(links.5);
         // The icon row sits above it; Options and Disconnect move down 24.
-        let icons = pause_icons(427.0, 240.0, true, false, false, false);
+        let icons = pause_icons(427.0, 240.0, true, false, false, false, false);
         let y0_icons = ((240.0f32 - 190.0) * 0.25).floor() + 98.0;
         assert_eq!(icons[0].1, y0_icons);
         assert!(links.1 > icons[0].1);
@@ -1019,8 +1073,8 @@ mod tests {
     fn pause_screen_additions_takes_the_server_links_row() {
         // getCustomAdditions: one additions button in row 3, never next to the
         // links button, so the grid keeps one extra row either way.
-        let with = pause_buttons(427.0, 240.0, true, true, true, false);
-        let links = pause_buttons(427.0, 240.0, true, true, false, false);
+        let with = pause_buttons(427.0, 240.0, true, true, true, false, false);
+        let links = pause_buttons(427.0, 240.0, true, true, false, false, false);
         assert!(with.iter().all(|b| b.4 != 11));
         let button = with.iter().find(|b| b.4 == 14).unwrap();
         assert_eq!(
@@ -1033,14 +1087,14 @@ mod tests {
             assert_eq!(add.1, link.1);
         }
         assert_eq!(
-            pause_icons(427.0, 240.0, true, true, false, false)[0].1,
-            pause_icons(427.0, 240.0, true, false, false, false)[0].1
+            pause_icons(427.0, 240.0, true, true, false, false, false)[0].1,
+            pause_icons(427.0, 240.0, true, false, false, false, false)[0].1
         );
     }
     #[test]
     fn split_settings_preserves_dialog_rows_and_icon_actions() {
         for (links, additions) in [(false, false), (true, false), (false, true), (true, true)] {
-            let buttons = pause_buttons(427.0, 300.0, true, links, additions, true);
+            let buttons = pause_buttons(427.0, 300.0, true, links, additions, true, false);
             let split = buttons.iter().find(|b| b.4 == 30).unwrap();
             let options = buttons.iter().find(|b| b.4 == 1).unwrap();
             assert_eq!(options.1, split.1 + 24.0);
@@ -1055,11 +1109,11 @@ mod tests {
             // AirPlay's launch action must not alias the new custom-dialog
             // button (14) or the upstream guest profile settings (30).
             assert!(buttons.iter().all(|b| b.4 != super::SPLIT_ACTION));
-            let icons = pause_icons(427.0, 300.0, links, additions, true, true);
+            let icons = pause_icons(427.0, 300.0, links, additions, true, true, false);
             assert_eq!(icons.len(), 5);
             assert!(split.1 > icons[super::SPLIT_ICON].1);
             assert!(
-                !pause_buttons(427.0, 300.0, true, links, additions, false)
+                !pause_buttons(427.0, 300.0, true, links, additions, false, false)
                     .iter()
                     .any(|b| b.4 == 30)
             );

@@ -7090,9 +7090,7 @@ impl Renderer {
         depth_far: f32,
     ) -> Frustum {
         let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, depth_far));
-        Frustum {
-            planes: frustum(views.cull().view_proj(bob)),
-        }
+        Frustum::from_view_projection(views.cull().view_proj(bob))
     }
     fn screen_view(&self, fov_degrees: f32, yaw: f32, pitch: f32, far: f32) -> View {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
@@ -11792,6 +11790,14 @@ pub struct Frustum {
     planes: [Vec4; 6],
 }
 impl Frustum {
+    /// The camera-relative world-to-clip transform, with WebGPU's depth range 0..1.
+    /// This is the same plane extraction the renderer uses for its camera view.
+    pub fn from_view_projection(view_projection: Mat4) -> Self {
+        Self {
+            planes: frustum(view_projection),
+        }
+    }
+
     /// Whether the camera-relative box `min..max` is at least partly inside.
     pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
         !self.planes.iter().any(|p| {

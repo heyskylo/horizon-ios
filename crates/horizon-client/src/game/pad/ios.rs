@@ -98,6 +98,7 @@ impl Pads {
         if self.devices.active != active {
             // Changing/disconnecting a controller is not its A release.
             self.menu.armed = None;
+            self.owner_epoch = self.owner_epoch.wrapping_add(1);
             self.devices.active = active;
         }
         let Some(pad) = selected else {

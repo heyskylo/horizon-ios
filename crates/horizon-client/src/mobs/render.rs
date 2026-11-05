@@ -2012,6 +2012,43 @@ fn posed_body(
     alpha: f32,
     data: &MobData,
 ) -> (std::sync::Arc<Part>, Poses, Vec<(String, String, [f32; 3])>) {
+    posed_body_stage(m, alpha, data, true)
+}
+
+/// Only the emote's body deformation for a layer, such as WingsLayer, that already has
+/// its native pose and must not inherit the vanilla torso animation a second time.
+/// The result is model-relative: multiply the wearer's existing base by this once.
+pub fn emote_body_delta(m: &Mob, alpha: f32, data: &MobData) -> Option<glam::Mat4> {
+    let playing = m.emote.as_ref()?;
+    let (_, weight) = playing.at(m.age as f32 + alpha)?;
+    if weight <= 0.0 {
+        return None;
+    }
+    // Evaluate the real pose first: CEM keeps only the first world's result per frame.
+    // Its following baseline evaluation reads that frame's start without storing again.
+    let (model, posed, _) = posed_body_stage(m, alpha, data, true);
+    let (baseline_model, baseline, _) = posed_body_stage(m, alpha, data, false);
+    let to = part_matrix(&model, glam::Mat4::IDENTITY, &posed, "body", 0.0)?;
+    let from = part_matrix(
+        &baseline_model,
+        glam::Mat4::IDENTITY,
+        &baseline,
+        "body",
+        0.0,
+    )?;
+    if to == from || !to.is_finite() || !from.is_finite() || from.determinant() == 0.0 {
+        return None;
+    }
+    let delta = to * from.inverse();
+    delta.is_finite().then_some(delta)
+}
+
+fn posed_body_stage(
+    m: &Mob,
+    alpha: f32,
+    data: &MobData,
+    with_emote: bool,
+) -> (std::sync::Arc<Part>, Poses, Vec<(String, String, [f32; 3])>) {
     let s = anim::state(m, alpha);
     let (model_key, _) = body(m);
     let cem = data
@@ -2028,7 +2065,11 @@ fn posed_body(
             .unwrap_or_else(|| m.kind.model.clone()),
     };
     let mut poses = Poses::new(&model);
-    anim::setup(m, &s, &mut poses, &data.animations);
+    if with_emote {
+        anim::setup(m, &s, &mut poses, &data.animations);
+    } else {
+        anim::vanilla_setup(m, &s, &mut poses, &data.animations);
+    }
     if let Some(c) = custom
         && let Some(animation) = &c.animation
     {

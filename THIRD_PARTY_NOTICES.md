@@ -1,8 +1,8 @@
 # Third-party notices
 
-## ureq Realms TLS connector defaults
+## ureq managed TLS connector defaults
 
-`crates/horizon-client/src/realms/transport.rs` adapts the TLS configuration defaults from
+`crates/horizon-cosmetics/src/transport.rs` (shared with Realms) adapts the TLS configuration defaults from
 [ureq 2.12.1, `src/rtls.rs`](https://github.com/algesten/ureq/blob/ba4555d54fd72e16fc737f7e8fcc812efb131260/src/rtls.rs).
 It retains certificate verification, WebPKI roots, ring, and TLS 1.2/1.3 while adding original
 close-only socket ownership for cancellation. No ureq transport implementation is vendored.

@@ -40,14 +40,15 @@ struct MenuFinger { id: u64, gesture: MenuGesture, target: MenuTarget }
 struct TouchInput { seen: bool, hardware: input_mode::InputMode,
     menu: Option<MenuFinger>, fingers: Touches }
 #[derive(Default)]struct Pad{in_use:bool}
-struct Game { pad:Pad,touch: TouchInput, last_input: Instant, playing: bool,
+#[derive(Default)]struct EmoteWheel{controller:Option<()>}
+struct Game { emote_wheel:EmoteWheel,pad:Pad,touch: TouchInput, last_input: Instant, playing: bool,
     actions: Vec<Out>, buttons: Vec<bool>, menu_calls: usize }
 mod horizon_gamecontroller { pub fn keyboard_connected() -> bool { true } }
 impl Game {
     fn new(playing: bool, pressed: bool) -> Self {
         let mut gesture=MenuGesture::new((0.0,0.0),MenuMode::Drag);
         if pressed { gesture.frame(); gesture.frame(); }
-        Self { pad:Pad::default(),touch: TouchInput { menu: Some(MenuFinger { id: 1, gesture, target: MenuTarget::Pointer }),
+        Self { emote_wheel:EmoteWheel::default(),pad:Pad::default(),touch: TouchInput { menu: Some(MenuFinger { id: 1, gesture, target: MenuTarget::Pointer }),
             ..TouchInput::default() }, last_input: Instant::now(), playing,
             actions: vec![], buttons: vec![], menu_calls: 0 }
     }
@@ -111,7 +112,8 @@ fn cancelled_menu_finger_releases_without_delayed_press() {
         fixture = fixture.replace("MODE_SOURCE", str(ROOT / "crates/horizon-client/src/game/input_mode.rs"))
         fixture = fixture.replace("METHODS", "\n".join(method(name) for name in (
             "touch_event", "touch_release_menu", "touch_keyboard_used")) + "\n" + production_method(
-                (ROOT / "crates/horizon-client/src/game/pad.rs").read_text(), "pad_yield_input"))
+                (ROOT / "crates/horizon-client/src/game/pad.rs").read_text(), "pad_yield_input") + "\n" + production_method(
+                (ROOT / "crates/horizon-client/src/game/emote_wheel.rs").read_text(), "cancel_emote_controller"))
         with tempfile.TemporaryDirectory(prefix="horizon-touch-handoff-") as folder:
             folder = Path(folder)
             (folder / "fixture.rs").write_text(fixture)

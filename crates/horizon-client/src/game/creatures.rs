@@ -299,6 +299,15 @@ pub(super) fn named_mob_pickable(
 /// camera-relative bounds (`cull_skinned`).
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
+/// An avatar draw that must be culled from its posed mesh instead of its standing box.
+#[derive(Clone, Copy)]
+struct PosedAvatarMark {
+    cpu: usize,
+    skin: (usize, usize, u32),
+    spans: usize,
+    motion: usize,
+}
+
 impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
@@ -1123,6 +1132,7 @@ impl Game<'_> {
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;
+                        snapshot[i].removed = true;
                     }
                     keep.push(kept);
                     continue;
@@ -2666,6 +2676,14 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::EndermanPlaceBlock {
+                    mob,
+                    pos,
+                    carried,
+                    occupants,
+                } => {
+                    self.enderman_place_block(mob, pos, carried, &occupants)?;
+                }
                 MobEvent::CropRaided {
                     pos,
                     state,
@@ -3000,9 +3018,12 @@ impl Game<'_> {
                         horizon_client::mobs::happy_ghast::notify_leash_holder(m);
                     }
                 }
-                MobEvent::Vibration { from, to, ticks } => {
-                    self.mob_vibration_particle(from, to, ticks)
-                }
+                MobEvent::Vibration {
+                    from,
+                    to,
+                    ticks,
+                    source,
+                } => self.mob_vibration_particle(source, from, to, ticks),
                 MobEvent::DigParticles { at } => self.warden_dig_particles(at),
                 MobEvent::BlockBreakEffect { pos, block } => {
                     // Turtle.aiStep broadcasts LevelEvent 2001, not the
@@ -5543,7 +5564,13 @@ impl Game<'_> {
                 return Ok(false);
             }
         }
+        // PlayerInteractTrigger: the name tag as it was before it named the mob.
+        let used = self.held().cloned();
         if self.name_mob(index) {
+            if let Some(stack) = &used {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             return Ok(true);
         }
         if self
@@ -5678,6 +5705,11 @@ impl Game<'_> {
         if !self.mobs[index].kind.food.contains(&item)
             && self.interact_sheep_dye(index, self.hand, false)
         {
+            // PlayerInteractTrigger: the dye as it was before it coloured the sheep.
+            if let Some(stack) = &held {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             self.swing_arm();
             return Ok(true);
         }
@@ -6897,6 +6929,52 @@ impl Game<'_> {
             .is_some_and(|r| r.skins_entities() && r.skinned_models().is_some())
     }
 
+    /// Test active emotes after posing, so root motion, limbs, equipment and props all
+    /// contribute their actual bounds. The standing-box fast path remains for every
+    /// unposed avatar. GPU parts contribute the same bounds the occlusion culler uses.
+    fn cull_posed_avatar_frustum(
+        &self,
+        out: &mut Vec<Vertex>,
+        mark: PosedAvatarMark,
+        mut bounds: Option<(glam::Vec3, glam::Vec3)>,
+    ) -> bool {
+        let Some(view) = &self.view_frustum else {
+            return false;
+        };
+        if self.skin_frame.borrow().mark().0 > mark.skin.0 && bounds.is_none() {
+            // A draw with unknown GPU bounds must fail open, as occlusion does.
+            return false;
+        }
+        if bounds.is_some_and(|(lo, hi)| !lo.is_finite() || !hi.is_finite() || lo.cmpgt(hi).any()) {
+            return false;
+        }
+        for vertex in &out[mark.cpu..] {
+            let position = glam::Vec3::from_array(vertex.pos);
+            if !position.is_finite() {
+                return false;
+            }
+            bounds = Some(match bounds {
+                Some((lo, hi)) => (lo.min(position), hi.max(position)),
+                None => (position, position),
+            });
+        }
+        let Some((lo, hi)) = bounds else {
+            return false;
+        };
+        // The ordinary mob path's half-block margin, now around the actual pose.
+        if view.intersects(lo - 0.5, hi + 0.5) {
+            return false;
+        }
+        out.truncate(mark.cpu);
+        self.skin_frame.borrow_mut().truncate(mark.skin);
+        self.entity_spans.borrow_mut().truncate(mark.spans);
+        self.entity_motion.borrow_mut().truncate(mark.motion);
+        self.rendered_mobs
+            .set(self.rendered_mobs.get().saturating_sub(1));
+        self.skin_downloads.borrow_mut().finish_draw(false);
+        true
+    }
+
     /// Culls one entity's vertices from `entity_start`, counting what it drew
     /// on the GPU path by the corners of `skinned`'s bounds; a culled entity's
     /// posed draws since `skinned`'s mark are taken back.
@@ -7027,6 +7105,12 @@ impl Game<'_> {
             // ClientMannequin uses AvatarRenderer's equipment layers too. Keep
             // player-only distance, culling and native identity checks separate.
             let avatar_equipment = is_player || &*mob.kind.id == "minecraft:mannequin";
+            let posed_avatar = avatar_equipment
+                && mob.emote.as_ref().is_some_and(|playing| {
+                    playing
+                        .at(mob.age as f32 + alpha as f32)
+                        .is_some_and(|(_, weight)| weight > 0.0)
+                });
             let d = glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z) - camera;
             // Entity.shouldRenderAtSqrDistance: 64 times the bounding box's
             // mean edge, scaled by the view scale. RemotePlayer's box counts
@@ -7042,6 +7126,7 @@ impl Game<'_> {
             // grown by 0.5 (GuardianRenderer also draws while its beam is out).
             if let Some(view) = &self.view_frustum
                 && beam.is_none()
+                && !posed_avatar
             {
                 let (lo, hi) = super::entity_culling::cull_box(mob, alpha);
                 let (lo, hi) = (
@@ -7064,6 +7149,7 @@ impl Game<'_> {
             let culling = if PRECHECK
                 && outline.is_none()
                 && !is_player
+                && !posed_avatar
                 && mob.kind.id.starts_with("minecraft:")
                 && [
                     &mob.extra.head,
@@ -7084,12 +7170,20 @@ impl Game<'_> {
             if culling.hides_entity() {
                 continue;
             }
-            let skin_jobs = self.skin_frame.borrow().mark().0;
+            let skin_mark = self.skin_frame.borrow().mark();
+            let skin_jobs = skin_mark.0;
             self.skin_downloads.borrow_mut().begin_draw();
             if avatar_equipment {
                 self.request_avatar_skin(mob, false);
             }
             let entity_start = out.len();
+            let posed_mark =
+                (posed_avatar && self.view_frustum.is_some()).then(|| PosedAvatarMark {
+                    cpu: entity_start,
+                    skin: skin_mark,
+                    spans: self.entity_spans.borrow().len(),
+                    motion: self.entity_motion.borrow().len(),
+                });
             self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
@@ -7138,6 +7232,11 @@ impl Game<'_> {
                 !is_player && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
             };
             if modded {
+                if let Some(mark) = posed_mark
+                    && self.cull_posed_avatar_frustum(out, mark, None)
+                {
+                    continue;
+                }
                 if let Some(skin) = &mob.skin {
                     self.mark_skin_used(skin);
                 }
@@ -7332,6 +7431,11 @@ impl Game<'_> {
                 self.mob_block_geometry(mob, camera, alpha, packed, skin, out);
                 // `native_mob_layer`: a native mod's layer, over the vanilla ones.
                 self.mod_mob_layer_geometry(mob, who, alpha as f32, camera, packed, out);
+            }
+            if let Some(mark) = posed_mark
+                && self.cull_posed_avatar_frustum(out, mark, skinned.and_then(|(_, bounds)| bounds))
+            {
+                continue;
             }
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);

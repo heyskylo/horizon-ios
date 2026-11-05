@@ -85,6 +85,44 @@ def verify_crouch(rows):
         assert row["wingMatches"], f"wing attachment used sneak flag instead of visual pose: {row}"
         assert row["previewMatches"], f"preview used sneak flag instead of visual pose: {row}"
 
+def verify_emotes(rows):
+    assert len(rows) == 8, len(rows)
+    assert {(r['kind'], r['gear']) for r in rows} == {
+        (kind, gear) for kind in ['minecraft:player', 'minecraft:mannequin']
+        for gear in ['none', 'helmet', 'cape', 'elytra']
+    }
+    for row in rows:
+        assert row['vanillaVertices'] > 0 and row['activeVertices'] > 0, row
+        assert len(row['inactive']) == 3, row
+        for case in row['inactive']:
+            assert case['vertices'] > 0 and case['matchesVanilla'], (row, case)
+        assert row['shiftedOnce'], f'body/equipment emote root was lost or applied twice: {row}'
+        assert row['posedTop'] > row['slice'] > row['staticTop'], row
+        assert row['intersectingVertices'] == row['activeVertices'], f'posed avatar was frustum-culled: {row}'
+        assert row['outsideVertices'] == 0, f'outside emote bypassed frustum culling: {row}'
+        assert row['inactiveFrustumVertices'] == [0, 0, 0], f'inactive emote changed vanilla culling: {row}'
+        if row['gear'] == 'elytra':
+            controls = row['affineControls']
+            assert len(controls) == 2 and {c['scale'] for c in controls} == {1.0, 2.0}, row
+            for control in controls:
+                assert control['baselineVertices'] == control['posedVertices'] == 48, control
+                assert control['sameUV'] and control['onceError'] < 2e-5, control
+                assert control['baselineError'] > 0.1 and control['twiceError'] > 0.1, control
+
+
+def verify_emote_visibility(rows):
+    assert len(rows) == 4, rows
+    assert {(row['preference'], row['path']) for row in rows} == {
+        (preference, path) for preference in ['Hidden', 'NameTags']
+        for path in ['frame_without_tick', 'tick_without_frame']
+    }, rows
+    for row in rows:
+        assert row['localLoopStarted'], row
+        assert row['worldEmotesCleared'], row
+        assert row['ownEmotePreserved'], row
+        assert row['worldAges'] == [10, 10], row
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path)
@@ -104,7 +142,8 @@ def main():
         with (args.output / 'run.log').open('w') as log:
             run_game([str(binary), '--headless', '--game-dir', str(game_dir),
                       '--resources', str(lab.RESOURCES)], cwd=game_dir,
-                     env=lab.game_env(HORIZON_AVATAR_EQUIPMENT_FIXTURE=args.output.resolve()),
+                     env=lab.game_env(HORIZON_AVATAR_EQUIPMENT_FIXTURE=args.output.resolve(),
+                                      HORIZON_COSMETICS="1", HORIZON_COSMETICS_LOCAL=game_dir / "cosmetics-local"),
                      stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
     rows = json.loads((args.output / 'rust.json').read_text())
     if args.capture_only:
@@ -113,7 +152,9 @@ def main():
         verify(rows)
         crouch = json.loads((args.output / 'crouch.json').read_text())
         verify_crouch(crouch)
-        print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases and 4 visual-crouch cases passed')
+        verify_emotes(json.loads((args.output / 'emotes.json').read_text()))
+        verify_emote_visibility(json.loads((args.output / 'emote_visibility.json').read_text()))
+        print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases, 4 visual-crouch cases and 8 posed-emote/frustum cases passed')
 
 
 if __name__ == '__main__':

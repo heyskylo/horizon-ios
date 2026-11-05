@@ -335,3 +335,37 @@ fn horizon_players_come_with_the_same_request_as_what_they_wear() {
     assert!(!frame.horizon(3));
     assert_eq!(ids(frame.worn(3)), ["hat"]);
 }
+#[test]
+fn shutdown_closes_a_stalled_production_https_handshake_and_joins_the_fetcher() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (entered, started) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        // Receive the actual TLS ClientHello; deliberately send no ServerHello.
+        assert!(socket.read(&mut bytes).unwrap() > 0);
+        entered.send(()).unwrap();
+        assert_eq!(socket.read(&mut bytes).unwrap(), 0);
+    });
+    let mut client = Cosmetics::new(
+        Http::new(
+            &format!("https://localhost:{}", address.port()),
+            "controlled-test",
+        ),
+        None,
+    );
+    client.frame().worn(1);
+    started.recv_timeout(Duration::from_secs(3)).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while !client.shutdown() {
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    }
+    peer.join().unwrap();
+}

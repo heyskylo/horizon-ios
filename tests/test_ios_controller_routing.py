@@ -31,6 +31,7 @@ def program():
     code += r'''
 #[derive(Default)]struct Menu { armed:Option<Button> }
 #[derive(Default)]struct Pads {
+    owner_epoch: u64,
  devices:Devices,feed_source:Option<PadId>,device:Option<Device>,style:GlyphStyle,
  menu:Menu,connections:Vec<Connection>,
 }

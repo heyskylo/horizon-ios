@@ -1441,6 +1441,7 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
@@ -1565,6 +1566,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

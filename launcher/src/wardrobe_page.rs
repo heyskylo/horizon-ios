@@ -1,6 +1,7 @@
 //! The Wardrobe page (top bar, between Servers and Versions), in the glass look, shown when the
 //! cosmetics service has a founder set to show (`horizon_launcher::shop`, `watch_shop`), or with
-//! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items, a
+//! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items in 3D
+//! (`viewer`: drag to turn, scroll to zoom, a hovered card tries its item on), a
 //! row per slot, what the account owns for the chosen slot, the purchase history, one plain link
 //! to the website's shop ("Get more cosmetics on playhorizon.dev"; browsing, prices, buying and
 //! the founder claim are all there, never in the launcher, except "Claim for free" where Paddle
@@ -16,7 +17,7 @@ use super::*;
 use crate::glass_ui as ui;
 use gpui::RenderImage;
 use horizon_cosmetics::prefs::{self, Others, Prefs};
-use horizon_cosmetics::{preview, Item, Texture};
+use horizon_cosmetics::{Item, Slot, Texture};
 use horizon_launcher::wardrobe::{
     Catalogue, Change, ClaimState, Error, Saved, Service, Session, SHOP_URL,
 };
@@ -26,11 +27,9 @@ use std::sync::Arc;
 
 mod marks;
 mod purchases;
+mod viewer;
 pub(super) use marks::Marks;
-
-/// The still picture's size, in points.
-const W: f32 = 180.;
-const H: f32 = 264.;
+use viewer::{Outfit, Viewer};
 /// How long a line like "Equipped Founder Visor." stays.
 const TOAST: Duration = Duration::from_secs(4);
 
@@ -63,14 +62,19 @@ pub(super) struct Wardrobe {
     saved: Saved,
     items: HashMap<String, Arc<Item>>,
     session: Option<Arc<Session>>,
-    skin: Option<(Texture, bool)>,
+    /// The skin and whether its arms are slim.
+    skin: Option<(Arc<Texture>, bool)>,
     status: Status,
     busy: bool,
     slot: &'static str,
-    /// Quarter turns of the picture.
-    turn: u8,
-    /// The picture, baked at (window scale, turn, what is worn).
-    seen: Option<(f32, u8, Vec<String>, Arc<RenderImage>)>,
+    /// The card under the pointer: its slot and item (None: "Nothing"), tried on in the view.
+    hover: Option<(&'static str, Option<String>)>,
+    /// The player in 3D, made on the first draw of the page.
+    viewer: Option<gpui::Entity<Viewer>>,
+    /// The outfit last handed to the viewer.
+    shown: Option<Outfit>,
+    /// The pointer turns the view (pressed in it, not let go yet).
+    dragging: bool,
     toast: Option<(String, Instant)>,
 }
 
@@ -98,18 +102,18 @@ fn game_language() -> &'static str {
 
 /// The account's skin as the preview takes it: from the profile heads' cache, 64×64 only (older
 /// 64×32 skins and missing ones show a plain figure).
-fn skin(account: &account::Account) -> Option<(Texture, bool)> {
+fn skin(account: &account::Account) -> Option<(Arc<Texture>, bool)> {
     let (url, model) = account.skin.as_ref()?;
     let png =
         horizon_launcher::heads::cached_skin(url, &backend::data_dir().join("profile-heads"))?;
     let image = image::load_from_memory(&png).ok()?.to_rgba8();
     (image.dimensions() == (64, 64)).then(|| {
         (
-            Texture {
+            Arc::new(Texture {
                 width: 64,
                 height: 64,
                 rgba: image.into_raw(),
-            },
+            }),
             model == "slim",
         )
     })
@@ -135,6 +139,21 @@ fn plain() -> Texture {
         height: 64,
         rgba,
     }
+}
+
+/// What the view shows: each slot's item, the hovered card's choice in its own slot.
+fn worn_ids(
+    equipped: &std::collections::BTreeMap<String, String>,
+    hover: Option<&(&'static str, Option<String>)>,
+) -> Vec<String> {
+    let mut worn = equipped.clone();
+    if let Some((slot, item)) = hover {
+        match item {
+            Some(id) => worn.insert((*slot).to_owned(), id.clone()),
+            None => worn.remove(*slot),
+        };
+    }
+    worn.into_values().collect()
 }
 
 /// The item files the catalogue names, kept or fetched (a missing one is left out).
@@ -257,9 +276,11 @@ impl Launcher {
         }
         let keep = self.wardrobe.take().filter(|w| w.uuid == account.uuid);
         let saved = Saved::load(&dir(), &account.uuid);
-        let (slot, turn) = keep.as_ref().map_or(("head", 0), |w| (w.slot, w.turn));
+        let slot = keep.as_ref().map_or("head", |w| w.slot);
         // A session still live from the last visit is reused by the refresh.
         let session = keep.as_ref().and_then(|w| w.session.clone());
+        // The view keeps its camera from the last visit.
+        let viewer = keep.as_ref().and_then(|w| w.viewer.clone());
         self.wardrobe = Some(Wardrobe {
             uuid: account.uuid.clone(),
             saved: saved.clone(),
@@ -269,8 +290,10 @@ impl Launcher {
             status: Status::Loading,
             busy: true,
             slot,
-            turn,
-            seen: None,
+            hover: None,
+            viewer,
+            shown: None,
+            dragging: false,
             toast: None,
         });
         let task = cx.background_executor().spawn(async move {
@@ -439,7 +462,6 @@ impl Launcher {
         if let Err(e) = w.saved.save(&dir(), &w.uuid) {
             eprintln!("Horizon: the outfit is not saved: {e}");
         }
-        w.seen = None;
         self.restyle = true;
         let Some(w) = self.wardrobe.as_mut() else {
             return;
@@ -565,6 +587,7 @@ impl Launcher {
             horizon_cosmetics::Slot::Torso => "torso",
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
+            horizon_cosmetics::Slot::Emote => "emote",
         };
         let state = std::env::var("HORIZON_WARDROBE_STATE").unwrap_or_default();
         let mut equipped = std::collections::BTreeMap::new();
@@ -665,50 +688,45 @@ impl Launcher {
             },
             busy: false,
             slot: "head",
-            turn: 0,
-            seen: None,
+            hover: None,
+            viewer: None,
+            shown: None,
+            dragging: false,
             toast: None,
         });
         self.wardrobe_reload = false;
         self.restyle = true;
     }
 
-    /// The account's skin wearing what it wears now, baked once per change.
-    fn wardrobe_picture(&mut self) -> Option<Arc<RenderImage>> {
-        let scale = self.scale;
+    /// The player in 3D, handed what it wears now (with the hovered card's item tried on) when
+    /// that changed: after this frame, so that the page never reads the view while it renders.
+    fn wardrobe_dress(&mut self, cx: &mut Context<Self>) -> Option<gpui::Entity<Viewer>> {
+        static PLAIN: std::sync::LazyLock<Arc<Texture>> =
+            std::sync::LazyLock::new(|| Arc::new(plain()));
         let w = self.wardrobe.as_mut()?;
         let me = w.saved.me.as_ref()?;
-        let worn: Vec<String> = me.equipped.values().cloned().collect();
-        if let Some((s, turn, seen, image)) = &w.seen {
-            if *s == scale && *turn == w.turn && *seen == worn {
-                return Some(image.clone());
-            }
-        }
-        let fallback = plain();
-        let (texture, slim) = match &w.skin {
-            Some((t, slim)) => (t, *slim),
-            None => (&fallback, false),
-        };
-        let body = preview::player_model(slim);
-        let mut draws = vec![preview::Draw {
-            root: &body,
-            base: Default::default(),
-            texture,
-            poses: Vec::new(),
-        }];
-        draws.extend(
-            worn.iter()
+        let viewer = w
+            .viewer
+            .get_or_insert_with(|| cx.new(|_| Viewer::new()))
+            .clone();
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (PLAIN.clone(), false));
+        let outfit = Outfit {
+            skin,
+            slim,
+            items: worn_ids(&me.equipped, w.hover.as_ref())
+                .iter()
                 .filter_map(|id| w.items.get(id))
-                .flat_map(|item| preview::Draw::item(item, &body, 0.0)),
-        );
-        let (pw, ph) = ((W * scale) as u32, (H * scale) as u32);
-        // Degrees: a little turned, then a quarter more per click.
-        let yaw = 30. + 90. * f32::from(w.turn);
-        let image = preview::render(&draws, pw, ph, yaw, 10.);
-        let texels: Vec<[u8; 4]> = image.rgba.as_chunks::<4>().0.to_vec();
-        let baked = art::bake(&texels, pw as usize, ph as usize, 1. / scale, scale);
-        w.seen = Some((scale, w.turn, worn, baked.clone()));
-        Some(baked)
+                .filter(|i| i.slot != Slot::NameTag)
+                .cloned()
+                .collect(),
+        };
+        if w.shown.as_ref() != Some(&outfit) {
+            w.shown = Some(outfit.clone());
+            let motion = crate::sky::motion() != crate::sky::Motion::Still;
+            let to = viewer.clone();
+            cx.defer(move |cx| to.update(cx, |v, cx| v.dress(outfit, motion, cx)));
+        }
+        Some(viewer)
     }
 
     /// A name tag style's mark (`Marks` keeps it).
@@ -784,7 +802,7 @@ impl Launcher {
                     .child(sign_in),
             );
         }
-        let picture = self.wardrobe_picture();
+        let viewer = self.wardrobe_dress(cx);
         let Some(w) = self.wardrobe.as_ref() else {
             return page;
         };
@@ -810,7 +828,7 @@ impl Launcher {
                             .gap(px(8.))
                             .children((0..SLOTS.len()).map(|_| skeleton(52.))),
                     )
-                    .child(div().flex_1().child(skeleton(H + 80.))),
+                    .child(div().flex_1().child(skeleton(viewer::H + 80.))),
             );
         };
         let lang = game_language();
@@ -859,6 +877,7 @@ impl Launcher {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if let Some(w) = &mut this.wardrobe {
                             w.slot = slot;
+                            w.hover = None;
                         }
                         cx.notify();
                     })),
@@ -910,31 +929,37 @@ impl Launcher {
             )
             .children(mark.map(|m| gpui::img(m).size(px(16.))))
             .when_some(line, |d, c| d.border_b_2().border_color(c));
-        let turn = button("wardrobe-turn", "Turn", Kind::Ghost, &t).on_click(cx.listener(
+        let reset = button("wardrobe-reset", "Reset view", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
-                if let Some(w) = &mut this.wardrobe {
-                    w.turn = (w.turn + 1) % 4;
+                if let Some(v) = this.wardrobe.as_ref().and_then(|w| w.viewer.clone()) {
+                    v.update(cx, |v, cx| v.reset(cx));
                 }
-                cx.notify();
             },
         ));
-        let player = glass::plate(radius::PANEL)
+        let controls = div()
             .flex()
-            .flex_col()
             .items_center()
-            .justify_center()
-            .gap(px(10.))
-            .flex_1()
-            .min_w(px(240.))
-            .p(px(20.))
-            .child(name_tag)
+            .gap(px(12.))
             .child(
-                div()
-                    .w(px(W))
-                    .h(px(H))
-                    .children(picture.map(|i| gpui::img(i).w(px(W)).h(px(H)))),
+                ui::text(12., FontWeight::NORMAL, ink::NOTE)
+                    .child(tr("Drag to turn, scroll to zoom.")),
             )
-            .child(turn);
+            .child(reset);
+        let player =
+            glass::plate(radius::PANEL)
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(10.))
+                .flex_1()
+                .min_w(px(240.))
+                .p(px(20.))
+                .child(name_tag)
+                .child(div().w(px(viewer::W)).h(px(viewer::H)).children(
+                    viewer.map(|v| viewer::frame(v, w.dragging, Self::wardrobe_drag(cx))),
+                ))
+                .child(controls);
         // What the account owns for the chosen slot, "Nothing" first.
         let slot = w.slot;
         let label = SLOTS.iter().find(|(s, _)| *s == slot).map_or("", |s| s.1);
@@ -974,6 +999,7 @@ impl Launcher {
                 tr("Take it off").into(),
                 wearing.is_none(),
             )
+            .on_hover(Self::wardrobe_try_on(slot, None, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.wardrobe_change(
                     Change::Equip {
@@ -1003,6 +1029,7 @@ impl Launcher {
                     under.into(),
                     on,
                 )
+                .on_hover(Self::wardrobe_try_on(slot, Some(e.id.clone()), cx))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.wardrobe_change(
                         Change::Equip {
@@ -1049,6 +1076,43 @@ impl Launcher {
                 ),
             )
         }))
+    }
+
+    /// Sets whether the pointer turns the view, for its hand.
+    fn wardrobe_drag(cx: &mut Context<Self>) -> impl Fn(bool, &mut App) + Clone + 'static {
+        let page = cx.entity().downgrade();
+        move |on, cx: &mut App| {
+            let _ = page.update(cx, |this, cx| {
+                if let Some(w) = this.wardrobe.as_mut().filter(|w| w.dragging != on) {
+                    w.dragging = on;
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    /// Hovering a card tries its item on in the view (None: takes the slot's off); leaving it
+    /// takes it back off.
+    fn wardrobe_try_on(
+        slot: &'static str,
+        item: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        let page = cx.entity().downgrade();
+        move |over: &bool, _: &mut Window, cx: &mut App| {
+            let _ = page.update(cx, |this, cx| {
+                let Some(w) = &mut this.wardrobe else {
+                    return;
+                };
+                let card = (slot, item.clone());
+                if *over {
+                    w.hover = Some(card);
+                } else if w.hover.as_ref() == Some(&card) {
+                    w.hover = None;
+                }
+                cx.notify();
+            });
+        }
     }
 
     /// Over the page: offline, a failure, or an account that owns nothing yet.
@@ -1226,5 +1290,32 @@ impl Launcher {
                     ..prefs
                 })),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hovered_card_tries_its_item_on_in_its_slot_only() {
+        let equipped: std::collections::BTreeMap<String, String> = [
+            ("head".to_owned(), "visor".to_owned()),
+            ("back".to_owned(), "pack".to_owned()),
+        ]
+        .into();
+        let mut worn = worn_ids(&equipped, None);
+        worn.sort();
+        assert_eq!(worn, ["pack", "visor"]);
+        // Another hat over the head: the visor gives way, the backpack stays.
+        let mut tried = worn_ids(&equipped, Some(&("head", Some("crown".to_owned()))));
+        tried.sort();
+        assert_eq!(tried, ["crown", "pack"]);
+        // "Nothing" for the back takes the backpack off.
+        assert_eq!(worn_ids(&equipped, Some(&("back", None))), ["visor"]);
+        // An empty slot gets the hovered item.
+        let mut pet = worn_ids(&equipped, Some(&("shoulder", Some("moth".to_owned()))));
+        pet.sort();
+        assert_eq!(pet, ["moth", "pack", "visor"]);
     }
 }

@@ -61,6 +61,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
+| `emote [ID\|stop]` | `emote` | Play one of the player's emotes, stop it, or list them | `id` (string): an owned emote's id, or stop |
 | `break X Y Z [--timeout S]` | `break` | Mine a block, holding the attack button until it breaks | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--timeout` (number): give up after this many seconds (default 30) |
 | `place X Y Z [--item ITEM]` | `place` | Place the held item (or ITEM from the hotbar) at an empty position | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--item` (string): hotbar item to select first |
 | `interact X Y Z [FACE]` | `interact` | Right-click a block: open a chest or crafting table, press a button, open a door | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`face` (down, up, north, south, west, east): which face to click |

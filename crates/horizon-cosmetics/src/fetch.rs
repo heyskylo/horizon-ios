@@ -37,6 +37,10 @@ pub type Worn = Arc<[Arc<Item>]>;
 pub trait Transport: Send + 'static {
     fn post(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String>;
     fn get(&self, path: &str) -> Result<Vec<u8>, String>;
+    /// Optional close-only cancellation for owned IO; existing transports remain compatible.
+    fn cancellation(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 }
 
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -71,6 +75,7 @@ struct Shared {
 pub struct Cosmetics {
     shared: Arc<Shared>,
     worker: Option<Box<dyn FnMut() + Send>>,
+    workers: crate::workers::Workers,
 }
 
 impl Cosmetics {
@@ -80,33 +85,31 @@ impl Cosmetics {
         let mut c = Self::manual(transport, cache, Arc::new(Instant::now));
         let mut work = c.worker.take().expect("worker");
         let shared = c.shared.clone();
-        let _ = std::thread::Builder::new()
-            .name("Cosmetics".into())
-            .spawn(move || {
-                loop {
-                    {
-                        let state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        let state = shared
-                            .wake
-                            .wait_while(state, |s| !s.stop && !ready(s, (shared.clock)()))
-                            .unwrap_or_else(PoisonError::into_inner);
-                        if state.stop {
-                            return;
-                        }
-                    }
-                    work();
-                    // A failure sets retry_at: sleep until then.
-                    let wait = {
-                        let s = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        s.retry_at
-                            .map(|t| t.saturating_duration_since((shared.clock)()))
-                    };
-                    if let Some(wait) = wait {
-                        let s = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        let _ = shared.wake.wait_timeout_while(s, wait, |s| !s.stop);
+        c.workers.spawn(move || {
+            loop {
+                {
+                    let state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let state = shared
+                        .wake
+                        .wait_while(state, |s| !s.stop && !ready(s, (shared.clock)()))
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if state.stop {
+                        return Ok(());
                     }
                 }
-            });
+                work();
+                // A failure sets retry_at: sleep until then.
+                let wait = {
+                    let s = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    s.retry_at
+                        .map(|t| t.saturating_duration_since((shared.clock)()))
+                };
+                if let Some(wait) = wait {
+                    let s = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let _ = shared.wake.wait_timeout_while(s, wait, |s| !s.stop);
+                }
+            }
+        });
         c
     }
 
@@ -118,6 +121,18 @@ impl Cosmetics {
             clock,
         });
         let inner = shared.clone();
+        let stop = shared.clone();
+        let cancel = transport.cancellation();
+        let workers = crate::workers::Workers::new(Some(Arc::new(move || {
+            stop.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stop = true;
+            stop.wake.notify_all();
+            if let Some(cancel) = &cancel {
+                cancel();
+            }
+        })));
         let mut saved = None;
         let worker: Box<dyn FnMut() + Send> = Box::new(move || {
             let saved = saved.get_or_insert_with(|| Saved::load(&cache));
@@ -126,7 +141,13 @@ impl Cosmetics {
         Self {
             shared,
             worker: Some(worker),
+            workers,
         }
+    }
+
+    /// Stop this client's IO and join only after its producer has finished.
+    pub fn shutdown(&mut self) -> bool {
+        self.workers.shutdown()
     }
 
     /// One frame's reads: lock once, ask `worn` for each player in view.
@@ -486,6 +507,7 @@ fn item(
 pub struct Http {
     agent: ureq::Agent,
     base: String,
+    cancellation: Arc<crate::transport::Cancellation>,
 }
 
 /// Answers are small; anything longer is refused.
@@ -494,17 +516,32 @@ const MAX_ANSWER: u64 = 1 << 20;
 impl Http {
     /// `base` without a trailing slash, e.g. `https://cosmetics.example`.
     pub fn new(base: &str, user_agent: &str) -> Self {
+        Self::managed(base, user_agent, Arc::default())
+    }
+
+    pub fn managed(
+        base: &str,
+        user_agent: &str,
+        cancellation: Arc<crate::transport::Cancellation>,
+    ) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
                 .timeout(Duration::from_secs(10))
                 .user_agent(user_agent)
+                .tls_connector(Arc::new(crate::transport::Connector::new(
+                    cancellation.clone(),
+                )))
                 .build(),
             base: base.trim_end_matches('/').to_owned(),
+            cancellation,
         }
     }
 
     pub(crate) fn agent(&self) -> &ureq::Agent {
         &self.agent
+    }
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancellation.cancelled()
     }
 
     pub(crate) fn base(&self) -> &str {
@@ -531,7 +568,14 @@ impl Http {
 }
 
 impl Transport for Http {
+    fn cancellation(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let cancellation = self.cancellation.clone();
+        Some(Arc::new(move || cancellation.cancel()))
+    }
     fn post(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+        if self.cancellation.cancelled() {
+            return Err("cosmetics request cancelled".into());
+        }
         let url = format!("{}{path}", self.base);
         Self::read(
             self.agent
@@ -542,6 +586,9 @@ impl Transport for Http {
     }
 
     fn get(&self, path: &str) -> Result<Vec<u8>, String> {
+        if self.cancellation.cancelled() {
+            return Err("cosmetics request cancelled".into());
+        }
         Self::read(self.agent.get(&format!("{}{path}", self.base)).call())
     }
 }
@@ -573,6 +620,7 @@ impl Local {
         for file in files {
             if let Some(item) = std::fs::read(&file).ok().and_then(|b| Item::parse(&b).ok())
                 && !slots.contains(&item.slot)
+                && item.slot != crate::Slot::Emote
                 && file.file_stem().is_some_and(|s| *s == *item.id)
             {
                 slots.push(item.slot);

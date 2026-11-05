@@ -1445,6 +1445,9 @@ pub struct Mob {
     /// `PlayerSkin.elytra`: a dedicated wing texture, independent of whether
     /// the player shows the cape model part.
     pub elytra: Option<String>,
+    /// A Horizon emote this player plays (docs/cosmetics.md), timed on `age`: it poses the bones
+    /// after the vanilla animation (`anim::setup`). Visual only.
+    pub emote: Option<horizon_cosmetics::Playing>,
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
@@ -1940,6 +1943,13 @@ pub enum MobEvent {
         table: &'static str,
         at: [f64; 3],
     },
+    /// A leave-block goal's sampled candidate, before neighbor-shape updates.
+    EndermanPlaceBlock {
+        mob: u32,
+        pos: [i32; 3],
+        carried: horizon_world::registry::BlockStateId,
+        occupants: Vec<horizon_core::geometry::Aabb>,
+    },
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
@@ -2207,6 +2217,8 @@ pub enum MobEvent {
         from: [f64; 3],
         to: [f64; 3],
         ticks: i32,
+        /// `VibrationSystem.User.getPositionSource`: the listener itself.
+        source: horizon_protocol::entity_data::PositionSource,
     },
     /// The crumbs of the block under a digging or emerging warden.
     DigParticles {
@@ -2281,6 +2293,8 @@ pub struct Seen {
     pub bounds: Aabb,
     pub eye_y: f64,
     pub alive: bool,
+    /// Entity removal at this mob snapshot, distinct from a dying body.
+    pub removed: bool,
     pub baby: bool,
     pub in_love: bool,
     pub tame: bool,
@@ -2495,6 +2509,7 @@ impl Mob {
             bounds: m.bounds(),
             eye_y: m.eye_y(),
             alive: m.alive(),
+            removed: m.removed,
             baby: m.is_baby(),
             // A villager is "in love" when it is willing to breed (`canBreed`).
             in_love: if villager {
@@ -3086,6 +3101,7 @@ impl Mob {
             skin_3d: None,
             cape: None,
             elytra: None,
+            emote: None,
             profile: None,
             random_textures: Default::default(),
             attrs: Attrs {

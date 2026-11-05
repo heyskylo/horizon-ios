@@ -259,6 +259,8 @@ impl Game<'_> {
             }
         };
         let mut view = self.view;
+        // An emote pulls the camera back from the player's face (`game/emotes.rs`).
+        let pull = self.emote_camera_pull(partial);
         let kind = match self.camera_type {
             CameraType::FirstPerson => horizon_client::camera::CameraType::FirstPerson,
             CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
@@ -287,7 +289,7 @@ impl Game<'_> {
             partial,
             kind,
             |distance| {
-                let mut distance = distance;
+                let mut distance = distance * pull;
                 self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
                 distance
             },
@@ -927,6 +929,13 @@ impl Game<'_> {
         let stack = m.extra.armor[1]
             .as_ref()
             .filter(|s| chest == Some(&*s.item));
+        let mut base = horizon_client::mobs::render::base_transform(m, partial, camera);
+        if chest.is_some()
+            && let Some(delta) =
+                horizon_client::mobs::render::emote_body_delta(m, partial, self.res.mob_data())
+        {
+            base *= delta;
+        }
         self.wings_geometry(
             chest,
             stack,
@@ -937,7 +946,7 @@ impl Game<'_> {
                 |location| self.gui.atlas.sprites.contains_key(location),
             ),
             false,
-            horizon_client::mobs::render::base_transform(m, partial, camera),
+            base,
             m.extra.elytra.angles(partial),
             m.visual_crouching(),
             light,

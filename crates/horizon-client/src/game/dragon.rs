@@ -557,7 +557,7 @@ impl Dragon {
     fn down(&self) -> bool {
         matches!(self.phase, Phase::Dying { .. }) || !self.alive()
     }
-    fn part_box(&self, i: usize) -> Aabb {
+    pub(super) fn part_box(&self, i: usize) -> Aabb {
         let (w, h) = PART_SIZES[i];
         let p = self.parts[i].0;
         Aabb::new(

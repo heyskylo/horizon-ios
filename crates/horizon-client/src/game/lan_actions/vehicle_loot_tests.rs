@@ -19,7 +19,7 @@ const ADV: &str = "test:boat_loot";
 const TABLE: &str = "minecraft:chests/simple_dungeon";
 const KEY: (i32, i32, i32) = (i32::MAX - 15, super::super::minecarts::CART_KEY_Y, 100);
 
-fn fixture() -> (Game<'static>, LanHost) {
+pub(in crate::game) fn fixture() -> (Game<'static>, LanHost) {
     let root = std::path::PathBuf::from(
         std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"),
     );

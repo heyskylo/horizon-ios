@@ -212,11 +212,15 @@ fn agent() -> ureq::Agent {
 
 /// The discovery document, fetched once per game (a failure is retried next time).
 pub(crate) fn discovery() -> Result<Arc<serde_json::Value>, JoinError> {
+    discovery_with_agent(&agent())
+}
+
+fn discovery_with_agent(agent: &ureq::Agent) -> Result<Arc<serde_json::Value>, JoinError> {
     static CACHE: Mutex<Option<Arc<serde_json::Value>>> = Mutex::new(None);
     if let Some(d) = CACHE.lock().unwrap().clone() {
         return Ok(d);
     }
-    let doc: serde_json::Value = agent()
+    let doc: serde_json::Value = agent
         .get(&discovery_url())
         .call()
         .inspect_err(|e| log::warn!("The services discovery document: {e}"))
@@ -313,9 +317,42 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
 }
 
 fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
-    let doc = discovery()?;
+    join_server_with_agent(session, server_hash, &agent())
+}
+
+/// The cosmetics owner's close-only transport covers discovery, TLS handshakes,
+/// join, and response reads. Ordinary auth callers keep their original agent.
+pub fn join_server_managed(
+    session: &AuthSession,
+    server_hash: &str,
+    cancellation: Arc<horizon_cosmetics::transport::Cancellation>,
+) -> Result<(), JoinError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+        .tls_connector(Arc::new(horizon_cosmetics::transport::Connector::new(
+            cancellation.clone(),
+        )))
+        .build();
+    with_one_retry(
+        || {
+            if cancellation.cancelled() {
+                return Err(JoinError::Unavailable);
+            }
+            join_server_with_agent(session, server_hash, &agent)
+        },
+        Duration::from_millis(500),
+    )
+}
+
+fn join_server_with_agent(
+    session: &AuthSession,
+    server_hash: &str,
+    agent: &ureq::Agent,
+) -> Result<(), JoinError> {
+    let doc = discovery_with_agent(agent)?;
     let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
-    match agent()
+    match agent
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
         .send_string(&join_request(session, server_hash))

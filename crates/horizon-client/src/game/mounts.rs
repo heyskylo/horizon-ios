@@ -17,6 +17,19 @@ use horizon_core::{
     random::RandomSource,
 };
 
+/// `ItemStack.hurtAndConvertOnBreak`: the stack after `wear` more damage, or -
+/// when that wear breaks it - the copy it leaves behind
+/// (`transmuteCopyIgnoreEmpty`: the components carry over, and a damageable
+/// copy starts whole). None while it still holds, so the caller adds the wear.
+fn stick_on_break(stack: &ItemStack, wear: u32, max: u32) -> Option<ItemStack> {
+    if max == 0 || stack.damage + wear < max {
+        return None;
+    }
+    let mut rod = stack.transmute("minecraft:fishing_rod", 1);
+    rod.damage = 0;
+    Some(rod)
+}
+
 fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
     let item = match species {
         Species::Pig => "minecraft:carrot_on_a_stick",
@@ -209,25 +222,45 @@ impl Game<'_> {
             return false;
         }
         if !self.creative
-            && let Some(stack) = self.inventory[self.selected].clone()
+            && let Some(mut stack) = self.held().cloned()
         {
-            self.trigger_item_durability(&stack, stack.damage + wear);
-            if let Some(stack) = self.inventory[self.selected].as_mut() {
-                stack.damage += wear;
-                let max = self
-                    .res
-                    .items()
-                    .get(&stack.item)
-                    .map_or(25, |i| i.max_damage);
-                if stack.damage >= max {
-                    let broken = stack.clone();
-                    self.inventory[self.selected] =
-                        Some(ItemStack::new("minecraft:fishing_rod", 1));
-                    // ItemStack.hurtAndBreak: onEquippedItemBroken, then the replacement.
-                    self.player_equipment_broke(
-                        horizon_world::player_inventory::EquipmentSlot::MainHand,
-                        &broken,
-                    );
+            let prototype = self
+                .res
+                .items()
+                .get(&stack.item)
+                .map_or(0, |i| i.max_damage);
+            let max = stack.max_damage(prototype);
+            let damageable = max > 0
+                && stack.data().is_none_or(|data| {
+                    data.other("!minecraft:damage").is_none()
+                        && data.other("minecraft:unbreakable").is_none()
+                });
+            if damageable {
+                stack.damage = stack.damage_value(prototype);
+                // Unbreaking and the native damage hook run only for a
+                // damageable stack, and the criterion hears the used hand.
+                let wear = self.wear(&stack, wear);
+                if wear > 0 {
+                    match stick_on_break(&stack, wear, max) {
+                        Some(rod) => {
+                            self.award_stat("broken", &stack.item, 1);
+                            let slot = match self.hand {
+                                horizon_client::first_person::Hand::Main => {
+                                    horizon_world::player_inventory::EquipmentSlot::MainHand
+                                }
+                                horizon_client::first_person::Hand::Off => {
+                                    horizon_world::player_inventory::EquipmentSlot::OffHand
+                                }
+                            };
+                            self.player_equipment_broke(slot, &stack);
+                            *self.held_mut() = Some(rod);
+                        }
+                        None => {
+                            if let Some(held) = self.held_mut().as_mut() {
+                                held.damage = stack.damage + wear;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1132,6 +1165,33 @@ mod tests {
         ))
     }
 
+    /// `ItemStack.hurtAndConvertOnBreak`: the seven points a pig's boost
+    /// wears break a carrot on a stick at 25, and what it leaves is a fishing
+    /// rod that kept the stick's components - not a fresh plain rod.
+    #[test]
+    fn a_steering_stick_that_breaks_leaves_a_fishing_rod() {
+        let mut stick = ItemStack::new("minecraft:carrot_on_a_stick", 1);
+        stick.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Old Nag".into()));
+        // One point short of the break: the caller wears it and it holds.
+        stick.damage = 17;
+        assert!(stick_on_break(&stick, 7, 25).is_none());
+        // 18 + 7 is the break: the rod it leaves is whole and keeps the name.
+        stick.damage = 18;
+        let rod = stick_on_break(&stick, 7, 25).expect("the wear breaks it");
+        assert_eq!(&*rod.item, "minecraft:fishing_rod");
+        assert_eq!(rod.count, 1);
+        assert_eq!(rod.damage, 0, "the rod starts whole");
+        assert_eq!(
+            rod.custom_name().as_deref(),
+            Some("Old Nag"),
+            "the components carry over"
+        );
+        // Wear Unbreaking took away breaks nothing, and a stack with no
+        // durability at all never breaks.
+        assert!(stick_on_break(&stick, 0, 25).is_none());
+        assert!(stick_on_break(&stick, 25, 0).is_none());
+    }
+
     /// `handlePlayerCommand` START_RIDING_JUMP reaches the ridden vehicle's
     /// `handleStartJump`: a saddled horse rears, slides on the rider's keys and
     /// its jump sound is played at 0.4; a donkey and a mule have their own
@@ -1390,5 +1450,174 @@ mod tests {
         // Facing west of south: the corner of the square.
         let v = escape_vector(0.9, 0.6, 45.0);
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
+    }
+}
+
+#[cfg(test)]
+mod steering_native_component_tests {
+    use super::*;
+    use horizon_client::{
+        advancements::{Advancement, Criterion, Rewards, Tree},
+        first_person::Hand,
+        mobs::Mob,
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn boosting_uses_the_used_hands_effective_components_and_native_break_slot() {
+        let (mut game, mut host) = crate::game::lan_actions::vehicle_loot_tests::fixture();
+        let mut tree = Tree::default();
+        tree.list.push(Advancement {
+            id: "test:steering_wear".into(),
+            parent: None,
+            display: None,
+            criteria: vec![Criterion {
+                name: "wear".into(),
+                trigger: "minecraft:item_durability_changed".into(),
+                conditions: serde_json::json!({"item":{"items":"minecraft:carrot_on_a_stick"}})
+                    .into(),
+            }],
+            requirements: vec![vec!["wear".into()]],
+            rewards: Rewards::default(),
+        });
+        tree.by_id.insert("test:steering_wear".into(), 0);
+        tree.by_trigger
+            .insert("minecraft:item_durability_changed".into(), vec![(0, 0)]);
+        game.adv.tree = Arc::new(tree);
+        game.adv.loaded = true;
+        game.adv.quiet = true;
+        let pig_type = game.res.mob_types()["minecraft:pig"].clone();
+        let mut failures = Vec::new();
+        for hand in [Hand::Main, Hand::Off] {
+            for (
+                case,
+                damage,
+                maximum,
+                remove_damage,
+                unbreakable,
+                rod,
+                expected_damage,
+                expected_max,
+                wears,
+            ) in [
+                ("default17", 17, None, false, false, false, 24, 25, true),
+                ("default18", 18, None, false, false, true, 0, 64, true),
+                ("max10", 3, Some(10), false, false, true, 0, 10, true),
+                ("max40", 18, Some(40), false, false, false, 25, 40, true),
+                ("removed_max", 0, Some(0), false, false, false, 0, 0, false),
+                ("removed_damage", 0, None, true, false, false, 0, 25, false),
+                ("unbreakable", 18, None, false, true, false, 18, 25, false),
+            ] {
+                let mut stick = ItemStack::new("minecraft:carrot_on_a_stick", 1);
+                stick.damage = damage;
+                let data = stick.data_mut();
+                data.custom_name = Some(Tag::String("Stick".into()));
+                if let Some(maximum) = maximum {
+                    data.other.push((
+                        if maximum == 0 {
+                            "!minecraft:max_damage"
+                        } else {
+                            "minecraft:max_damage"
+                        }
+                        .into(),
+                        Tag::Int(maximum),
+                    ));
+                }
+                if remove_damage {
+                    data.other.push((
+                        "!minecraft:damage".into(),
+                        Tag::Compound(Default::default()),
+                    ));
+                }
+                if unbreakable {
+                    data.other.push((
+                        "minecraft:unbreakable".into(),
+                        Tag::Compound(Default::default()),
+                    ));
+                }
+                let mut pig = Mob::new(700, pig_type.clone(), Vec3::new(8.5, 65.0, 8.5), 0.0);
+                pig.extra.saddled = true;
+                game.mobs.clear();
+                game.mobs.push(pig);
+                let driver = &mut host.hub.guests[0];
+                driver.vehicle = Some(700);
+                driver.loaded = true;
+                driver.load_timeout = 0;
+                driver.inventory[0] = Some(ItemStack::new("minecraft:stone", 4));
+                driver.offhand = Some(ItemStack::new("minecraft:stone", 4));
+                if hand == Hand::Main {
+                    driver.inventory[0] = Some(stick);
+                } else {
+                    driver.offhand = Some(stick);
+                }
+                let (left, other, events, broken, criterion, used) = game
+                    .as_guest(&mut host, 1, |g| {
+                        g.adv.progress = Default::default();
+                        g.guest_equipment_breaks.clear();
+                        let before = g.stats.get("broken", "minecraft:carrot_on_a_stick");
+                        g.guest_use = Some(crate::game::GuestUse::Item(hand));
+                        g.forced_hit = None;
+                        g.tick_hit = None;
+                        g.use_failed = false;
+                        g.use_delay = 0;
+                        let used = g.use_item().unwrap();
+                        let left = if hand == Hand::Main {
+                            g.inventory[0].clone()
+                        } else {
+                            g.offhand.clone()
+                        }
+                        .unwrap();
+                        let other = if hand == Hand::Main {
+                            g.offhand.clone()
+                        } else {
+                            g.inventory[0].clone()
+                        }
+                        .unwrap();
+                        let events = g
+                            .guest_equipment_breaks
+                            .iter()
+                            .map(|(event, _)| *event)
+                            .collect::<Vec<_>>();
+                        (
+                            left,
+                            other,
+                            events,
+                            g.stats.get("broken", "minecraft:carrot_on_a_stick") - before,
+                            g.adv.progress.has("test:steering_wear", "wear"),
+                            used,
+                        )
+                    })
+                    .unwrap();
+                let item = if rod {
+                    "minecraft:fishing_rod"
+                } else {
+                    "minecraft:carrot_on_a_stick"
+                };
+                let default = game.res.items().get(&left.item).map_or(0, |i| i.max_damage);
+                let wanted_events = if rod {
+                    vec![if hand == Hand::Main { 47 } else { 48 }]
+                } else {
+                    vec![]
+                };
+                let okay = &*left.item == item
+                    && left.damage == expected_damage
+                    && left.max_damage(default) == expected_max
+                    && left.count == 1
+                    && left.custom_name().as_deref() == Some("Stick")
+                    && &*other.item == "minecraft:stone"
+                    && other.count == 4
+                    && other.damage == 0
+                    && events == wanted_events
+                    && broken == i32::from(rod)
+                    && criterion == wears
+                    && used == Some(hand);
+                if !okay {
+                    failures.push(format!("{hand:?}/{case}: left={left:?} other={other:?} events={events:?} broken={broken} criterion={criterion} used={used:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

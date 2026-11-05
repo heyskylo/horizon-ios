@@ -1227,6 +1227,7 @@ dependencies = [
  "chrono",
  "flate2",
  "fs4",
+ "getrandom 0.3.4",
  "glam",
  "horizon-anticheat",
  "horizon-assets",
@@ -1237,6 +1238,7 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-friends",
  "horizon-hdr",
  "horizon-ios-launcher",
@@ -1360,6 +1362,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
