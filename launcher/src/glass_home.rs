@@ -764,6 +764,8 @@ impl Launcher {
     fn glass_join_friend(&self, tag: &str, wide: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let focused = self.friend_focused;
+        let join_label = tr("Join");
+        let pr = friend_code_padding_right(join_label);
         let field = div()
             .id("friend-code")
             .track_focus(&self.friend_focus)
@@ -771,7 +773,7 @@ impl Launcher {
             .items_center()
             .size_full()
             .pl(px(48.))
-            .pr(px(84.))
+            .pr(px(pr))
             .rounded(px(radius::LARGE))
             .bg(white(if focused { 0.09 } else { 0.06 }))
             .font_family(horizon_theme::glass::FONT)
@@ -808,7 +810,7 @@ impl Launcher {
         let field = line_edit::mouse(field, cx, |this| &mut this.friend_code);
         let valid = horizon_friends::invite::parse(self.friend_code.text()).is_some();
         let can = valid && (tag.is_empty() || self.can_start(tag));
-        let join = ui::quiet("join-friend", tr("Join"), 40., &t);
+        let join = ui::quiet("join-friend", join_label, 40., &t);
         let join = if can {
             join.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.join_friend();
@@ -817,9 +819,10 @@ impl Launcher {
         } else {
             join.opacity(0.4).cursor_default()
         };
+        let wide_w = 340. + (pr - 84.);
         div()
             .relative()
-            .when(wide, |d| d.flex_none().w(px(340.)))
+            .when(wide, |d| d.flex_none().w(px(wide_w)))
             .when(!wide, |d| d.flex_1().min_w(px(150.)))
             .h(px(TALL))
             .child(field)
@@ -832,6 +835,15 @@ impl Launcher {
             )
             .child(div().absolute().right(px(8.)).top(px(8.)).child(join))
     }
+}
+
+/// Right padding for the invite code text field. In English ("Join"), the button is ~58 px wide,
+/// so 84 px leaves a clean margin from the button placed at right: 8 px. In locales with longer
+/// labels (French "Rejoindre", German "Beitreten", Ukrainian "Приєднатися"), the button is wider;
+/// expand the field's padding so the button never overlaps the entered text or placeholder (#9507).
+fn friend_code_padding_right(join_label: &str) -> f32 {
+    let btn_width = 28. + (join_label.chars().count() as f32 * 8.5).max(30.);
+    (8. + btn_width + 12.).max(84.)
 }
 
 /// The instance of one edition (`java`) an edition tab goes to: of those the player can select,
@@ -957,5 +969,26 @@ mod tests {
         assert_eq!(since(m(20 * 60), 1, "2026-11-02"), "20 hours ago");
         assert_eq!(since(m(30 * 60), 1, "2026-11-02"), "yesterday");
         assert_eq!(since(m(3 * 24 * 60), 3, "2026-10-31"), "Oct 31");
+    }
+
+    #[test]
+    fn friend_code_padding_right_clears_localized_join_button() {
+        for label in [
+            "Join",
+            "Rejoindre",
+            "Beitreten",
+            "Приєднатися",
+            "Unirse",
+            "Dołącz",
+            "Reunir-se",
+        ] {
+            let pr = friend_code_padding_right(label);
+            let btn_width = 28. + label.chars().count() as f32 * 8.5;
+            let btn_right_extent = 8. + btn_width;
+            assert!(
+                pr >= btn_right_extent + 10.,
+                "padding {pr} must clear button right extent {btn_right_extent} for label '{label}'"
+            );
+        }
     }
 }
