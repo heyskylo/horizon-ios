@@ -2452,18 +2452,46 @@ impl Game<'_> {
                 MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
                     self.mount_event(&e)
                 }
-                MobEvent::Launch { target, up } => match target {
-                    Who::Player => {
-                        if let Some(p) = self.player.as_mut() {
-                            p.velocity.y += up;
+                MobEvent::IronGolemHit {
+                    target,
+                    amount,
+                    source,
+                } => {
+                    // IronGolem.doHurtTarget: the toss only follows a hit that
+                    // landed, scaled by the target's KNOCKBACK_RESISTANCE.
+                    let hurt = match target {
+                        Who::Player => {
+                            let from = source.from.unwrap_or_default();
+                            self.mob_hits_player(amount, from, "minecraft:mob_attack")
+                        }
+                        Who::Mob(id) => self.mob_hits_mob(id, amount, source),
+                    };
+                    if hurt {
+                        let resistance = match target {
+                            Who::Player => self.player.as_mut().map_or(0.0, |p| {
+                                p.attribute("minecraft:knockback_resistance").unwrap_or(0.0)
+                            }),
+                            Who::Mob(id) => self
+                                .mobs
+                                .iter()
+                                .find(|m| m.id == id)
+                                .map_or(0.0, |m| self.mob_knockback_resistance(m)),
+                        };
+                        let up = f64::from(0.4f32) * (1.0 - resistance).max(0.0);
+                        match target {
+                            Who::Player => {
+                                if let Some(p) = self.player.as_mut() {
+                                    p.velocity.y += up;
+                                }
+                            }
+                            Who::Mob(id) => {
+                                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                                    m.velocity.y += up;
+                                }
+                            }
                         }
                     }
-                    Who::Mob(id) => {
-                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                            m.velocity.y += up;
-                        }
-                    }
-                },
+                }
                 MobEvent::Bonemeal { pos } => {
                     let at = BlockPos::new(pos[0], pos[1], pos[2]);
                     if self.with_level(|b, level, ticks| b.grow_crop(level, ticks, at)) {

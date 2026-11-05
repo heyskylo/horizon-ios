@@ -2097,10 +2097,13 @@ pub enum MobEvent {
     FinishAdmiring {
         mob: u32,
     },
-    /// Throw an entity upward (iron golem swings).
-    Launch {
+    /// `IronGolem.doHurtTarget`: the hit, then, only when `hurtServer` let it
+    /// land, the target thrown up by `0.4f` scaled by
+    /// `max(0, 1 - KNOCKBACK_RESISTANCE)`.
+    IronGolemHit {
         target: Who,
-        up: f64,
+        amount: f32,
+        source: Damage,
     },
     /// Damage the mob itself (snow golems melting).
     HurtSelf {

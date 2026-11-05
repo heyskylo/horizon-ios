@@ -61,7 +61,7 @@ pub fn register_iron(m: &mut Mob) {
         3,
         NearestTarget::player(true)
             .interval(10)
-            .when(|m, _| m.extra.anger > 0),
+            .when(super::tame::angry_at_player),
     );
     m.ai.targets.add(
         3,
@@ -363,17 +363,11 @@ pub fn iron_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         attack
     };
     let from = [m.position.x, m.position.y, m.position.z];
-    match who {
-        Who::Player => cx.events.push(MobEvent::AttackPlayer(amount, from)),
-        Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
-            target: id,
-            amount,
-            source: super::Damage::mob(m.id, from),
-        }),
-    }
-    cx.events.push(MobEvent::Launch {
+    // The hit, then the toss only if it landed (game/creatures.rs).
+    cx.events.push(MobEvent::IronGolemHit {
         target: who,
-        up: 0.4,
+        amount,
+        source: super::Damage::mob(m.id, from),
     });
     cx.events.push(MobEvent::Sound(
         "entity.iron_golem.attack",
@@ -409,20 +403,17 @@ pub fn client_tick(m: &mut Mob) {
         m.extra.counter -= 1;
     }
 }
-/// `IronGolem.aiStep` timers and anger.
-pub fn iron_ai_step(m: &mut Mob) {
+/// `IronGolem.aiStep` timers and anger: `updatePersistentAnger(level, true)`,
+/// as a wolf's, so any target (a monster too) restarts the anger timer with a
+/// draw of the golem's random every tick it is held.
+pub fn iron_ai_step(m: &mut Mob, w: &MobWorld) {
     if m.extra.anim_ticks > 0 {
         m.extra.anim_ticks -= 1;
     }
     if m.extra.counter > 0 {
         m.extra.counter -= 1;
     }
-    if m.extra.anger > 0 {
-        m.extra.anger -= 1;
-        if m.extra.anger == 0 && m.ai.target == Some(Who::Player) {
-            m.ai.target = None;
-        }
-    }
+    super::tame::update_persistent_anger(m, w);
 }
 /// `Crackiness.GOLEM` texture for the health left.
 pub fn crackiness(m: &Mob) -> Option<&'static str> {
@@ -674,6 +665,7 @@ mod tests {
             w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
             let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
             golem.extra.anger = 100;
+            golem.extra.angry_at = Some(Who::Player);
             let mut events = Vec::new();
             let mut lr = horizon_core::random::LegacyRandom::new(0);
             let mut cx = Cx {
@@ -683,7 +675,7 @@ mod tests {
             };
             let mut goal = NearestTarget::player(true)
                 .interval(0)
-                .when(|m, _| m.extra.anger > 0);
+                .when(super::super::tame::angry_at_player);
             assert!(goal.can_use(&mut golem, &mut cx));
             goal.start(&mut golem, &mut cx);
             assert_eq!(golem.ai.target, Some(Who::Player));
@@ -725,8 +717,9 @@ mod created_golem_tests {
                 let mut m = Mob::new(id, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
                 // `CarvedPumpkinBlock.trySpawnGolem`: setPlayerCreated(true).
                 m.extra.player_created = created;
-                // The anger a player's hit gives it (`after_hurt`).
+                // The anger at the player who hit it (`updatePersistentAnger`).
                 m.extra.anger = 400;
+                m.extra.angry_at = Some(Who::Player);
                 m
             };
             let zombie = Mob::new(
