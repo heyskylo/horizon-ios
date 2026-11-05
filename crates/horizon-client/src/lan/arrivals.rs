@@ -2690,8 +2690,15 @@ mod hub_tests {
         at: [f64; 3],
         center: Option<(i32, i32)>,
     ) -> (serde_json::Value, Hub, Receiver<Out>) {
+        held_with_a_record_of(|g| g.position = at, center)
+    }
+
+    fn held_with_a_record_of(
+        source_player: impl FnOnce(&mut Guest),
+        center: Option<(i32, i32)>,
+    ) -> (serde_json::Value, Hub, Receiver<Out>) {
         let (mut source, i) = exported_guest();
-        source.guests[i].position = at;
+        source_player(&mut source.guests[i]);
         let record = super::export_record(&mut source, i, true, Default::default()).unwrap();
         let mut hub = hub();
         assert_eq!(
@@ -2769,6 +2776,42 @@ mod hub_tests {
                 .unwrap()
                 .recentered
         );
+    }
+
+    /// A retried import of the same hand-over (its reply was lost) finds the view already moved,
+    /// and still says the chunks around the new place are on their way.
+    #[test]
+    fn a_retried_import_still_reports_the_recentring() {
+        let (record, mut hub, _mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        for _ in 0..2 {
+            let done = import_player(&mut hub, UUID_N, &request).unwrap();
+            assert!(done.recentered);
+        }
+    }
+
+    /// A record whose vehicle is still to be restored puts the player back on it at the vehicle's
+    /// own place, so a position the request names would be undone: it is refused, and the record's
+    /// own place is still taken.
+    #[test]
+    fn a_named_position_is_refused_for_a_record_with_a_vehicle_to_restore() {
+        let (record, mut hub, _mine) = held_with_a_record_of(
+            |g| {
+                g.position = [10.5, 70.0, -3.25];
+                g.saved_vehicle = Some([1, 2, 3, 4]);
+            },
+            Some((0, 0)),
+        );
+        let named = serde_json::json!({
+            "record": record.clone(), "place": false, "position": [300.5, 64.0, 300.5],
+        });
+        let error = import_player(&mut hub, UUID_N, &named).unwrap_err();
+        assert!(error.contains("vehicle"), "{error}");
+        assert!(!hub.guests[0].imported);
+        let plain = serde_json::json!({ "record": record, "place": false });
+        import_player(&mut hub, UUID_N, &plain).unwrap();
+        assert_eq!(hub.guests[0].position, [10.5, 70.0, -3.25]);
+        assert_eq!(hub.guests[0].saved_vehicle, Some([1, 2, 3, 4]));
     }
 
     #[test]
@@ -2886,6 +2929,10 @@ mod hub_tests {
             (
                 "rotation of one",
                 with(serde_json::json!({ "rotation": [1.0] })),
+            ),
+            (
+                "a rotation past what a float holds",
+                with(serde_json::json!({ "rotation": [1e39, 1e39] })),
             ),
             (
                 "a velocity that is not three numbers",

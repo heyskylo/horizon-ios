@@ -150,8 +150,14 @@ fn read_arrival(request: &Value) -> Result<Arrival, String> {
             // Entity.setXRot: the pitch is taken modulo a turn (`frem`, the sign of the
             // dividend, as Rust's `%`), then cut to a quarter turn each way; setYRot keeps the
             // yaw as it is.
-            let pitch = (pitch as f32 % 360.0).clamp(-90.0, 90.0);
-            Some([yaw as f32, pitch])
+            let (yaw, pitch) = (yaw as f32, pitch as f32);
+            // Finite as an f64 is not enough: past f32::MAX the cast gives an infinity (and
+            // the pitch's modulo a NaN), which Entity.load would refuse.
+            if !yaw.is_finite() || !pitch.is_finite() {
+                return Err("rotation holds only numbers a float can hold".into());
+            }
+            let pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+            Some([yaw, pitch])
         }
         None => None,
     };
@@ -502,6 +508,17 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     let mut level = Level::default();
     level.read_player(&tag);
     check_values(&level)?;
+    // A record with a vehicle still to restore (`RootVehicle`) puts the player back on it, at
+    // the vehicle's own saved place: a position named by the request would be undone as soon
+    // as the vehicle is restored, so the two cannot be taken together.
+    if request.arrival.position.is_some()
+        && (level.root_vehicle.is_some() || tag.get("RootVehicle").is_some())
+    {
+        return Err(
+            "the record has a vehicle to restore (RootVehicle): a position cannot be named with it"
+                .into(),
+        );
+    }
     // What `playerdata::load` gives `apply` too: the whole compound, for the keys Horizon
     // does not model, the mods' attachments and the body's values.
     level.player_extra = Some(tag);
@@ -560,6 +577,10 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     // player as it will be; the player stays held until it is placed or dropped.
     let recentered = hub.send_arrival_state(i);
     let g = &mut hub.guests[i];
+    // A retry of this hand-over's import finds the view already moved: it still answers that
+    // the chunks around the new place are on their way, as the first reply did.
+    let recentered = recentered || (g.arrival_handover == Some(handover) && g.arrival_recentered);
+    g.arrival_recentered = recentered;
     g.imported = true;
     g.arrival_announce = request.announce;
     g.arrival_handover = Some(handover);
