@@ -5526,7 +5526,7 @@ impl Game<'_> {
     /// crosshair or on the one a guest's interact packet named: returns true
     /// when consumed.
     pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
-        let Some((index, distance)) = (match target {
+        let Some((index, distance, _)) = (match target {
             // The id the packet named, under the filters the crosshair pick
             // applies (`mob_hit`): a mob in its death animation is not clicked
             // by either path, so naming one in a packet must not reach the
@@ -5536,7 +5536,7 @@ impl Game<'_> {
                     let m = &self.mobs[i];
                     named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
                 })
-                .map(|i| (i, 0.0)),
+                .map(|i| (i, 0.0, [0.0; 3])),
             None => self.mob_hit(),
         }) else {
             return Ok(false);

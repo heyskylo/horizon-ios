@@ -7630,7 +7630,7 @@ impl Game<'_> {
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
         if let Some(hit) = self.remote_object_hit(false)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // Interaction.interact answers SUCCESS when it responds and
@@ -7714,14 +7714,14 @@ impl Game<'_> {
             }
             return true;
         }
-        if let Some((i, distance)) = self.mob_hit()
+        if let Some((i, distance, location)) = self.mob_hit()
             && self.before_block(distance)
         {
             let id = self.mobs[i].id as i32;
             self.send(S::Interact(play::Interact {
                 id,
                 hand: hand_id(hand),
-                location: [0.0, 1.0, 0.0],
+                location,
                 secondary: sneaking,
             }));
             // Player.interactOn: another player passes, and so does a mob
@@ -9019,7 +9019,7 @@ impl Game<'_> {
         // A ghast's fireball or a wind charge nearer than any mob: the
         // server turns it (game/deflect.rs).
         if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d)| distance <= d)
+            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
             && self.before_block(distance)
             && self.creatures.projectiles[i].id != 0
         {
@@ -9028,14 +9028,14 @@ impl Game<'_> {
             }));
             self.reset_attack_strength();
         } else if let Some(hit) = self.remote_object_hit(true)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer,
             // a painting broken or an EndCrystal hurtServer: the server decides.
             self.send(S::Attack(play::Attack { id: hit.id }));
             self.reset_attack_strength();
-        } else if let Some((i, distance)) = self.mob_hit()
+        } else if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
         {
             // Minecraft.startAttack: an item's attack_range must hold the hit.

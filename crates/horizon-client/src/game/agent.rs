@@ -461,7 +461,7 @@ impl Game<'_> {
             v["distance"] = json!(dist(eye, hit.point));
             v
         });
-        let entity = self.mob_hit().map(|(i, d)| {
+        let entity = self.mob_hit().map(|(i, d, _)| {
             let m = &self.mobs[i];
             json!({ "id": m.id, "type": m.kind.id, "health": m.health, "distance": d,
                     "pos": [m.position.x, m.position.y, m.position.z] })
@@ -1300,7 +1300,7 @@ impl Game<'_> {
                 }
                 let target = self
                     .mob_hit()
-                    .map(|(i, _)| (self.mobs[i].id, self.mobs[i].health));
+                    .map(|(i, _, _)| (self.mobs[i].id, self.mobs[i].health));
                 if id.is_some() && target.map(|t| t.0) != id {
                     return Err("that entity is out of reach or hidden; get closer".into());
                 }
