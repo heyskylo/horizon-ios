@@ -1637,6 +1637,9 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// The Extras or PvP & HUD items that take a whole row (`wide_extras`), measured
+    /// when the page is drawn.
+    wide_extras: Vec<crate::extras::Item>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1693,6 +1696,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            wide_extras: Vec::new(),
         }
     }
 }
@@ -1743,6 +1747,40 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         },
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
+}
+/// The Extras or PvP & HUD page's rows: its items under their headers.
+fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
+    match page {
+        Page::Pvp => crate::pvp::rows()
+            .into_iter()
+            .map(|r| r.map(crate::extras::Item::Pvp))
+            .collect(),
+        _ => crate::extras::rows(),
+    }
+}
+/// The items of `page`'s rows whose label, with any of their first values, is wider than a
+/// half-width button holds (`width` measures text with the screen's font): those take the
+/// whole row, so no label slides past its edges, in any language.
+fn wide_extras(s: &Settings, page: Page, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
+    // A button's label keeps 2 px off each edge (`AbstractButton.renderString`'s margin),
+    // past which it slides back and forth.
+    let room = 150.0 - 4.0;
+    extras_rows(page)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|&item| {
+            let mut e = s.extras.clone();
+            (0..4).any(|_| {
+                let label = Text::option_name_value(
+                    Text::literal(item.caption_text()),
+                    Text::literal(item.value(&e)),
+                )
+                .plain();
+                item.cycle(&mut e, false);
+                width(&label) > room
+            })
+        })
+        .collect()
 }
 /// What a button opening one of Horizon's pages says on hover.
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
@@ -2493,8 +2531,9 @@ impl OptionsUi {
             Page::SplitSetup => Vec::new(),
             Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
-                // OptionsList.addSmall lays out an options screen.
-                let extra = |item: crate::extras::Item| {
+                // OptionsList.addSmall lays out an options screen; one whose label would run
+                // past half a row in this language (`wide_extras`) gets the whole row.
+                let extra = |item: crate::extras::Item, width: f32| {
                     let value = Text::option_name_value(
                         Text::literal(item.caption_text()),
                         Text::literal(item.value(&s.extras)),
@@ -2506,7 +2545,7 @@ impl OptionsUi {
                     } else {
                         Text::literal(value)
                     };
-                    let widget = button(0.0, 0.0, 150.0, label, Act::Extra(item));
+                    let widget = button(0.0, 0.0, width, label, Act::Extra(item));
                     // A setting of a switch that is off does nothing: inactive,
                     // as vanilla greys out an option that can't apply.
                     if item
@@ -2527,21 +2566,20 @@ impl OptionsUi {
                 }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
-                    rows.extend(
-                        section
-                            .chunks(2)
-                            .map(|c| Row::Buttons(extra(c[0]), c.get(1).map(|&b| extra(b)))),
-                    );
-                    section.clear();
+                    let mut half = None;
+                    for item in section.drain(..) {
+                        if self.wide_extras.contains(&item) {
+                            rows.extend(half.take().map(|h| Row::Buttons(extra(h, 150.0), None)));
+                            rows.push(Row::Buttons(extra(item, 310.0), None));
+                        } else if let Some(h) = half.take() {
+                            rows.push(Row::Buttons(extra(h, 150.0), Some(extra(item, 150.0))));
+                        } else {
+                            half = Some(item);
+                        }
+                    }
+                    rows.extend(half.map(|h| Row::Buttons(extra(h, 150.0), None)));
                 };
-                let page_rows = match self.page() {
-                    Page::Pvp => crate::pvp::rows()
-                        .into_iter()
-                        .map(|r| r.map(crate::extras::Item::Pvp))
-                        .collect(),
-                    _ => crate::extras::rows(),
-                };
-                for row in page_rows {
+                for row in extras_rows(self.page()) {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
@@ -3585,6 +3623,9 @@ impl OptionsUi {
             packs.bind_icons(&mut draws, atlas, &mut batch.patches);
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
+        }
+        if matches!(self.page(), Page::Extras | Page::Pvp) {
+            self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
@@ -7539,6 +7580,56 @@ mod tests {
         assert_eq!(toggles(&mut ui, &s), [(0, true), (1, true)]);
         ui.open_at(true, Page::Mods);
         assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true)]);
+    }
+
+    /// An Extras or PvP & HUD label wider than half a row takes the whole row, so every label
+    /// fits its button: "Keep channels for UI sounds: Off" did not.
+    #[test]
+    fn extras_labels_fit_their_buttons() {
+        // Vanilla's font: 6 px a glyph, a few narrower ones.
+        let width = |t: &str| {
+            t.chars()
+                .map(|c| match c {
+                    'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
+                    'l' => 3.0,
+                    ' ' | 't' | 'I' => 4.0,
+                    'f' | 'k' => 5.0,
+                    _ => 6.0,
+                })
+                .sum::<f32>()
+        };
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        for page in [Page::Extras, Page::Pvp] {
+            ui.stack = vec![Page::Main, page];
+            ui.wide_extras = wide_extras(&s, page, width);
+            let rows = ui.list_rows(&s);
+            let buttons: Vec<&Widget> = rows
+                .iter()
+                .flat_map(|r| match r {
+                    Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for b in &buttons {
+                let WKind::Button { label, .. } = &b.kind else {
+                    continue;
+                };
+                let label = label.plain();
+                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+            }
+            // Short ones keep vanilla's two to a row.
+            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
+        }
+        ui.stack = vec![Page::Main, Page::Extras];
+        ui.wide_extras = wide_extras(&s, Page::Extras, width);
+        for item in [
+            crate::extras::Item::UiSoundReserve,
+            crate::extras::Item::WheelCyclesSettings,
+        ] {
+            assert!(ui.wide_extras.contains(&item), "{item:?}");
+        }
+        assert!(!ui.wide_extras.contains(&crate::extras::Item::AutoReconnect));
     }
 
     /// Every setting a player reaches, from the Options screen through every button that opens
