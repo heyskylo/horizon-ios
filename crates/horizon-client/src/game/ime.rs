@@ -24,7 +24,8 @@ impl Game<'_> {
             return true;
         }
         match self.screen {
-            Screen::Chat | Screen::CommandBlock | Screen::Social => true,
+            Screen::Chat => self.chat_text_focused(),
+            Screen::CommandBlock | Screen::Social => true,
             Screen::DebugOptions => self
                 .debug_options
                 .as_ref()

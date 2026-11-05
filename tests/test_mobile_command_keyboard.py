@@ -28,10 +28,15 @@ def program(pad_source=None, command_source=None):
     pad_source = pad_source or (ROOT / 'crates/horizon-client/src/game/pad_menu.rs').read_text()
     ime = (ROOT / 'crates/horizon-client/src/game/ime.rs').read_text()
     names = ['pad_typing', 'field_focused', 'sync_system_keyboard', 'show_system_keyboard',
-             'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output']
+             'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output', 'key_focus_blocked']
     methods = '\n'.join(method(pad_source, n) for n in names)
-    assert methods.count('cfg!(target_os = "ios")') == 1
+    chat = (ROOT / 'crates/horizon-client/src/game/chat.rs').read_text()
+    methods += '\n' + method(chat, 'chat_text_focused') + '\n' + method(chat, 'bed_chat_focus') + '\n' + method(chat, 'bed_chat_choose_at')
+    assert methods.count('cfg!(target_os = "ios")') == 2
     methods = methods.replace('cfg!(target_os = "ios")', 'self.ios')
+    context_start = pad_source.index('        let ctx = key_focus::Context {')
+    context = pad_source[context_start:pad_source.index('        let act =', context_start)]
+    methods += '\nfn actual_navigation_typing(&mut self)->bool { let slider_edit=false; ' + context + '\nctx.typing }'
     methods += '\n' + method(ime, 'text_field_focused') + '\n' + method(ime, 'ime_commit')
     command_source = command_source or (ROOT / 'crates/horizon-client/src/game/command_blocks.rs').read_text()
     methods += '\n' + method(command_source, 'command_block_key')
@@ -54,10 +59,11 @@ STUBS = r'''
 use std::cell::RefCell;
 #[macro_export] macro_rules! warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }}; }
 mod log { pub(crate) use crate::warn; }
+mod key_focus { pub struct Context{pub slider_edit:bool,pub typing:bool,pub rows_take_enter:bool,pub gui:(f32,f32)} }
 mod preedit { pub fn set_preedit(_: Option<()>) {} }
 mod books { pub enum BookScreen { Edit {}, View } }
 mod osk { pub enum Output { Text(String), Backspace, Enter, Close } }
-#[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options, Social, DebugOptions, BlockEditor }
+#[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options, Social, DebugOptions, BlockEditor, Win }
 #[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter }
 mod smol_str { pub type SmolStr = String; }
 #[derive(Clone, Copy, PartialEq)] enum ElementState { Pressed, Released }
@@ -71,12 +77,15 @@ impl Window { fn set_ime_allowed(&self, value: bool) { self.requests.borrow_mut(
 #[derive(Default)] struct Menu { osk: Option<()>, system_keyboard: bool, system_keyboard_hidden: bool, osk_dismissed: bool }
 #[derive(Default)] struct Pad { menu: Menu }
 struct Title { focused: bool }
-impl Title { fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
+impl Title { fn list_focused(&self)->bool{false} fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
 #[derive(Default)] struct Creative { search: bool }
 impl Creative { fn tab(&self) -> &Self { self } }
-#[derive(Default)] struct Options { typing: bool }
+#[derive(Default)] struct Options { typing: bool, selected_pad_action: Option<()> }
 impl Options { fn typing(&self) -> bool { self.typing } fn type_text(&mut self, _: &(), _: &str) {} }
-#[derive(Default)] struct Ui { options: Options }
+#[derive(Default)] struct ChatInput { focused: bool }
+impl ChatInput {fn contains(&self,x:f64,y:f64)->bool{(0.0..100.0).contains(&x)&&(0.0..12.0).contains(&y)}}
+#[derive(Default)] struct ChatScreen { input: ChatInput }
+#[derive(Default)] struct Ui { options: Options, in_bed_chat: bool, bed_chat_typing: bool, chat_screen: Option<ChatScreen> }
 #[derive(Default)] struct FocusEditor { focused: bool }
 impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(&self)->bool{self.focused} }
 #[derive(Default)] struct Gui { atlas: () }
@@ -105,11 +114,35 @@ impl Game {
  fn creative_search_backspace(&mut self,_:bool){} fn creative_search_edit(&mut self,_:Option<&str>){}
  fn recipe_text(&mut self,_:Option<&str>,_:bool){} fn station_text(&mut self,_:Option<&str>,_:bool){}
  fn world_options_text(&mut self,_:Option<&str>){} fn title_edit(&mut self,_:Option<&str>,_:bool){}
+ fn pad_synthetic_input(&self)->bool{false}
+ fn gui_size(&self)->(f32,f32){(400.0,300.0)}
+ fn edit_box_focused(&mut self)->bool{matches!(self.screen,Screen::Chat|Screen::CommandBlock)}
+ fn options_waiting_for_key(&self)->bool{false}
  fn options_key(&mut self,_:KeyCode,_:Option<()>)->Result<(),String>{Ok(())}
 }
 '''
 
 CASES = r'''
+#[test] fn automatically_opened_bed_chat_keeps_keyboard_down_and_navigation_available() {
+ let mut g=Game::new(); g.screen=Screen::Chat;g.ui.in_bed_chat=true;g.ui.chat_screen=Some(ChatScreen::default());
+ g.bed_chat_focus(false);g.sync_system_keyboard();
+ assert!(!g.system_keyboard_up());assert!(g.requests().is_empty());
+ assert!(g.field_focused(),"explicit keyboard control remains available");
+ assert!(!g.key_focus_blocked(),"Leave Bed can receive keyboard focus");
+ assert!(!g.actual_navigation_typing(),"Leave Bed Enter/Space reaches button dispatch");
+ g.bed_chat_choose_at((5.0,50.0));g.sync_system_keyboard();assert!(g.requests().is_empty());
+ g.bed_chat_choose_at((5.0,5.0));g.sync_system_keyboard();assert!(g.system_keyboard_up());
+ g.bed_chat_focus(false);g.sync_system_keyboard();
+ g.show_system_keyboard();g.sync_system_keyboard();
+ assert!(g.system_keyboard_up());assert!(g.ui.bed_chat_typing);assert!(g.ui.chat_screen.as_ref().unwrap().input.focused);
+ assert!(g.key_focus_blocked(),"typing keeps chat history and completion keys");
+ assert!(g.actual_navigation_typing(),"text retains Space/Enter");
+ g.bed_chat_focus(false);g.sync_system_keyboard();assert!(!g.system_keyboard_up());
+}
+#[test] fn ordinary_chat_and_command_editor_keep_navigation_keys_for_their_text() {
+ let mut g=Game::new();
+ for screen in [Screen::Chat,Screen::CommandBlock] {g.screen=screen;g.sync_system_keyboard();assert!(g.system_keyboard_up());assert!(g.key_focus_blocked());}
+}
 #[test] fn new_upstream_text_fields_request_the_mobile_keyboard() {
  let mut g=Game::new(); g.screen=Screen::Social; g.sync_system_keyboard(); assert!(g.system_keyboard_up());
  g.screen=Screen::DebugOptions; g.sync_system_keyboard(); assert!(!g.system_keyboard_up());
@@ -211,7 +244,7 @@ class MobileCommandKeyboardTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('11 passed', run.stdout)
+            self.assertIn('13 passed', run.stdout)
 
 
 if __name__ == '__main__':

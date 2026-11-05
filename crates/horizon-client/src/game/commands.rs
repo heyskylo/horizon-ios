@@ -936,7 +936,11 @@ impl Game<'_> {
     /// `Level.getEntity`: the entity of the level in place with a network
     /// id, players aside.
     pub(in crate::game) fn level_entity(&self, id: i32) -> Option<Target> {
-        let id = u32::try_from(id).ok()?;
+        let id = if self.remote.is_some() {
+            id as u32
+        } else {
+            u32::try_from(id).ok()?
+        };
         [
             Target::Mob(id),
             Target::Item(id),

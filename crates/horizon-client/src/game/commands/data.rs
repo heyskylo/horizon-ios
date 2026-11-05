@@ -67,43 +67,47 @@ impl Game<'_> {
         self.in_target_level(t, |g| g.entity_nbt_in_level(t))
             .flatten()
     }
-    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
-        // The acting player's own UUID: a guest's turn (the window's player on
-        // the server thread) keeps the world owner's in `level`.
-        let player_uuid = self
-            .lan_acting_uuid
+    /// The acting player's own UUID: a guest's turn (the window's player on
+    /// the server thread) keeps the world owner's in `level`.
+    fn saved_player_uuid(&self) -> Option<[i32; 4]> {
+        self.lan_acting_uuid
             .map(horizon_client::lan::playerdata::uuid_ints)
-            .or(self.level.player_uuid);
+            .or(self.level.player_uuid)
+    }
+    /// [`Self::entity_nbt`] of the player whose turn it is.
+    pub(in crate::game) fn player_nbt(&mut self) -> Option<Tag> {
+        self.player.as_ref()?;
+        self.sync_level();
+        let mut tag = self.level.player_tag();
+        if let Some(u) = self.saved_player_uuid() {
+            set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
+        }
+        // NbtPredicate.getEntityTagToCompare: a player's held stack.
+        let selected = self.level.selected_slot;
+        let held = match tag.get("Inventory") {
+            Some(Tag::List(items)) => items
+                .iter()
+                .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
+                .cloned(),
+            _ => None,
+        };
+        if let Some(mut stack) = held {
+            if let Tag::Compound(c) = &mut stack {
+                c.remove(&"Slot".into());
+            }
+            set_key(&mut tag, "SelectedItem", stack);
+        }
+        Some(tag)
+    }
+    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
+        let player_uuid = self.saved_player_uuid();
         Some(match t {
             Target::Guest(_) => {
                 return self
                     .for_player(t, |g| g.entity_nbt(Target::Player))
                     .flatten();
             }
-            Target::Player => {
-                self.player.as_ref()?;
-                self.sync_level();
-                let mut tag = self.level.player_tag();
-                if let Some(u) = player_uuid {
-                    set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
-                }
-                // NbtPredicate.getEntityTagToCompare: a player's held stack.
-                let selected = self.level.selected_slot;
-                let held = match tag.get("Inventory") {
-                    Some(Tag::List(items)) => items
-                        .iter()
-                        .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
-                        .cloned(),
-                    _ => None,
-                };
-                if let Some(mut stack) = held {
-                    if let Tag::Compound(c) = &mut stack {
-                        c.remove(&"Slot".into());
-                    }
-                    set_key(&mut tag, "SelectedItem", stack);
-                }
-                tag
-            }
+            Target::Player => return self.player_nbt(),
             Target::Mob(id) => {
                 // `saveWithoutId` writes the entity as saved, riders under
                 // `Passengers`: `/data get` reads the same tree persistence does (#1519).
@@ -140,13 +144,20 @@ impl Game<'_> {
                     [b.yaw, b.pitch],
                     uuid,
                     self.persist.raw.get(&id),
-                    b.chest.then_some(&b.items[..]),
+                    b.chest
+                        .then(|| self.open_vehicle_items(id).unwrap_or(&b.items)),
                 )
             }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let c = self.carts.iter().find(|c| c.id == id)?;
-                c.to_nbt(uuid, self.persist.raw.get(&id))
+                if let Some(items) = self.open_vehicle_items(id) {
+                    let mut live = c.clone();
+                    live.items = items.to_vec();
+                    live.to_nbt(uuid, self.persist.raw.get(&id))
+                } else {
+                    c.to_nbt(uuid, self.persist.raw.get(&id))
+                }
             }
             Target::Fangs(id) => {
                 let uuid = self.uuid_for(id);
@@ -313,7 +324,10 @@ impl Game<'_> {
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
         match t {
-            Target::Player => return Err(err("commands.data.entity.invalid", &[])),
+            // EntityDataAccessor.setData: players can't be modified, guests neither.
+            Target::Player | Target::Guest(_) => {
+                return Err(err("commands.data.entity.invalid", &[]));
+            }
             Target::Mob(id) => {
                 let uuid = self.uuid_for(id);
                 let kind = self
@@ -383,6 +397,47 @@ impl Game<'_> {
                     *slot = new;
                 }
             }
+            Target::Boat(id) => {
+                // AbstractBoat.readAdditionalSaveData over Entity.load: the
+                // position, rotation, motion, NoGravity and a chest boat's items.
+                let (position, velocity, yaw) =
+                    entity_nbt::boat_from_nbt(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                let b = self
+                    .boats
+                    .iter_mut()
+                    .find(|b| b.id == id)
+                    .ok_or_else(stale)?;
+                b.position = position;
+                b.previous = position;
+                b.velocity = velocity;
+                b.yaw = yaw;
+                b.previous_yaw = yaw;
+                b.pitch = entity_nbt::rotation(&tag)[1];
+                b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                if b.chest {
+                    b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
+                }
+                self.sync_open_vehicle_items(id);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Cart(id) => {
+                let uuid = self.uuid_for(id);
+                let i = self
+                    .carts
+                    .iter()
+                    .position(|c| c.id == id)
+                    .ok_or_else(stale)?;
+                let mut cart = self.carts[i].clone();
+                cart.load(&tag).ok_or_else(stale)?;
+                crate::game::minecarts::forget_unreadable_display(&mut cart, |t| {
+                    self.state_from_nbt(t).is_some()
+                });
+                self.roll_cart_loot(&mut cart, &tag);
+                self.carts[i] = cart;
+                self.sync_open_vehicle_items(id);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             Target::Other(id) => {
                 let uuid = self.uuid_for(id);
                 let marker = self
@@ -407,9 +462,18 @@ impl Game<'_> {
         | Target::Item(id)
         | Target::Stand(id)
         | Target::Frame(id)
+        | Target::Boat(id)
+        | Target::Cart(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
+            // EntityDataAccessor.setData calls the same Entity.load common
+            // fields as spawn/save loading. Team updates the scoreboard now;
+            // it is not a tag Entity writes back on its next save.
+            self.join_saved_team(id, &tag);
+            if let Tag::Compound(fields) = &mut tag {
+                fields.remove(&"Team".into());
+            }
             self.persist.raw.insert(id, tag);
         }
         Ok(())

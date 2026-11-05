@@ -725,6 +725,9 @@ impl Game<'_> {
     }
 
     fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
+        if self.screen == Screen::Chat && target.kind != Kind::Field {
+            self.bed_chat_focus(false);
+        }
         let left = self.pad.menu.focus.replace(target);
         if left.is_some_and(|l| l.rect != target.rect) {
             self.clear_screen_click_focus();
@@ -1162,7 +1165,7 @@ impl Game<'_> {
     fn key_focus_blocked(&self) -> bool {
         let playing_screen = |screen| self.title.is_none() && self.screen == screen;
         self.pad.menu.osk.is_some()
-            || playing_screen(Screen::Chat)
+            || (playing_screen(Screen::Chat) && self.chat_text_focused())
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (playing_screen(Screen::Creative) && self.creative_screen.tab().search)
@@ -1226,7 +1229,11 @@ impl Game<'_> {
         }
         let ctx = key_focus::Context {
             slider_edit,
-            typing: self.edit_box_focused(),
+            typing: if self.screen == Screen::Chat && self.title.is_none() {
+                self.chat_text_focused()
+            } else {
+                self.edit_box_focused()
+            },
             rows_take_enter: self.title.as_ref().is_some_and(|t| t.list_focused()),
             gui: self.gui_size(),
         };
@@ -1486,6 +1493,9 @@ impl Game<'_> {
         // Use the same focus inventory as IME commits, including upstream's
         // caret-based title fields, social search and block/debug editors.
         self.text_field_focused()
+            // Keep the explicit mobile keyboard button available on the bed
+            // screen even before the player chooses its chat field.
+            || (self.title.is_none() && self.screen == Screen::Chat && self.ui.in_bed_chat)
     }
 
     /// The focused field's box (GUI pixels), where the screen can say: a title screen's field or an options
@@ -1504,6 +1514,7 @@ impl Game<'_> {
     /// while a touch is being handled) is otherwise never repeated, as `sync_system_keyboard` only asks on a
     /// change. The touch controls' keyboard button, when the keyboard is down.
     pub(super) fn show_system_keyboard(&mut self) {
+        self.bed_chat_focus(true);
         self.pad.menu.osk = None;
         self.pad.menu.system_keyboard = true;
         self.pad.menu.system_keyboard_hidden = false;
@@ -1550,7 +1561,8 @@ impl Game<'_> {
     /// A player who put it away keeps it away until the focus moves. winit types its keys into the window as
     /// `KeyboardInput`, which the fields already read.
     pub(super) fn sync_system_keyboard(&mut self) {
-        let focused = self.field_focused();
+        let focused =
+            self.field_focused() && (self.screen != Screen::Chat || self.chat_text_focused());
         if !focused {
             // The next field to take the focus asks for the keyboard again.
             self.pad.menu.system_keyboard_hidden = false;
@@ -1599,7 +1611,9 @@ impl Game<'_> {
     }
 
     /// Chat or a sign opened by the pad (either menu mode): the keyboard
-    /// opens with it (once per screen; B closes it for good).
+    /// opens with it (once per screen; B closes it for good). Not the chat a
+    /// sleeper gets (`InBedChatScreen`): the game opens that one, not the
+    /// player, so the keyboard waits for A on its chat box.
     fn pad_auto_keyboard(&mut self) {
         let menu = &self.pad.menu;
         if osk_auto_opens(
@@ -1607,7 +1621,7 @@ impl Game<'_> {
             menu.osk_dismissed,
             self.pad.in_use,
             menu.open_polls,
-            self.screen == Screen::Chat || self.sign_edit.is_some(),
+            (self.screen == Screen::Chat && !self.ui.in_bed_chat) || self.sign_edit.is_some(),
         ) {
             self.pad.menu.osk_dismissed = true;
             self.pad_open_keyboard();
@@ -1715,7 +1729,8 @@ impl Game<'_> {
                 .is_some_and(|f| f.center().1 > batch.height / 2.0)
                 || self.screen == Screen::Chat;
             let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, self.cursor);
-            keyboard.draw(&mut ui, at_top, self.ui.options.pad_style);
+            let options = &self.ui.options;
+            keyboard.draw(&mut ui, at_top, options.pad_style, options.pad_by_letter);
             ui.finish();
             return;
         }

@@ -148,6 +148,9 @@ pub struct UiState {
     pub chat_opened: Option<std::time::Instant>,
     /// The chat screen is `InBedChatScreen`: the sleeper's, with a Leave Bed button.
     pub in_bed_chat: bool,
+    /// Bed chat opens on Leave Bed. Typing begins only after the player
+    /// chooses its text field or explicitly opens the mobile keyboard.
+    pub bed_chat_typing: bool,
     pub registries: Registries,
     pub rules: GameRules,
     pub clock: WorldClock,
@@ -819,11 +822,46 @@ impl Game<'_> {
         } else if self.sleeping.is_some() && self.screen == Screen::Playing {
             self.open_chat("");
             self.ui.in_bed_chat = self.screen == Screen::Chat;
+            self.bed_chat_focus(false);
         }
     }
     /// The Leave Bed button of `InBedChatScreen`: its bounds.
     fn leave_bed_button(width: f32, height: f32) -> (i32, i32, i32, i32) {
         (width as i32 / 2 - 100, height as i32 - 40, 200, 20)
+    }
+    /// The Leave Bed button's draws. It registers as a button
+    /// (`widgets::record`), so the pad's and the keyboard's focus reach it (the
+    /// pad's starts on it) and `horizon-ctl click-button` finds it.
+    fn leave_bed_draws(
+        m: &Measure,
+        mouse: (i32, i32),
+        width: f32,
+        height: f32,
+    ) -> Vec<horizon_client::screen_draw::Draw> {
+        let (x, y, w, h) = Self::leave_bed_button(width, height);
+        let label = Text::literal(horizon_client::lang::get_or(
+            "multiplayer.stopSleeping",
+            "Leave Bed",
+        ));
+        horizon_client::widgets::record(
+            &label.plain(),
+            [x as f32, y as f32, w as f32, h as f32],
+            true,
+        );
+        let mut button = Vec::new();
+        horizon_client::screen_draw::button(
+            &mut button,
+            m,
+            &label,
+            x,
+            y,
+            w,
+            h,
+            true,
+            horizon_client::screen_draw::inside(mouse, x, y, w, h),
+            horizon_client::hud_overlays::now_ms(),
+        );
+        button
     }
     /// `Minecraft.computeChatAbilities` from the Chat option.
     pub(super) fn chat_abilities(&self) -> ChatAbilities {
@@ -876,8 +914,26 @@ impl Game<'_> {
             focused,
         );
     }
+    pub(super) fn chat_text_focused(&self) -> bool {
+        !self.ui.in_bed_chat || self.ui.bed_chat_typing
+    }
+
+    pub(super) fn bed_chat_focus(&mut self, typing: bool) {
+        if self.ui.in_bed_chat {
+            self.ui.bed_chat_typing = typing;
+            if let Some(screen) = self.ui.chat_screen.as_mut() {
+                screen.input.focused = typing;
+            }
+        }
+    }
+
     /// Keys while the chat screen is open.
     pub(super) fn chat_key(&mut self, event: &KeyEvent) {
+        if !self.chat_text_focused()
+            && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape))
+        {
+            return;
+        }
         if let Some(shortcut) = self.edit_shortcut(event) {
             let m = Measure(&self.gui.atlas.font);
             let c = Commands {
@@ -997,6 +1053,9 @@ impl Game<'_> {
     }
     /// Text typed into the chat box (control socket `chat`).
     pub(super) fn chat_type(&mut self, text: &str) {
+        if !self.chat_text_focused() {
+            return;
+        }
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1066,11 +1125,31 @@ impl Game<'_> {
         let amount = amount.clamp(-1.0, 1.0) * if shift { 1.0 } else { 7.0 };
         self.ui.chat.scroll_by(amount as i32, true);
     }
+    /// An explicit hit in the bed's text box takes typing focus; the Leave Bed
+    /// button and message history do not summon the native keyboard.
+    fn bed_chat_choose_at(&mut self, cursor: (f32, f32)) {
+        if self.ui.in_bed_chat
+            && self.ui.chat_screen.as_ref().is_some_and(|screen| {
+                screen
+                    .input
+                    .contains(f64::from(cursor.0), f64::from(cursor.1))
+            })
+        {
+            self.bed_chat_focus(true);
+            // A physical tap on the text field also reopens a keyboard the
+            // player hid. Controller/keyboard focus keeps its own OSK policy.
+            if cfg!(target_os = "ios") && !self.pad_synthetic_input() {
+                self.show_system_keyboard();
+            }
+        }
+    }
+
     pub(super) fn chat_click(&mut self) {
         let cursor = self.cursor;
         let height = self.renderer.as_ref().map_or(720.0, |r| {
             HudBatch::new([r.config.width, r.config.height]).height
         });
+        self.bed_chat_choose_at(cursor);
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1375,24 +1454,7 @@ impl Game<'_> {
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {
-            let (x, y, w, h) = Self::leave_bed_button(batch.width, batch.height);
-            let label = Text::literal(horizon_client::lang::get_or(
-                "multiplayer.stopSleeping",
-                "Leave Bed",
-            ));
-            let mut button = Vec::new();
-            horizon_client::screen_draw::button(
-                &mut button,
-                &m,
-                &label,
-                x,
-                y,
-                w,
-                h,
-                true,
-                horizon_client::screen_draw::inside(mouse, x, y, w, h),
-                horizon_client::hud_overlays::now_ms(),
-            );
+            let button = Self::leave_bed_draws(&m, mouse, batch.width, batch.height);
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
         // The hovered message part's tooltip (`renderComponentHoverEffect`),
@@ -1981,5 +2043,74 @@ mod tests {
         prefilled.fill_from_exported(&reg);
         assert_eq!(prefilled.summonable, vec!["minecraft:pig".to_string()]);
         assert_eq!(prefilled.entity_types, vec!["minecraft:pig".to_string()]);
+    }
+
+    /// The sleeper's chat: Leave Bed is a button target for the pad and the
+    /// keyboard, right above the chat box, and the D-pad steps between the
+    /// two.
+    #[test]
+    fn leave_bed_is_a_focus_target_above_the_chat_box() {
+        use super::super::key_focus;
+        use horizon_client::{
+            font::Font,
+            gamepad::{Button, focus_step_strict},
+            widgets::Kind,
+        };
+        use std::collections::HashMap;
+        // The missing-glyph metrics measure without game assets.
+        let font = Font::load(
+            Path::new("/nonexistent-horizon-chat-test-resources"),
+            &HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            horizon_client::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let m = Measure(&font);
+        let registries = Registries::default();
+        let c = Commands {
+            dispatcher: horizon_client::command::vanilla::game_dispatcher(),
+            registries: &registries,
+        };
+        let (width, height) = (427.0, 240.0);
+        let mut screen = ChatScreen::new(
+            &m,
+            &c,
+            "",
+            0,
+            width as i32,
+            height as i32,
+            ChatAbilities::new(ChatVisibility::Full),
+        );
+        screen.draw(&m, (0, 0), 0, 0);
+        Game::leave_bed_draws(&m, (0, 0), width, height);
+        horizon_client::widgets::end_frame(u64::MAX);
+
+        let targets = key_focus::drawn_targets();
+        let (x, y, w, h) = Game::leave_bed_button(width, height);
+        let bed = targets
+            .iter()
+            .copied()
+            .find(|t| t.rect == [x as f32, y as f32, w as f32, h as f32])
+            .expect("Leave Bed is a focus target");
+        assert_eq!(bed.kind, Kind::Button);
+        assert!(key_focus::keyboard_targets(targets.clone(), false).contains(&bed));
+        let field = targets
+            .iter()
+            .copied()
+            .find(|t| t.kind == Kind::Field)
+            .expect("the chat box is a focus target");
+        let rects: Vec<_> = targets.iter().map(|t| t.rect).collect();
+        let step =
+            |from: [f32; 4], button| focus_step_strict(from, button, &rects).map(|i| targets[i]);
+        assert_eq!(step(field.rect, Button::DPadUp), Some(bed));
+        assert_eq!(step(bed.rect, Button::DPadDown), Some(field));
     }
 }

@@ -29,6 +29,7 @@ use std::process::{Command, Stdio};
 mod api;
 mod crates;
 mod dependencies;
+mod diagnostics;
 mod inject;
 mod inject_cache;
 
@@ -1499,43 +1500,66 @@ impl Step {
 /// Runs `cmd`, its output appended to the build log; `line` sees each line of its standard error.
 /// An error ends with its first `error` lines and the last lines: a failed build script's output
 /// alone could push the line naming its crate out of the last ones.
-fn run(mut cmd: Command, what: &str, mut line: impl FnMut(&str)) -> Result<(), String> {
+fn run(cmd: Command, what: &str, line: impl FnMut(&str)) -> Result<(), String> {
+    run_with_compiler(cmd, what, line, None)
+}
+
+fn run_with_compiler(
+    mut cmd: Command,
+    what: &str,
+    mut line: impl FnMut(&str),
+    compiler: Option<diagnostics::Compiler<'_>>,
+) -> Result<(), String> {
     let mut log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path())
         .map_err(|e| e.to_string())?;
     let _ = writeln!(log, "$ {cmd:?}");
-    let stdout = log.try_clone().map_err(|e| e.to_string())?;
+    let stdout = if compiler.is_some() {
+        cmd.stdout(Stdio::piped());
+        Some(log.try_clone().map_err(|e| e.to_string())?)
+    } else {
+        cmd.stdout(log.try_clone().map_err(|e| e.to_string())?);
+        None
+    };
     let mut child = cmd
-        .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start {what}: {e}"))?;
-    let mut tail = std::collections::VecDeque::new();
-    let mut errors = Vec::new();
-    for text in BufReader::new(child.stderr.take().expect("piped"))
-        .lines()
-        .map_while(Result::ok)
-    {
-        if let Some(kept) = log_text(&text) {
-            let _ = writeln!(log, "{kept}");
+    std::thread::scope(|scope| {
+        let messages = compiler.zip(stdout).map(|(compiler, log)| {
+            let input = BufReader::new(child.stdout.take().expect("piped"));
+            scope.spawn(move || diagnostics::capture(&compiler, input, log))
+        });
+        let mut tail = std::collections::VecDeque::new();
+        let mut errors = Vec::new();
+        for text in BufReader::new(child.stderr.take().expect("piped"))
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(kept) = log_text(&text) {
+                let _ = writeln!(log, "{kept}");
+            }
+            line(&text);
+            if text.starts_with("error") && errors.len() < 4 {
+                errors.push(text.clone());
+            }
+            if tail.len() == 12 {
+                tail.pop_front();
+            }
+            tail.push_back(text);
         }
-        line(&text);
-        if text.starts_with("error") && errors.len() < 4 {
-            errors.push(text.clone());
+        let status = child.wait().map_err(|e| e.to_string())?;
+        let messages = messages
+            .map(|m| m.join().expect("compiler output reader"))
+            .unwrap_or_default();
+        if status.success() {
+            return Ok(());
         }
-        if tail.len() == 12 {
-            tail.pop_front();
-        }
-        tail.push_back(text);
-    }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    if status.success() {
-        return Ok(());
-    }
-    let tail: Vec<String> = tail.into();
-    Err(failure(what, &status.to_string(), &errors, &tail))
+        let tail: Vec<String> = tail.into();
+        Err(messages.explain(failure(what, &status.to_string(), &errors, &tail)))
+    })
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -1635,7 +1659,12 @@ fn compile(
         .env("CARGO_TERM_PROGRESS_WHEN", "always")
         .env("CARGO_TERM_PROGRESS_WIDTH", "100");
     let (cargo_profile, configs) = profile.cargo();
-    cmd.args(["--locked", "--profile", cargo_profile]);
+    cmd.args([
+        "--locked",
+        "--message-format=json",
+        "--profile",
+        cargo_profile,
+    ]);
     cmd.args(configs.iter().flat_map(|config| ["--config", config]));
     if target == Target::Server {
         cmd.arg("--no-default-features");
@@ -2091,7 +2120,11 @@ fn pipeline(
         let compiled = profile_of(&stage, profile);
         built.profile = compiled;
         let (mut crates, mut total, mut name) = (0, None, String::new());
-        run(
+        let identities: Vec<_> = mods
+            .iter()
+            .map(|m| (m.id.clone(), m.version.clone()))
+            .collect();
+        run_with_compiler(
             compile(
                 &rust,
                 &stage,
@@ -2127,6 +2160,11 @@ fn pipeline(
                     }
                 }
             },
+            Some(diagnostics::Compiler {
+                stage: &stage,
+                source: &source,
+                mods: &identities,
+            }),
         )
         .map_err(|e| blame(crates::locked(e)))?;
         save_record(target, profile, &now);
@@ -2196,6 +2234,9 @@ pub fn build(
     profile: Profile,
     progress: impl Fn(Step),
 ) -> Result<String, String> {
+    if let Some(error) = backend::native_mod_architecture_error() {
+        return Err(error);
+    }
     logged(|| {
         let built = pipeline(
             base,
@@ -2490,7 +2531,7 @@ fn stale(
 
 #[cfg(test)]
 mod tests {
-    static LOG_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static LOG_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     use super::*;
 

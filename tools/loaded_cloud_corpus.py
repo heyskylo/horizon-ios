@@ -106,6 +106,8 @@ def loaded_clouds(cmd, setup, contract='loader', summary=None):
         out.append(cmd(command))
     out.append({'op': 'settle'})
     check('/execute if loaded 0 200 0')
+    # /fill counts changed blocks; prior groups may already have stone here.
+    out.extend(setup('/fill 0 199 0 15 199 15 air'))
     check('/fill 0 199 0 15 199 15 stone', 256)
     for kind in ('pig', 'zombie', 'skeleton', 'husk', 'zoglin', 'drowned', 'phantom', 'spider'):
         undead = kind not in ('pig', 'spider')

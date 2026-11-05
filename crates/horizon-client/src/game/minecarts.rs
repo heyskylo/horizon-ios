@@ -180,9 +180,18 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `EntityEvent.TNT_PRIME`. `MinecartTNT.primeFuse` broadcasts it;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
-/// AbstractMinecart.getDefaultDisplayOffset, in sixteenths of a block.
+/// `AbstractMinecart.getDefaultDisplayOffset` (6), in sixteenths of a block, as
+/// `MinecartChest` (8) and `MinecartHopper` (1) override it.
 pub(super) fn default_display_offset(kind: CartKind) -> f64 {
-    if kind == CartKind::Hopper { 1.0 } else { 6.0 }
+    match kind {
+        CartKind::Chest => 8.0,
+        CartKind::Hopper => 1.0,
+        CartKind::Rideable
+        | CartKind::Furnace
+        | CartKind::Tnt
+        | CartKind::CommandBlock
+        | CartKind::Spawner => 6.0,
+    }
 }
 /// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
 fn display_offset(c: &Minecart) -> f64 {
@@ -2072,6 +2081,34 @@ impl Game<'_> {
         }
         best
     }
+    /// An open vehicle's slots are authoritative for saves and /data reads.
+    /// Unlike slot commands, reading entity NBT must not unpack its loot.
+    pub(super) fn open_vehicle_items(&self, id: u32) -> Option<&[Option<ItemStack>]> {
+        match self
+            .world
+            .block_entities
+            .get(&(i32::MAX - 15, CART_KEY_Y, id as i32))
+        {
+            Some(BlockEntity::Chest(items)) => Some(items),
+            _ => None,
+        }
+    }
+    /// Entity.load replaced the backing inventory. Existing menus continue
+    /// viewing the same live container; update its contents without closing it.
+    pub(super) fn sync_open_vehicle_items(&mut self, id: u32) {
+        let Some(BlockEntity::Chest(open)) =
+            self.world
+                .block_entities
+                .get_mut(&(i32::MAX - 15, CART_KEY_Y, id as i32))
+        else {
+            return;
+        };
+        if let Some(cart) = self.carts.iter().find(|cart| cart.id == id) {
+            open.clone_from(&cart.items);
+        } else if let Some(boat) = self.boats.iter().find(|boat| boat.id == id && boat.chest) {
+            open.clone_from(&boat.items);
+        }
+    }
     /// The slots of a container vehicle `id`, for a command: `getChestVehicleItem` and
     /// `setChestVehicleItem` first unpack its loot table with no player, so
     /// no `player_generates_container_loot` fires later. While its menu is
@@ -2817,9 +2854,21 @@ impl Minecart {
         tag
     }
     pub fn from_nbt(tag: &horizon_world::nbt::Tag, id: u32, kind: CartKind) -> Option<Self> {
+        let (position, _, _) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
+        let mut c = Self::new(id, kind, position);
+        c.load(tag)?;
+        Some(c)
+    }
+    /// `Entity.load` on this cart: the saved fields are read over the live
+    /// ones, the rest (riders, lerp, hurt state) stays; its kind never changes.
+    /// `None`, with nothing changed, when the compound has no position.
+    pub fn load(&mut self, tag: &horizon_world::nbt::Tag) -> Option<()> {
         use horizon_world::nbt::Tag;
         let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
-        let mut c = Self::new(id, kind, position);
+        let kind = self.kind;
+        let c = self;
+        c.position = position;
+        c.previous = position;
         c.velocity = velocity;
         c.yaw = yaw;
         c.previous_yaw = yaw;
@@ -2863,7 +2912,7 @@ impl Minecart {
                 tag,
             )));
         }
-        Some(c)
+        Some(())
     }
 }
 
@@ -2991,6 +3040,70 @@ mod tests {
         assert_eq!(out.get("DisplayOffset"), Some(&Tag::Int(10)));
     }
 
+    /// `/data merge entity` on a cart: `EntityDataAccessor.setData` loads the
+    /// merged compound into the live cart (`Entity.load`). Its display state,
+    /// offset and name read back; its id, kind and unsaved state stay.
+    #[test]
+    fn data_merge_loads_into_a_live_cart() {
+        let mut cart = Minecart::new(7, CartKind::Chest, Vec3::new(1.5, 64.0, 2.5));
+        cart.hurt_time = 5;
+        let old = cart.to_nbt([0; 4], None);
+        let (patch, _) = horizon_world::nbt::parse_snbt(
+            r#"{DisplayState:"minecraft:furnace",DisplayOffset:3,CustomName:"Cart",Pos:[1.5d,70.0d,2.5d]}"#,
+        )
+        .unwrap();
+        let merged = horizon_client::data_cmd::merged(&old, &patch);
+        cart.load(&merged).unwrap();
+        assert_eq!(
+            (cart.id, cart.kind, cart.hurt_time),
+            (7, CartKind::Chest, 5)
+        );
+        assert_eq!(cart.position, Vec3::new(1.5, 70.0, 2.5));
+        assert_eq!(display_offset(&cart), 3.0);
+        let out = cart.to_nbt([0; 4], Some(&merged));
+        assert_eq!(out.get("DisplayState"), patch.get("DisplayState"));
+        assert_eq!(out.get("DisplayOffset"), Some(&Tag::Int(3)));
+        assert_eq!(out.get("CustomName"), Some(&Tag::String("Cart".into())));
+        // A compound without a position loads nothing.
+        let mut no_pos = merged.clone();
+        if let Tag::Compound(map) = &mut no_pos {
+            map.remove(&"Pos".into());
+            map.insert("DisplayOffset".into(), Tag::Int(9));
+        }
+        assert!(cart.load(&no_pos).is_none());
+        assert_eq!(display_offset(&cart), 3.0);
+    }
+
+    /// A merge of an unrelated key loads the cart's own saved state back
+    /// unchanged: a furnace cart keeps its fuel and push, a TNT cart its fuse,
+    /// a hopper cart its Enabled flag.
+    #[test]
+    fn data_merge_of_a_name_keeps_the_carts_state() {
+        let mut furnace = Minecart::new(1, CartKind::Furnace, Vec3::ZERO);
+        (furnace.fuel, furnace.push) = (1200, Vec3::new(0.5, 0.0, -0.25));
+        let mut tnt = Minecart::new(2, CartKind::Tnt, Vec3::ZERO);
+        tnt.fuse = 40;
+        let mut hopper = Minecart::new(3, CartKind::Hopper, Vec3::ZERO);
+        hopper.enabled = false;
+        let (patch, _) = horizon_world::nbt::parse_snbt(r#"{CustomName:"x"}"#).unwrap();
+        for cart in [furnace, tnt, hopper] {
+            let mut merged_cart = cart.clone();
+            let merged = horizon_client::data_cmd::merged(&cart.to_nbt([0; 4], None), &patch);
+            merged_cart.load(&merged).unwrap();
+            assert_eq!(
+                (
+                    merged_cart.fuel,
+                    merged_cart.push,
+                    merged_cart.fuse,
+                    merged_cart.enabled
+                ),
+                (cart.fuel, cart.push, cart.fuse, cart.enabled),
+                "{:?}",
+                cart.kind
+            );
+        }
+    }
+
     #[test]
     fn air_display_state_shows_nothing() {
         let (air, stone) = (BlockStateId(0), BlockStateId(1));
@@ -3019,8 +3132,12 @@ mod tests {
 
     #[test]
     fn display_offset_is_not_saved_at_its_default() {
-        // A hopper cart's default is 1, any other kind's 6.
-        for (kind, default) in [(CartKind::Hopper, 1), (CartKind::Chest, 6)] {
+        // A hopper cart's default is 1, a chest cart's 8, any other kind's 6.
+        for (kind, default) in [
+            (CartKind::Hopper, 1),
+            (CartKind::Chest, 8),
+            (CartKind::Rideable, 6),
+        ] {
             let saved = saved_cart(kind, &[("DisplayOffset", Tag::Int(default))]);
             let cart = Minecart::from_nbt(&saved, 1, kind).unwrap();
             assert_eq!(display_offset(&cart), f64::from(default));
@@ -3035,16 +3152,30 @@ mod tests {
             cart.to_nbt([0; 4], None).get("DisplayOffset"),
             Some(&Tag::Int(6))
         );
+        // And a chest cart saved with 6, the base default, keeps it too.
+        let saved = saved_cart(CartKind::Chest, &[("DisplayOffset", Tag::Int(6))]);
+        let cart = Minecart::from_nbt(&saved, 1, CartKind::Chest).unwrap();
+        assert_eq!(display_offset(&cart), 6.0);
+        assert_eq!(
+            cart.to_nbt([0; 4], None).get("DisplayOffset"),
+            Some(&Tag::Int(6))
+        );
     }
 
     #[test]
     fn display_offset_matches_vanilla_for_each_cart_kind() {
+        // MinecartChest and MinecartHopper override getDefaultDisplayOffset;
+        // the rest keep AbstractMinecart's 6.
+        assert_eq!(default_display_offset(CartKind::Chest), 8.0);
         assert_eq!(default_display_offset(CartKind::Hopper), 1.0);
-        assert_eq!(default_display_offset(CartKind::Chest), 6.0);
         assert_eq!(default_display_offset(CartKind::Furnace), 6.0);
         assert_eq!(default_display_offset(CartKind::Tnt), 6.0);
         assert_eq!(default_display_offset(CartKind::CommandBlock), 6.0);
+        assert_eq!(default_display_offset(CartKind::Spawner), 6.0);
         assert_eq!(default_display_offset(CartKind::Rideable), 6.0);
+        // A cart without a saved offset draws at its kind's default.
+        let chest = Minecart::new(1, CartKind::Chest, Vec3::ZERO);
+        assert_eq!(display_offset(&chest), 8.0);
     }
 
     /// `MinecartSpawner`: its `BaseSpawner` is saved and loaded with the cart (the delay, the
