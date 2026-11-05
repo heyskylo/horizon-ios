@@ -42,6 +42,14 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
 
+### Chunk pregeneration (`pregen`, default off)
+- Makes `/pregen` available in single-player and hosted LAN worlds, with the existing cheat and
+  permission checks. It does not start generation: run `/pregen start` explicitly.
+- Saved with the other Extras settings and applied immediately; no launch argument or restart is
+  needed. `--pregen` still enables it for the whole run. Dedicated servers use their own property.
+- Turning it off hides the command without cancelling an existing task; turn it on again to manage
+  that task, or cancel it first. See [pregeneration](pregeneration.md).
+
 ### Fullbright (`fullbright`, default off)
 - Displays blocks and entities with a fully bright lightmap, including in dark caves.
 - Turning it off restores the normal lightmap using the current brightness,
