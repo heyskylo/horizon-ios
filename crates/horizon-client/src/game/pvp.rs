@@ -557,11 +557,11 @@ impl Game<'_> {
         ];
         // The editor shows a widget with nothing to show yet by its name.
         let editing = self.hud_editing();
-        let mut stand_in = Vec::new();
         for (id, on, corner, lines, size) in widgets {
             if !on {
                 continue;
             }
+            let stand_in;
             let (lines, size) = match lines.is_empty() {
                 false => (lines, size),
                 true if editing => {
