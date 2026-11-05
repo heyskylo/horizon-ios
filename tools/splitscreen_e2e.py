@@ -353,6 +353,32 @@ def scenario_switch():
         g.quit()
 
 
+def scenario_controller_profiles():
+    print('controller_profiles: P2 sees and changes its own controller settings, not P1\'s')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+
+        def labels(n):
+            return [w.get('label') or '' for w in g.ctl(n, 'ui')['widgets']]
+
+        g.ctl(2, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P2' in l for l in labels(2)), 'P2 named on its screen')
+        g.ctl(2, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(2)), 'the Device page')
+        g.ctl(2, 'click-button', next(l for l in labels(2) if l.startswith('Vibration')))
+        saved = lambda: [p for p in g.home.rglob('horizon-controller.txt') if 'vibration:false' in p.read_text()]
+        g.wait(saved, 'P2 saved its vibration')
+        check('only P2 has it', [p.parent.name for p in saved()], ['P2'])
+        g.ctl(1, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P1' in l for l in labels(1)), 'P1 named on its screen')
+        g.ctl(1, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(1)), 'P1\'s Device page')
+        check('P1 keeps its own', next(l for l in labels(1) if l.startswith('Vibration')).endswith('ON'), True)
+    finally:
+        g.quit()
+
+
 def scenario_bumpers():
     print('bumpers: reorder views, move into a new window, return and join there')
     g = Game(2, HORIZON_SPLIT_PICK='1')
@@ -1298,6 +1324,7 @@ def scenario_custom_skin():
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
+    'controller_profiles': scenario_controller_profiles,
     'custom_skin': scenario_custom_skin,
     'four': scenario_four,
     'windows': scenario_windows,

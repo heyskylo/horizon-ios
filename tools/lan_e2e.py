@@ -12663,8 +12663,6 @@ def check_datapack_recipe(host, guest, out):
     host's window and of a guest (#6733). Vanilla's CraftingMenu.slotChangedCraftingGrid sets the
     result on the server and ClientboundContainerSetSlotPacket sends slot 0: the window shows the
     server's, not a result of its own recipes. The world reopens to load the pack."""
-    if not SERVER_THREAD:
-        return {'skipped': "the reopen is the server thread's"}
     pack = host.work / 'saves' / 'Lan' / 'datapacks' / 'repro'
     (pack / 'data/repro/recipe').mkdir(parents=True, exist_ok=True)
     (pack / 'pack.mcmeta').write_text('{"pack":{"description":"repro","min_format":[121,0],"max_format":[121,0]}}')
