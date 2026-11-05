@@ -99,9 +99,8 @@ impl Game<'_> {
         };
         let done = c.cook_tick();
         for (_, item) in done {
-            let result = self
-                .res
-                .recipes()
+            // The world's table, as placing the item (`self.recipes()`) asked.
+            let result = world_recipes!(self)
                 .cook(KIND, &item)
                 .map_or_else(|| item.clone(), |r| r.result.clone());
             self.native_block_cook([pos.0, pos.1, pos.2], &item.item, &result.item);

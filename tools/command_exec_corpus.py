@@ -1798,6 +1798,10 @@ def progression():
 
 
 def advancement_reward_fixtures(group_names):
+    if 'crafting recipe priority' in group_names:
+        return {f'h295:{name}': {'criteria': {'crafted': {
+                    'trigger': 'minecraft:crafter_recipe_crafted', 'conditions': {'recipes': recipe}}}}
+                for name, recipe in [('custom_crafted', 'parity:aaa_star'), ('wrong_recipe', 'parity:zzz_star')]}
     if 'advancement reward functions' not in group_names:
         return {}
     def advancement(function=None):
@@ -4790,6 +4794,59 @@ def mining_efficiency_9021():
 
 
 
+def crafter_map_extension():
+    """Actual empty-map use, then scheduled crafter matching and saved-map derivation."""
+    def map_state(id, value):
+        return {'op': 'map_state', 'id': id, 'expect_map': value}
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone',
+                '/tp @s 8.5 200 8.5 0 0', '/gamemode survival', '/clear @s',
+                '/item replace entity @s weapon.mainhand with minecraft:map',
+                '/scoreboard objectives add crafter_map dummy',
+                '/data modify storage h298:identity uuid set from entity @s UUID')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s SelectedItem'),
+            map_state(0, 'missing'), {'op': 'use_item'},
+            cmd('/data get entity @s SelectedItem'),
+            cmd('/execute if items entity @s weapon.mainhand minecraft:filled_map[minecraft:map_id=0]', expect_result=1),
+            map_state(0, 'scale=0,locked=false,center=0,0'),
+            {'op': 'crafter_max_map_fixture'},
+            map_state(31, 'scale=4,locked=false,center=960,960'),
+            map_state(99, 'missing')]
+    ops += setup('/clear @s')
+    for case, map_id in [('extend', 0), ('missing', 99), ('max_scale', 31), ('ordinary', None)]:
+        ops += setup('/setblock 4 200 5 air', '/setblock 4 200 4 air', '/setblock 4 200 3 air',
+                     '/setblock 4 200 3 chest[facing=south]',
+                     '/setblock 4 200 4 crafter[orientation=north_up]')
+        for i in range(9):
+            item = ('minecraft:oak_log' if i == 0 else 'minecraft:air') if map_id is None else (
+                f'minecraft:filled_map[minecraft:map_id={map_id}]' if i == 4 else 'minecraft:paper')
+            ops += setup(f'/item replace block 4 200 4 container.{i} with {item}')
+        ops += [cmd('/execute if block 4 200 4 minecraft:crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if block 4 199 4 minecraft:stone', expect_result=1),
+                cmd('/execute if block 4 200 3 minecraft:chest[facing=south]', expect_result=1),
+                cmd('/data get block 4 200 4 id'), cmd('/data get block 4 200 4 Items'),
+                cmd('/data get block 4 200 4 disabled_slots'), cmd('/data get block 4 200 3 Items')]
+        ops += setup('/execute store result score start crafter_map run time query gametime')
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                cmd('/execute if block 4 200 4 minecraft:crafter[triggered=true]', expect_result=1),
+                {'op': 'tick', 'n': 10},
+                cmd('/data get block 4 200 4 Items'), cmd('/data get block 4 200 3 Items')]
+        if case == 'extend':
+            ops += [cmd('/execute if items block 4 200 3 container.0 minecraft:filled_map[minecraft:map_id=1]', expect_result=1),
+                    cmd('/execute unless data block 4 200 3 Items[0].components."minecraft:map_post_processing"', expect_result=1),
+                    map_state(1, 'scale=1,locked=false,center=64,64')]
+        ops += [map_state(0, 'scale=0,locked=false,center=0,0'),
+                map_state(31, 'scale=4,locked=false,center=960,960')]
+        ops += setup('/execute store result score elapsed crafter_map run time query gametime',
+                     '/scoreboard players operation elapsed crafter_map -= start crafter_map')
+        ops += [cmd('/scoreboard players get elapsed crafter_map', expect_result=10)]
+    ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
+    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map')
+
+
 def advancement_loot_fixtures(group_names):
     advancements, tables = {}, {}
     if 'advancement world loot rewards' in group_names:
@@ -4959,6 +5016,107 @@ def bell_server_glow():
             if scene != 1 and sample == 49:
                 ops += [cmd(f'/data get entity @e[tag=h288_{scene}_witch,limit=1] active_effects[{{id:"minecraft:glowing"}}].duration', expect_result=56)]
     return ops + setup('/scoreboard objectives remove bell_clock')
+
+
+def crafting_priority_recipes(group_names):
+    if 'crafting recipe priority' not in group_names:
+        return {}
+    def recipe(inputs, item, count=1):
+        return {'type': 'minecraft:crafting_shapeless', 'ingredients': ['minecraft:' + x for x in inputs],
+                'result': {'id': 'minecraft:' + item, 'count': count}}
+    # Write deliberately out of selection order; resource registration decides priority.
+    return {'parity:zzz_star': recipe(['gunpowder', 'red_dye'], 'emerald'),
+            'parity:aaa_star': recipe(['gunpowder', 'blue_dye'], 'diamond'),
+            'a_priority:z_h295_pick': recipe(['gold_nugget', 'paper'], 'diamond'),
+            'z_priority:a_h295_pick': recipe(['gold_nugget', 'paper'], 'emerald'),
+            'z_priority:h295_equal': recipe(['coal', 'paper'], 'emerald'),
+            'a_priority:h295_equal': recipe(['coal', 'paper'], 'gold_nugget', 3),
+            'parity:h295_resource': recipe(['clay_ball', 'paper'], 'brick'),
+            'parity:h295_resource-early': recipe(['clay_ball', 'paper'], 'nether_brick'),
+            'minecraft:oak_planks': recipe(['oak_log'], 'gold_ingot', 2),
+            'parity:zzzz_h295_unique': recipe(['apple', 'amethyst_shard'], 'quartz', 5)}
+
+
+def crafting_recipe_priority(world=True):
+    """Fresh natural crafters distinguish world selection, resource order and ID replacement."""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone',
+                '/tp @s 8.5 200 8.5 0 0', '/clear @s', '/recipe take @s *',
+                '/scoreboard objectives add recipe_order dummy',
+                '/data modify storage h295:identity uuid set from entity @s UUID')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
+    if world:
+        for id in crafting_priority_recipes(['crafting recipe priority']):
+            ops += [cmd('/recipe give @s ' + id, expect_result=1)]
+        cases = [('early', ['gunpowder', 'blue_dye'], 'diamond', 1),
+                 ('late', ['gunpowder', 'red_dye'], 'firework_star', 1),
+                 ('path_before_namespace', ['gold_nugget', 'paper'], 'emerald', 1),
+                 ('same_path_namespace', ['coal', 'paper'], 'gold_nugget', 3),
+                 ('resource_file_prefix', ['clay_ball', 'paper'], 'nether_brick', 1),
+                 ('base_id_replacement', ['oak_log'], 'gold_ingot', 2),
+                 ('late_world_only', ['apple', 'amethyst_shard'], 'quartz', 5),
+                 ('ordinary', ['birch_log'], 'birch_planks', 4)]
+    else:
+        cases = [('base_star', ['gunpowder', 'blue_dye'], 'firework_star', 1),
+                 ('base_planks', ['oak_log'], 'oak_planks', 4),
+                 ('ordinary', ['birch_log'], 'birch_planks', 4)]
+    for label, inputs, output, count in cases:
+        ops += setup('/setblock 4 200 5 air', '/setblock 4 200 4 air', '/setblock 4 200 3 air',
+                     '/setblock 4 200 3 chest[facing=south]', '/setblock 4 200 4 crafter[orientation=north_up]')
+        for i, item in enumerate(inputs):
+            ops += setup(f'/item replace block 4 200 4 container.{i} with minecraft:{item} 1')
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+                cmd('/execute if block 4 199 4 stone', expect_result=1),
+                cmd('/execute if block 4 200 4 crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if block 4 200 3 chest[facing=south]', expect_result=1),
+                cmd('/data get block 4 200 4 id'), cmd('/data get block 4 200 4 Items'),
+                cmd('/data get block 4 200 4 disabled_slots'), cmd('/data get block 4 200 3 Items')]
+        for i, item in enumerate(inputs):
+            ops += [cmd(f'/execute if items block 4 200 4 container.{i} minecraft:{item}', expect_result=1)]
+        ops += setup('/execute store result score start recipe_order run time query gametime')
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                cmd('/execute if block 4 200 4 crafter[triggered=true]', expect_result=1),
+                {'op': 'tick', 'n': 10}, cmd('/data get block 4 200 4 Items'),
+                cmd('/execute unless data block 4 200 4 Items[]', expect_result=1),
+                cmd('/data get block 4 200 3 Items'),
+                cmd(f'/execute if items block 4 200 3 container.0 minecraft:{output}', expect_result=count),
+                cmd(f'/execute if data block 4 200 3 Items[{{Slot:0b,id:"minecraft:{output}",count:{count}}}]', expect_result=1)]
+        ops += setup('/execute store result score elapsed recipe_order run time query gametime',
+                     '/scoreboard players operation elapsed recipe_order -= start recipe_order')
+        ops += [cmd('/scoreboard players get elapsed recipe_order', expect_result=10)]
+    if world:
+        # Open-air ejection exercises the existing trigger route, independently
+        # of insertion into a chest. The wrong recipe is a negative control.
+        for advancement in ['h295:custom_crafted', 'h295:wrong_recipe']:
+            ops += [cmd('/advancement grant @s only ' + advancement, expect_result=1),
+                    cmd('/advancement revoke @s only ' + advancement, expect_result=1),
+                    cmd('/execute unless entity @s[advancements={' + advancement + '=true}]', expect_result=1)]
+        ops += setup('/kill @e[type=item]', '/setblock 4 200 5 air', '/setblock 4 200 4 air',
+                     '/setblock 4 200 3 air', '/setblock 4 200 4 crafter[orientation=north_up]',
+                     '/item replace block 4 200 4 container.0 with gunpowder 1',
+                     '/item replace block 4 200 4 container.1 with blue_dye 1')
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+                cmd('/execute if block 4 199 4 stone', expect_result=1),
+                cmd('/execute if block 4 200 3 air', expect_result=1),
+                cmd('/execute if block 4 200 4 crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if items block 4 200 4 container.0 gunpowder', expect_result=1),
+                cmd('/execute if items block 4 200 4 container.1 blue_dye', expect_result=1)]
+        ops += setup('/execute store result score start recipe_order run time query gametime')
+        # Invoke the real block tick in the connected owner's context. Ordinary
+        # server ticks have no acting player in this harness; recipient dispatch
+        # is a separate route and is not repaired by recipe-ID normalization.
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                {'op': 'crafter_tick', 'pos': [4, 200, 4]}, {'op': 'tick', 'n': 10},
+                cmd('/execute unless data block 4 200 4 Items[]', expect_result=1),
+                cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:diamond",count:1}}]', expect_result=1),
+                cmd('/execute if entity @s[advancements={h295:custom_crafted=true}]', expect_result=1),
+                cmd('/execute unless entity @s[advancements={h295:wrong_recipe=true}]', expect_result=1)]
+        ops += setup('/execute store result score elapsed recipe_order run time query gametime',
+                     '/scoreboard players operation elapsed recipe_order -= start recipe_order')
+        ops += [cmd('/scoreboard players get elapsed recipe_order', expect_result=10)]
+    ops += setup('/execute store success score identity_changed recipe_order run data modify storage h295:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get identity_changed recipe_order', expect_result=0)]
+    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove recipe_order')
 
 
 def advancement_reward_functions():
@@ -5163,8 +5321,189 @@ def mob_team_command_names():
     return out
 
 
+def reinforcement_room(legacy=False):
+    ops = setup('/tick freeze', '/gamerule spawn_mobs false', '/gamerule spawn_monsters true',
+                '/gamerule mob_drops false', '/gamerule advance_time false', '/scoreboard objectives add h300 dummy',
+                '/forceload add -64 -64 63 63', '/tp @s 0.5 -63 3.5 0 0')
+    ops += [{'op': 'settle'}]
+    for x in range(-64, 64, 16):
+        for z in range(-64, 64, 16):
+            ops += [cmd(f'/execute if loaded {x} -63 {z}', expect_result=1)]
+    if not legacy:
+        # Reinforcement foot offsets can reachY-23. Solid foot cells exclude
+        # generated caves above the room; the original roof/floor stay unchanged.
+        # Prime each band with air so its stone ACK proves the complete volume.
+        for y in range(-59, -22, 3):
+            top = min(y + 2, -23)
+            ops += setup(f'/fill -50 {y} -50 50 {top} 50 air')
+            ops += [cmd(f'/fill -50 {y} -50 50 {top} 50 stone', expect_result=101 * 101 * (top - y + 1))]
+        for pos, block in [('-40 -23 -40', 'stone'), ('40 -59 40', 'stone'),
+                           ('0 -56 0', 'stone')]:
+            ops += [cmd(f'/execute if block {pos} {block}', expect_result=1)]
+    ops += setup('/fill -50 -63 -50 50 -61 50 air', '/fill -50 -64 -50 50 -64 50 air',
+                 '/fill -50 -60 -50 50 -60 50 air')
+    ops += [cmd('/fill -50 -64 -50 50 -64 50 stone', expect_result=10201),
+            cmd('/fill -50 -60 -50 50 -60 50 stone', expect_result=10201), {'op': 'settle'}]
+    if not legacy:
+        for pos, block in [('0 -63 0', 'air'), ('0 -60 0', 'stone'), ('0 -64 0', 'stone')]:
+            ops += [cmd(f'/execute if block {pos} {block}', expect_result=1)]
+    for x, z in [(0, 0), (-16, -16), (-16, 16), (16, -16), (16, 16)]:
+        ops += [{'op': 'light', 'pos': [x, -63, z], 'expect_light': [0, 0]}]
+    ops += setup('/gamerule spawn_mobs true', '/kill @e[type=zombie]', '/kill @e[type=zombified_piglin]',
+                 '/execute store result score start h300 run time query gametime',
+                 '/data modify storage h300:actor uuid set from entity @s UUID')
+    ops += [cmd('/gamerule spawn_mobs', expect_result=1), cmd('/gamerule spawn_monsters', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[0.5d,-63d,3.5d],Health:20f}]', expect_result=1)]
+    return ops
+
+def command_zombie_reinforcements(once=False, raw=False, legacy=False):
+    """Frozen accepted command hits, with typed random facts and additive raw snapshots."""
+    ops = reinforcement_room(legacy) + setup('/scoreboard objectives add parity dummy')
+    original_rows = []
+    def original(label, command):
+        op = cmd(command)
+        op['label'] = 'h300 original/' + label
+        original_rows.append(label)
+        return [op]
+    def clean(difficulty):
+        # Cleanup must not make a hurt callee call again: peaceful before /kill.
+        return setup('/difficulty peaceful', '/kill @e[type=zombie]', '/kill @e[type=zombified_piglin]',
+                     '/difficulty ' + difficulty)
+    def subject(kind, serial, tag):
+        return setup(f'/summon {kind} 0.5 -63 0.5 {{UUID:[I;300,0,0,{serial}],NoAI:1b,Tags:["{tag}"]}}') + [
+            cmd(f'/execute if entity @e[type={kind},tag={tag},nbt={{UUID:[I;300,0,0,{serial}],NoAI:1b,Health:20f,Pos:[0.5d,-63d,0.5d]}}]', expect_result=1),
+            cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Pos:[0.5d,-63d,3.5d],Health:20f}]', expect_result=1)]
+    def chance(selector, value=1):
+        return [cmd(f'/attribute {selector} minecraft:spawn_reinforcements base set {value}', expect_result=1),
+                cmd(f'/attribute {selector} minecraft:spawn_reinforcements base get', expect_result=value),
+                cmd(f'/attribute {selector} minecraft:spawn_reinforcements get', expect_result=1)]
+    def read(command, success, result_name='#value', objective='parity'):
+        return setup(f'/scoreboard players set {result_name} {objective} -99',
+                     '/scoreboard players set read_ok h300 -99',
+                     f'/execute store result score {result_name} {objective} store success score read_ok h300 run {command}') + [
+                         cmd('/scoreboard players get read_ok h300', expect_result=success)]
+    def clock(expected):
+        return setup('/execute store result score elapsed h300 run time query gametime',
+                     '/scoreboard players operation elapsed h300 -= start h300') + [cmd('/scoreboard players get elapsed h300', expect_result=expected)]
+    def callee(kind, parent_tag, case):
+        target = f'@e[type={kind},tag=!{parent_tag},limit=1]'
+        charge = 'minecraft:reinforcement_callee_charge'
+        out = [cmd(f'/execute if entity @e[type={kind},tag=!{parent_tag}]', expect_result=1)]
+        out += setup(f'/data modify storage h300:callees {case} set from entity {target}')
+        out += read(f'data get entity {target} UUID', 1, 'uuid_length', 'h300')
+        out += [cmd('/scoreboard players get uuid_length h300', expect_result=4),
+                cmd(f'/execute if data entity {target} attributes[{{id:"minecraft:spawn_reinforcements"}}].modifiers[{{id:"{charge}",amount:-0.05000000074505806d,operation:"add_value"}}]', expect_result=1)]
+        out += read(f'data get entity {target} Health 1000', 1, 'health', 'h300')
+        out += [cmd('/execute if score health h300 matches 1..', expect_result=1)]
+        for axis, bounds in enumerate(['-40..40', '-63', '-40..40']):
+            out += read(f'data get entity {target} Pos[{axis}]', 1, 'coordinate', 'h300')
+            out += [cmd(f'/execute if score coordinate h300 matches {bounds}', expect_result=1)]
+        out += [cmd(f'/execute at {target} if block ~ ~-1 ~ stone', expect_result=1)]
+        out += read(f'attribute {target} minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus 1000', 1)
+        out += [cmd('/execute if score #value parity matches 0..50', expect_result=1)]
+        if not legacy:
+            # A random baby may be a chicken jockey. These strict conditional
+            # facts never equate a missing entity with a successful query. The raw
+            # diagnostic retains vehicle presence and full snapshots separately.
+            out += setup('/scoreboard players set vehicle_present h300 0',
+                         f'/execute as {target} on vehicle run scoreboard players set vehicle_present h300 1',
+                         f'/data remove storage h300:vehicles {case}',
+                         f'/execute as {target} on vehicle run data modify storage h300:vehicles {case} set from entity @s',
+                         f'/data modify storage h300:rider uuid set from entity {target} UUID')
+            facts = [
+                (f'execute as {target} on vehicle if entity @s[type=chicken,nbt={{Health:4f}}]', '1', 1),
+                (f'execute as {target} on vehicle run data get entity @s UUID', '4', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[0]', '-40..40', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[1]', '-63', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[2]', '-40..40', 1),
+                (f'execute as {target} on vehicle at @s if block ~ ~-1 ~ stone', '1', 1),
+                (f'execute as {target} on vehicle on passengers if entity @s[type={kind},tag=!{parent_tag}]', '1', 1),
+                (f'execute as {target} on vehicle on passengers run data modify storage h300:rider uuid set from entity @s UUID', '0', 0),
+            ]
+            for command, bounds, success in facts:
+                out += setup('/scoreboard players set vehicle_ok h300 1',
+                             '/execute if score vehicle_present h300 matches 1 run scoreboard players set vehicle_ok h300 0',
+                             '/scoreboard players set vehicle_value h300 -99',
+                             '/scoreboard players set vehicle_read h300 -99',
+                             f'/execute store result score vehicle_value h300 store success score vehicle_read h300 run {command}',
+                             f'/execute if score vehicle_present h300 matches 1 if score vehicle_read h300 matches {success} if score vehicle_value h300 matches {bounds} run scoreboard players set vehicle_ok h300 1')
+                out += [cmd('/scoreboard players get vehicle_ok h300', expect_result=1)]
+        if raw:
+            if not legacy:
+                out += [cmd(f'/data get storage h300:vehicles {case}')]
+            op = cmd(f'/data get storage h300:callees {case}')
+            op['label'] = 'h300 raw snapshot/' + case
+            out.append(op)
+        return out
+
+    if once:
+        ops += clean('hard') + subject('zombie', 30, 'origin') + chance('@e[tag=origin,limit=1]')
+        ops += [cmd('/difficulty', expect_result=3),
+                cmd('/damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s', expect_result=1)]
+        ops += callee('zombie', 'origin', 'once') + clock(0)
+        # Guarantee eligibility if an erroneously retained event runs later: .95 is not sufficient.
+        ops += chance('@e[tag=origin,limit=1]', 2)
+        marked = '@e[type=zombie,nbt={attributes:[{id:"minecraft:spawn_reinforcements",modifiers:[{id:"minecraft:reinforcement_callee_charge"}]}]}]'
+        ops += [cmd('/execute if entity ' + marked, expect_result=1)]
+        ops += setup('/data modify storage h300:once uuid set from entity @e[type=zombie,tag=!origin,limit=1] UUID', '/tick unfreeze')
+        ops += [{'op': 'tick', 'n': 1}]
+        ops += setup('/tick freeze')
+        ops += [cmd('/execute if entity ' + marked, expect_result=1),
+                cmd('/execute if data entity @e[tag=origin,limit=1] attributes[{id:"minecraft:spawn_reinforcements"}].modifiers[{id:"minecraft:reinforcement_caller_charge",amount:-0.05d}]', expect_result=1)]
+        ops += setup('/execute store success score changed h300 run data modify storage h300:once uuid set from entity ' + marked[:-1] + ',limit=1] UUID')
+        ops += [cmd('/execute if entity ' + marked, expect_result=1), cmd('/scoreboard players get changed h300', expect_result=0)] + clock(1)
+    else:
+        for difficulty, serial in [('easy', 10), ('hard', 11)]:
+            ops += clean(difficulty) + subject('zombie', serial, 'origin')
+            ops += [cmd('/difficulty', expect_result=1 if difficulty == 'easy' else 3)]
+            # These are the same six original reads, with their failure flags retained separately.
+            ops += read('attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements base get 1000', 1)
+            ops += original(difficulty + '/summoned base range', '/execute if score #value parity matches 0..100')
+            ops += read('attribute @e[tag=origin,limit=1] minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus 1000', 0)
+            ops += original(difficulty + '/summoned knockback range', '/execute if score #value parity matches 0..50')
+            ops += setup('/execute store success score #value parity run attribute @e[tag=origin,limit=1] minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus')
+            ops += original(difficulty + '/summoned knockback exists', '/execute if score #value parity matches 1')
+            ops += chance('@e[tag=origin,limit=1]')
+            ops += original(difficulty + '/first hurt', '/damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s')
+            ops += original(difficulty + '/birth', '/execute if entity @e[type=zombie,tag=!origin]')
+            ops += original(difficulty + '/birth floor', '/execute if entity @e[type=zombie,tag=!origin,x=-60,y=-63.5,z=-60,dx=120,dy=1,dz=120]')
+            ops += original(difficulty + '/caller charge', '/attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_caller_charge')
+            ops += original(difficulty + '/callee charge', '/execute as @e[type=zombie,tag=!origin,limit=1] run attribute @s minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_callee_charge')
+            ops += read('attribute @e[type=zombie,tag=!origin,limit=1] minecraft:spawn_reinforcements base get 1000', int(difficulty == 'hard'))
+            ops += original(difficulty + '/callee base range', '/execute if score #value parity matches 0..100')
+            ops += original(difficulty + '/callee target', '/execute as @e[type=zombie,tag=!origin,limit=1] on target run data get entity @s Pos')
+            if difficulty == 'hard':
+                ops += callee('zombie', 'origin', 'hard')
+            ops += setup('/data modify storage h300:health value set from entity @e[tag=origin,limit=1] Health',
+                         '/scoreboard players set rejected_result h300 -99', '/scoreboard players set rejected_success h300 -99')
+            ops += [cmd('/execute store result score rejected_result h300 store success score rejected_success h300 run damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s'),
+                    cmd('/scoreboard players get rejected_result h300', expect_result=0), cmd('/scoreboard players get rejected_success h300', expect_result=0)]
+            ops += setup('/execute store success score changed h300 run data modify storage h300:health value set from entity @e[tag=origin,limit=1] Health')
+            ops += [cmd('/scoreboard players get changed h300', expect_result=0)]
+            ops += original(difficulty + '/charge after rejected hit', '/attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_caller_charge')
+            ops += original(difficulty + '/birth after rejected hit', '/execute if entity @e[type=zombie,tag=!origin]')
+        ops += clean('hard') + subject('zombified_piglin', 12, 'piglin')
+        ops += original('piglin/default chance', '/attribute @e[tag=piglin,limit=1] minecraft:spawn_reinforcements base get')
+        ops += chance('@e[tag=piglin,limit=1]')
+        ops += original('piglin/hurt', '/damage @e[tag=piglin,limit=1] 1 minecraft:player_attack by @s')
+        ops += original('piglin/birth', '/execute if entity @e[type=zombified_piglin,tag=!piglin]')
+        ops += callee('zombified_piglin', 'piglin', 'piglin')
+        ops += clean('hard') + setup('/summon zombified_piglin 0.5 -63 0.5 {UUID:[I;300,0,0,13],NoAI:1b,Tags:["piglin"],CanBreakDoors:1b}')
+        ops += [cmd('/execute if entity @e[type=zombified_piglin,tag=piglin,nbt={UUID:[I;300,0,0,13]}]', expect_result=1)]
+        ops += original('piglin/saved door flag', '/data get entity @e[tag=piglin,limit=1] CanBreakDoors')
+        ops += clean('hard') + subject('zombie', 14, 'origin') + chance('@e[tag=origin,limit=1]')
+        ops += original('no attacker/hurt', '/damage @e[tag=origin,limit=1] 1 minecraft:generic')
+        ops += original('no attacker/no birth', '/execute if entity @e[type=zombie,tag=!origin]')
+        assert len(original_rows) == 30
+        ops += clock(0)
+    ops += setup('/execute store success score changed h300 run data modify storage h300:actor uuid set from entity @s UUID')
+    ops += [cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,3.5d]}]', expect_result=1), cmd('/scoreboard players get changed h300', expect_result=0)]
+    return ops
+
+
 def groups():
     try:
+        from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
         from .carpet_farm_corpus import carpet_farms
@@ -5172,6 +5511,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
+        from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
         from carpet_farm_corpus import carpet_farms
@@ -5180,10 +5520,16 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('allay passive healing', allay_healing(cmd, setup)),
+        ('crafter map extension', crafter_map_extension()),
+
+
+        ('command zombie reinforcements', command_zombie_reinforcements()),
+        ('command reinforcement once', command_zombie_reinforcements(True)),
         ('advancement world loot rewards', advancement_world_loot_rewards()),
         ('advancement empty loot reference', advancement_empty_loot_reference()),
-
-
+        ('crafting recipe priority', crafting_recipe_priority()),
+        ('crafting base recipe control', crafting_recipe_priority(False)),
         ('item stack-size override merges', stack_limit_merges(cmd, setup)),
         ('moving piston command data', moving_piston_data(cmd, setup)),
         ('mob team command names', mob_team_command_names()),

@@ -6,6 +6,7 @@
 //! system message it produced, as styled spans, with the results reported to
 //! the player's `CommandResultCallback`; `tick` advances the game; `settle`
 //! waits until the terrain and entities around the player are loaded;
+//! `use_item` dispatches the main-hand server packet; `map_state` reads saved map metadata;
 //! `use_block` uses the main hand at a block top;
 //! `break` destroys a block as the server player; `portal` sends the player
 //! through the nether portal it stands in; `falling` counts physical falling
@@ -437,7 +438,7 @@ impl Game<'_> {
                     }
                     self.harness_owner(|g| g.harness_settle(deadline, op.get("required_chunks")))?;
                 }
-                "use_item" => {
+                "use_item" if op.get("sequence").is_some() => {
                     // Exercise the connected owner's normal server packet route.
                     let sequence = op["sequence"].as_i64().unwrap_or(0) as i32;
                     let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
@@ -483,6 +484,76 @@ impl Game<'_> {
                         Ok(())
                     })?;
                 }
+                // Java produced the fixture file before this world was opened; map_state loads it.
+                "crafter_max_map_fixture" => {}
+                "use_item" => {
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItem(
+                                horizon_protocol::packets::play::UseItem {
+                                    hand: 0,
+                                    sequence: 0,
+                                    yaw: 0.0,
+                                    pitch: 0.0,
+                                },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
+                "map_state" => {
+                    let id = op["id"].as_i64().ok_or("command harness: map id")? as i32;
+                    let value = self.harness_owner(|g| {
+                        Ok(match g.map(id) {
+                            Some(m) => format!(
+                                "scale={},locked={},center={},{}",
+                                m.scale, m.locked, m.center[0], m.center[1]
+                            ),
+                            None => "missing".to_owned(),
+                        })
+                    })?;
+                    let record = json!({"cmd": format!("#map_state {id}"),
+                        "messages": [spans(&Text::literal(value))], "results": []});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "light" => {
+                    let pos = std::array::from_fn::<_, 3, _>(|i| {
+                        op["pos"][i].as_i64().unwrap_or(0) as i32
+                    });
+                    let levels = self.harness_owner(|g| {
+                        use horizon_client::mobs::spawn_rules::SpawnLevel;
+                        let level = g.natural_level();
+                        Ok([
+                            level.block_light(pos[0], pos[1], pos[2]),
+                            level.sky_light(pos[0], pos[1], pos[2]),
+                        ])
+                    })?;
+                    let record = json!({"cmd": format!("#light {}", op["pos"]),
+                        "messages": [], "results": levels.map(|v| (true, v))});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
@@ -522,6 +593,17 @@ impl Game<'_> {
                         );
                         g.lan = Some(host);
                         Ok(())
+                    })?;
+                }
+                "crafter_tick" => {
+                    let [x, y, z] =
+                        std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    self.harness_owner(|g| {
+                        let state = g.world.block(x, y, z);
+                        if &*g.res.facts().get(state).name != "minecraft:crafter" {
+                            return Err("command harness: crafter tick without a crafter".into());
+                        }
+                        g.dispense_from(horizon_core::position::BlockPos::new(x, y, z), state)
                     })?;
                 }
                 "break" => {

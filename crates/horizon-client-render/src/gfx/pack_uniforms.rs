@@ -635,6 +635,9 @@ impl FrameUniforms {
     }
 
     /// `hz_fog_color` and `hz_fog` of the translator's block (the compatibility `gl_Fog`).
+    /// Its density is `fogDensity`'s (0): Iris 1.11.7 gave `gl_Fog.density` 0, not 1, in every
+    /// program kind our probe pack read it in (gbuffers_terrain and deferred, in a cave and in
+    /// the Nether), where `fogDensity` read 0 too.
     pub fn fog(&self) -> [Vec4; 2] {
         let get = |name| match index(name).and_then(|i| self.values.get(i)) {
             Some(Value::F(f)) => *f,
@@ -643,7 +646,12 @@ impl FrameUniforms {
         let (color, start, end) = (get("fogColor"), get("fogStart")[0], get("fogEnd")[0]);
         [
             Vec4::new(color[0], color[1], color[2], 1.0),
-            Vec4::new(1.0, start, end, 1.0 / (end - start).max(1e-3)),
+            Vec4::new(
+                get("fogDensity")[0],
+                start,
+                end,
+                1.0 / (end - start).max(1e-3),
+            ),
         ]
     }
 }
@@ -1356,6 +1364,29 @@ mod initial_history_tests {
         assert_eq!(int(&u, index("entityId").unwrap()), 0);
         assert_eq!(int(&u, index("fogMode").unwrap()), 0);
         assert_eq!(int(&u, index("fogShape").unwrap()), -1);
+    }
+
+    /// Iris 1.11.7, read back with a probe pack in gbuffers_terrain and in deferred, in a cave
+    /// (fog 0 to 1024) and in the Nether (fog 10 to 96): `gl_Fog` holds the fog's colour, start
+    /// and end, a scale of 1 / (end - start), and a density of 0, not 1.
+    #[test]
+    fn the_compatibility_gl_fog_has_no_density() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        f.fog = Some(crate::fog::FogData {
+            color: [0.09, 0.24, 0.23, 1.0],
+            environmental_start: 10.0,
+            environmental_end: 96.0,
+            render_distance_start: 172.8,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 1024.0,
+        });
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        let [color, fog] = u.fog();
+        assert_eq!(color.truncate(), Vec3::new(0.09, 0.24, 0.23));
+        assert_eq!(fog, Vec4::new(0.0, 10.0, 96.0, 1.0 / 86.0));
     }
 
     /// Iris 1.11.7 (probe pack): gbuffers programs read fogMode GL_LINEAR (9729) and fogShape 1

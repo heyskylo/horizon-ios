@@ -549,6 +549,9 @@ pub enum GpuCullingOffer {
     /// DX12 with flat page groups, whose count draws leave each draw's base vertex out of
     /// what the near sections' packed faces are read by (`gpu_culling::loses_base_vertex`).
     Dx12 = 3,
+    /// The graphics device was lost while its frames were drawn (`lose_gpu_culling`): off
+    /// for the renderers after it, until Horizon restarts.
+    DeviceLost = 5,
     Offered = 4,
 }
 impl GpuCullingOffer {
@@ -559,6 +562,7 @@ impl GpuCullingOffer {
             Self::Software => Some("Not with software rendering, which runs it on the CPU."),
             Self::OutOfMemory => Some("Out of video memory: off until the next start."),
             Self::Dx12 => Some("Not on DirectX 12 yet: try the Vulkan graphics API."),
+            Self::DeviceLost => Some("The graphics device was lost: off until the next start."),
             Self::Offered => None,
         }
     }
@@ -574,8 +578,19 @@ pub fn gpu_culling_offer() -> GpuCullingOffer {
         2 => GpuCullingOffer::OutOfMemory,
         3 => GpuCullingOffer::Dx12,
         4 => GpuCullingOffer::Offered,
+        5 => GpuCullingOffer::DeviceLost,
         _ => GpuCullingOffer::Unsupported,
     }
+}
+/// Set once the graphics device was lost while GPU culling drew the frames (the game's
+/// `recover_device`): the renderers made after it don't offer it (`GpuCullingOffer::DeviceLost`),
+/// so a fault in its frames can't lose the device again after every recovery.
+static GPU_CULLING_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn lose_gpu_culling() {
+    GPU_CULLING_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn gpu_culling_lost() -> bool {
+    GPU_CULLING_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
@@ -661,6 +676,8 @@ pub struct Graphics {
     pub gpu_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
+    /// Minimum entity population for coarse AABB culling; zero disables it.
+    pub entity_culling_precheck: u32,
     /// Skip particles outside the view or hidden behind opaque terrain.
     pub particle_culling: ParticleCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
@@ -769,6 +786,7 @@ impl Default for Graphics {
             cave_culling: true,
             gpu_culling: false,
             entity_culling: EntityCullingMode::Off,
+            entity_culling_precheck: 64,
             particle_culling: ParticleCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             cache_shulker_boxes: false,
@@ -866,6 +884,9 @@ impl Graphics {
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "gpuCulling" => g.gpu_culling = flag(g.gpu_culling),
                 "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
+                "entityCullingPrecheck" => {
+                    g.entity_culling_precheck = number(g.entity_culling_precheck).min(512)
+                }
                 "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "blockEntityCache" => {
@@ -959,12 +980,13 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             self.entity_culling.name(),
+            self.entity_culling_precheck,
             self.particle_culling.name(),
             self.leaf_culling.name(),
             bool_text(self.cache_shulker_boxes),
@@ -1153,6 +1175,7 @@ mod tests {
             cave_culling: false,
             gpu_culling: true,
             entity_culling: EntityCullingMode::Synchronous,
+            entity_culling_precheck: 128,
             particle_culling: ParticleCullingMode::Asynchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             cache_shulker_boxes: true,

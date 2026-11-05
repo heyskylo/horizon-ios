@@ -6,7 +6,7 @@
 //! A cushion is a `BlockAttachedEntity`, not a block: it has no block state,
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
-use super::{Game, Hit, InteractTarget};
+use super::{Game, Hit, InteractTarget, Keys, entity_culling::default_range, ray_box};
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
@@ -149,7 +149,7 @@ impl Game<'_> {
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, c) in self.cushions.iter().enumerate() {
-            let Some(d) = super::ray_box(eye, dir, reach, aabb(c.bounds())) else {
+            let Some(d) = ray_box(eye, dir, reach, aabb(c.bounds())) else {
                 continue;
             };
             if best.is_none_or(|b| d < b.1) {
@@ -525,7 +525,7 @@ impl Game<'_> {
     }
 
     /// `Player.rideTick` on a cushion: hold the seat, and get up on sneak.
-    pub(super) fn tick_cushion_riding(&mut self, keys: super::Keys) -> bool {
+    pub(super) fn tick_cushion_riding(&mut self, keys: Keys) -> bool {
         let Some(c) = self
             .cushions
             .iter()
@@ -560,14 +560,13 @@ impl Game<'_> {
         };
         let sprites = &self.gui.atlas.sprites;
         for c in &self.cushions {
-            let entity_start = out.len();
             let a = aabb(c.bounds());
             let (lo, hi) = (a.min_position(), a.max_position());
             let (lo, hi) = (
                 glam::DVec3::new(lo.x, lo.y, lo.z),
                 glam::DVec3::new(hi.x, hi.y, hi.z),
             );
-            let range = super::entity_culling::default_range(hi - lo, self.view_scale());
+            let range = default_range(hi - lo, self.view_scale());
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
                 continue;
             }
@@ -577,6 +576,11 @@ impl Game<'_> {
             else {
                 continue;
             };
+            let culling = self.entity_cull_decision(c, 1.0);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let p = glam::DVec3::new(c.position.x, c.position.y, c.position.z) - camera;
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((180.0 - snap_yaw(c.yaw)).to_radians())
@@ -599,7 +603,7 @@ impl Game<'_> {
                 0,
                 out,
             );
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, c, out, entity_start);
         }
     }
 }
