@@ -104,6 +104,8 @@ def main():
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
+    parser.add_argument("--pufferfish-mob-fixture", action="store_true")
+    parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -187,6 +189,9 @@ def main():
     if args.boat_item_hit_fixture:
         from boat_item_hit_corpus import boat_item_hits
         groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
+    if args.pufferfish_mob_fixture:
+        from pufferfish_mob_contact_corpus import mob_contacts
+        groups = [("pufferfish mob contact", mob_contacts(args.pufferfish_mob_duration_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:

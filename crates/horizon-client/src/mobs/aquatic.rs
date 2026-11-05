@@ -407,7 +407,7 @@ pub fn not_scary_for_pufferfish(s: Species) -> bool {
 /// not tested), and each one takes `Pufferfish.touch`: `doTeamsAllowDamage`,
 /// then a `mobAttack` hit for `getPuffState() + 1`. The poison and the sting
 /// sound follow a hit that landed, which only the game layer knows.
-fn sting_touching_mobs(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+pub(super) fn sting_touching_mobs(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !m.alive() || m.extra.size <= 0 {
         return;
     }
@@ -1235,7 +1235,60 @@ mod school_tests {
 mod pufferfish_sting_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
+    use horizon_core::random::LegacyRandom;
     use std::sync::Arc;
+
+    #[test]
+    fn mob_tick_dispatches_puffed_contacts_with_or_without_ai() {
+        with_test_world(&[], |w, types| {
+            let target = Mob::new(
+                2,
+                Arc::new(types.types["minecraft:pig"].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            let others = [target.seen(None)];
+            let world = MobWorld {
+                others: &others,
+                ..w.clone()
+            };
+            for no_ai in [true, false] {
+                for puff in [0, 2] {
+                    let mut fish = Mob::new(
+                        1,
+                        Arc::new(types.types["minecraft:pufferfish"].clone()),
+                        Vec3::new(0.5, 64.0, 0.5),
+                        0.0,
+                    );
+                    fish.no_ai = no_ai;
+                    fish.no_gravity = true;
+                    fish.persistent = true;
+                    fish.extra.size = puff;
+                    let mut events = Vec::new();
+                    assert!(fish.tick(&world, &mut LegacyRandom::new(0), &mut events));
+                    let stings: Vec<_> = events
+                        .iter()
+                        .filter_map(|event| match event {
+                            MobEvent::PufferfishSting {
+                                target,
+                                amount,
+                                source,
+                                poison_ticks,
+                                ..
+                            } => Some((*target, *amount, *poison_ticks, source.attacker)),
+                            _ => None,
+                        })
+                        .collect();
+                    let expected = if puff == 2 {
+                        vec![(2, 3.0, 120, Some(Who::Mob(1)))]
+                    } else {
+                        Vec::new()
+                    };
+                    assert_eq!(stings, expected, "NoAI={no_ai}, puff={puff}");
+                }
+            }
+        });
+    }
 
     /// What a pufferfish puffed to `puff` stings in one `ai_step`, as
     /// `(target, damage)`, with `others` standing `x` blocks east of it.
