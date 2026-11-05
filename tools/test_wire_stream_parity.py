@@ -462,7 +462,8 @@ def main():
     parser.add_argument('--out', default=str(lab.LOCAL / 'wire-stream-parity'))
     parser.add_argument('--scenarios', default=','.join(SCENARIOS), type=lambda s: s.split(','))
     parser.add_argument('--clients', default='vanilla,horizon', type=lambda s: s.split(','),
-                        help=argparse.SUPPRESS)
+                        help='capture only these (a loaded machine whose vanilla client fails to log in: rerun '
+                             'horizon alone, copy an earlier vanilla.jsonl into --out, then --compare-only)')
     parser.add_argument('--compare-only', action='store_true', help='compare the captures already in --out')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folders')
     args = parser.parse_args()
@@ -479,6 +480,9 @@ def main():
             captures = run(args, out)
         except Failed as e:
             sys.exit(f'FAIL: {e}')
+        if len(captures) < 2:
+            print(f'captured {", ".join(captures)} in {out}; nothing to compare it with')
+            return
     try:
         results = compare(captures, args.scenarios)
     except Failed as e:
