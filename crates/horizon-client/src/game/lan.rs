@@ -497,7 +497,9 @@ fn mob_meta(
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    let kind = m.kind.id.as_str();
+    // The entries are the class's: a content mod's living type has its
+    // template's.
+    let kind = m.kind.class_id();
     // Entity.DATA_SHARED_FLAGS_ID: on fire 0x01, sprinting 0x08 (a dashing
     // cat or ocelot), swimming 0x10 (a drowned under water,
     // `Drowned.setSwimming`), invisible 0x20 (the effect's flag) and glowing
@@ -3634,14 +3636,63 @@ mod tests {
     /// the raider celebrates.
     #[test]
     fn a_celebrating_raider_is_sent_by_mob_meta() {
-        use horizon_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data, hub};
         let Some(mut pillager) = mob_of("minecraft:pillager") else {
             return;
         };
+        let hub = meta_hub("RaiderMetaTest");
+        let meta_of = |m: &Mob| {
+            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+            super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
+            (meta, defaults)
+        };
+
+        let (meta, defaults) = meta_of(&pillager);
+        assert!(defaults.contains(&(16, serializer::BOOLEAN, Value::Bool(false))));
+        assert!(meta.iter().all(|e| e.0 != 16), "{meta:?}");
+        horizon_client::mobs::raider::state_mut(&mut pillager).celebrating = true;
+        let (meta, _) = meta_of(&pillager);
+        assert!(
+            meta.contains(&(16, serializer::BOOLEAN, Value::Bool(true))),
+            "{meta:?}"
+        );
+    }
+
+    /// A content mod's living type sends the entity data of its template's
+    /// class (`Zombie.DATA_BABY_ID`, the villager's unhappy counter), entry
+    /// for entry what its template sends.
+    #[test]
+    fn a_mod_living_type_sends_its_templates_entity_data() {
+        let types = super::super::mods::living_mod_types();
+        let hub = meta_hub("ModMobMetaTest");
+        let meta_of = |id: &str| {
+            let at = horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5);
+            let mut m = Mob::new(1, types[id].clone(), at, 0.0);
+            m.extra.age = -24000;
+            // The same health: the ghoul's own maximum is 40, the zombie's 20.
+            m.health = 10.0;
+            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+            super::mob_meta(&m, &hub, None, 0, &mut meta, &mut defaults);
+            (meta, defaults)
+        };
+        for (template, id) in [
+            ("minecraft:zombie", "ruby:ghoul"),
+            ("minecraft:villager", "ruby:settler"),
+        ] {
+            assert_eq!(
+                meta_of(id),
+                meta_of(template),
+                "{id} sends what {template} sends"
+            );
+        }
+    }
+
+    /// A hub with no players and empty registries, for `mob_meta`.
+    fn meta_hub(name: &str) -> horizon_client::lan::hub::Hub {
+        use horizon_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data, hub};
         let sync = std::sync::Arc::new(data::SyncData::empty());
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "RaiderMetaTest".into(), 2)
+            ..NetConfig::lan(0, name.into(), 2)
         };
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(
@@ -3664,22 +3715,7 @@ mod tests {
             integrated: false,
             levels: Default::default(),
         };
-        let hub = hub::Hub::new(lan, sync, encoder, hub_config);
-        let meta_of = |m: &Mob| {
-            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
-            super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
-            (meta, defaults)
-        };
-
-        let (meta, defaults) = meta_of(&pillager);
-        assert!(defaults.contains(&(16, serializer::BOOLEAN, Value::Bool(false))));
-        assert!(meta.iter().all(|e| e.0 != 16), "{meta:?}");
-        horizon_client::mobs::raider::state_mut(&mut pillager).celebrating = true;
-        let (meta, _) = meta_of(&pillager);
-        assert!(
-            meta.contains(&(16, serializer::BOOLEAN, Value::Bool(true))),
-            "{meta:?}"
-        );
+        hub::Hub::new(lan, sync, encoder, hub_config)
     }
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for

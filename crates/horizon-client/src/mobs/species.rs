@@ -1324,6 +1324,16 @@ pub const ALL: &[Def] = &[
 pub fn def(s: Species) -> &'static Def {
     ALL.iter().find(|d| d.species == s).unwrap_or(&ALL[0])
 }
+/// The vanilla entity type of a species, `minecraft:` and its [`Def::name`].
+pub fn vanilla_id(s: Species) -> &'static str {
+    static IDS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        ALL.iter()
+            .map(|d| format!("minecraft:{}", d.name))
+            .collect()
+    });
+    let index = ALL.iter().position(|d| d.species == s).unwrap_or(0);
+    &IDS[index]
+}
 impl Def {
     /// Model layer families to load for this entity (adult, baby, variants).
     pub fn layer_prefixes(&self) -> Vec<&'static str> {

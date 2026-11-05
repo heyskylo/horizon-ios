@@ -536,7 +536,9 @@ pub fn mob_to_nbt(
     ] {
         map.entry(key.into()).or_insert(value);
     }
-    let id = m.kind.id.as_str();
+    // What the mob's class saves: a content mod's living type saves as its
+    // template does (the `id` written above stays its own).
+    let id = m.kind.class_id();
     // AgeableMob.addAdditionalSaveData, only if canBeABaby (not a frog or a
     // parrot); a tadpole saves its own age.
     let species = m.species();
