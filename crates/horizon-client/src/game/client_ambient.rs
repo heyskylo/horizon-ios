@@ -38,7 +38,7 @@ impl Game<'_> {
                             .add(&ParticleOptions::simple(ty), at, velocity);
                     }
                 }
-                MobEvent::Particles { kind, at, count } if count == 0 => {
+                MobEvent::Particles { kind, at, count: 0 } => {
                     if let Some(ty) = ParticleType::from_name(kind) {
                         self.particles
                             .add(&ParticleOptions::simple(ty), at, [0.0; 3]);
