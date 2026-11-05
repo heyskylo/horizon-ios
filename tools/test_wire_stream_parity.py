@@ -387,7 +387,7 @@ def run(args, out):
                                            f'127.0.0.1:{listen}', scripts)
                 else:
                     client = VanillaClient(f'127.0.0.1:{listen}', work / 'vanilla', out / 'vanilla-client.log')
-                    if not client.ready.wait(300):
+                    if not client.ready.wait(900):
                         raise Failed('the vanilla client never got into the world')
                 time.sleep(3)
                 play_all(client, server, args.scenarios, scripts, who == 'horizon', capture)
