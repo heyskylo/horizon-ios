@@ -71,8 +71,8 @@ below); where HDR's settings live (a later note).
 | --- | --- | --- |
 | `hdr` | `u32` | 1 while the output is HDR, else 0. |
 | `headroom` | `f32` | The peak over paper white: the brightest value the display shows (Apple's EDR headroom, Android's HDR/SDR ratio). 1 in SDR. It changes while the game runs (the system's SDR white, a calibration, another display), so read it every frame. |
-| `paper_white` | `f32` | Paper white in nits; 0 in SDR (unknown). |
-| `peak` | `f32` | The peak brightness in nits; 0 in SDR. |
+| `paper_white` | `f32` | Paper white in nits; a nominal 80 in SDR (see the decisions at the end). |
+| `peak` | `f32` | The peak brightness in nits; a nominal 80 in SDR, as `paper_white`. |
 | `black_level` | `f32` | The display's black in nits (HDR's Black Level); 0 in SDR. |
 
 - **A `[tonemap]` stage**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's linear picture in, the
@@ -96,6 +96,7 @@ The frame depends on what draws the picture, not on the display:
 | HDR on, no pack | `Rgba16Float` | vanilla's gamma, values above 1 kept |
 | a 0.2 pack (SDR or HDR) | `Rgba16Float` | vanilla's gamma, values above 1 kept; linear light with `[frame] blend = "linear"` |
 | a 0.1 pack | as today | as today (see 0.1 packs) |
+| a `shaders/`-format pack | as today | as today, with nothing lifted in HDR (see `shaders/`-format packs) |
 
 **When it changes.** Today the frame's format is chosen when the renderer is made and then kept: HDR turned off keeps
 the 16-bit frame until the next start, and dropping a pack rebuilds nothing. A float frame can't stay behind like that,
@@ -212,7 +213,10 @@ beside it.
 
 ## `shaders/`-format packs
 
-They keep their own buffers and tone map to SDR in their last program, and their alpha is theirs. With HDR on their
+They keep their own buffers and tone map to SDR in their last program, and their alpha is theirs. Today their
+`final` program writes all four channels onto the frame (`gfx/pack_post.rs` `target`), and `keep_world` copies that
+alpha into the kept world. With HDR and its HDR Lighting setting on, the HDR pass reads it as marks: below 0.75 it
+lifts as a light-source tier, from 0.75 up nothing (the lighting gain is off under a pack). From this note on their
 picture is shown at paper white with nothing lifted, as #3125 suggests. HDR values they could read (`hdr`, headroom,
 paper white) are a later, optional addition for pack authors.
 
@@ -257,15 +261,17 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
    only 0.1 packs, and goes when 0.1 does.
 
 Later, each its own note or pull request: HDR's light-source lift as a built-in preset on 0.2, values for
-`shaders/` packs, and which settings stay on the HDR page and which move to the shader menu.
+`shaders/` packs, and which settings stay on the HDR page and which move to the shader menu. Additions to 0.2 that
+break no pack, so they can wait: telling post stages which pixels are light sources, and a full-screen peak for
+displays that dim large bright areas below `peak` (Windows reports it, DXGI's `MaxFullFrameLuminance`; other systems
+mostly don't).
 
-## Open questions
+## Decisions for Ludovic
 
-- **The screenshot test's home**: the parity runners (two builds a run) or a synthetic scene with generated textures
-  and a committed digest?
-- **`[tonemap]` as its own stage**, or the last post pass with a flag?
-- **`paper_white` and `peak` in SDR**: 0, or a nominal 80 nits?
-- **A full-screen peak**: many displays dim large bright areas below `peak`; Windows reports that level (DXGI's
-  `MaxFullFrameLuminance`), other systems mostly don't. Worth an optional field?
-- **`shaders/` packs in HDR today**: what the loader does with the frame's alpha, so the change above is stated
-  against it.
+Each has a recommendation; the step it blocks says when it's needed.
+
+| Decision | Options | Recommended | Why | Needed before |
+| --- | --- | --- | --- | --- |
+| Where the HDR-off screenshot test runs | **A.** The parity runners: build main and the change, capture fixed scenes with `HORIZON_STILL=1` on Mesa's software Vulkan, compare PNGs. **B.** A synthetic scene with generated textures and a committed digest. | A | It tests the real game with real resource packs; B's digest changes with every Mesa update and covers less. A costs a second build a run, and needs #9398. | Step 3, the first change to the frame |
+| How tone mapping is written | **A.** A `[tonemap]` stage of its own. **B.** The last post pass, with a flag. | A | A pack that only grades keeps Horizon's curve, and one that only tone maps needs no post chain; the check can hold the stage to its range (0 to `headroom`); upscaling and anti-aliasing can run between the post chain and the curve. | Step 2, the API |
+| `paper_white` and `peak` in SDR | **A.** 80 nits, sRGB's reference white (scRGB's 1.0). **B.** 0, for unknown. | A | A pack that divides by them never gets infinity or NaN; `hdr` = 0 already says they're nominal, and `headroom` is 1 either way. | Step 2, the API |
