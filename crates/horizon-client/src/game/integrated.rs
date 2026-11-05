@@ -347,7 +347,9 @@ impl Game<'_> {
     /// Splitscreen: players joined through memory play on while one opens a pause menu;
     /// the world keeps ticking for them (`set_paused`), so this window must keep ticking too.
     pub(super) fn has_split_players(&self) -> bool {
-        self.integrated.as_ref().is_some_and(|s| s.has_split_players())
+        self.integrated
+            .as_ref()
+            .is_some_and(|s| s.has_split_players())
     }
     /// `Minecraft.doWorldLoad`: start the server thread on the world; the
     /// window joins it through memory once it is ready (`poll_integrated_start`).
