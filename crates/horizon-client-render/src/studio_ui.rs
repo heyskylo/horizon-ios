@@ -7,6 +7,7 @@
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
+    lang,
     text::Text,
     ui,
 };
@@ -177,11 +178,11 @@ impl StudioUi {
             let (duration_ms, date, server_name, singleplayer) =
                 if let Some(parsed) = Self::read_metadata(&path) {
                     let srv = if parsed.singleplayer {
-                        "Singleplayer".to_string()
+                        lang::get("menu.singleplayer")
                     } else if !parsed.server_name.is_empty() {
                         parsed.server_name
                     } else {
-                        "Multiplayer".to_string()
+                        lang::get("menu.multiplayer")
                     };
                     (parsed.duration, parsed.date, srv, parsed.singleplayer)
                 } else {
@@ -191,7 +192,12 @@ impl StudioUi {
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
-                    (0, modified, "Unknown".to_string(), true)
+                    (
+                        0,
+                        modified,
+                        lang::get("horizon.studio.unknown_server"),
+                        true,
+                    )
                 };
 
             self.recordings.push(SavedRecordingItem {
@@ -225,10 +231,10 @@ impl StudioUi {
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
 
         // Header Title: centered at top
-        style::title(batch, atlas, &Text::literal("Replay Studio"));
+        style::title(batch, atlas, &Text::tr("horizon.pages.studio", &[]));
 
         // Subtitle strip: centered info text
-        let subtitle = Text::literal("Saved Recordings");
+        let subtitle = Text::tr("horizon.studio.saved_recordings", &[]);
         ui::centered_text(batch, atlas, &subtitle, 0.0, 26.0, w, style::GREY);
 
         // Main content area layout
@@ -242,9 +248,8 @@ impl StudioUi {
 
         if self.recordings.is_empty() {
             // Empty state
-            let empty_text = Text::literal("No recordings found in recordings/ folder.");
-            let hint_text =
-                Text::literal("Use /studio record start <name> in-game, or drop .mcpr files here.");
+            let empty_text = Text::tr("horizon.studio.empty", &[]);
+            let hint_text = Text::tr("horizon.studio.empty_hint", &[]);
             ui::centered_text(
                 batch,
                 atlas,
@@ -326,24 +331,6 @@ impl StudioUi {
                 let meta_text = Text::literal(&meta_str);
                 batch.text_styled(atlas, &meta_text, card_x + 8.0, y + 20.0, style::GREY, true);
 
-                // Action hint on the right
-                if is_selected || is_hovered {
-                    let play_hint = Text::literal("▶ Edit");
-                    let hint_color = if is_selected {
-                        style::ACCENT
-                    } else {
-                        style::MUTED
-                    };
-                    batch.text_styled(
-                        atlas,
-                        &play_hint,
-                        card_x + card_w - 44.0,
-                        y + 12.0,
-                        hint_color,
-                        true,
-                    );
-                }
-
                 y += row_step;
             }
 
@@ -374,7 +361,7 @@ impl StudioUi {
             batch,
             atlas,
             f_btn,
-            &Text::literal("Open Recordings"),
+            &Text::tr("horizon.studio.open_folder", &[]),
             (f_hover, true, false),
         );
 
@@ -385,7 +372,7 @@ impl StudioUi {
             batch,
             atlas,
             r_btn,
-            &Text::literal("Refresh"),
+            &Text::tr("horizon.studio.refresh", &[]),
             (r_hover, true, false),
         );
 
@@ -396,7 +383,7 @@ impl StudioUi {
             batch,
             atlas,
             d_btn,
-            &Text::literal("Done"),
+            &Text::tr("gui.done", &[]),
             (d_hover, true, false),
         );
     }

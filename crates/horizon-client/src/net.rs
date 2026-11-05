@@ -865,9 +865,12 @@ fn receive_play(
                 continue;
             }
         };
-        if let Some((recorded_id, recorded_payload)) =
-            studio_recording_packet(&packet, id, &payload)
-            && let Some(rec) = recorder.lock().unwrap().as_ref()
+        // Only while a recording runs: the filter copies what it keeps, and re-encodes
+        // AddEntity with a fresh UUID.
+        if let Some(rec) = recorder.lock().unwrap().as_ref()
+            && rec.is_active()
+            && let Some((recorded_id, recorded_payload)) =
+                studio_recording_packet(&packet, id, &payload)
         {
             rec.record_packet(recorded_id, &recorded_payload);
         }
@@ -948,12 +951,13 @@ fn receive_play(
 /// Unknown packets fail closed so a newly added protocol packet cannot bypass
 /// the privacy policy. `AddEntity` retains its entity id and state, but gets a
 /// fresh UUID so the recording cannot link that entity to an account UUID.
-fn studio_recording_packet(
+fn studio_recording_packet<'a>(
     packet: &play::Clientbound,
     packet_id: i32,
-    payload: &[u8],
-) -> Option<(i32, Vec<u8>)> {
+    payload: &'a [u8],
+) -> Option<(i32, std::borrow::Cow<'a, [u8]>)> {
     use play::Clientbound as P;
+    use std::borrow::Cow;
     match packet {
         P::AddEntity(entity) => {
             let mut anonymous = entity.clone();
@@ -961,7 +965,7 @@ fn studio_recording_packet(
             let encoded = P::AddEntity(anonymous).encode();
             let mut reader = Reader::new(&encoded);
             let id = reader.varint().ok()?;
-            Some((id, reader.rest().to_vec()))
+            Some((id, Cow::Owned(reader.rest().to_vec())))
         }
         P::CookieRequest(_)
         | P::CustomChatCompletions(_)
@@ -984,7 +988,7 @@ fn studio_recording_packet(
         | P::TrackedWaypoint(_)
         | P::Transfer(_)
         | P::Unknown(..) => None,
-        _ => Some((packet_id, payload.to_vec())),
+        _ => Some((packet_id, Cow::Borrowed(payload))),
     }
 }
 
