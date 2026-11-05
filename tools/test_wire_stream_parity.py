@@ -16,14 +16,15 @@ over the scenario, and must never fall between two packets of one tick.
   python3 tools/test_wire_stream_parity.py                      # every scenario
   python3 tools/test_wire_stream_parity.py --scenarios walk,bow --keep
 
-Linux: both clients run on the virtual screen (`vscreen`); macOS: Horizon offscreen, vanilla from the
-logged-in session. Every game and server here runs in fresh temporary folders (HORIZON_HOME,
+Horizon runs `--headless` (no window or GPU: the ticks are what it sends from); the vanilla client runs on the
+virtual screen (`vscreen`) on Linux, from the logged-in session on macOS. Every game and server here runs in fresh temporary folders (HORIZON_HOME,
 HORIZON_LAUNCHER_HOME, XDG_*), with no audio and no self-update. Needs .local (the vanilla jars and prepared
 resources) and a built horizon-client and horizon-ctl (--bin DIR, default the parity target's fast build).
 """
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -178,6 +179,25 @@ class Failed(Exception):
     pass
 
 
+MESA_EGL = Path('/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json')
+
+
+def screen_env(env):
+    """Where the vanilla client's window goes. On Linux, the virtual screen (`vscreen`), never a real monitor,
+    and Mesa's EGL: NVIDIA's crashed the client there (libEGL_nvidia). On macOS, the logged-in session."""
+    if sys.platform == 'darwin' or not shutil.which('vscreen'):
+        return env
+    subprocess.run(['vscreen', 'up'], check=False, capture_output=True)
+    text = subprocess.run(['vscreen', 'env'], capture_output=True, text=True, check=True).stdout
+    env = dict(env)
+    env.pop('DISPLAY', None)
+    for match in re.finditer(r'(\w+)=(\S+)', text.split('unset')[0]):
+        env[match.group(1)] = match.group(2).strip('"\'')
+    if MESA_EGL.exists():
+        env['__EGL_VENDOR_LIBRARY_FILENAMES'] = str(MESA_EGL)
+    return env
+
+
 class VanillaClient:
     """The vanilla 26.3 client, VanillaTickScript as its main class, joined to `address`."""
 
@@ -201,7 +221,7 @@ class VanillaClient:
         command[command.index('net.minecraft.client.main.Main')] = 'dev.horizonlab.parity.VanillaTickScript'
         self.log = open(log, 'w')
         self.ready, self.done = threading.Event(), {}
-        self.process = subprocess.Popen(command, cwd=args.game_dir, env=vanilla_client.environment(), text=True,
+        self.process = subprocess.Popen(command, cwd=args.game_dir, env=screen_env(vanilla_client.environment()), text=True,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         threading.Thread(target=self.pump, daemon=True).start()
 
