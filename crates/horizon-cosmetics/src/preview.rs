@@ -1,5 +1,7 @@
-//! A still picture of a player wearing items, drawn on the CPU (the launcher's Wardrobe): the
-//! player model at rest with its skin, each item on its bone, seen from the front at an angle.
+//! A picture of a player wearing items, drawn on the CPU (the launcher's Wardrobe): the player
+//! model with its skin, at rest or posed, each item on its bone, seen from any angle and distance
+//! (`Camera`). The Wardrobe's live view draws it again only when something changes
+//! (`crate::viewer`).
 
 use crate::item::cube_faces;
 use crate::{Item, Part, Texture, pose_matrix};
@@ -94,11 +96,93 @@ pub fn player_model(slim: bool) -> Part {
 
 /// The matrix of the part named `name` under `parent`, at rest.
 pub fn rest_matrix(part: &Part, parent: Mat4, name: &str) -> Option<Mat4> {
-    let m = parent * pose_matrix(part.pose);
+    posed_matrix(part, parent, name, &[])
+}
+
+/// The matrix of the part named `name` under `parent`, its parts posed by `poses` (name → pose;
+/// the rest at rest).
+pub fn posed_matrix(
+    part: &Part,
+    parent: Mat4,
+    name: &str,
+    poses: &[(String, crate::Pose)],
+) -> Option<Mat4> {
+    let m = parent * pose_matrix(pose_of(part, poses));
     if part.name == name {
         return Some(m);
     }
-    part.children.iter().find_map(|c| rest_matrix(c, m, name))
+    part.children
+        .iter()
+        .find_map(|c| posed_matrix(c, m, name, poses))
+}
+
+fn pose_of(part: &Part, poses: &[(String, crate::Pose)]) -> crate::Pose {
+    poses
+        .iter()
+        .find(|(n, _)| *n == part.name)
+        .map_or(part.pose, |(_, p)| *p)
+}
+
+/// Where the picture looks at the player from: turned `yaw` degrees (0 shows the front), from
+/// `pitch` degrees above (below when negative), `zoom` times closer. At zoom 1 the whole player
+/// fits, 3 blocks to the picture's height, with room above the head for tall hats and back items;
+/// closer, the view centres on the head, wholly at `MAX_ZOOM`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub zoom: f32,
+}
+
+impl Camera {
+    /// Where the view starts and goes back to: a little turned, a little from above.
+    pub const HOME: Camera = Camera {
+        yaw: 30.0,
+        pitch: 10.0,
+        zoom: 1.0,
+    };
+    pub const MAX_ZOOM: f32 = 3.0;
+    /// How far up and down the view tilts, in degrees.
+    pub const MAX_PITCH: f32 = 60.0;
+    pub const MIN_PITCH: f32 = -30.0;
+    /// Degrees turned per point dragged.
+    pub const DRAG: f32 = 0.6;
+    /// How much closer one step of the scroll wheel comes.
+    pub const ZOOM_STEP: f32 = 1.15;
+
+    /// Dragged by `dx`, `dy` points, as if the pointer held the player: right turns the front
+    /// to the right, down tips the head toward the viewer.
+    pub fn dragged(self, dx: f32, dy: f32) -> Self {
+        Self {
+            yaw: (self.yaw - dx * Self::DRAG).rem_euclid(360.0),
+            pitch: (self.pitch + dy * Self::DRAG).clamp(Self::MIN_PITCH, Self::MAX_PITCH),
+            zoom: self.zoom,
+        }
+    }
+
+    /// `steps` of the scroll wheel closer (farther when negative), from 1 to `MAX_ZOOM`.
+    pub fn zoomed(self, steps: f32) -> Self {
+        Self {
+            zoom: (self.zoom * Self::ZOOM_STEP.powf(steps)).clamp(1.0, Self::MAX_ZOOM),
+            ..self
+        }
+    }
+
+    /// Model space (blocks, y down, the front at -z, the body's pivot at 0) to the picture's
+    /// pixels, `width`×`height`, depth growing away from the viewer.
+    pub fn view(&self, width: u32, height: u32) -> Mat4 {
+        let scale = height as f32 / 3.0 * self.zoom;
+        // The head's top is 0.5 blocks above the body's pivot and the feet 1.5 below. At zoom 1
+        // the picture's middle is 0.4 below the pivot (a fifth of the picture above the head),
+        // at `MAX_ZOOM` the head's centre, 0.25 above.
+        let near = ((self.zoom - 1.0) / (Self::MAX_ZOOM - 1.0)).clamp(0.0, 1.0);
+        let focus = 0.4 + (-0.25 - 0.4) * near;
+        Mat4::from_translation(Vec3::new(width as f32 / 2.0, height as f32 / 2.0, 0.0))
+            * Mat4::from_scale(Vec3::splat(scale))
+            * Mat4::from_rotation_x(self.pitch.to_radians())
+            * Mat4::from_rotation_y(self.yaw.to_radians())
+            * Mat4::from_translation(Vec3::new(0.0, -focus, 0.0))
+    }
 }
 
 /// One model to draw: its root under `base` (model space, blocks), its parts posed by
@@ -111,16 +195,27 @@ pub struct Draw<'a> {
 }
 
 impl<'a> Draw<'a> {
-    /// `item` on the player model `body`, at `ticks` of its animations: one draw per bone it
-    /// rides (a shirt's sleeves are on the arms).
+    /// `item` on the player model `body` at rest, at `ticks` of its animations: one draw per
+    /// bone it rides (a shirt's sleeves are on the arms).
     pub fn item(item: &'a Item, body: &Part, ticks: f32) -> Vec<Self> {
+        Self::item_posed(item, body, &[], ticks)
+    }
+
+    /// `item` on the player model `body` posed by `body_poses` (an emote), at `ticks` of its
+    /// animations: each draw follows its bone as posed.
+    pub fn item_posed(
+        item: &'a Item,
+        body: &Part,
+        body_poses: &[(String, crate::Pose)],
+        ticks: f32,
+    ) -> Vec<Self> {
         let mut poses = Vec::new();
         item.animate(ticks, |name, pose| poses.push((name.to_owned(), pose)));
         item.roots()
             .filter_map(|(bone, root)| {
                 Some(Self {
                     root,
-                    base: rest_matrix(body, Mat4::IDENTITY, bone.part())?,
+                    base: posed_matrix(body, Mat4::IDENTITY, bone.part(), body_poses)?,
                     texture: &item.texture,
                     poses: poses.clone(),
                 })
@@ -129,30 +224,18 @@ impl<'a> Draw<'a> {
     }
 }
 
-/// Draws `draws` into a `width`×`height` picture: turned `yaw` degrees (0 shows the front),
-/// tilted `pitch` degrees down: 2.5 blocks to the height, the head's top a tenth of the way down
-/// (room for a hat).
-pub fn render(draws: &[Draw], width: u32, height: u32, yaw: f32, pitch: f32) -> Image {
+/// Draws `draws` into a `width`×`height` picture seen from `camera`. At `Camera::HOME`'s zoom
+/// the head's top is a fifth of the way down (room for a hat) and the feet 13% up.
+pub fn render(draws: &[Draw], width: u32, height: u32, camera: &Camera) -> Image {
     let (w, h) = (width as usize, height as usize);
     let mut rgba = vec![0u8; w * h * 4];
     let mut depth = vec![f32::INFINITY; w * h];
     // Model space has y down and the front at -z: the camera looks along +z from the front.
-    let scale = height as f32 / 2.5;
-    let view = Mat4::from_translation(Vec3::new(width as f32 / 2.0, height as f32 * 0.1, 0.0))
-        * Mat4::from_scale(Vec3::new(scale, scale, scale))
-        * Mat4::from_rotation_x(-pitch.to_radians())
-        * Mat4::from_rotation_y(yaw.to_radians())
-        // Up the body's pivot: the head's top is 0.5 blocks above it.
-        * Mat4::from_translation(Vec3::new(0.0, 0.5, 0.0));
+    let view = camera.view(width, height);
     for d in draws {
         let mut stack = vec![(d.root, d.base)];
         while let Some((part, parent)) = stack.pop() {
-            let pose = d
-                .poses
-                .iter()
-                .find(|(n, _)| *n == part.name)
-                .map_or(part.pose, |(_, p)| *p);
-            let m = parent * pose_matrix(pose);
+            let m = parent * pose_matrix(pose_of(part, &d.poses));
             let to_screen = view * m;
             let normal = glam::Mat3::from_mat4(view * m);
             for face in &part.faces {
@@ -268,6 +351,18 @@ mod tests {
         }
     }
 
+    /// Straight at the front, level, the whole player.
+    const FRONT: Camera = Camera {
+        yaw: 0.0,
+        pitch: 0.0,
+        zoom: 1.0,
+    };
+
+    /// Where the model-space point `p` (blocks) lands in a 100×100 picture.
+    fn screen(camera: Camera, p: Vec3) -> Vec3 {
+        camera.view(100, 100).transform_point3(p)
+    }
+
     fn at(img: &Image, x: u32, y: u32) -> [u8; 4] {
         img.rgba[((y * img.width + x) * 4) as usize..][..4]
             .try_into()
@@ -284,14 +379,14 @@ mod tests {
             texture: &tex,
             poses: Vec::new(),
         };
-        let img = render(&[draw], 100, 100, 0.0, 0.0);
-        // 40 px a block: the head's top at row 10, its bottom (the pivot) 20 px lower; its
-        // middle at row 20, column 50.
-        let face = at(&img, 50, 20);
+        let img = render(&[draw], 100, 100, &FRONT);
+        // A third of 100 px a block: the head's top at row 20, its bottom (the pivot) at 36.7;
+        // its middle at row 28, column 50.
+        let face = at(&img, 50, 28);
         assert_eq!(face[3], 255);
         assert!(face[0] > 100 && face[1] == 0 && face[2] == 0, "{face:?}");
         // Above the head, nothing (the transparent hat layer doesn't hide it).
-        assert_eq!(at(&img, 50, 5)[3], 0);
+        assert_eq!(at(&img, 50, 10)[3], 0);
         // Turned round: the back of the head (green region), not the face.
         let back = render(
             &[Draw {
@@ -302,10 +397,12 @@ mod tests {
             }],
             100,
             100,
-            180.0,
-            0.0,
+            &Camera {
+                yaw: 180.0,
+                ..FRONT
+            },
         );
-        let c = at(&back, 50, 20);
+        let c = at(&back, 50, 28);
         assert!(c[1] > 100 && c[0] == 0, "{c:?}");
     }
 
@@ -326,17 +423,113 @@ mod tests {
             texture: &tex,
             poses: Vec::new(),
         }];
-        let bare = render(&draws, 100, 100, 0.0, 0.0);
+        let bare = render(&draws, 100, 100, &FRONT);
         draws.extend(Draw::item(&item, &body, 0.0));
-        let worn = render(&draws, 100, 100, 0.0, 0.0);
-        // The cap spans 8 to 12 model pixels above the head's pivot: rows 0 to 10, over the
-        // head's top at row 10.
-        assert_eq!(at(&bare, 50, 5)[3], 0);
-        let cap = at(&worn, 50, 5);
+        let worn = render(&draws, 100, 100, &FRONT);
+        // The cap spans 8 to 12 model pixels above the head's pivot: rows 11.7 to 20, over the
+        // head's top at row 20.
+        assert_eq!(at(&bare, 50, 15)[3], 0);
+        let cap = at(&worn, 50, 15);
         assert_eq!(cap[3], 255);
         // Grey (200 lit), not the skin's colours.
         assert!(cap[0] == cap[1] && cap[1] == cap[2], "{cap:?}");
         // The face is still the face.
-        assert_eq!(at(&worn, 50, 20), at(&bare, 50, 20));
+        assert_eq!(at(&worn, 50, 28), at(&bare, 50, 28));
+    }
+
+    #[test]
+    fn dragging_turns_the_player_as_if_held() {
+        // The nose: the middle of the head's front face.
+        let nose = Vec3::new(0.0, -0.25, -0.25);
+        let ahead = screen(FRONT, nose);
+        assert!((ahead.x - 50.0).abs() < 1e-3, "{ahead}");
+        // Dragged right, the face turns right.
+        let right = screen(FRONT.dragged(30.0, 0.0), nose);
+        assert!(right.x > 52.0, "{right}");
+        let left = screen(FRONT.dragged(-30.0, 0.0), nose);
+        assert!(left.x < 48.0, "{left}");
+        // A full turn's drag comes back round, the yaw kept within one turn.
+        let round = FRONT.dragged(360.0 / Camera::DRAG, 0.0);
+        assert!(
+            round.yaw.abs() < 1e-3 || (round.yaw - 360.0).abs() < 1e-3,
+            "{round:?}"
+        );
+        // Dragged down, the top of the head turns toward the viewer (its normal points at -z,
+        // where the viewer is); up, away.
+        let top = |c: Camera| c.view(100, 100).transform_vector3(Vec3::NEG_Y).z;
+        assert!(top(FRONT.dragged(0.0, 20.0)) < 0.0);
+        assert!(top(FRONT.dragged(0.0, -20.0)) > 0.0);
+        assert!(top(Camera::HOME) < 0.0, "home looks from a little above");
+        // The tilt stops at its limits.
+        assert_eq!(FRONT.dragged(0.0, 1e4).pitch, Camera::MAX_PITCH);
+        assert_eq!(FRONT.dragged(0.0, -1e4).pitch, Camera::MIN_PITCH);
+    }
+
+    #[test]
+    fn zooming_closes_in_on_the_head() {
+        // The whole player at zoom 1: the head's top a fifth down, the feet above the bottom.
+        let head_top = screen(FRONT, Vec3::new(0.0, -0.5, 0.0));
+        let feet = screen(FRONT, Vec3::new(0.0, 1.5, 0.0));
+        assert!((head_top.y - 20.0).abs() < 1e-3, "{head_top}");
+        assert!(80.0 < feet.y && feet.y < 90.0, "{feet}");
+        assert_eq!(FRONT.zoomed(100.0).zoom, Camera::MAX_ZOOM);
+        assert_eq!(FRONT.zoomed(-100.0).zoom, 1.0);
+        assert!((FRONT.zoomed(2.0).zoomed(-2.0).zoom - 1.0).abs() < 1e-5);
+        // All the way in, the head's centre is the picture's and it is three times the size.
+        let near = FRONT.zoomed(100.0);
+        let head = screen(near, Vec3::new(0.0, -0.25, 0.0));
+        assert!(
+            (head.x - 50.0).abs() < 1e-3 && (head.y - 50.0).abs() < 1e-3,
+            "{head}"
+        );
+        let chin = screen(near, Vec3::new(0.0, 0.0, 0.0));
+        assert!((chin.y - head.y - 0.25 * 100.0).abs() < 1e-3, "{chin}");
+        // On the way, the picture's middle moves from the body's middle up to the head.
+        let middle = |c: Camera| {
+            c.view(100, 100)
+                .inverse()
+                .transform_point3(Vec3::new(50.0, 50.0, 0.0))
+        };
+        assert!((middle(FRONT).y - 0.4).abs() < 1e-4);
+        let half = middle(FRONT.zoomed(4.0)).y;
+        assert!(-0.25 < half && half < 0.4, "{half}");
+    }
+
+    #[test]
+    fn an_item_follows_its_bone_as_posed() {
+        let file = format!(
+            r#"{{"format": 1, "id": "band", "slot": "torso", "bone": "right_arm",
+              "texture": {{"png": "{}"}},
+              "parts": [{{"name": "b", "cubes": [{{"origin": [-3, 8, -2], "size": [4, 2, 4], "uv": [0, 0]}}]}}]}}"#,
+            crate::pose::tests::png(32, 32)
+        );
+        let item = Item::parse(file.as_bytes()).unwrap();
+        let body = player_model(false);
+        // Ten pixels down the arm, where the band is.
+        let wrist = |draws: &[Draw]| {
+            draws[0]
+                .base
+                .transform_point3(Vec3::new(0.0, 10.0 / 16.0, 0.0))
+        };
+        let rest = wrist(&Draw::item(&item, &body, 0.0));
+        // At rest the arm hangs: the wrist is below the shoulder.
+        assert!(rest.y > 0.5 && rest.z.abs() < 1e-4, "{rest}");
+        // Raised straight ahead (vanilla's -90° about x), the band comes forward with it.
+        let raised = [(
+            "right_arm".to_owned(),
+            [
+                -5.0,
+                2.0,
+                0.0,
+                -std::f32::consts::FRAC_PI_2,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+            ],
+        )];
+        let up = wrist(&Draw::item_posed(&item, &body, &raised, 0.0));
+        assert!(up.z < -0.5 && (up.y - 2.0 / 16.0).abs() < 1e-4, "{up}");
     }
 }

@@ -775,6 +775,10 @@ impl Game<'_> {
         let eye = self.eye_position().unwrap_or_default();
         self.using = None;
         self.send_use_item_complete();
+        // Consumable.onConsume: the used statistic and the consume_item
+        // trigger, with the stack as drunk (before it shrinks).
+        self.award_stat("used", &stack.item, 1);
+        self.trigger_item("minecraft:consume_item", stack);
         self.post_entity_event("minecraft:drink", horizon_client::mobs::Who::Player);
         if ominous {
             self.drink_ominous_bottle(slot, stack);

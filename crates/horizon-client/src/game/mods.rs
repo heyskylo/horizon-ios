@@ -14,6 +14,8 @@ pub(super) struct ModsState {
     pub(super) dev: Vec<PathBuf>,
     /// The WebAssembly mods found that no longer run, for the one-time notice.
     stopped: Vec<String>,
+    /// Browse mods' worker (`mod_browser`).
+    pub(super) jobs: super::mod_browser::Jobs,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.

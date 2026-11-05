@@ -2717,6 +2717,7 @@ dependencies = [
  "libc",
  "objc2-app-kit 0.3.2",
  "oo7",
+ "png 0.18.1",
  "proc-macro2",
  "pulldown-cmark",
  "quote",
