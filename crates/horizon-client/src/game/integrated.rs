@@ -98,6 +98,17 @@ pub(super) struct Integrated {
     pub world_name: String,
 }
 impl Integrated {
+    /// Queue every change, even if the currently published tree still has the requested state:
+    /// an earlier update may be waiting for a busy server thread.
+    fn queue_pregen_option(&self, enabled: bool) {
+        let _ = self.tasks.send(Box::new(move |g| {
+            use horizon_client::command::vanilla;
+            if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
+                vanilla::set_horizon_commands(enabled);
+                g.resend_commands_filtered();
+            }
+        }));
+    }
     /// The generator of the server's level in `dimension`, once it has run.
     pub fn terrain(
         &self,
@@ -335,13 +346,7 @@ impl Game<'_> {
         let enabled = self.options.pregen || self.settings.extras.pregen;
         // Check on the server, after earlier updates have run, so a later toggle
         // wins. Do not block the window when an unrelated setting changes.
-        let _ = server.tasks.send(Box::new(move |g| {
-            use horizon_client::command::vanilla;
-            if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
-                vanilla::set_horizon_commands(enabled);
-                g.resend_commands_filtered();
-            }
-        }));
+        server.queue_pregen_option(enabled);
     }
 
     /// `Minecraft.hasSingleplayerServer`: a world of this window's own, run
@@ -1291,6 +1296,27 @@ fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pregen_toggle_back_is_queued_while_server_is_busy() {
+        let (tasks, waiting_server) = channel();
+        let server = Integrated {
+            flags: Arc::new(Flags::default()),
+            thread: None,
+            tasks,
+            world_name: String::new(),
+        };
+        // The receiver deliberately does not run either task between the updates. In particular,
+        // the dispatcher can still show the old value when the owner toggles back.
+        server.queue_pregen_option(true);
+        server.queue_pregen_option(false);
+        assert!(
+            waiting_server.try_recv().is_ok(),
+            "enable must reach the server"
+        );
+        assert!(waiting_server.try_recv().is_ok(), "disable must follow it");
+        assert!(waiting_server.try_recv().is_err());
+    }
 
     #[test]
     fn the_owner_and_splitscreen_seats_are_let_in_only_through_memory() {
