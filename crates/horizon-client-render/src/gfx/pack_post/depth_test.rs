@@ -783,3 +783,68 @@ fn shadowtex_nearest_settings_read_the_nearest_texel() {
         }
     }
 }
+
+/// The sky program covers the horizon and downward viewing directions too.
+/// This original probe reports sky colour in RGB and window depth in alpha.
+#[test]
+#[ignore = "requires a host GPU"]
+fn sky_covers_the_horizon_without_writing_depth_or_overpainting_terrain() {
+    let gpu = Gpu::new().expect("GPU required for the sky coverage regression");
+    assert_ne!(gpu.adapter.get_info().device_type, wgpu::DeviceType::Cpu);
+    let color = gpu.texture(T::Rgba8Unorm);
+    let depth = gpu.texture(T::Depth32Float);
+    let files = vec![
+        ("gbuffers_skybasic.vsh".into(), "#version 120\nvoid main(){gl_Position=ftransform();}".into()),
+        ("gbuffers_skybasic.fsh".into(), "#version 120\n/* DRAWBUFFERS:0 */\nvoid main(){gl_FragData[0]=vec4(1.0,0.0,0.0,1.0);}".into()),
+        ("final.vsh".into(), VERTEX.into()),
+        ("final.fsh".into(), "#version 120\nuniform sampler2D colortex0;uniform sampler2D depthtex0;varying vec2 uv;\nconst vec4 colortex0ClearColor=vec4(0.0,1.0,0.0,1.0);\nvoid main(){gl_FragColor=vec4(texture2D(colortex0,uv).rgb,texture2D(depthtex0,uv).r);}".into()),
+    ];
+    let mut post = gpu.load(
+        files,
+        World {
+            atlas: None,
+            material_maps: None,
+            lightmap: color.clone(),
+            terrain: None,
+            block_ids: &[],
+            sprite_rects: &[],
+            celestial: None,
+            gui_size: SIZE,
+            clouds: None,
+            weather: false,
+            hand: false,
+        },
+        horizon_shaders::GameInputs {
+            sky: Some(crate::gfx::pack_sky::inputs()),
+            ..Default::default()
+        },
+    );
+    let hud = HudBatch::new(SIZE);
+    let mut frame = fixture_frame(&hud);
+    frame.title = false;
+    frame.skybox = true;
+    frame.distance = 512.0;
+    frame.detail_distance = 512.0;
+    frame.depth_far = 2048.0;
+    for yaw in [0.0, 45.0, 90.0, 180.0, 270.0] {
+        for pitch in [-60.0, 0.0, 21.1, 60.0] {
+            frame.yaw = yaw;
+            frame.pitch = pitch;
+            gpu.clear(&color, &depth, 0.0);
+            let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});
+            all_pixels(
+                &pixels,
+                [255, 0, 0, 255],
+                &format!("sky yaw={yaw} pitch={pitch}"),
+            );
+        }
+    }
+    // A pre-existing foreground depth must survive the sky, as must its colour.
+    gpu.clear(&color, &depth, 0.5);
+    let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});
+    all_pixels(
+        &pixels,
+        [16, 16, 16, 128],
+        "foreground colour and depth survive sky",
+    );
+}
