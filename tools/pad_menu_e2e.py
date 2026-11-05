@@ -1096,7 +1096,7 @@ def stick_keeps_option(game, check):
     check(game.focus()[1] < y, 'the list did not scroll')
 
 
-@options_case('video-settings')
+@options_case('controls')
 def stick_under_keyboard(game, check):
     game.pad('south')
     check(game.menu()['keyboard'], 'A on the search field did not open the on-screen keyboard')
@@ -1107,7 +1107,7 @@ def stick_under_keyboard(game, check):
 
 @options_case('video-settings')
 def stick_leaves_sidebar(game, check):
-    game.ctl('click', 'horizon-graphics')
+    # Video Settings... is the graphics screen.
     game.pad('down')
     game.wait_targets()
     game.focus_on('advanced')
@@ -1237,7 +1237,7 @@ def stick_steps_once(args, name):
 
 @options_case('video-settings')
 def gui_scale_keeps_focus(game, check):
-    # In the right column, beside Reduce fps.
+    # The graphics screen's General page.
     game.focus_on('gui-scale')
     label = game.focused_label() or ''
     check(label.startswith('GUI Scale'), f'never reached GUI Scale: on {label}')

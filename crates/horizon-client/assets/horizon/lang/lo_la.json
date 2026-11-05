@@ -468,5 +468,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Aura ແລະ trails ຜູ້ນອື່ນໆໃສ່. ປິດຕາມຄ່າເລີ່ມຕົ້ນ.",
   "horizon.extras.cosmetics.shown": "ສະແດງໃຫ້ເຫັນ",
   "horizon.extras.cosmetics.hidden": "ເຊື່ອງໄວ້",
-  "horizon.extras.cosmetics.name_tags": "ປ້າຍຊື່ເທົ່ານັ້ນ"
+  "horizon.extras.cosmetics.name_tags": "ປ້າຍຊື່ເທົ່ານັ້ນ",
+  "Shader Packs...": "ຊອງ Shader..."
 }

@@ -403,6 +403,7 @@
   "Frame Generation": "Keretgenerálás",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Egy-egy kitalált keretet mutat a két valódi között: simább, kicsit több késés.",
   "Shadow Cache": "Árnyék gyorsítótár",
+  "Shader Packs...": "Shader csomagok...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Újra felhasználja a csomag árnyéktérképét, amikor a nap, a kilátás és a világ megegyezik. Alapértelmezés szerint ki.",
   "Find BlueMap": "Keresse meg a BlueMap-et",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "A szervereken megkeresi a BlueMap webtérképüket a távoli terepre. Következő csatlakozás.",

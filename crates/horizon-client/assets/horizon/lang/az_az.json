@@ -407,6 +407,7 @@
   "Frame Generation": "Çərçivə Yaradılması",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Hər iki real arasında düzəldilmiş çərçivəni göstərir: daha hamar, bir az daha gecikmə.",
   "Shadow Cache": "Kölgə önbelleği",
+  "Shader Packs...": "Shader Paketləri...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Günəş, görünüş və dünya uyğunlaşdıqda paket kölgə xəritəsindən təkrar istifadə edir. Defolt olaraq söndürülür.",
   "Find BlueMap": "BlueMap tapın",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Serverlərdə uzaq ərazilər üçün BlueMap veb xəritəsini tapır. Növbəti qoşulun.",

@@ -69,6 +69,7 @@ pub fn open(mode: Mode, cx: &mut App) {
 
 fn step_text(step: Step) -> String {
     match step {
+        Step::Closing => tr("Closing Horizon Launcher").to_string(),
         Step::Files => tr("Copying files").to_string(),
         Step::Shortcuts => tr("Making shortcuts").to_string(),
         Step::Registry => tr("Registering with Windows").to_string(),
@@ -138,6 +139,7 @@ impl Setup {
             };
             let result = match mode {
                 Mode::Install => installer::install(&options, report).map(|_| Vec::new()),
+                // Asks a launcher that is still open to quit first (`installer::uninstall`).
                 Mode::Uninstall => installer::uninstall(options.remove_data, report),
             };
             let _ = tx.send(Event::Done(result));
@@ -312,7 +314,7 @@ impl Setup {
                         self.options.remove_data,
                         tr("Also delete the launcher's data").to_string(),
                         Some(
-                            tr("Game builds, servers made in the launcher, settings, skins.")
+                            tr("Off by default. Deletes the game builds, servers made in the launcher, settings and skins; it cannot be undone. Your worlds stay either way.")
                                 .to_string(),
                         ),
                         |o| o.remove_data = !o.remove_data,

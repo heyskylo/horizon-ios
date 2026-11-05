@@ -421,6 +421,7 @@
   "Frame Generation": "Генерација на рамки",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Покажува изработена рамка помеѓу секоја две реални: помазна, малку повеќе заостанување.",
   "Shadow Cache": "Кеш во сенка",
+  "Shader Packs...": "Пакети за шејдер...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Повторно ја користи мапата на сенки на пакетот кога сонцето, погледот и светот се совпаѓаат. Исклучено стандардно.",
   "Find BlueMap": "Најдете BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "На серверите, ја наоѓа нивната веб-мапа BlueMap за далечен терен. Следно придружете се.",
