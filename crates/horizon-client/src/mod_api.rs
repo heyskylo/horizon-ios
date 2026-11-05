@@ -26,7 +26,7 @@ pub use crate::game::{
     NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
     NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
     NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
-    NativeShake,
+    NativeShake, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,

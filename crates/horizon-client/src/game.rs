@@ -247,6 +247,7 @@ mod native_shaders;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
+pub mod native_world_draw;
 mod native_world_edit;
 mod native_world_read;
 mod natural_spawning;
@@ -441,6 +442,7 @@ pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_world_columns::NativeColumnBlocks;
+pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use std::{
@@ -11675,6 +11677,7 @@ impl Game<'_> {
         laps.lap("eg_cracks");
         self.finish_async_entity_culling();
         laps.lap("eg_culling_finish");
+        self.native_world_geometry(camera, alpha as f32, &mut out);
         (
             out,
             static_block_entities,
