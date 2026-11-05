@@ -64,6 +64,8 @@ TARGET = ('summon minecraft:husk {x} {y} {z} {{NoAI:1b,Silent:1b,PersistenceRequ
 # Every scenario starts with a short step forward: it moves the player, which starts LocalPlayer.sendPosition's
 # 20-tick reminder over on both clients alike, and selects the first slot.
 PRELUDE = 10
+# Client ticks between a reset's last teleport and the scenario: the player lands and stands still.
+SETTLE = 40
 
 
 def taps(key, ticks):
@@ -293,13 +295,53 @@ class HorizonClient:
         self.game.quit()
 
 
-def play_all(client, server, scenarios, scripts, horizon):
+class ClientCounts:
+    """How many teleports the client has accepted, and how many ticks it has ended, read from its capture as it
+    grows (complete lines only)."""
+
+    def __init__(self, capture):
+        self.capture, self.offset, self.accepted, self.ticks = capture, 0, 0, 0
+
+    def update(self):
+        with open(self.capture, 'rb') as f:
+            f.seek(self.offset)
+            data = f.read()
+        data = data[:data.rfind(b'\n') + 1]
+        self.offset += len(data)
+        for line in data.splitlines():
+            if b'"c2s"' in line:
+                e = json.loads(line)
+                self.accepted += e.get('name') == 'accept_teleportation'
+                self.ticks += e.get('name') == 'client_tick_end'
+        return self
+
+
+def settle(counts, accepted, timeout=120):
+    """Wait until the client has accepted `accepted` teleports in all, then for SETTLE more of its ticks. The
+    last command of a reset is a teleport, so the server has run them all by then; a busy server can take
+    seconds to, and a teleport landing in a scenario's first ticks would change all of its moves."""
+    deadline = time.time() + timeout
+    while counts.update().accepted < accepted:
+        if time.time() > deadline:
+            raise Failed(f'{counts.capture.stem}: the client never accepted the reset\'s teleports')
+        time.sleep(0.2)
+    ticks = counts.ticks
+    while counts.update().ticks < ticks + SETTLE:
+        if time.time() > deadline:
+            raise Failed(f'{counts.capture.stem}: the client stopped ticking')
+        time.sleep(0.2)
+
+
+def play_all(client, server, scenarios, scripts, horizon, capture):
+    counts = ClientCounts(capture)
     for name in scenarios:
         spec = SCENARIOS[name]
-        for command in RESET + spec.get('setup', []):
-            server.console(command)
         # The place settles: blocks and items reach the client, the player stands still on the ground.
-        time.sleep(2.5)
+        commands = RESET + spec.get('setup', []) + [f'tp {PLAYER} ~ ~ ~']
+        accepted = counts.update().accepted + sum(c.startswith('tp ') for c in commands)
+        for command in commands:
+            server.console(command)
+        settle(counts, accepted)
         path = scripts / f'{name}-{"horizon" if horizon else "vanilla"}.json'
         path.write_text(json.dumps(script(name, spec, horizon)))
         client.play(path, name, timeout=60)
@@ -348,7 +390,7 @@ def run(args, out):
                     if not client.ready.wait(300):
                         raise Failed('the vanilla client never got into the world')
                 time.sleep(3)
-                play_all(client, server, args.scenarios, scripts, who == 'horizon')
+                play_all(client, server, args.scenarios, scripts, who == 'horizon', capture)
             finally:
                 if client:
                     if who == 'horizon' and client.game.log.exists():
