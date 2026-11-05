@@ -67,8 +67,8 @@ pub struct RealmServer {
     /// The invited players: only in the detail answer (`RealmsClient.getOwnRealm`).
     #[serde(default, deserialize_with = "nullable")]
     pub players: Vec<PlayerInfo>,
-    /// The world slots: only in the detail answer too.
-    #[serde(default, deserialize_with = "nullable")]
+    /// The world slots by id: only in the detail answer too (`RealmsServer.slots`).
+    #[serde(default = "empty_slots", deserialize_with = "slots")]
     pub slots: std::collections::HashMap<i32, RealmSlot>,
 }
 
@@ -104,16 +104,65 @@ pub struct RealmSetting {
     pub value: String,
 }
 
-/// `RealmsSlot`: one of the Realm's four world slots.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+/// `RealmsSlot`: one of the Realm's world slots.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RealmSlot {
-    #[serde(default, deserialize_with = "nullable")]
     pub slot_id: i32,
-    #[serde(default, deserialize_with = "nullable")]
     pub options: RealmWorldOptions,
-    #[serde(default, deserialize_with = "nullable")]
     pub settings: Vec<RealmSetting>,
+}
+
+/// `RealmsServer.finalizeSlots`: the JSON's `slots` list (`slotList`) by slot id, each slot's
+/// options a JSON string of their own (`RealmsSlot.RealmsWorldOptionsJsonAdapter`), and the
+/// world slots 1 to 3 it lacks empty (`RealmsSlot.defaults`).
+fn slots<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<std::collections::HashMap<i32, RealmSlot>, D::Error> {
+    #[derive(Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    struct Raw {
+        #[serde(default, deserialize_with = "nullable")]
+        slot_id: i32,
+        #[serde(default)]
+        options: Option<String>,
+        #[serde(default, deserialize_with = "nullable")]
+        settings: Vec<RealmSetting>,
+    }
+    let list: Vec<Raw> = nullable(d)?;
+    let mut slots = empty_slots();
+    for raw in list {
+        // `RealmsWorldOptions.parse`: the defaults when the string is missing or not JSON.
+        let options = raw
+            .options
+            .and_then(|o| serde_json::from_str(&o).ok())
+            .unwrap_or_default();
+        slots.insert(
+            raw.slot_id,
+            RealmSlot {
+                slot_id: raw.slot_id,
+                options,
+                settings: raw.settings,
+            },
+        );
+    }
+    Ok(slots)
+}
+
+/// `RealmsSlot.defaults` for world slots 1 to 3: empty, not hardcore.
+fn empty_slots() -> std::collections::HashMap<i32, RealmSlot> {
+    (1..=3)
+        .map(|slot_id| {
+            let slot = RealmSlot {
+                slot_id,
+                options: RealmWorldOptions {
+                    empty: true,
+                    ..Default::default()
+                },
+                settings: Vec::new(),
+            };
+            (slot_id, slot)
+        })
+        .collect()
 }
 
 impl RealmSlot {
@@ -125,30 +174,49 @@ impl RealmSlot {
     }
 }
 
-/// `RealmsWorldOptions`: a slot's options.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+/// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
+/// constructor (`Default`); `empty` is never in the JSON (`RealmsSlot.defaults` sets it).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RealmWorldOptions {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub spawn_protection: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub force_game_mode: bool,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub difficulty: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub game_mode: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub slot_name: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub version: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(deserialize_with = "nullable")]
     pub compatibility: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(rename = "worldTemplateId", deserialize_with = "nullable")]
     pub template_id: i64,
-    #[serde(default, deserialize_with = "nullable")]
-    pub template_image: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(rename = "worldTemplateImage")]
+    pub template_image: Option<String>,
+    #[serde(skip)]
     pub empty: bool,
+}
+
+impl Default for RealmWorldOptions {
+    /// `new RealmsWorldOptions()`: normal difficulty, no template.
+    fn default() -> Self {
+        Self {
+            spawn_protection: 0,
+            force_game_mode: false,
+            difficulty: 2,
+            game_mode: 0,
+            slot_name: String::new(),
+            version: String::new(),
+            compatibility: "UNVERIFIABLE".into(),
+            template_id: -1,
+            template_image: None,
+            empty: false,
+        }
+    }
 }
 
 impl RealmServer {
@@ -559,8 +627,8 @@ impl RealmsClient {
             "slotName": slot.options.slot_name,
             "version": slot.options.version,
             "compatibility": slot.options.compatibility,
-            "templateId": slot.options.template_id,
-            "templateImage": slot.options.template_image,
+            "worldTemplateId": slot.options.template_id,
+            "worldTemplateImage": slot.options.template_image,
             "hardcore": slot.is_hardcore(),
         })
         .to_string();
@@ -763,6 +831,38 @@ mod tests {
         assert!(server.is_open());
         assert!(server.owned_by(UUID));
         assert!(!server.owned_by(UUID + 1));
+    }
+
+    /// `RealmsServer.slots` as the detail answer carries them (`slotList`): a list whose
+    /// options are a JSON string each, read as `RealmsWorldOptions.parse` reads them, and the
+    /// world slots it lacks empty (`finalizeSlots`).
+    #[test]
+    fn the_detail_answer_s_slot_list_reads_its_options_strings() {
+        let raw = r#"{"id":7,"name":"Base","activeSlot":1,"slots":[
+            {"slotId":1,"options":"{\"slotName\":\"Spawn\",\"difficulty\":3,\"gameMode\":1,\"spawnProtection\":4,\"worldTemplateId\":42,\"worldTemplateImage\":null}",
+             "settings":[{"name":"hardcore","value":"true"}]},
+            {"slotId":2,"options":"{}","settings":[]}]}"#;
+        let server: RealmServer = serde_json::from_str(raw).unwrap();
+        let one = &server.slots[&1];
+        assert_eq!(
+            (
+                one.options.slot_name.as_str(),
+                one.options.difficulty,
+                one.options.game_mode,
+                one.options.spawn_protection,
+                one.options.template_id,
+            ),
+            ("Spawn", 3, 1, 4, 42)
+        );
+        assert!(one.is_hardcore() && !one.options.empty);
+        // `new RealmsWorldOptions()` for what the string leaves out.
+        let two = &server.slots[&2].options;
+        assert_eq!((two.difficulty, two.template_id, two.empty), (2, -1, false));
+        assert!(server.slots[&3].options.empty);
+        assert_eq!(server.slots.len(), 3);
+        // The list answer has no slots: the empty world slots still.
+        let listed: RealmServer = serde_json::from_str(r#"{"id":7,"slots":null}"#).unwrap();
+        assert!(listed.slots.values().all(|s| s.options.empty));
     }
 
     #[test]

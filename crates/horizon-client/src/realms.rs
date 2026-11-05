@@ -1650,11 +1650,7 @@ impl Screen {
                     cx - 154.0,
                     90.0,
                     152.0,
-                    format!(
-                        "{}: {}",
-                        t("options.difficulty"),
-                        t(DIFFICULTIES[*difficulty])
-                    ),
+                    crate::lang::tr("options.generic_value", &[&t("options.difficulty"), &t(DIFFICULTIES[*difficulty])]),
                     !hardcore,
                     95,
                     None,
@@ -1663,11 +1659,7 @@ impl Screen {
                     cx + 2.0,
                     90.0,
                     152.0,
-                    format!(
-                        "{}: {}",
-                        t("selectWorld.gameMode"),
-                        t(GAME_MODES[*game_mode])
-                    ),
+                    crate::lang::tr("options.generic_value", &[&t("selectWorld.gameMode"), &t(GAME_MODES[*game_mode])]),
                     !hardcore,
                     96,
                     None,
@@ -1676,11 +1668,7 @@ impl Screen {
                     cx - 154.0,
                     118.0,
                     152.0,
-                    format!(
-                        "{}: {}",
-                        t("mco.configure.world.forceGameMode"),
-                        on_off(*force_game_mode)
-                    ),
+                    crate::lang::tr("options.generic_value", &[&t("mco.configure.world.forceGameMode"), &on_off(*force_game_mode)]),
                     normal && !hardcore,
                     97,
                     None,
@@ -2254,15 +2242,11 @@ impl Screen {
                 );
                 let normal = server.world_type == "NORMAL";
                 let off = *spawn_protection == 0;
-                let label = format!(
-                    "{}: {}",
-                    t("mco.configure.world.spawnProtection"),
-                    if off {
+                let label = crate::lang::tr("options.generic_value", &[&t("mco.configure.world.spawnProtection"), &if off {
                         t("options.off")
                     } else {
                         spawn_protection.to_string()
-                    }
-                );
+                    }]);
                 let value = *spawn_protection as f32 / 16.0;
                 crate::ui::slider(
                     batch,
