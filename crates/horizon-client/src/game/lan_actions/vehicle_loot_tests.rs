@@ -349,3 +349,286 @@ fn foreign_or_unplaced_vehicle_menus_cannot_pin_this_levels_live_inventory() {
         assert_eq!(game.boats[0].items, live);
     }
 }
+
+fn placement_cubes(game: &mut Game<'_>) -> (bool, bool) {
+    use horizon_core::position::BlockPos;
+    use horizon_world::level::LevelAccess;
+    let stone = game
+        .pack
+        .assets
+        .registry
+        .default_state("minecraft:stone")
+        .unwrap();
+    let actor_bounds = (!game.spectator())
+        .then(|| game.player.as_ref().map(|p| p.bounds()))
+        .flatten();
+    game.with_level(|_, level, _| {
+        if let Some(bounds) = actor_bounds {
+            assert_eq!(
+                level
+                    .building_blocker_boxes()
+                    .iter()
+                    .filter(|b| b.intersects(bounds))
+                    .count(),
+                1,
+                "the live acting body appears once, without a stale hub duplicate",
+            );
+        }
+        (
+            level.is_unobstructed(BlockPos::new(6, 200, 6), stone),
+            level.is_unobstructed(BlockPos::new(6, 201, 6), stone),
+        )
+    })
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn player_building_obstruction_follows_presence_through_guest_outside_and_nested_turns() {
+    let (mut game, mut host) = fixture();
+    host.hub.guests[0].position = [4.5, 200.0, 6.5];
+    host.hub.guests[0].loaded = true;
+    host.hub.guests[0].load_timeout = 0;
+    let mut failures = Vec::new();
+    // Native ServerPlayer damage/doTick and actual EntityGetter queries:
+    // normal death retains its standing box until removal on tick 20.
+    // A load acknowledgement is not the presence of the server-side entity.
+    for (
+        label,
+        loaded,
+        dead,
+        corpse_ticks,
+        placed,
+        spectator,
+        foreign,
+        disconnected,
+        expected,
+        triggers,
+    ) in [
+        (
+            "alive loaded",
+            true,
+            false,
+            0,
+            true,
+            false,
+            false,
+            false,
+            false,
+            2,
+        ),
+        (
+            "alive no acknowledgement after timeout",
+            false,
+            false,
+            0,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+        ),
+        (
+            "dead present at 0",
+            true,
+            true,
+            0,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+        ),
+        (
+            "dead present at 1",
+            true,
+            true,
+            1,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+        ),
+        (
+            "dead present at 19",
+            true,
+            true,
+            19,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+        ),
+        (
+            "dead removed at 20",
+            true,
+            true,
+            20,
+            true,
+            false,
+            false,
+            false,
+            true,
+            1,
+        ),
+        (
+            "genuinely unplaced",
+            true,
+            false,
+            0,
+            false,
+            false,
+            false,
+            false,
+            true,
+            1,
+        ),
+        (
+            "disconnected and unplaced",
+            true,
+            false,
+            0,
+            false,
+            false,
+            false,
+            true,
+            true,
+            1,
+        ),
+        (
+            "spectator",
+            true,
+            false,
+            0,
+            true,
+            true,
+            false,
+            false,
+            true,
+            1,
+        ),
+        (
+            "other dimension",
+            true,
+            false,
+            0,
+            true,
+            false,
+            true,
+            false,
+            true,
+            1,
+        ),
+    ] {
+        let target = &mut host.hub.guests[1];
+        target.motion = None;
+        target.position = [6.5, 200.0, 6.5];
+        target.loaded = loaded;
+        target.loading = !loaded;
+        target.load_timeout = 0;
+        target.dead = dead;
+        target.health = if dead { 0.0 } else { 20.0 };
+        target.death_time = 0;
+        for _ in 0..corpse_ticks {
+            target.tick_death();
+        }
+        target.placed = placed;
+        target.disconnected = disconnected;
+        target.game_mode = if spectator { 3 } else { 0 };
+        target.dimension = if foreign {
+            "minecraft:the_nether"
+        } else {
+            "minecraft:overworld"
+        }
+        .into();
+        for route in ["guest turn", "outside turn", "borrowed ancestor"] {
+            // A cross-level borrowed turn must actually enter that level;
+            // its dimension ownership has separate existing regression tests.
+            if foreign && route == "borrowed ancestor" {
+                continue;
+            }
+            let result = if route == "outside turn" {
+                game.lan = Some(host);
+                let count = game.lan_block_trigger_boxes().len();
+                assert_eq!(
+                    count, triggers,
+                    "trigger policy must remain separate: {label}"
+                );
+                let result = placement_cubes(&mut game);
+                host = game.lan.take().unwrap();
+                result
+            } else if route == "borrowed ancestor" {
+                let dimension = game.dim;
+                let swap = game.enter_guest(&mut host, 2, dimension).unwrap();
+                let result = game.as_guest(&mut host, 1, placement_cubes).unwrap();
+                game.leave_guest(&mut host, swap);
+                result
+            } else {
+                game.as_guest(&mut host, 1, placement_cubes).unwrap()
+            };
+            if result != (expected, expected) {
+                failures.push(format!("{label}, {route}: {result:?}, expected {expected}"));
+            }
+        }
+    }
+    // Real respawn replaces the expired body and restarts client readiness.
+    let target = &mut host.hub.guests[1];
+    target.disconnected = false;
+    target.placed = true;
+    target.game_mode = 0;
+    target.dimension = "minecraft:overworld".into();
+    target.dead = true;
+    target.health = 0.0;
+    target.death_time = 20;
+    target.spawn = Some([6.5, 200.0, 6.5]);
+    game.guest_respawn(&mut host, 2);
+    let target = &mut host.hub.guests[1];
+    assert!(!target.dead);
+    assert_eq!(target.death_time, 0);
+    assert!(target.loading);
+    assert!(!target.client_loaded());
+    target.position = [6.5, 200.0, 6.5];
+    let result = game.as_guest(&mut host, 1, placement_cubes).unwrap();
+    if result != (false, false) {
+        failures.push(format!("actual respawn: {result:?}"));
+    }
+
+    // A disconnected entity is removed from the hub; no snapshot from its
+    // previous turn may keep its body in later guest or outside-turn queries.
+    let mut removed = host.hub.guests.remove(1);
+    removed.disconnected = true;
+    drop(removed);
+    assert_eq!(
+        game.as_guest(&mut host, 1, placement_cubes),
+        Some((true, true))
+    );
+    game.lan = Some(host);
+    assert_eq!(placement_cubes(&mut game), (true, true));
+    host = game.lan.take().unwrap();
+
+    // Production server players have an associated guest record. Preserve
+    // the existing unassociated client/legacy local-owner body policy.
+    game.player = Some(
+        horizon_client::motion::PlayerMotion::new(&game.motion, Vec3::new(6.5, 200.0, 6.5))
+            .unwrap(),
+    );
+    game.mode = horizon_client::command::args::GameMode::Survival;
+    assert_eq!(
+        game.as_guest(&mut host, 1, placement_cubes),
+        Some((false, false))
+    );
+    game.mode = horizon_client::command::args::GameMode::Spectator;
+    assert_eq!(
+        game.as_guest(&mut host, 1, placement_cubes),
+        Some((true, true))
+    );
+    game.player = None;
+    game.mode = horizon_client::command::args::GameMode::Survival;
+
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

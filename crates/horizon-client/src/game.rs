@@ -1004,8 +1004,8 @@ struct GameLevel<'w> {
     player_box: Option<([f64; 3], [f64; 3])>,
     /// The LAN guests in this level who trigger blocks (not spectators).
     guest_boxes: Vec<([f64; 3], [f64; 3])>,
-    /// Other players that block placement during a guest turn, whose hub is
-    /// borrowed out; None outside one, where `guest_boxes` are those players.
+    /// Server-present player bodies for building, including borrowed guest
+    /// turns; separate from the loaded/alive `guest_boxes` used for triggers.
     building_player_boxes: Option<Vec<([f64; 3], [f64; 3])>>,
     player_collision: Option<PlayerCollision>,
     /// Minecart boxes (detector rails).
@@ -1197,11 +1197,7 @@ impl GameLevel<'_> {
         let b = self.entities;
         self.player_box
             .iter()
-            .chain(
-                self.building_player_boxes
-                    .as_ref()
-                    .unwrap_or(&self.guest_boxes),
-            )
+            .chain(self.building_player_boxes.iter().flatten())
             .chain(&self.cart_boxes)
             .map(boxed)
             .chain(b.mobs.iter().filter(|m| !m.removed).map(Mob::bounds))
@@ -4719,10 +4715,30 @@ impl Game<'_> {
             })
             .collect();
         let guest_boxes = self.lan_block_trigger_boxes();
-        let building_player_boxes = self
-            .lan_acting
-            .is_some()
-            .then(|| self.lan_building_boxes.boxes(self.dim));
+        // Building uses server entity presence, while trigger boxes retain
+        // their separate loaded/alive policy for pressure plates and contact.
+        let building_player_boxes = if self.lan_acting.is_some() {
+            Some(self.lan_building_boxes.boxes(self.dim))
+        } else {
+            self.lan.as_ref().map(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .filter(|g| {
+                        host.hub.here(g)
+                            && building_players::guest_body_present(g)
+                            && !g.spectator()
+                    })
+                    .map(|g| {
+                        let bounds = g.bounds();
+                        (
+                            bounds.min_position().components(),
+                            bounds.max_position().components(),
+                        )
+                    })
+                    .collect()
+            })
+        };
         let dimension = match self.dim {
             Dim::Overworld => LevelDimension::Overworld,
             Dim::Nether => LevelDimension::Nether,

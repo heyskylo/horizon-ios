@@ -3,6 +3,12 @@
 use super::Dim;
 use horizon_core::geometry::Aabb;
 
+/// Server entity presence is independent of terrain acknowledgement. A dead
+/// player's body remains until LivingEntity.tickDeath removes it on tick 20.
+pub(super) fn guest_body_present(guest: &horizon_client::lan::guest::Guest) -> bool {
+    guest.placed && !guest.disconnected && (!guest.dead || guest.death_time < 20)
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct BuildingPlayer {
     pub(super) conn: Option<u32>,

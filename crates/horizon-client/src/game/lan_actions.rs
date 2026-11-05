@@ -319,7 +319,8 @@ fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
         .map(|g| BuildingPlayer {
             conn: Some(g.conn),
             dimension: Dim::from_id(&g.dimension),
-            bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
+            bounds: (super::building_players::guest_body_present(g) && !g.spectator())
+                .then(|| g.bounds()),
             borrowed: false,
         })
         .collect()
@@ -409,7 +410,17 @@ impl Game<'_> {
             bounds: self
                 .player
                 .as_ref()
-                .filter(|p| !self.spectator() && !p.health.dead_or_dying())
+                .filter(|p| {
+                    !self.spectator()
+                        && match self.lan_acting {
+                            Some(ancestor) => host
+                                .hub
+                                .guest(ancestor)
+                                .is_some_and(super::building_players::guest_body_present),
+                            // Unassociated client/legacy bodies have no guest lifecycle record.
+                            None => !p.health.dead_or_dying(),
+                        }
+                })
                 .map(PlayerMotion::bounds),
             borrowed: true,
         };
