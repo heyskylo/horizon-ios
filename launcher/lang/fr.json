@@ -1185,5 +1185,12 @@
   "Installed {mods} into horizon-mods and turned it on, checksum checked (Options > Mods in the game).": "{mods} installé dans horizon-mods et activé, somme de contrôle vérifiée (Options > Mods dans le jeu).",
   "Ported {mods} into horizon-mods and turned on (Options > Mods in the game).": "{mods} porté dans horizon-mods et activé (Options > Mods dans le jeu).",
   "What didn't port is listed under Installed.": "Ce qui n'a pas pu être porté est listé sous Installé.",
-  "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.": "{mods} installé, sommes de contrôle vérifiées. Activez-le dans le jeu : Options > Packs de ressources."
+  "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.": "{mods} installé, sommes de contrôle vérifiées. Activez-le dans le jeu : Options > Packs de ressources.",
+  "Glass": "Verre",
+  "How light the frosted panels and menus are.": "La clarté des panneaux et des menus dépolis.",
+  "Blur": "Flou",
+  "How frosted the panels are.": "L'intensité du dépoli des panneaux.",
+  "Gather, build and stay alive": "Récoltez, construisez et restez en vie",
+  "Fly and build with every block": "Volez et construisez avec tous les blocs",
+  "Play a map the way it was made": "Jouez une carte comme elle a été conçue"
 }

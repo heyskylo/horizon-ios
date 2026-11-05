@@ -1185,5 +1185,12 @@
   "Installed {mods} into horizon-mods and turned it on, checksum checked (Options > Mods in the game).": "Installed {mods} into horizon-mods and turned it on, checksum checked (Options > Mods in the game).",
   "Ported {mods} into horizon-mods and turned on (Options > Mods in the game).": "Ported {mods} into horizon-mods and turned on (Options > Mods in the game).",
   "What didn't port is listed under Installed.": "What didn't port is listed under Installed.",
-  "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.": "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs."
+  "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.": "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.",
+  "Glass": "Glass",
+  "How light the frosted panels and menus are.": "How light the frosted panels and menus are.",
+  "Blur": "Blur",
+  "How frosted the panels are.": "How frosted the panels are.",
+  "Gather, build and stay alive": "Gather, build and stay alive",
+  "Fly and build with every block": "Fly and build with every block",
+  "Play a map the way it was made": "Play a map the way it was made"
 }
