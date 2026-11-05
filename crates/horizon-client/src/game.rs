@@ -347,6 +347,7 @@ mod test_environments;
 mod test_instance_edit;
 mod test_instances;
 mod text_displays;
+mod tick_script;
 mod titles;
 mod tnt;
 mod totem;
@@ -3066,6 +3067,8 @@ struct Game<'a> {
     input_trace: input_trace::InputTrace,
     /// A repro recording, export or replay (game/repro.rs).
     repro: repro::Repro,
+    /// `HORIZON_TICK_SCRIPT`'s scenario (game/tick_script.rs).
+    tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
     /// The last water plane `water_plane` found, kept while none is in reach.
@@ -18927,6 +18930,9 @@ impl Game<'_> {
                     for _ in 0..steps {
                         let started = Instant::now();
                         if self.title.is_none() && !self.pause {
+                            if self.tick_script.armed() {
+                                self.tick_script_step(event_loop);
+                            }
                             horizon_client::spans::time("tick", || self.tick())?;
                             // Cave mood (a shader pack's playerMood) samples on a random
                             // seeded from the clock: under `HORIZON_STILL` it waits for the
@@ -19689,6 +19695,7 @@ impl<'a> Game<'a> {
             events: Default::default(),
             input_trace: Default::default(),
             repro: Default::default(),
+            tick_script: tick_script::TickScript::from_env(),
             agent: agent::Agent::default(),
             view_frustum: None,
             entity_section_visibility_valid: false,
