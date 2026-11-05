@@ -940,6 +940,56 @@ pub fn killed_by_arrow(
     let kinds: BTreeSet<&str> = victims.iter().map(|e| e.kind.as_str()).collect();
     range_i(&c["unique_entity_types"], kinds.len() as i64)
 }
+/// `KilledTrigger.TriggerInstance.matches`: the player, the other entity
+/// (the one killed, or the killer for `entity_killed_player`) and the
+/// killing blow (none: any `killing_blow` fails).
+pub fn killed(
+    c: &Value,
+    me: &EntityView,
+    target: &EntityView,
+    blow: Option<&DamageView>,
+    w: &dyn World,
+) -> bool {
+    let pctx = Entities {
+        this: Some(me),
+        origin: me.position,
+        tool: None,
+        block_pos: None,
+    };
+    let ectx = Entities {
+        this: Some(target),
+        ..pctx
+    };
+    let blow_ok = c["killing_blow"].is_null()
+        || blow.is_some_and(|d| damage_source(&c["killing_blow"], d, w, me.position));
+    conditions(&c["player"], &pctx, w) && conditions(&c["entity"], &ectx, w) && blow_ok
+}
+/// A blow recorded by its damage type and causing entity, as `killing_blow`
+/// sees it: the projectile those types name is the direct entity, at `at`;
+/// otherwise the causing entity dealt it itself (`DamageSource.isDirect`).
+pub fn recorded_blow(kind: String, source: Option<EntityView>, at: [f64; 3]) -> DamageView {
+    let projectile = match kind.as_str() {
+        "minecraft:arrow" => Some("minecraft:arrow"),
+        "minecraft:fireball" | "minecraft:small_fireball" => Some("minecraft:fireball"),
+        "minecraft:wither_skull" => Some("minecraft:wither_skull"),
+        "minecraft:fireworks" => Some("minecraft:firework_rocket"),
+        _ => None,
+    };
+    DamageView {
+        kind,
+        is_direct: projectile.is_none(),
+        direct: match projectile {
+            Some(kind) => Some(EntityView {
+                kind: kind.into(),
+                position: at,
+                ..Default::default()
+            }),
+            None => source.clone(),
+        },
+        source,
+        ..Default::default()
+    }
+}
 /// A damage event as `DamagePredicate` sees it.
 #[derive(Clone, Debug, Default)]
 pub struct DamageView {
@@ -1799,6 +1849,81 @@ mod tests {
         };
         assert!(!damage_source(&blow, &arrow, &Flat, [0.0; 3]));
         assert!(damage_source(&Value::Null, &sword, &Flat, [0.0; 3]));
+    }
+    fn mob(kind: &str) -> EntityView {
+        EntityView {
+            kind: kind.into(),
+            ..Default::default()
+        }
+    }
+    /// `entity_killed_player` by a mob's melee hit: the mob is the killer and
+    /// the blow's causing and direct entity.
+    #[test]
+    fn entity_killed_player_by_a_mob_names_the_mob() {
+        let c = serde_json::json!({
+            "entity": {"minecraft:entity_type": "minecraft:polar_bear"},
+            "killing_blow": {"source_entity": {"minecraft:entity_type": "minecraft:polar_bear"}}
+        });
+        let me = mob("minecraft:player");
+        let bear = mob("minecraft:polar_bear");
+        let blow = recorded_blow("minecraft:mob_attack".into(), Some(bear.clone()), [0.0; 3]);
+        assert!(blow.is_direct);
+        assert_eq!(
+            blow.direct.as_ref().map(|e| e.kind.as_str()),
+            Some("minecraft:polar_bear")
+        );
+        assert!(killed(&c, &me, &bear, Some(&blow), &Flat));
+        let panda = mob("minecraft:panda");
+        let blow = recorded_blow("minecraft:mob_attack".into(), Some(panda.clone()), [0.0; 3]);
+        assert!(!killed(&c, &me, &panda, Some(&blow), &Flat));
+    }
+    /// `entity_killed_player` by a skeleton's arrow: the shooter is the
+    /// killer and the blow's causing entity, the arrow its direct one.
+    #[test]
+    fn entity_killed_player_by_an_arrow_names_the_shooter() {
+        let c = serde_json::json!({
+            "entity": {"minecraft:entity_type": "minecraft:skeleton"},
+            "killing_blow": {
+                "direct_entity": {"minecraft:entity_type": "minecraft:arrow"},
+                "source_entity": {"minecraft:entity_type": "minecraft:skeleton"},
+                "is_direct": false
+            }
+        });
+        let me = mob("minecraft:player");
+        let skeleton = mob("minecraft:skeleton");
+        let blow = recorded_blow(
+            "minecraft:arrow".into(),
+            Some(skeleton.clone()),
+            [1.0, 2.0, 3.0],
+        );
+        assert!(!blow.is_direct);
+        assert_eq!(
+            blow.direct.as_ref().map(|e| e.position),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert!(killed(&c, &me, &skeleton, Some(&blow), &Flat));
+        // Shot point-blank, not with an arrow: the direct entity is the skeleton.
+        let melee = recorded_blow(
+            "minecraft:mob_attack".into(),
+            Some(skeleton.clone()),
+            [0.0; 3],
+        );
+        assert!(!killed(&c, &me, &skeleton, Some(&melee), &Flat));
+    }
+    /// A blow with no causing entity fails a `source_entity` test, and with
+    /// no blow at all any `killing_blow` fails.
+    #[test]
+    fn a_blow_with_no_killer_fails_its_entity_tests() {
+        let c = serde_json::json!({
+            "killing_blow": {"source_entity": {"minecraft:entity_type": "minecraft:zombie"}}
+        });
+        let me = mob("minecraft:player");
+        let zombie = mob("minecraft:zombie");
+        let fall = recorded_blow("minecraft:fall".into(), None, [0.0; 3]);
+        assert!(fall.direct.is_none() && fall.source.is_none());
+        assert!(!killed(&c, &me, &zombie, Some(&fall), &Flat));
+        assert!(!killed(&c, &me, &zombie, None, &Flat));
+        assert!(killed(&serde_json::json!({}), &me, &zombie, None, &Flat));
     }
     #[test]
     fn uh_oh_accepts_either_tnt_event_only_for_adult_sulfur_cubes() {

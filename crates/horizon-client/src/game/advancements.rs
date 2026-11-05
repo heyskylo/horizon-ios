@@ -1024,23 +1024,7 @@ impl Game<'_> {
         let target = target.clone();
         let blow = blow.cloned();
         self.trigger(name, move |c, w| {
-            let pctx = adv::Entities {
-                this: Some(&me),
-                origin: me.position,
-                tool: None,
-                block_pos: None,
-            };
-            let ectx = adv::Entities {
-                this: Some(&target),
-                ..pctx
-            };
-            let blow_ok = c["killing_blow"].is_null()
-                || blow
-                    .as_ref()
-                    .is_some_and(|d| adv::damage_source(&c["killing_blow"], d, w, me.position));
-            adv::conditions(&c["player"], &pctx, w)
-                && adv::conditions(&c["entity"], &ectx, w)
-                && blow_ok
+            adv::killed(c, &me, &target, blow.as_ref(), w)
         });
     }
     /// `KilledByArrowTrigger`: what the arrow killed and the weapon it came from.
@@ -1744,6 +1728,18 @@ impl Game<'_> {
                 && adv::item(&c["item"], &tool, w)
                 && adv::range_i(&c["num_bees_inside"], bees)
                 && adv::conditions(&c["player"], &pctx, w)
+        });
+    }
+    /// `Entity.startRiding`'s `sendEventAndTriggers`: `START_RIDING_TRIGGER`
+    /// for every `ServerPlayer` in `entityToRide.getIndirectPassengersStream()`.
+    pub(super) fn trigger_started_riding(&mut self, vehicle: u32) {
+        let mounts: Vec<(u32, Option<u32>)> =
+            self.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+        let aboard = super::boarding::passenger_vehicles(vehicle, &mounts);
+        self.for_each_player(|g| {
+            if g.riding.is_some_and(|v| aboard.contains(&v)) {
+                g.trigger_player("minecraft:started_riding");
+            }
         });
     }
     /// A trigger with only the player condition (slept_in_bed, started_riding).

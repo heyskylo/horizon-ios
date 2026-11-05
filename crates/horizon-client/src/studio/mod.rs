@@ -2,4 +2,6 @@
 
 pub mod mcpr;
 
-pub use mcpr::{McprReader, McprWriter, Metadata, TimestampedPacket};
+pub use mcpr::{
+    McprReader, McprWriter, Metadata, RecoveryReport, TimestampedPacket, recover_crashed_recordings,
+};
