@@ -36,7 +36,9 @@ impl Screen {
             | Self::Dead
             | Self::CommandBlock
             | Self::BlockEditor
-            | Self::Mod => false,
+            | Self::Mod
+            // The HUD editor shows the HUD it moves.
+            | Self::HudEditor => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
