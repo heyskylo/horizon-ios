@@ -7229,7 +7229,9 @@ impl Game<'_> {
             self.particles.add(&options, p, v);
         }
     }
-    /// LocalPlayer.sendChanges: input, sprint and the move. The held slot is not sent here:
+    /// The end of the player's tick: `AbstractBoat.tick`'s paddles (the vehicle ticks before its
+    /// passenger's `sendChanges`), then `LocalPlayer.sendChanges`: the input, and a passenger's look,
+    /// vehicle and sprint, or `sendPosition`'s sprint and move. The held slot is not sent here:
     /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
     fn remote_send_state(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
@@ -7244,33 +7246,46 @@ impl Game<'_> {
         let (yaw, pitch) = (self.yaw, self.pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
-        let vehicle = self.remote_vehicle_packets();
+        let (paddles, vehicle): (Vec<S>, Vec<S>) = self
+            .remote_vehicle_packets()
+            .into_iter()
+            .partition(|p| matches!(p, S::PaddleBoat(_)));
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let mut out = Vec::new();
+        let mut out = paddles;
         if input != r.last_input {
             r.last_input = input;
             out.push(S::PlayerInput(play::PlayerInput { flags: input }));
         }
-        if sprinting != r.was_sprinting {
-            r.was_sprinting = sprinting;
-            out.push(S::PlayerCommand(play::PlayerCommand {
-                id: r.entity_id,
-                action: if sprinting { 1 } else { 2 },
-                data: 0,
-            }));
-        }
+        // LocalPlayer.sendIsSprintingIfNeeded.
+        let sprint = |r: &mut Remote, out: &mut Vec<S>| {
+            if sprinting != r.was_sprinting {
+                r.was_sprinting = sprinting;
+                out.push(S::PlayerCommand(play::PlayerCommand {
+                    id: r.entity_id,
+                    action: if sprinting { 1 } else { 2 },
+                    data: 0,
+                }));
+            }
+        };
         if riding {
-            // LocalPlayer.tick: a passenger sends its look, then the vehicle
-            // it controls.
+            // LocalPlayer.sendChanges: a passenger sends its look, then the
+            // vehicle it controls and, only then, its sprint.
             out.push(S::MovePlayerRot(play::MovePlayerRot {
                 yaw,
                 pitch,
                 flags: u8::from(on_ground) | u8::from(collision) << 1,
             }));
-            out.extend(vehicle);
-        } else if controls_camera
+            if !vehicle.is_empty() {
+                out.extend(vehicle);
+                sprint(r, &mut out);
+            }
+        } else {
+            sprint(r, &mut out);
+        }
+        if !riding
+            && controls_camera
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
             && let Some(packet) =
