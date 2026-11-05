@@ -933,7 +933,28 @@ impl PlayerMotion {
         keys: crate::sprint::Keys,
         sprint_window: i32,
     ) -> Result<()> {
+        let conditions = self.sprint_conditions();
+        self.run_sprint_tick(keys, conditions, sprint_window)
+    }
+    /// The same phase for a passenger: `LocalPlayer.isSprintingPossible` asks the
+    /// vehicle's `canSprint` and this client's authority there, not food.
+    pub fn sprint_input_tick_riding(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+        vehicle_can_sprint: bool,
+        vehicle_local: bool,
+    ) -> Result<()> {
         let conditions = crate::sprint::Conditions {
+            passenger: true,
+            vehicle_can_sprint,
+            vehicle_local,
+            ..self.sprint_conditions()
+        };
+        self.run_sprint_tick(keys, conditions, sprint_window)
+    }
+    fn sprint_conditions(&self) -> crate::sprint::Conditions {
+        crate::sprint::Conditions {
             sprinting: self.sprinting,
             mobility_restricted: self.mobility_restricted,
             enough_food: self.health.food.has_enough_food(),
@@ -951,7 +972,14 @@ impl PlayerMotion {
             under_water: self.is_under_water(),
             swimming: self.swimming,
             ..Default::default()
-        };
+        }
+    }
+    fn run_sprint_tick(
+        &mut self,
+        keys: crate::sprint::Keys,
+        conditions: crate::sprint::Conditions,
+        sprint_window: i32,
+    ) -> Result<()> {
         // The sprint setter edits attributes and flags, independent of local
         // keyboard history. Retain the input prefix even if that setter fails.
         let mut state = self.sprint_input;
