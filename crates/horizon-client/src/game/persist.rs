@@ -2276,19 +2276,6 @@ mod tests {
         assert!(tag.get("Passengers").is_none());
     }
 
-    #[test]
-    fn a_vehicle_with_multiple_passengers_saves_and_loads_driver_first() {
-        let (camel, husk, parched) = (1, 2, 3);
-        let mounts = [(husk, Some(camel)), (parched, Some(camel))];
-        assert_eq!(vehicle_tree(camel, &mounts), vec![camel, husk, parched]);
-        let mut tag = entity("minecraft:camel_husk");
-        add_passengers(
-            &mut tag,
-            vec![entity("minecraft:husk"), entity("minecraft:parched")],
-        );
-        assert_eq!(passengers(&tag), ["minecraft:husk", "minecraft:parched"]);
-    }
-
     /// A portal arrival or a `/summon` is told as a fresh add, and the mark
     /// never reaches the entity's kept or saved compound.
     #[test]

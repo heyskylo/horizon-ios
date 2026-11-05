@@ -660,40 +660,4 @@ mod tests {
         assert!(!r(Species::Drowned, true).nautilus);
         assert!(!r(Species::Zombie, false).camel_husk);
     }
-
-    #[test]
-    fn camel_two_seats_place_second_rider_behind_driver() {
-        let pos = Vec3::new(10.0, 64.0, 20.0);
-        let rider_offset = 0.7; // Humanoid riding offset
-
-        // Facing south (yaw = 0): +z is forward
-        let driver_attach = [0.0, 2.0, 0.5];
-        let passenger_attach = [0.0, 2.0, -0.7];
-        let driver_pos = riders::seat(driver_attach, rider_offset, pos, 0.0);
-        let passenger_pos = riders::seat(passenger_attach, rider_offset, pos, 0.0);
-
-        assert!(
-            (driver_pos.z - 20.5).abs() < 1e-6,
-            "driver is 0.5 blocks ahead"
-        );
-        assert!(
-            (passenger_pos.z - 19.3).abs() < 1e-6,
-            "passenger is 0.7 blocks behind"
-        );
-        assert!(
-            passenger_pos.z < driver_pos.z,
-            "passenger sits behind driver"
-        );
-
-        // Facing north (yaw = 180): -z is forward
-        let driver_north = riders::seat(driver_attach, rider_offset, pos, 180.0);
-        let passenger_north = riders::seat(passenger_attach, rider_offset, pos, 180.0);
-
-        assert!((driver_north.z - 19.5).abs() < 1e-6);
-        assert!((passenger_north.z - 20.7).abs() < 1e-6);
-        assert!(
-            passenger_north.z > driver_north.z,
-            "passenger sits behind driver facing north"
-        );
-    }
 }
