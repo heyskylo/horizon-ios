@@ -14,6 +14,7 @@ mod players;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
+mod selector_bounds;
 mod terrain_cmds;
 mod test_locate;
 mod test_runs;
@@ -880,13 +881,20 @@ impl Game<'_> {
                 }
                 if s.delta.iter().any(Option::is_some) {
                     let d = s.delta.map(|v| v.unwrap_or(0.0));
-                    for i in 0..3 {
-                        let (a, b) = (
-                            origin[i].min(origin[i] + d[i]),
-                            origin[i].max(origin[i] + d[i]) + 1.0,
-                        );
-                        if p[i] < a || p[i] >= b {
+                    if let Some(bounds) = self.selector_target_bounds(t) {
+                        if !selector_bounds::selector_box(origin, d).intersects(bounds) {
                             return None;
+                        }
+                    } else {
+                        // Unmodeled boxes retain their previous point fallback.
+                        for i in 0..3 {
+                            let (a, b) = (
+                                origin[i].min(origin[i] + d[i]),
+                                origin[i].max(origin[i] + d[i]) + 1.0,
+                            );
+                            if p[i] < a || p[i] >= b {
+                                return None;
+                            }
                         }
                     }
                 }
@@ -4431,5 +4439,93 @@ mod teleport_rider_tests {
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod selector_bounds_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{entities::ArmorStand, mobs::Mob};
+    use horizon_core::geometry::Vec3;
+
+    #[test]
+    fn actual_selector_uses_body_overlap_but_distance_stays_at_the_origin() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            eprintln!("Prepared resources unavailable; Game selector coverage did not run");
+            return;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs
+            .push(Mob::new(30, kind, Vec3::new(10.5, 220.0, 10.5), 0.0));
+        let target = Target::Mob(30);
+        let mut selector = Selector {
+            kind: 'e',
+            include_entities: true,
+            limit: usize::MAX,
+            delta: [Some(0.0); 3],
+            ..Default::default()
+        };
+        let origin = [9.5, 220.0, 10.5];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, origin),
+            vec![(target, 1.0)]
+        );
+        selector.distance = Some((None, Some(0.9)));
+        assert!(
+            game.select_in_level(vec![target], &selector, origin)
+                .is_empty()
+        );
+        selector.distance = None;
+        assert!(
+            game.select_in_level(vec![target], &selector, [11.0, 220.0, 10.5])
+                .is_empty()
+        );
+        selector.delta = [Some(-1.0), None, None];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, [11.5, 220.0, 10.5])
+                .len(),
+            1
+        );
+        game.armor_stands
+            .push(ArmorStand::new(31, Vec3::new(30.5, 220.0, 10.5), 0.0));
+        selector.delta = [Some(0.0); 3];
+        for (x, count) in [(29.5, 1), (29.25, 0), (30.75, 0), (29.250000000000004, 1)] {
+            assert_eq!(
+                game.select_in_level(vec![Target::Stand(31)], &selector, [x, 220.0, 10.5])
+                    .len(),
+                count
+            );
+        }
     }
 }

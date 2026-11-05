@@ -138,6 +138,7 @@ def main():
     parser.add_argument('--piglin-anger-memory-diagnostic', action='store_true')
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
+    parser.add_argument("--selector-bounds-fixture", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -289,6 +290,9 @@ def main():
     if args.map_decoration_patch_fixture:
         from map_decoration_patch_corpus import map_decoration_patches
         groups = [('setup', corpus_module.group_setup()), ('map decoration saved patch', map_decoration_patches(args.map_decoration_removal_diagnostic))]
+    if args.selector_bounds_fixture:
+        from selector_bounds_corpus import selector_bounds
+        groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
     script = []
     for _, lines in groups:
         script.extend(lines)
