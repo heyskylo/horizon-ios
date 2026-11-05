@@ -11,14 +11,12 @@
 //!   a placeholder stands in until one arrives.
 use super::mods_page::{Checking, Event};
 use super::*;
-use crate::glass_ui::{self as ui, white};
 use gpui::img;
 use horizon_launcher::browser::{
     self,
     details::{Details, Environment, Filters, Sort, Tags},
     images, java, Kind as PackKind, Project, SourceId, Support, Version,
 };
-use horizon_theme::glass::{fill, ink, radius};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -328,106 +326,36 @@ impl Launcher {
             .find(|(value, _)| *value == current)
             .or(sorts.first())
             .map_or("", |(_, label)| *label);
-        if t.glass {
-            let button = div()
-                .id("mods-sort")
+        let mut wrap = div().relative().flex_none().child(
+            keyboard(div().id("mods-sort"), &t)
                 .relative()
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .h(px(36.))
+                .h(px(theme::CONTROL_LARGE))
                 .px(px(14.))
-                .rounded(px(radius::CONTROL))
-                .overflow_hidden()
-                .bg(white(fill::BUTTON))
-                .hover(move |s| s.bg(white(fill::BUTTON_HOVER)))
+                // The button's bottom lip isn't part of its face: centre the text on the face.
+                .pb(px(theme::LIP))
+                .border_2()
+                .border_color(t.outline)
+                .bg(t.button)
+                .children(blocks::edges(t.button_bevel, t.lip, theme::LIP))
                 .cursor_pointer()
+                .hover(move |s| s.bg(t.raised))
                 .child(
-                    ui::text(14., FontWeight::MEDIUM, ink::FULL)
+                    div()
+                        .font_family(theme::PIXEL)
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.ink)
                         .child(trf("Sort by: {order}", &[("order", tr(name))])),
                 )
-                .child(ui::icon("arrow-down-01", 16., white(ink::NOTE)))
+                .child(blocks::icon("chevron-down", 16., t.muted))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mods.browse.sort_menu = !this.mods.browse.sort_menu;
                     cx.notify();
-                }));
-            let mut wrap = div().relative().flex_none().child(keyboard(button, &t));
-            if self.mods.browse.sort_menu {
-                let mut menu = ui::popover(220.)
-                    .id("mods-sort-menu")
-                    .absolute()
-                    .top(px(40.))
-                    .left_0()
-                    .occlude()
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.mods.browse.sort_menu = false;
-                        cx.notify();
-                    }));
-                for &(value, label) in sorts {
-                    let chosen = value == current
-                        || (current.is_some()
-                            && value.is_none()
-                            && !sorts.iter().any(|(v, _)| *v == current));
-                    menu = menu.child(
-                        div()
-                            .id(SharedString::from(format!("mods-sort-pick-{label}")))
-                            .relative()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(8.))
-                            .h(px(34.))
-                            .px(px(12.))
-                            .rounded(px(radius::CONTROL))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(white(0.08)))
-                            .child(ui::text(14., FontWeight::NORMAL, ink::FULL).child(tr(label)))
-                            .when(chosen, |d| {
-                                d.child(ui::icon("tick-02", 16., ui::color(ui::look().accent_soft)))
-                            })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.mods.browse.sort_menu = false;
-                                this.mods_filter(|f| f.sort = value);
-                                cx.notify();
-                            })),
-                    );
-                }
-                wrap = wrap.child(gpui::deferred(menu).with_priority(1));
-            }
-            return wrap;
-        }
-        let button = div()
-            .id("mods-sort")
-            .relative()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .h(px(theme::CONTROL_LARGE))
-            .px(px(14.))
-            // The button's bottom lip isn't part of its face: centre the text on the face.
-            .pb(px(theme::LIP))
-            .rounded(px(horizon_theme::night::RADIUS_CONTROL))
-            .overflow_hidden()
-            .border_2()
-            .border_color(t.outline)
-            .bg(t.button)
-            .children(blocks::edges(t.button_bevel, t.lip, theme::LIP))
-            .cursor_pointer()
-            .hover(move |s| s.bg(t.raised))
-            .child(
-                div()
-                    .font_family(theme::PIXEL)
-                    .text_size(px(15.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(t.ink)
-                    .child(trf("Sort by: {order}", &[("order", tr(name))])),
-            )
-            .child(blocks::icon("chevron-down", 16., t.muted))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.mods.browse.sort_menu = !this.mods.browse.sort_menu;
-                cx.notify();
-            }));
-        let mut wrap = div().relative().flex_none().child(keyboard(button, &t));
+                })),
+        );
         if self.mods.browse.sort_menu {
             let mut menu = div()
                 .id("mods-sort-menu")
@@ -436,7 +364,6 @@ impl Launcher {
                 .left_0()
                 .w(px(220.))
                 .p(px(6.))
-                .rounded(px(horizon_theme::night::RADIUS_CONTROL))
                 .border_2()
                 .border_color(t.outline)
                 .bg(t.surface)
@@ -453,7 +380,7 @@ impl Launcher {
                         .gap(px(8.))
                         .h(px(30.))
                         .px(px(10.))
-                        .rounded(px(horizon_theme::night::RADIUS_CONTROL - 2.))
+                        .rounded(px(theme::RADIUS))
                         .cursor_pointer()
                         .hover(move |s| s.bg(t.plate_soft))
                         .child(text(theme::LABEL).text_color(t.ink).child(tr(label)))
@@ -481,7 +408,7 @@ impl Launcher {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
         let sorts = self.mods_sorts();
-        let sort = self.mods_sort_dropdown(&sorts, f.sort, cx);
+        let sort = (!t.glass).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
             + f.loader.is_some() as usize
@@ -507,7 +434,7 @@ impl Launcher {
                 .flex_wrap()
                 .items_center()
                 .gap(px(12.))
-                .child(sort)
+                .children(sort)
                 .child(toggle),
         );
         if !shown {

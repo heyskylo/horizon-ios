@@ -304,36 +304,21 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
             p.full_size = (vw, vh);
         }
 
-        let image = match kind {
-            Kind::Glass => {
-                if p.full_glass.is_none() {
-                    let img = if light {
-                        let buf = image::RgbaImage::from_pixel(2, 2, light_texel(Kind::Glass, 1.));
-                        Arc::new(RenderImage::new([image::Frame::new(buf)]))
-                    } else if let Some(backdrop) = p.backdrop.as_ref() {
-                        build_dark_full_image(backdrop, &p.look, Kind::Glass, vw, vh)
-                    } else {
-                        return (None, bounds);
-                    };
-                    p.full_glass = Some(img);
-                }
-                p.full_glass.clone()
-            }
-            Kind::Float => {
-                if p.full_float.is_none() {
-                    let img = if light {
-                        let buf = image::RgbaImage::from_pixel(2, 2, light_texel(Kind::Float, 1.));
-                        Arc::new(RenderImage::new([image::Frame::new(buf)]))
-                    } else if let Some(backdrop) = p.backdrop.as_ref() {
-                        build_dark_full_image(backdrop, &p.look, Kind::Float, vw, vh)
-                    } else {
-                        return (None, bounds);
-                    };
-                    p.full_float = Some(img);
-                }
-                p.full_float.clone()
-            }
+        let full = match kind {
+            Kind::Glass => &mut p.full_glass,
+            Kind::Float => &mut p.full_float,
         };
+        if full.is_none() {
+            *full = Some(if light {
+                let buf = image::RgbaImage::from_pixel(2, 2, light_texel(kind, 1.));
+                Arc::new(RenderImage::new([image::Frame::new(buf)]))
+            } else if let Some(backdrop) = p.backdrop.as_ref() {
+                build_dark_full_image(backdrop, &p.look, kind, vw, vh)
+            } else {
+                return (None, bounds);
+            });
+        }
+        let image = full.clone();
 
         let img_bounds = if light { bounds } else { outer };
         (image, img_bounds)
