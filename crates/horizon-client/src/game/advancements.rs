@@ -898,7 +898,11 @@ impl Game<'_> {
         }
         if let Some(d) = &a.display {
             // A network player's client shows its own toast.
-            if d.show_toast && !self.adv.quiet && self.lan_acting.is_none() {
+            if d.show_toast
+                && !self.adv.quiet
+                && self.lan_acting.is_none()
+                && self.toast_allowed("advancement", &a.id)
+            {
                 self.adv.toasts.push_back(Toast {
                     icon: d.icon.clone(),
                     frame: d.frame,
@@ -2036,6 +2040,14 @@ impl Game<'_> {
             .chain(self.narrator_toast.as_ref().and_then(|t| t.slot))
             .fold(self.tutorial_toast_slots(), |used, slot| used | 1 << slot)
     }
+    /// `ToastManager.addToast`'s `ToastAddEvent`: whether a new toast of
+    /// `kind` (`id` within it) may be queued; false when a mod cancelled it.
+    /// Always asked: a bundle injected at the hook point is not in `mods()`.
+    pub(super) fn toast_allowed(&mut self, kind: &str, id: &str) -> bool {
+        let mut cancel = false;
+        self.native_toast_add(kind, id, &mut cancel);
+        !cancel
+    }
     /// The `AdvancementToast` or `RecipeToast` at `index` in its slot at `y`.
     fn draw_toast(&mut self, batch: &mut HudBatch, index: usize, y: f32, multiplier: f64) {
         let t = &self.adv.toasts[index];
@@ -2291,6 +2303,7 @@ impl Game<'_> {
                 && p.show
                 && self.adv.progress.done(a)
                 && let Some(d) = a.display.as_ref().filter(|d| d.show_toast)
+                && self.toast_allowed("advancement", &a.id)
             {
                 self.adv.toasts.push_back(Toast {
                     icon: d.icon.clone(),

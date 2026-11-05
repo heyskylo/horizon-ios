@@ -2879,6 +2879,24 @@ give it what Horizon's own rows use, without reading `Game`'s fields:
 
 Bundles need `"hooks": @API:health_hud_state@`.
 
+### Toasts a mod hides
+
+`native_toast_add(kind, id, cancel)` (client) is NeoForge's `ToastAddEvent`: it is heard once for each new toast, just
+before it is queued, so a mod can drop recipe toasts, tutorial hints or the advancement toasts of a large pack. `kind`
+and `id` say which:
+
+- `advancement`: the advancement id; `recipe`: the first recipe id of the toast;
+- `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
+- `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
+  `chunk_load_failure` or `chunk_save_failure`;
+- `now_playing`: an empty id, each time the music toast shows a new song.
+
+Set `cancel` and the toast isn't queued, shown or sounded. As in vanilla, an update to a toast already queued or shown
+is not an add: more recipes joining the recipe toast, or a system toast taking new text (`SystemToast.addOrUpdate`).
+A cancelled tutorial hint isn't asked again while it stays the current hint; a cancelled system toast is asked again at
+its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
+Bundles need `"hooks": @API:toast_add@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
