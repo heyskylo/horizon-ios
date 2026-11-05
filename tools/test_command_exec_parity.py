@@ -305,6 +305,13 @@ def main():
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
     loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
     advancements.update(loot_advancements)
+    if os.environ.get('HORIZON_FISHING_FALLBACK_FIXTURE') == '1':
+        # No random_sequence: FishingHook.retrieve must use the level stream.
+        loot_tables['minecraft:gameplay/fishing'] = {
+            'type': 'minecraft:fishing', 'pools': [{'rolls': 1, 'entries': [
+                {'type': 'minecraft:item', 'name': 'minecraft:cod', 'weight': 1},
+                {'type': 'minecraft:item', 'name': 'minecraft:salmon', 'weight': 1},
+            ]}]}
 
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import advancements as contact_advancements
