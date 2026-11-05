@@ -168,11 +168,15 @@ impl ExperimentsScreen {
             }
         }
         let [(dx, dy), (cx, cy)] = footer(w, h);
-        for (fx, fy, key) in [(dx, dy, "gui.done"), (cx, cy, "gui.cancel")] {
+        for (action, fx, fy, key) in [
+            (crate::widgets::Action::Done, dx, dy, "gui.done"),
+            (crate::widgets::Action::Cancel, cx, cy, "gui.cancel"),
+        ] {
             let hover = ui::hovered(cursor, fx, fy, 150.0, 20.0);
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                action,
                 fx,
                 fy,
                 150.0,

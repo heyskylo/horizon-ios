@@ -152,7 +152,8 @@ pub struct GbuffersInputs {
     /// `hz_MultiTexCoord1` and `hz_Normal` (the compatibility inputs), run first in `main`.
     pub body: String,
     /// The value of each attribute a pack may declare (`mc_Entity`, `vaPosition`...), as a GLSL
-    /// expression of the declared type's size; an attribute not listed reads zero.
+    /// expression of the declared type's size; an attribute not listed reads zero. Terrain
+    /// also supplies `mc_chunkFade`, an implicit float input rather than a declared attribute.
     pub attributes: Vec<(String, String)>,
     /// GLSL statements run last in `main`, with `gl_Position` in wgpu's clip space.
     pub after: String,
@@ -432,6 +433,12 @@ fn translate(
         }
     }
 
+    // Terrain's fade input is supplied without a pack declaration. Inject it only when
+    // the renderer provides the actual value; other geometry and authored globals keep
+    // their existing behavior.
+    let chunk_fade = gbuffers
+        .and_then(|g| g.attributes.iter().find(|(n, _)| n == "mc_chunkFade"))
+        .filter(|_| uses_name(&vertex.code, "mc_chunkFade") && !v.globals.contains("mc_chunkFade"));
     let header = |stage: &Stage| {
         let mut h = resources(&uniforms, &samplers, &images);
         if let Some(reference) = alpha_test_ref {
@@ -462,6 +469,9 @@ fn translate(
         if let (Some(inputs), ShaderStage::Vertex) = (gbuffers, stage.kind) {
             h.push_str(&inputs.declarations);
             h.push('\n');
+            if chunk_fade.is_some() {
+                h.push_str("float mc_chunkFade;\n");
+            }
         }
         h.push_str(&stage.prelude());
         h
@@ -479,6 +489,9 @@ fn translate(
             vertex_main.push_str(&matrices);
             vertex_main.push_str(&inputs.body);
         }
+    }
+    if let Some((_, value)) = chunk_fade {
+        writeln!(vertex_main, "    mc_chunkFade = {value};").unwrap();
     }
     for (name, value, ty) in &v.attributes {
         let value = match gbuffers {

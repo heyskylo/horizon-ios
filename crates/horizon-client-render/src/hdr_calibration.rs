@@ -207,6 +207,16 @@ impl Calibration {
             (l.next, if last { save } else { next }, true),
         ] {
             let hover = over(cursor, rect) && active;
+            let action = if rect == l.cancel {
+                Some(crate::widgets::Action::Cancel)
+            } else if rect == l.back {
+                Some(crate::widgets::Action::Back)
+            } else {
+                None
+            };
+            if let Some(action) = action {
+                crate::widgets::declare_action(action, [rect.0, rect.1, rect.2, 20.0], active);
+            }
             ui::button(
                 batch,
                 atlas,

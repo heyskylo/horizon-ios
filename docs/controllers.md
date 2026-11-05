@@ -75,7 +75,50 @@ awkward, which is why Bedrock does the same) and acts like vanilla's toggle
 crouch: a screen stands you up while it is open and closing it crouches you
 again. The controls options can make it hold-to-sneak.
 
+A Nintendo pad's face buttons can go by their places, as the table and SDL's
+layout have them (B, at the bottom, jumps and confirms), or by their letters,
+as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
+back and drops, X swaps the offhand, Y opens the inventory, and the binds list
+and the on-screen keyboard's hints show those letters (splitscreen's join and
+lost-controller prompts, which a controller nobody holds yet answers, stay by
+places). `nintendoLetters:true|false` in `horizon-controller.txt`
+picks one; by places unless it says otherwise (a build for the Switch itself
+goes by letters). Bindings name the part, so a rebinding means the same on
+either.
+
 ## Menus and inventories
+
+### Adding a screen
+
+Draw the screen's Done, Back, Cancel or Apply with `ui::action_button` and the
+`widgets::Action` it performs, or call `widgets::declare_action` if the screen
+draws its own buttons. That is all: nothing else names the screen.
+
+| Action | Pad button | With the button disabled |
+|---|---|---|
+| Back, Cancel, Done (the first the screen has that can be pressed, in that order) | B | B falls back to Escape |
+| Apply | X | no glyph, X does nothing |
+| Options | X | no glyph, X does nothing |
+| Exit | moves the focus there for A to confirm: B on a screen with no Back, Cancel or Done, else Y | no glyph |
+
+It works the same on a focus screen and a pointer screen (Statistics, Advancements, packs, books).
+The hint is the glyph on the declared button, in that player's pad's style and view; nothing draws
+in a corner. It shows while the pad drives; the mouse or a focus key hides it, and a button too small
+for it, or running off a split view, goes without it and keeps its pad button. What a screen declared
+stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
+buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared:
+B is Escape, which unbinds.
+
+Don't declare a button Escape deliberately ignores: Optimize World's and a connection's Cancel have
+no pad button, only A on them, and show in `undeclared` for that reason.
+
+A focused text field shows A at its right end. `game/pad_actions.rs` holds this table. A screen that declares nothing keeps
+B as Escape. `horizon-ctl pad status` lists `undeclared`: a button labelled
+Done, Back or Cancel on the current screen that didn't declare its job.
+`tools/pad_menu_e2e.py` fails on one in the settings screens. `glyphs` lists what is drawn.
+
+A label wider than its button slides inside it, as vanilla's do
+(`AbstractWidget.extractScrollingStringOverContents`); one under a glyph slides beside it.
 
 Vanilla's screens are all mouse-driven, and Horizon draws them 1:1. A pad
 drives them two ways, each on the screens it suits:
@@ -122,15 +165,17 @@ the crafting result, armour to the player's grid.
 | Input | Focus mode |
 |---|---|
 | D-pad, left stick | move focus (held: repeats after 0.35 s, every 0.09 s) |
-| A | press the focused widget (held: drag); on a text field, type with the on-screen keyboard |
-| B, Menu | back (Escape) |
-| X | right click (inventories: take half, place one) |
-| Y | quick move (shift-click) in inventories |
+| A | press the focused widget: a button when A is let go, if the focus is still on it; anything else when A goes down (held: drag); on a text field, type with the on-screen keyboard. With nothing focused yet, A only lands the focus, as the D-pad does |
+| B, Menu | back (Escape); on the title's main menu, B moves the focus to Quit Game, for A to confirm |
+| X | right click (inventories: take half, place one); on the title's main menu, Options |
+| Y | quick move (shift-click) in inventories; on the pause menu, moves the focus to the exit button, for A to confirm |
 | View | throw one item from the focused slot (Q) |
 | Left stick click | throw the focused stack (Ctrl+Q) |
 | LB / RB | previous / next tab (creative, recipe book, the Horizon options' sections) |
 | Right stick | scroll |
 
+- **Declared buttons**: a button that says what it's for gets its controller
+  button and a glyph on it while the pad drives; see "Adding a screen".
 - **Sliders**: left and right move the value (one pixel per press like
   vanilla's arrow keys, faster while held); A does nothing on a slider, as a
   click would jump the handle.
@@ -243,9 +288,11 @@ language, at the bottom of the screen (at the top when the field is in the
 lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
 Menu is Enter, B closes it. It opens by itself when the pad opens chat or a
-sign. It types into every field the keyboard reaches: chat (local and
-server), signs, books, the title screens' fields, the options' searches, the
-creative and recipe-book searches, the anvil, the LAN port.
+sign, but not over the chat a sleeper gets (the game opens that one): there
+it waits for A on the chat box. It types into every field the keyboard
+reaches: chat (local and server), signs, books, the title screens' fields,
+the options' searches, the creative and recipe-book searches, the anvil, the
+LAN port.
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;

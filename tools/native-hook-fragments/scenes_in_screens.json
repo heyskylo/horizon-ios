@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "draw_scene", "target": "horizon_client::game::native_scene::Game<'_>::native_draw_scene"}
+  ],
+  "rust_summary": "a scene of blocks and their mod block entities drawn in a screen from an angle (`native_draw_scene`), as Create's Ponder shows its machines.",
+  "doc_summary": "`native_draw_scene(batch, rect, blocks, view)` draws a few block states, at positions of their own, into a box of a screen, seen as `NativeSceneView` says (centre, yaw, pitch, scale), with a depth of their own: each block's model, and a mod block entity's drawing through `native_block_entity_submit` with its turning parts. Bundles need \"hooks\": @API:scenes_in_screens@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_scene.rs"
+  ]
+}

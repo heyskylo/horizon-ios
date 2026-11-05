@@ -15,13 +15,18 @@ pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeFluidTank;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
+pub use crate::game::native_client_services::{
+    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+};
 pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
     NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
     NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
     NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -36,6 +41,7 @@ pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::text::Text;
+pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
 pub use horizon_core::{
     geometry::Direction,
@@ -246,6 +252,28 @@ pub struct NativeMinimap {
     pub blocks_per_pixel: f32,
     pub rotate: bool,
     pub round: bool,
+}
+
+/// One block of a scene a mod draws in a screen (`Host::draw_scene`): its
+/// place in the scene, its state, and the block entity drawn with it, if any
+/// (a mod's, through `native_block_entity_submit` as in the world).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSceneBlock<'a> {
+    pub pos: [i32; 3],
+    pub state: BlockStateId,
+    pub entity: Option<&'a ModBlockEntity>,
+}
+
+/// How a scene in a screen is seen (`Host::draw_scene`): the point at the
+/// middle of the screen's box, in blocks; the turn about the scene's vertical
+/// axis and the tilt of its top towards the viewer, in degrees; and how many
+/// GUI pixels a block is across.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeSceneView {
+    pub center: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub scale: f32,
 }
 
 /// A mod block's screen over its menu (`native_screen`): its size, where
@@ -580,15 +608,29 @@ pub fn name_mods(ids: &'static [&'static str]) {
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
 /// panic in it names the mod. The generated dispatch loops over it.
+/// A part of [`mods`] (one mod, dispatched on its own) keeps its entries' places in it.
 fn entered<'a>(mods: &'a [Box<dyn Hooks>], hook: &'static str) -> Entered<'a> {
     Entered {
+        first: place_in(self::mods(), mods),
         mods: mods.iter().enumerate(),
         hook,
         guard: None,
     }
 }
 
+/// Where `part` starts in `all`, 0 when it is not a part of it.
+fn place_in<T>(all: &[T], part: &[T]) -> usize {
+    let range = all.as_ptr_range();
+    if range.contains(&part.as_ptr()) {
+        (part.as_ptr().addr() - range.start.addr()) / size_of::<T>().max(1)
+    } else {
+        0
+    }
+}
+
 struct Entered<'a> {
+    /// Where `mods` starts in [`mods`].
+    first: usize,
     mods: std::iter::Enumerate<std::slice::Iter<'a, Box<dyn Hooks>>>,
     hook: &'static str,
     guard: Option<crate::crash::NativeModGuard>,
@@ -601,6 +643,7 @@ impl<'a> Iterator for Entered<'a> {
         // The last mod's mark goes first, so the next one's puts back what was there before.
         drop(self.guard.take());
         let (index, hooks) = self.mods.next()?;
+        let index = self.first + index;
         self.guard = Some(crate::crash::enter_native_mod(
             crate::crash::NativeModCall {
                 id: MOD_IDS.get().and_then(|ids| ids.get(index)).copied(),
@@ -716,6 +759,14 @@ mod tests {
 
     struct Quiet;
     impl Hooks for Quiet {}
+
+    #[test]
+    fn one_mod_dispatched_alone_keeps_its_place() {
+        let all = [10, 11, 12, 13];
+        assert_eq!(place_in(&all, &all[2..=2]), 2);
+        assert_eq!(place_in(&all, &all), 0);
+        assert_eq!(place_in(&all, &[12]), 0);
+    }
 
     struct Broken;
     impl Hooks for Broken {

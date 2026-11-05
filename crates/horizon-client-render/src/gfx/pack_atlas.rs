@@ -614,6 +614,13 @@ impl PackAtlas {
             "vec4(0.0)"
         };
         let attributes = [
+            // section_instance stores 1 - visibility in a positive origin's mantissa.
+            // Negative origins encode a distant-terrain handover, fully visible here
+            // just as terrain.wgsl's instance_visibility treats them.
+            (
+                "mc_chunkFade",
+                "(hz_origin.w > 0.0 ? 1.0 - float(floatBitsToUint(hz_origin.w) & 0x7fffffu) / 8388608.0 : 1.0)",
+            ),
             ("mc_Entity", entity),
             ("at_midBlock", mid_block),
             (
@@ -640,6 +647,10 @@ impl PackAtlas {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_atlas/fade_test.rs"]
+mod fade_test;
 
 #[cfg(test)]
 #[path = "pack_atlas/midpoint_test.rs"]

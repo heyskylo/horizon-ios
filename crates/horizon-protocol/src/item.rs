@@ -16,6 +16,39 @@ mod skip;
 
 pub use hash::{Names, NoNames};
 
+/// How deep values may sit inside one another while an item is decoded: stacks in a stack's components (a
+/// bundle in a bundle, a use_remainder's use_remainder) and a mob effect's hidden effects. Those codecs
+/// call each other with no limit of their own. In vanilla a payload nested past the stack ends in a
+/// StackOverflowError, which the decoder turns into a disconnect; in Rust a stack overflow aborts the
+/// process, so a single packet from a peer would end the game, or a whole server and all its players.
+/// Real items stay far below it (a survival bundle holds bundles about 16 deep at most).
+const MAX_NESTING: u32 = 64;
+
+thread_local! {
+    static NESTING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// One level of [`MAX_NESTING`] while it lives. Counted per thread rather than in the [`Reader`], because a
+/// delimited or rewritten component is read through a reader of its own.
+struct Nested;
+impl Nested {
+    fn enter() -> Result<Self> {
+        NESTING.with(|n| {
+            let depth = n.get();
+            if depth >= MAX_NESTING {
+                return Err(crate::Error::new("item data nested too deeply"));
+            }
+            n.set(depth + 1);
+            Ok(Nested)
+        })
+    }
+}
+impl Drop for Nested {
+    fn drop(&mut self) {
+        NESTING.with(|n| n.set(n.get() - 1));
+    }
+}
+
 /// minecraft:data_component_type registry ids (26.3).
 pub mod component {
     pub const CUSTOM_DATA: i32 = 0;
@@ -724,6 +757,8 @@ fn read_added<'a>(
     raw: i32,
     r: &mut Reader<'a>,
 ) -> Result<Option<(i32, Component, std::borrow::Cow<'a, [u8]>)>> {
+    // Every way a stack holds another passes through here.
+    let _nested = Nested::enter()?;
     if let Some(name) = ids::dropped_component(raw) {
         skip_dropped(name, r)?;
         return Ok(None);
@@ -1142,6 +1177,51 @@ mod tests {
         let mut r = Reader::new(&w.data);
         assert_eq!(C::read(&mut r).unwrap(), v);
         assert_eq!(r.remaining(), 0);
+    }
+
+    /// A stack holding bundles `depth` deep, each the only stack in the one around it.
+    fn nested_bundles(depth: usize) -> Vec<u8> {
+        // count (or item) 1, item (or count) 1, one added component, none removed: bundle_contents, one stack.
+        let level = [1, 1, 1, 0, component::BUNDLE_CONTENTS as u8, 1];
+        let mut bytes = level.repeat(depth);
+        bytes.extend([1, 1, 0, 0]);
+        bytes
+    }
+
+    /// Decodes `bytes` as a slot on a thread with the 2 MiB stack network threads get.
+    fn read_on_network_stack(bytes: Vec<u8>) -> Result<Option<Stack>> {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || Slot::read(&mut Reader::new(&bytes)))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn items_nested_without_end_are_refused_instead_of_overflowing_the_stack() {
+        // About 1.2 MB, under the 2 MiB frame cap: without a limit this aborts the process.
+        assert!(read_on_network_stack(nested_bundles(200_000)).is_err());
+        // A potion whose effect hides an effect that hides another, 200,000 times over.
+        let mut potion = vec![1, 1, 1, 0, component::POTION_CONTENTS as u8, 0, 0, 1, 5];
+        potion.extend([0, 1, 0, 0, 0, 1].repeat(200_000));
+        potion.extend([0, 1, 0, 0, 0, 0, 0]);
+        assert!(read_on_network_stack(potion).is_err());
+    }
+
+    #[test]
+    fn deeply_nested_bundles_still_decode() {
+        let bytes = nested_bundles(MAX_NESTING as usize);
+        let mut stack = read_on_network_stack(bytes.clone()).unwrap().unwrap();
+        let mut depth = 0;
+        while let Some(Component::Stacks(inner)) = stack.component(component::BUNDLE_CONTENTS) {
+            stack = inner[0].clone();
+            depth += 1;
+        }
+        assert_eq!(depth, MAX_NESTING);
+        // A refused stack leaves nothing counted behind on its thread.
+        assert!(Slot::read(&mut Reader::new(&nested_bundles(MAX_NESTING as usize + 1))).is_err());
+        assert!(Slot::read(&mut Reader::new(&bytes)).unwrap().is_some());
     }
 
     #[test]
