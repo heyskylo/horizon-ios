@@ -1186,6 +1186,9 @@ impl Game<'_> {
         if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
             self.native_client_level_unload(&old);
         }
+        if self.remote.is_some() {
+            self.native_client_disconnecting();
+        }
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }

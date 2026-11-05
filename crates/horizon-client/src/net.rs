@@ -561,8 +561,15 @@ fn connect_tcp(
 
 /// Whether joining servers of older releases is on (roadmap `older-servers`): off by default while the
 /// adapter is incomplete; `HORIZON_OLDER_SERVERS=1` turns it on.
+static NATIVE_OLDER_SERVERS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Process-wide opt-in requested through the native Host, before connecting.
+pub fn enable_older_servers_for_native_mod() {
+    NATIVE_OLDER_SERVERS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
 pub fn older_servers_enabled() -> bool {
-    std::env::var_os("HORIZON_OLDER_SERVERS").is_some_and(|v| v == "1")
+    NATIVE_OLDER_SERVERS.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var_os("HORIZON_OLDER_SERVERS").is_some_and(|v| v == "1")
 }
 
 /// The older release a server speaks, by its status ping, when Horizon can translate it; `None` for the

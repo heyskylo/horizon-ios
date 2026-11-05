@@ -206,6 +206,7 @@ pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_chunk_tickets;
 mod native_claimed_items;
+pub mod native_client_services;
 mod native_components;
 mod native_configs;
 mod native_criteria;
@@ -429,7 +430,7 @@ pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
 pub use native_criteria::NativeCriterion;
 pub use native_data_maps::NativeDataMapType;
 pub use native_falling::NativeFalling;
-pub use native_hooks::{NativeClock, NativeItemEntity, NativeShake};
+pub use native_hooks::{NativeClock, NativeItemEntity, NativePlayer, NativeShake};
 pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
@@ -3078,6 +3079,7 @@ struct Game<'a> {
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
+    native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
@@ -12759,6 +12761,10 @@ impl Game<'_> {
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {
+        if self.native_window() && !self.native_client_stopped {
+            self.native_client_stopped = true;
+            self.native_client_stopping();
+        }
         // Native application termination can bypass CloseRequested. Finish any
         // save screen synchronously here, before the process can go away.
         while self.pending_save.is_some() {
@@ -16510,7 +16516,9 @@ impl Game<'_> {
                     || self.dialog_open()
                     || (self.screen == Screen::Win && self.win_screen_pauses())));
         let radius = self.settings.menu_blur as f32;
-        (blurred && radius >= 1.0).then_some(radius)
+        let mut radius = (blurred && radius >= 1.0).then_some(radius);
+        self.native_menu_background(&mut radius);
+        radius.filter(|r| r.is_finite() && (1.0..=64.0).contains(r))
     }
     /// `LevelExtractor` / `LevelRenderer`: the world border wall this frame.
     fn border_draw(
@@ -19061,7 +19069,7 @@ impl<'a> Game<'a> {
             &gui.atlas.sprites,
             &gui.atlas.translucent,
         );
-        Ok(Game {
+        let mut game = Game {
             world_biomes: None,
             world_biomes_base: None,
             res: res.clone(),
@@ -19491,6 +19499,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
+            native_client_stopped: false,
             pending_save: None,
             frame_drawn: true,
             world_icon: None,
@@ -19562,7 +19571,11 @@ impl<'a> Game<'a> {
             camera_type: Default::default(),
             fangs: Default::default(),
             player_model: None,
-        })
+        };
+        if game.native_window() {
+            game.native_client_start();
+        }
+        Ok(game)
     }
 }
 

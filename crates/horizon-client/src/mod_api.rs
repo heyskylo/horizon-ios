@@ -17,12 +17,16 @@ pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeFluidTank;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
+pub use crate::game::native_client_services::{
+    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+};
 pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
     NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
     NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
     NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,

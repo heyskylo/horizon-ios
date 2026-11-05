@@ -1998,15 +1998,15 @@ impl OpenNativeScreen {
 /// The player as a native mod reads it.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NativePlayer {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) z: f64,
+pub struct NativePlayer {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
     /// Degrees; 0 faces south, 90 west (`Direction.fromYRot`).
-    pub(crate) yaw: f32,
-    pub(crate) pitch: f32,
+    pub yaw: f32,
+    pub pitch: f32,
     /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
-    pub(crate) dimension: &'static str,
+    pub dimension: &'static str,
 }
 
 /// The world's clock as a client mod reads it (`native_clock`).
@@ -2182,6 +2182,22 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// Client initialization, before any outgoing connection; a window need not exist yet.
+    pub(super) fn native_client_start(&mut self) {
+        mod_api::dispatch_client_start(self, mod_api::mods());
+    }
+    /// Before an actual connection is discarded, not on a dimension change.
+    pub(super) fn native_client_disconnecting(&self) {
+        mod_api::dispatch_client_disconnecting(self, mod_api::mods());
+    }
+    /// Once before this client's final save/exit. A mod can flush and join its worker here.
+    pub(super) fn native_client_stopping(&self) {
+        mod_api::dispatch_client_stopping(self, mod_api::mods());
+    }
+    /// The normal menu blur request, before finite/range validation. None disables it.
+    pub(super) fn native_menu_background(&self, radius: &mut Option<f32>) {
+        mod_api::dispatch_menu_background(self, mod_api::mods(), radius);
+    }
     /// Declare categories for custom recipe types, with registered item icons.
     /// Asked lazily once per recipe table by `native_recipe_book_category`.
     /// Invalid declarations are logged and skipped; the first valid category
