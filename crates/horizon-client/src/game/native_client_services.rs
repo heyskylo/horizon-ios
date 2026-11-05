@@ -77,7 +77,7 @@ pub enum NativeWorldId {
     Singleplayer(String),
     /// A server, a LAN world joined included: its address as the player
     /// joined it (`mc.example.com:25565`). A friend's world is `friend:` and
-    /// what its invite shows anyone (its host's addresses, else its relay
+    /// what its invite shows anyone (its host's addresses and its relay
     /// nameplate), never the invite's secret.
     Server(String),
 }
@@ -94,20 +94,19 @@ impl NativeWorldId {
 }
 
 /// The part of a friend's invite anyone may see. A host's code is fresh each
-/// time it shares, so a friend's world is known for that sharing only.
+/// time it shares, so a friend's world is known for that sharing only. The
+/// relay is kept beside the addresses: two hosts on other networks can share
+/// a private address and the fixed direct port.
 fn invite_public_part(code: &str) -> String {
     match invite::parse(code) {
         Some(Parsed::Short(code)) => code.nameplate,
-        Some(Parsed::Long(invite)) if !invite.endpoints.is_empty() => invite
-            .endpoints
-            .iter()
-            .map(SocketAddr::to_string)
-            .collect::<Vec<_>>()
-            .join(","),
-        Some(Parsed::Long(invite)) => invite
-            .relay
-            .map(|r| format!("{}/{}", r.address, r.code.nameplate))
-            .unwrap_or_default(),
+        Some(Parsed::Long(invite)) => {
+            let relay = invite
+                .relay
+                .map(|r| format!("{}/{}", r.address, r.code.nameplate));
+            let endpoints = invite.endpoints.iter().map(SocketAddr::to_string);
+            endpoints.chain(relay).collect::<Vec<_>>().join(",")
+        }
         None => String::new(),
     }
 }
@@ -393,6 +392,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_friends::code::Code;
 
     #[test]
     fn a_world_is_its_save_in_single_player_and_its_address_on_a_server() {
@@ -409,31 +409,44 @@ mod tests {
     #[test]
     fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
         const PORT: u16 = 50000;
-        let invite = |secret: u8, host: &str| {
+        const RELAY: &str = "relay.example.com:443";
+        // A short code: its nameplate, then its secret.
+        let short = |nameplate: &str, secret: &str| Code {
+            nameplate: nameplate.into(),
+            secret: secret.into(),
+        };
+        let invite = |secret: u8, host: &str, relay: Option<Code>| {
             let code = invite::Invite {
                 secret: [secret; invite::SECRET],
                 port: PORT,
                 endpoints: vec![format!("{host}:{PORT}").parse().unwrap()],
-                relay: None,
+                relay: relay.map(|code| invite::RelayRef {
+                    address: RELAY.into(),
+                    code,
+                }),
             }
             .encode();
             NativeWorldId::of(None, &format!("{FRIEND}{code}"))
         };
         assert_ne!(
-            invite(1, "192.168.1.5"),
-            invite(1, "192.168.1.6"),
+            invite(1, "192.168.1.5", None),
+            invite(1, "192.168.1.6", None),
             "two friends"
         );
-        assert_eq!(
-            invite(1, "192.168.1.5"),
-            invite(2, "192.168.1.5"),
-            "the same host sharing again, with a fresh secret"
+        assert_ne!(
+            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
+            invite(1, "192.168.1.5", Some(short("EFGH", "WXYZ"))),
+            "two friends on other networks behind the same private address"
         );
-        // A relay's short code: its nameplate, then the secret.
-        let short = |secret: &str| NativeWorldId::of(None, &format!("{FRIEND}ABCD-{secret}"));
-        assert_eq!(short("WXYZ"), short("QRST"));
         assert_eq!(
-            short("WXYZ"),
+            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
+            invite(2, "192.168.1.5", Some(short("ABCD", "QRST"))),
+            "the invite's and the relay code's secrets take no part"
+        );
+        let typed = |code: Code| NativeWorldId::of(None, &format!("{FRIEND}{code}"));
+        assert_eq!(typed(short("ABCD", "WXYZ")), typed(short("ABCD", "QRST")));
+        assert_eq!(
+            typed(short("ABCD", "WXYZ")),
             NativeWorldId::Server(format!("{FRIEND}ABCD"))
         );
     }

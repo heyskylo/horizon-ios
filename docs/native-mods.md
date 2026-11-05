@@ -2910,7 +2910,7 @@ thread:
   - `debug_screen`: F3's debug screen is showing.
   - `world`, the world joined, for a mod's data per world: `NativeWorldId::Singleplayer(folder)` is the save's folder in
     `saves/` (its LAN host and splitscreen seats too), `Server(address)` the address as the player joined it
-    (`mc.example.com:25565`). A friend's world is `friend:` and what its invite shows anyone, its host's addresses or
+    (`mc.example.com:25565`). A friend's world is `friend:` and what its invite shows anyone, its host's addresses and
     its relay nameplate, never the invite's secret; the host's code is new each time it shares, so this names that
     sharing only, as a LAN world's port does. None before a world is joined. A later Horizon may add kinds, so match
     it with a `_` arm.
