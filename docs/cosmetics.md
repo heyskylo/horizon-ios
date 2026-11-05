@@ -130,8 +130,10 @@ props; `Playing` is an emote someone plays (its start, its cancel) and gives its
   rebinds it, and so does the controller's page, with no button by default: the stick's cursor
   picks a slice). Up to 8 emotes around the middle of the screen, the game running behind. Hold
   the key, point at one and let go; or tap the key and click one, or press its number (1–8).
-  Escape or the key again closes it. The wheel lists the emotes the account owns
-  (`HORIZON_COSMETICS_LOCAL`: the folder's).
+  Escape or the key again closes it. The wheel lists the emotes the account owns: when it opens,
+  at most every 10 minutes, the game asks the service (`GET /v1/me`'s `emotes`: id, file hash
+  and names, signed in with the session `account::Kept` keeps) and reads the files it lacks
+  (`/v1/items`); `HORIZON_COSMETICS_LOCAL`: the folder's. An offline account has none.
 - **Cancelled** by moving more than a hundredth of a block, attacking or mining, using an item,
   being hurt, riding, sleeping, gliding, sneaking, swimming or dying: it fades out over its blend.
   Only a standing player starts one. A loop plays until cancelled.
@@ -141,6 +143,32 @@ props; `Playing` is an emote someone plays (its start, its cancel) and gives its
   view it stays as it is.
 - **Visual only**: it changes nothing of the game; the game server receives nothing and sees a
   player standing still. `horizon-ctl emote [ID|stop]` plays one as the wheel does.
+
+### Others' emotes (`horizon_cosmetics::Feed`)
+
+Vanilla servers stay untouched: emotes travel through the cosmetics service only.
+
+- **Mine**: while one plays, the game says so, signed in as for *Show me as Horizon*
+  (`POST /v1/emote {"emote": id}`, `{"emote": null}` when it stops early), with a service
+  session kept for the hour it lives (`account::Kept`: one Mojang `join` an hour, not one per
+  emote). A loop is said again every 30 s (the service keeps one a minute). Only while *Show me
+  as Horizon* is on: playing an emote tells anyone who asks that you play Horizon, so with it off
+  nothing is sent. An offline account sends nothing. The service takes at most 6 at once, then
+  one every 2 s per account, owned emotes only.
+- **Theirs**: each tick the game names the Horizon players in view (the `horizon` list of the
+  `/v1/worn` answers, at most 64) to a thread of its own, which asks
+  `POST /v1/emotes {"players": [...]}` at most once a second, only while someone is named
+  (nobody in view who plays Horizon: no request). The answer gives each player's emote, its
+  file's hash and how long ago it started (`{"playing": {uuid: {"id", "hash", "ms"}}}`), and the
+  game plays it on that player's model from that point; the item file comes once
+  (`/v1/items`). A player who moves ends theirs on this screen at once. A failure waits 15 s,
+  doubling to 10 minutes, and ends the emotes shown.
+- **Switches**: others' emotes follow *Other players' cosmetics*: shown only with *Shown*; with
+  *Name tags only* or *Hidden* nothing is asked and nothing is drawn. Vanilla clients see nothing.
+- **Cost**: per player in view, one cache look a tick (the same lock as what they wear) and,
+  while one plays, the six bones' sampling (a few keys each) after the vanilla animation in the
+  pass that draws them; props are boxes in the item's budget, drawn as cosmetics are (the GPU
+  skin path). Nobody emoting: one `Option` check per player model.
 
 ## What other players wear (`horizon_cosmetics::Cosmetics`)
 

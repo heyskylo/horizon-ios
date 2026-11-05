@@ -43,6 +43,7 @@ fn at(cx: f32, cy: f32, radius: f32, angle: f32) -> [f32; 2] {
 impl Game<'_> {
     /// Opens the wheel from play.
     pub(super) fn open_emote_wheel(&mut self) {
+        self.refresh_owned_emotes();
         self.emote_wheel = Wheel {
             opened: Some(Instant::now()),
             hovered: None,

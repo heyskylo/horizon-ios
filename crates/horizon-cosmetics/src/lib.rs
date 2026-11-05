@@ -10,6 +10,7 @@
 
 pub mod account;
 mod emote;
+mod feed;
 mod fetch;
 mod item;
 pub mod mark;
@@ -21,6 +22,7 @@ pub use emote::{
     BODY, Ease, Emote, Key, MAX_ALL_KEYS, MAX_KEYS, MAX_LENGTH, MAX_MOVE, MAX_ROOT_MOVE,
     MAX_ROOT_TURN, MAX_TRACKS, MAX_TURN, Playing, Sample, Target, Track,
 };
+pub use feed::{Feed, POLL, Seen};
 pub use fetch::{BATCH, Clock, Cosmetics, Frame, Http, Local, Transport, Worn};
 pub use item::{
     Animation, Axis, Bone, Error, FORMAT, Face, Item, MAX_MARK, MAX_PARTS, MAX_REACH, MAX_TEXTURE,
