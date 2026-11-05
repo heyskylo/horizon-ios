@@ -146,6 +146,16 @@ fn frame(v: &Value) -> Frame {
     }
 }
 impl Tree {
+    /// `PlayerAdvancements.checkForAutomaticTriggers`: the advancements that
+    /// have no criteria at all, so nothing can ever grant them a criterion and
+    /// vanilla hands them over (and grants their rewards) as the player's
+    /// progress loads.
+    pub fn automatic(&self) -> Vec<usize> {
+        (0..self.list.len())
+            .filter(|&i| self.list[i].criteria.is_empty())
+            .collect()
+    }
+
     /// [`Tree::load`], shared while anyone holds it: a server's advancement
     /// packets (`ServerAdvancements`) and its game's criteria read the same
     /// files, and each kept its own copy (7 MB). A world whose data packs bring
@@ -528,12 +538,14 @@ impl Progress {
             .get(adv)
             .is_some_and(|m| m.contains_key(criterion))
     }
-    /// `AdvancementProgress.isDone`.
+    /// `AdvancementProgress.isDone`: every requirement group has a criterion
+    /// obtained, and an advancement with no requirement groups at all (no
+    /// criteria, so nothing to wait for) is done from the start, as vanilla's
+    /// empty loop answers true.
     pub fn done(&self, a: &Advancement) -> bool {
-        !a.requirements.is_empty()
-            && a.requirements
-                .iter()
-                .all(|group| group.iter().any(|c| self.has(&a.id, c)))
+        a.requirements
+            .iter()
+            .all(|group| group.iter().any(|c| self.has(&a.id, c)))
     }
     /// Completed requirement groups and their count (the screen's tooltip).
     pub fn counts(&self, a: &Advancement) -> (usize, usize) {
