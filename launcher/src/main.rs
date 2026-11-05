@@ -2641,6 +2641,25 @@ fn slot_row(
         .children(right)
 }
 
+/// Microsoft account actions go below the profile in the fixed-width glass card.
+fn account_row(
+    slot: Option<Div>,
+    name: impl IntoElement,
+    detail: Option<AnyElement>,
+    actions: Div,
+    t: &Theme,
+) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(slot_row(slot, name, detail, None, t))
+            .child(actions.flex_wrap().px(px(16.)).pb(px(12.)));
+    }
+    slot_row(slot, name, detail, Some(actions.into_any_element()), t)
+}
+
 /// A plate that stands apart from the page: notices, the console, the agents note.
 fn plate(t: &Theme) -> Div {
     blocks::panel(t)
@@ -4466,7 +4485,7 @@ impl Launcher {
                 }))
             });
             n += 1;
-            rows = rows.child(slot_row(
+            rows = rows.child(account_row(
                 Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
                 a.name.clone(),
                 Some(
@@ -4484,7 +4503,7 @@ impl Launcher {
                         })
                         .into_any_element(),
                 ),
-                Some(actions.into_any_element()),
+                actions,
                 &t,
             ));
         }
@@ -5717,8 +5736,17 @@ fn main() {
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
-    if let Some(code) = cli::run() {
-        std::process::exit(code);
+    // The setup wizard and `horizon-launcher.exe uninstall` (what Control Panel runs) are windows,
+    // not CLI commands: asked of the CLI parser first, `uninstall` was refused as an unknown
+    // subcommand, with the error going to the console that Control Panel's start doesn't have.
+    #[cfg(windows)]
+    let setup_window = horizon_launcher::installer::window_mode();
+    #[cfg(not(windows))]
+    let setup_window: Option<horizon_launcher::setup_args::Mode> = None;
+    if setup_window.is_none() {
+        if let Some(code) = cli::run() {
+            std::process::exit(code);
+        }
     }
     gpui_platform::application()
         .with_assets(blocks::Assets)
@@ -5752,10 +5780,12 @@ fn main() {
             cx.set_menus(menus());
             // The setup exe (and `horizon-launcher.exe uninstall`) opens its own window instead.
             #[cfg(windows)]
-            if let Some(mode) = horizon_launcher::installer::window_mode() {
+            if let Some(mode) = setup_window {
                 setup_page::open(mode, cx);
                 return;
             }
+            #[cfg(not(windows))]
+            let _ = setup_window;
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
             cx.open_window(
                 WindowOptions {

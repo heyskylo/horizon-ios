@@ -425,5 +425,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Mga aura at trail na isinusuot ng ibang mga manlalaro. Naka-off bilang default.",
   "horizon.extras.cosmetics.shown": "Ipinakita",
   "horizon.extras.cosmetics.hidden": "Nakatago",
-  "horizon.extras.cosmetics.name_tags": "Mga name tag lang"
+  "horizon.extras.cosmetics.name_tags": "Mga name tag lang",
+  "Shader Packs...": "Mga Shader Pack..."
 }

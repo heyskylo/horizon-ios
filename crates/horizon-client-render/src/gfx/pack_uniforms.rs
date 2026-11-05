@@ -96,15 +96,12 @@ pub struct PackInputs {
     pub still_ticks: Option<u64>,
 }
 
-/// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
-/// has alpha (`LevelExtractor`); a dimension without clouds has no height, which the uniform
-/// reports as NaN. NaN is not vanilla's own value: packs map it to "no clouds".
-pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
-    if crate::clouds::has_color(cloud_color_alpha) {
-        height
-    } else {
-        f32::NAN
-    }
+/// The `cloudHeight` uniform: the dimension's `visual/cloud_height`
+/// (`EnvironmentAttributes.CLOUD_HEIGHT`, 192.33 where the dimension doesn't set it), whether or
+/// not it has clouds. ShaderDoc says NaN for a dimension without clouds, but Iris 1.11.7 reads
+/// 192.33 in the Nether and the End, in every program kind our probe packs read it from.
+pub fn cloud_height(sky: &crate::environment::Sky) -> f32 {
+    sky.cloud_height
 }
 
 /// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
@@ -1175,11 +1172,40 @@ mod tests {
         );
     }
 
+    /// A dimension type of `attributes` (JSON), loaded as the game loads one and sampled at noon.
+    fn sky_of(name: &str, attributes: &str) -> crate::environment::Sky {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cloud-height-{}-{name}",
+            std::process::id()
+        ));
+        let dir = root.join("data/minecraft/dimension_type");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            format!(r#"{{"attributes": {attributes}}}"#),
+        )
+        .unwrap();
+        let environment =
+            crate::environment::Environment::load_dimension(&root, name, false).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        environment.sample(6000, None, None)
+    }
+
     #[test]
-    fn cloud_height_needs_a_cloud_color() {
-        assert_eq!(cloud_height(0.8, 192.33), 192.33);
-        assert_eq!(cloud_height(0.8, 120.0), 120.0);
-        assert!(cloud_height(0.0, 192.33).is_nan());
+    fn cloud_height_is_the_dimensions_with_or_without_clouds() {
+        // Our probe packs read 192.33 in Iris 1.11.7's Nether and End, whose dimension types
+        // set neither a cloud colour nor a cloud height.
+        let nether = sky_of(
+            "nether_like",
+            r##"{"minecraft:visual/fog_start_distance": 10.0, "minecraft:visual/fog_end_distance": 96.0}"##,
+        );
+        assert_eq!(nether.cloud_color[3], 0.0, "no clouds");
+        assert_eq!(cloud_height(&nether), 192.33);
+        let cloudy = sky_of(
+            "cloudy",
+            r##"{"minecraft:visual/cloud_color": "#ccffffff", "minecraft:visual/cloud_height": 120.0}"##,
+        );
+        assert_eq!(cloud_height(&cloudy), 120.0);
     }
 
     #[test]
@@ -2261,3 +2287,7 @@ mod initial_history_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_uniforms/ftransform_test.rs"]
+mod ftransform_test;

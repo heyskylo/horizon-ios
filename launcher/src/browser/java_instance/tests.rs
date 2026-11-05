@@ -300,6 +300,7 @@ fn the_page_search_keeps_the_players_filters_but_not_their_version() {
     let t = target("1.21.1", Some("fabric"));
     let picked = details::Filters {
         categories: vec!["optimization".into()],
+        tags: Vec::new(),
         loader: Some("neoforge".into()),
         game_version: Some("26.3".into()),
         environment: Some(details::Environment::Client),
