@@ -175,7 +175,11 @@ impl Launcher {
                 .spawn()
         });
         match result {
-            Ok(_) => cx.quit(),
+            Ok(_) => {
+                // No installer while the worker copies the data folder its stage is in.
+                horizon_launcher::update_handoff::forget();
+                cx.quit()
+            }
             Err(error) => {
                 self.location_error = Some(trf(
                     "Could not start data move: {error}",
