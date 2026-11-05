@@ -818,6 +818,12 @@ impl Game<'_> {
         } else {
             format!("minecraft:{kind}")
         };
+        // Ender Dragons are simulated separately from `Mob` and therefore do
+        // not have a mob-type registry entry for the generic dispenser path.
+        if name == "minecraft:ender_dragon" {
+            let at = [f64::from(p.0) + 0.5, f64::from(p.1), f64::from(p.2) + 0.5];
+            return self.spawn_dragon_spawned(at);
+        }
         let t = self.res.mob_types().get(&name)?.clone();
         let y_off = if try_move_down {
             self.drop_offset(t.width, t.height, p)

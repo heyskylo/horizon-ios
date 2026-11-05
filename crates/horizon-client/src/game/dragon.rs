@@ -4161,6 +4161,27 @@ impl Game<'_> {
 /// sends its moves, health and phase; the client flaps its wings, keeps
 /// its flight history and places its parts, so it can be drawn and hit.
 impl Game<'_> {
+    /// Create an Ender Dragon for a scripted spawn such as a spawn egg or a
+    /// dispenser.  Unlike the End fight's dragon, this one is not assigned to
+    /// the fight UUID and can therefore be summoned in any dimension.
+    pub(super) fn spawn_dragon_spawned(&mut self, at: [f64; 3]) -> Option<u32> {
+        // Horizon currently keeps one simulated dragon per level, matching
+        // the existing `/summon`/save representation.
+        if self.dragon.is_some() {
+            return None;
+        }
+        let position = Vec3::new(at[0], at[1], at[2]);
+        let yaw = self.world.random.next_float() * 360.0;
+        let seed = self.world.random.next_long();
+        let mut dragon = Dragon::new(position, yaw, seed);
+        dragon.id = self.next_entity + 1;
+        self.next_entity += 9;
+        let id = dragon.id;
+        self.dragon = Some(dragon);
+        self.place_dragon_parts();
+        Some(id)
+    }
+
     /// `handleAddEntity` for `minecraft:ender_dragon`. Its constructor
     /// sets the full health and the hovering phase until the server's
     /// synched data says otherwise.
