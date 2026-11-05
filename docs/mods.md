@@ -332,8 +332,9 @@ behaviour, with its own attributes. It saves what its template's class saves und
 table is its own, `<id>:entities/<name>` (vanilla's `EntityType.getDefaultLootTable`). It is not in vanilla's entity type
 tags (`#minecraft:undead`, `#minecraft:zombies`...) unless the mod adds it. Its row in `entity-types.json` is its
 template's, with `template` added and its attributes in place of the template's. Unit tests check all this; it has
-not yet been tried in a running game. Not yet: its own model or texture (a native mod draws one with
-`native_mob_submit`), and its own goals.
+not yet been tried in a running game. Not yet as data: its own model or texture (a native mod draws one with
+`native_mob_submit`) and its own goals (a native mod gives it them with
+[`register_goals`](native-mods.md#mob-goals)).
 
 #### Menu types
 

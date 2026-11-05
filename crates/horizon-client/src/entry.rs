@@ -155,6 +155,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         living_jump: |entity, kind| {
             crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
         },
+        register_goals: |mob| {
+            crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
+        },
         ingredient: |kind, data, items| {
             crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);
         },
