@@ -264,7 +264,7 @@
   "Backups": "Резервнай копиялар",
   "Nothing found.": "Туох да табыллыбатах.",
   "The source at commit {commit}.": "Коммитка баар источник {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачиваниелар, киириилэр уонна саҥардыылар бу HTTP прокси нөҥүө бараллар (http://host:port). Кураанах диэн суох диэн суолталаах: HTTPS_PROXY ол оннугар лаунчер бииртэн саҕаламмытыгар туттуллар.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачиваниелар, киириилэр уонна саҥардыылар бу прокси нөҥүө бараллар (http://host:port, socks5://host:port). Кураанах диэн суох диэн суолталаах: HTTPS_PROXY ол оннугар лаунчер бииртэн саҕаламмытыгар туттуллар.",
   "Beta": "Бета",
   "Benchmark uploads": "Бенчмарк ыытыылара",
   "Saved: the next Play {what}.": "Харыстаммыт: кэлэр Оонньуу {what}.",

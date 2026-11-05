@@ -264,7 +264,7 @@
   "Backups": "Biztonsági mentések",
   "Nothing found.": "Nem találtunk semmit.",
   "The source at commit {commit}.": "A forrás a véglegesítésnél {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "A letöltések, bejelentkezések és frissítések ezen a HTTP-proxyn (http://host:port) keresztül mennek keresztül. Az üres azt jelenti, hogy nincs: ehelyett a HTTPS_PROXY használatos, amikor az indítót eggyel indították.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "A letöltések, bejelentkezések és frissítések ezen a proxyn (http://host:port, socks5://host:port) keresztül mennek keresztül. Az üres azt jelenti, hogy nincs: ehelyett a HTTPS_PROXY használatos, amikor az indítót eggyel indították.",
   "Beta": "Beta",
   "Benchmark uploads": "Feltöltések összehasonlítása",
   "Saved: the next Play {what}.": "Mentve: a következő lejátszás {what}.",

@@ -263,7 +263,7 @@
   "Backups": "Резервни копии",
   "Nothing found.": "Ништо не е пронајдено.",
   "The source at commit {commit}.": "Изворот при извршување {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Преземањата, најавувањата и ажурирањата одат преку овој HTTP прокси (http://host:port). Празно значи нема: наместо тоа, се користи HTTPS_PROXY кога стартувачот е стартуван со еден.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Преземањата, најавувањата и ажурирањата одат преку овој прокси (http://host:port, socks5://host:port). Празно значи нема: наместо тоа, се користи HTTPS_PROXY кога стартувачот е стартуван со еден.",
   "Beta": "Бета",
   "Benchmark uploads": "Поставувања на репер",
   "Saved: the next Play {what}.": "Зачувано: следната игра {what}.",

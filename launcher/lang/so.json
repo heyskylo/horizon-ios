@@ -263,7 +263,7 @@
   "Backups": "Kaabta",
   "Nothing found.": "Waxba lama helin",
   "The source at commit {commit}.": "Isha ballan {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Soo dejinta, gelista iyo cusboonaysiinta waxay maraan wakiilkan HTTP (http://host:port). Madhan macneheedu waa maya: HTTPS_PROXY waxa la istcmaalaa bedelkii markii wax soo saaruhu lagu bilaabay mid.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Soo dejinta, gelista iyo cusboonaysiinta waxay maraan wakiilkan (http://host:port, socks5://host:port). Madhan macneheedu waa maya: HTTPS_PROXY waxa la istcmaalaa bedelkii markii wax soo saaruhu lagu bilaabay mid.",
   "Beta": "Beta",
   "Benchmark uploads": "Soo gelinta Benchmark",
   "Saved: the next Play {what}.": "La kaydiyay: ciyaarta soo socota {what}.",

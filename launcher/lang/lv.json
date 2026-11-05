@@ -263,7 +263,7 @@
   "Backups": "Dublējumkopijas",
   "Nothing found.": "Nekas netika atrasts.",
   "The source at commit {commit}.": "Avots pie commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo HTTP starpniekserveri (http://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo starpniekserveri (http://host:port, socks5://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
   "Beta": "Beta",
   "Benchmark uploads": "Etalona augšupielādes",
   "Saved: the next Play {what}.": "Saglabāts: nākamā atskaņošana {what}.",

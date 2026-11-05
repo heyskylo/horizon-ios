@@ -264,7 +264,7 @@
   "Backups": "Sao lưu",
   "Nothing found.": "Không tìm thấy gì.",
   "The source at commit {commit}.": "Nguồn tại cam kết {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Việc tải xuống, đăng nhập và cập nhật đều thông qua proxy HTTP này (http://host:port). Trống có nghĩa là không có: HTTPS_PROXY được sử dụng thay thế khi trình khởi chạy được khởi động bằng một.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Việc tải xuống, đăng nhập và cập nhật đều thông qua proxy này (http://host:port, socks5://host:port). Trống có nghĩa là không có: HTTPS_PROXY được sử dụng thay thế khi trình khởi chạy được khởi động bằng một.",
   "Beta": "bản thử nghiệm",
   "Benchmark uploads": "Tải lên điểm chuẩn",
   "Saved: the next Play {what}.": "Đã lưu: Lần chơi tiếp theo {what}.",

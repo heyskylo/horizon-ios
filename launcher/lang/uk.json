@@ -264,7 +264,7 @@
   "Backups": "Резервні копії",
   "Nothing found.": "Нічого не знайдено.",
   "The source at commit {commit}.": "Вихідний код на коміті {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Завантаження, вхід в обліковий запис та оновлення проходять через цей HTTP-проксі (http://host:port). Порожнє поле означає відсутність: натомість використовується HTTPS_PROXY, якщо лаунчер було запущено з ним.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Завантаження, вхід в обліковий запис та оновлення проходять через цей проксі (http://host:port, socks5://host:port). Порожнє поле означає відсутність: натомість використовується HTTPS_PROXY, якщо лаунчер було запущено з ним.",
   "Beta": "Бета",
   "Benchmark uploads": "Benchmark uploads",
   "Saved: the next Play {what}.": "Збережено: під час наступного запуску {what}.",

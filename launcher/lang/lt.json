@@ -264,7 +264,7 @@
   "Backups": "Atsarginės kopijos",
   "Nothing found.": "Nieko nerasta.",
   "The source at commit {commit}.": "Įsipareigojimo šaltinis {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Atsisiuntimai, prisijungimai ir naujinimai vyksta per šį HTTP tarpinį serverį (http://host:port). Tuščia reiškia, kad nėra: vietoj to naudojamas HTTPS_PROXY, kai paleidimo priemonė buvo paleista naudojant vieną.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Atsisiuntimai, prisijungimai ir naujinimai vyksta per šį tarpinį serverį (http://host:port, socks5://host:port). Tuščia reiškia, kad nėra: vietoj to naudojamas HTTPS_PROXY, kai paleidimo priemonė buvo paleista naudojant vieną.",
   "Beta": "Beta",
   "Benchmark uploads": "Įkėlimų palyginimas",
   "Saved: the next Play {what}.": "Išsaugota: kitas paleidimas {what}.",

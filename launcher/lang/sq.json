@@ -263,7 +263,7 @@
   "Backups": "Rezervimet",
   "Nothing found.": "Asgjë nuk u gjet.",
   "The source at commit {commit}.": "Burimi në kryerjen {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Shkarkimet, hyrjet dhe përditësimet kalojnë përmes këtij përfaqësuesi HTTP (http://host:port). Bosh do të thotë asnjë: HTTPS_PROXY përdoret në vend të kësaj kur lëshuesi filloi me një të tillë.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Shkarkimet, hyrjet dhe përditësimet kalojnë përmes këtij përfaqësuesi (http://host:port, socks5://host:port). Bosh do të thotë asnjë: HTTPS_PROXY përdoret në vend të kësaj kur lëshuesi filloi me një të tillë.",
   "Beta": "Beta",
   "Benchmark uploads": "Ngarkimet standarde",
   "Saved: the next Play {what}.": "Ruajtur: luajtja tjetër {what}.",

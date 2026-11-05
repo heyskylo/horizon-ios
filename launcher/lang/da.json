@@ -264,7 +264,7 @@
   "Backups": "Sikkerhedskopier",
   "Nothing found.": "Intet fundet.",
   "The source at commit {commit}.": "Kilden ved commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, log-ins og opdateringer går gennem denne HTTP-proxy (http://host:port). Tom betyder ingen: HTTPS_PROXY bruges i stedet, da launcheren blev startet med en.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, log-ins og opdateringer går gennem denne proxy (http://host:port, socks5://host:port). Tom betyder ingen: HTTPS_PROXY bruges i stedet, da launcheren blev startet med en.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark-uploads",
   "Saved: the next Play {what}.": "Gemt: næste Afspil {what}.",

@@ -264,7 +264,7 @@
   "Backups": "Cópias de segurança",
   "Nothing found.": "Nada encontrado.",
   "The source at commit {commit}.": "A fonte no commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, inícios de sessão e atualizações passam por este proxy HTTP (http://host:port). Vazio significa nenhum: o HTTPS_PROXY é usado em alternativa quando o launcher foi iniciado com um.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, inícios de sessão e atualizações passam por este proxy (http://host:port, socks5://host:port). Vazio significa nenhum: o HTTPS_PROXY é usado em alternativa quando o launcher foi iniciado com um.",
   "Beta": "Beta",
   "Benchmark uploads": "Envios de benchmarks",
   "Saved: the next Play {what}.": "Guardado: o próximo Jogar {what}.",

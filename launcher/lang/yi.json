@@ -263,7 +263,7 @@
   "Backups": "באַקקופּס",
   "Nothing found.": "גאָרנישט געפונען.",
   "The source at commit {commit}.": "דער מקור אין יבערגעבן {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "דאַונלאָודז, צייכן-ינס און דערהייַנטיקונגען גיין דורך דעם הטטפּ פראקסי (הטטפּ: // האָסט: פּאָרט). ליידיק מיטל גאָרניט: HTTPS_PROXY איז געוויינט אַנשטאָט ווען די לאָנטשער איז סטאַרטעד מיט איין.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "דאַונלאָודז, צייכן-ינס און דערהייַנטיקונגען גיין דורך דעם פראקסי (http://host:port, socks5://host:port). ליידיק מיטל גאָרניט: HTTPS_PROXY איז געוויינט אַנשטאָט ווען די לאָנטשער איז סטאַרטעד מיט איין.",
   "Beta": "ביתא",
   "Benchmark uploads": "בענטשמאַרק ופּלאָאַדס",
   "Saved: the next Play {what}.": "געראטעוועט: דער ווייַטער שפּיל {what}.",

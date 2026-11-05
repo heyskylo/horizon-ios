@@ -263,7 +263,7 @@
   "Backups": "Awọn afẹyinti",
   "Nothing found.": "Ko si ohun ti a ri.",
   "The source at commit {commit}.": "Orisun ni ifaramo {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Awọn igbasilẹ, awọn ifilọlẹ ati awọn imudojuiwọn lọ nipasẹ aṣoju HTTP yii (http://host:port). Ofo tumọ si pe ko si: HTTPS_PROXY ni a lo dipo nigbati ifilọlẹ bẹrẹ pẹlu ọkan.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Awọn igbasilẹ, awọn ifilọlẹ ati awọn imudojuiwọn lọ nipasẹ aṣoju yii (http://host:port, socks5://host:port). Ofo tumọ si pe ko si: HTTPS_PROXY ni a lo dipo nigbati ifilọlẹ bẹrẹ pẹlu ọkan.",
   "Beta": "Beta",
   "Benchmark uploads": "Awọn ìrùsókè ala",
   "Saved: the next Play {what}.": "Ti a fipamọ: Ere atẹle {what}.",

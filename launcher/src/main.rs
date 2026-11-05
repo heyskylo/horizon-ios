@@ -4335,8 +4335,8 @@ impl Launcher {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
                 .child(tr(
-                    "Downloads, sign-ins and updates go through this proxy (http://host:port \
-                     or socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the \
+                    "Downloads, sign-ins and updates go through this proxy (http://host:port, \
+                     socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the \
                      launcher was started with one.",
                 ))
                 .into_any_element(),

@@ -263,7 +263,7 @@
   "Backups": "Nā waihona",
   "Nothing found.": "ʻAʻohe mea i loaʻa.",
   "The source at commit {commit}.": "ʻO ke kumu ma commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Hoʻoiho ʻia, kau inoa a me nā mea hou i kēia proxy HTTP (http://host:port). ʻAʻohe manaʻo ʻole: HTTPS_PROXY ke hoʻohana ʻia i ka wā i hoʻomaka ai ka mea hoʻolaha me hoʻokahi.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Hoʻoiho ʻia, kau inoa a me nā mea hou i kēia proxy (http://host:port, socks5://host:port). ʻAʻohe manaʻo ʻole: HTTPS_PROXY ke hoʻohana ʻia i ka wā i hoʻomaka ai ka mea hoʻolaha me hoʻokahi.",
   "Beta": "Beta",
   "Benchmark uploads": "Hoʻouka ʻia ʻo Benchmark",
   "Saved: the next Play {what}.": "Mālama ʻia: ka pāʻani hou {what}.",

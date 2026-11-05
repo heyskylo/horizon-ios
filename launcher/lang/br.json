@@ -263,7 +263,7 @@
   "Backups": "Enrolladennoù",
   "Nothing found.": "Netra bet kavet.",
   "The source at commit {commit}.": "Ar vammenn e commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ar pellgargadennoù, an enskrivadurioù hag an hizivadurioù a dremen dre ar proksi HTTP-mañ (http://host:port). Goullo a dalv hini ebet : arveret e vez HTTPS_PROXY e-lec'h pa oa bet kroget al lañser gant unan.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ar pellgargadennoù, an enskrivadurioù hag an hizivadurioù a dremen dre ar proksi mañ (http://host:port, socks5://host:port). Goullo a dalv hini ebet : arveret e vez HTTPS_PROXY e-lec'h pa oa bet kroget al lañser gant unan.",
   "Beta": "Beta",
   "Benchmark uploads": "Pellgargadennoù benchmark",
   "Saved: the next Play {what}.": "Enrollet : ar C'hoari da zont {what}.",

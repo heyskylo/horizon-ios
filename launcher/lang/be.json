@@ -263,7 +263,7 @@
   "Backups": "Рэзервовыя копіі",
   "Nothing found.": "Нічога не знойдзена.",
   "The source at commit {commit}.": "Крыніца ў фіксацыі {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Спампоўкі, уваходы і абнаўленні праходзяць праз гэты HTTP-проксі (http://host:port). Пусты азначае, што няма: замест яго выкарыстоўваецца HTTPS_PROXY, калі праграма запуску запускалася з ім.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Спампоўкі, уваходы і абнаўленні праходзяць праз гэты проксі (http://host:port, socks5://host:port). Пусты азначае, што няма: замест яго выкарыстоўваецца HTTPS_PROXY, калі праграма запуску запускалася з ім.",
   "Beta": "Бэта-версія",
   "Benchmark uploads": "Эталонныя загрузкі",
   "Saved: the next Play {what}.": "Захавана: наступная гульня {what}.",

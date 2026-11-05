@@ -264,7 +264,7 @@
   "Backups": "גיבויים",
   "Nothing found.": "שום דבר לא נמצא.",
   "The source at commit {commit}.": "המקור ב-commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי HTTP זה (http://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי זה (http://host:port, socks5://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
   "Beta": "בטא",
   "Benchmark uploads": "העלאות בנצ'מרק",
   "Saved: the next Play {what}.": "נשמר: ההפעלה הבאה {what}.",

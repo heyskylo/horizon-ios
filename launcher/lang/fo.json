@@ -263,7 +263,7 @@
   "Backups": "Trygdarrit",
   "Nothing found.": "Einki funnið.",
   "The source at commit {commit}.": "Keldan við binda {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurtøkur, innritanir og dagføringar fara gjøgnum hetta HTTP umboð (http://vertur:portur). Tómt merkir einki: HTTPS_PROXY verður brúkt ístaðin tá sjósetingin varð byrjað við einum.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurtøkur, innritanir og dagføringar fara gjøgnum hetta umboð (http://vertur:portur, socks5://vertur:portur). Tómt merkir einki: HTTPS_PROXY verður brúkt ístaðin tá sjósetingin varð byrjað við einum.",
   "Beta": "Beta",
   "Benchmark uploads": "Samanberingar upplesingar",
   "Saved: the next Play {what}.": "Goymt: næsta Spælið {what}.",

@@ -263,7 +263,7 @@
   "Backups": "ಬ್ಯಾಕಪ್‌ಗಳು",
   "Nothing found.": "ಏನೂ ಸಿಗಲಿಲ್ಲ.",
   "The source at commit {commit}.": "ಕಮಿಟ್ {commit} ನಲ್ಲಿನ ಮೂಲ.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ಡೌನ್‌ಲೋಡ್‌ಗಳು, ಸೈನ್-ಇನ್‌ಗಳು ಮತ್ತು ನವೀಕರಣಗಳು ಈ HTTP ಪ್ರಾಕ್ಸಿ (http://host:port) ಮೂಲಕ ಹೋಗುತ್ತವೆ. ಖಾಲಿ ಎಂದರೆ ಯಾವುದೂ ಇಲ್ಲ: ಲಾಂಚರ್ ಒಂದನ್ನು ಪ್ರಾರಂಭಿಸಿದಾಗ HTTPS_PROXY ಅನ್ನು ಬಳಸಲಾಗುತ್ತದೆ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ಡೌನ್‌ಲೋಡ್‌ಗಳು, ಸೈನ್-ಇನ್‌ಗಳು ಮತ್ತು ನವೀಕರಣಗಳು ಈ ಪ್ರಾಕ್ಸಿ (http://host:port, socks5://host:port) ಮೂಲಕ ಹೋಗುತ್ತವೆ. ಖಾಲಿ ಎಂದರೆ ಯಾವುದೂ ಇಲ್ಲ: ಲಾಂಚರ್ ಒಂದನ್ನು ಪ್ರಾರಂಭಿಸಿದಾಗ HTTPS_PROXY ಅನ್ನು ಬಳಸಲಾಗುತ್ತದೆ.",
   "Beta": "ಬೀಟಾ",
   "Benchmark uploads": "ಬೆಂಚ್‌ಮಾರ್ಕ್ ಅಪ್‌ಲೋಡ್‌ಗಳು",
   "Saved: the next Play {what}.": "ಉಳಿಸಲಾಗಿದೆ: ಮುಂದಿನ ಪ್ಲೇ {what}.",

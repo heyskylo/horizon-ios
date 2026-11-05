@@ -263,7 +263,7 @@
   "Backups": "ຂໍ້ມູນສຳຮອງ",
   "Nothing found.": "ບໍ່ພົບຫຍັງ.",
   "The source at commit {commit}.": "ແຫຼ່ງທີ່ commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ການດາວໂຫຼດ, ເຂົ້າສູ່ລະບົບ ແລະອັບເດດຜ່ານພຣັອກຊີ HTTP ນີ້ (http://host:port). ຫວ່າງເປົ່າຫມາຍຄວາມວ່າບໍ່ມີ: HTTPS_PROXY ຖືກນໍາໃຊ້ແທນໃນເວລາທີ່ launcher ໄດ້ເລີ່ມຕົ້ນດ້ວຍອັນຫນຶ່ງ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ການດາວໂຫຼດ, ເຂົ້າສູ່ລະບົບ ແລະອັບເດດຜ່ານພຣັອກຊີ ນີ້ (http://host:port, socks5://host:port). ຫວ່າງເປົ່າຫມາຍຄວາມວ່າບໍ່ມີ: HTTPS_PROXY ຖືກນໍາໃຊ້ແທນໃນເວລາທີ່ launcher ໄດ້ເລີ່ມຕົ້ນດ້ວຍອັນຫນຶ່ງ.",
   "Beta": "ເບຕ້າ",
   "Benchmark uploads": "ການອັບໂຫລດມາດຕະຖານ",
   "Saved: the next Play {what}.": "ບັນທຶກແລ້ວ: ການຫຼິ້ນຄັ້ງຕໍ່ໄປ {what}.",
