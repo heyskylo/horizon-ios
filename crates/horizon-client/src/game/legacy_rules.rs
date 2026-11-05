@@ -55,7 +55,7 @@ impl Game<'_> {
     fn legacy_attacker(&self) -> legacy_combat::Attacker {
         let p = self.player.as_ref();
         legacy_combat::Attacker {
-            fall_distance: p.map_or(0.0, |p| f64::from(p.fall_distance)),
+            fall_distance: p.map_or(0.0, |p| p.fall_distance),
             on_ground: p.is_none_or(|p| p.ground.on_ground),
             in_water: p.is_some_and(|p| p.fluids.was_touching_water),
             blind: self.potions.effects.get("blindness").is_some(),
