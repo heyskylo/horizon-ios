@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Ийм нэртэй Minecraft: Java Edition бүртгэл алга.",
   "That account already owns everything in the basket.": "Тэр бүртгэлд сагсан дахь бүх зүйл аль хэдийн байгаа.",
   "The shop isn't selling right now. Nothing was charged.": "Дэлгүүр одоо зарахгүй байна. Юу ч суутгаагүй.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлбөрийг эхлүүлж чадсангүй. Юу ч суутгаагүй."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлбөрийг эхлүүлж чадсангүй. Юу ч суутгаагүй.",
+  "Shop": "Дэлгүүр",
+  "Owned": "Эзэмшсэн",
+  "Claim the founder set": "Үүсгэн байгуулагчийн багцыг нэхэмжлэх",
+  "Claiming…": "Авч байна…",
+  "The shop didn't load.": "Дэлгүүр ачаалагдсангүй.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Таны тоглогчид зориулсан өмсөх зүйлс, Horizon дээр тоглодог хүн бүр харна.",
+  "Free for founders": "Үүсгэн байгуулагчдад үнэгүй",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Эндхийн анхны тоглогчдод зориулсан. Үнэгүй авч болно; нэг авсны дараа таных үүрд.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Үнэгүй төлбөрийг хөтөч дээрээ дуусгана уу. Иж бүрдэл хэсэг хугацааны дараа энд ирнэ.",
+  "{n} items": "{n} зүйл",
+  "Nothing is on sale right now.": "Одоо юу ч зарагдахгүй байна."
 }

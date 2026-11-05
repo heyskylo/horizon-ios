@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Няма ўліковага запісу Minecraft: Java Edition з такім імем.",
   "That account already owns everything in the basket.": "Гэты ўліковы запіс ужо мае ўсё, што ў кошыку.",
   "The shop isn't selling right now. Nothing was charged.": "Крама зараз не прадае. Нічога не спісана.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не змог пачаць аплату. Нічога не спісана."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не змог пачаць аплату. Нічога не спісана.",
+  "Shop": "Крама",
+  "Owned": "У вас",
+  "Claim the founder set": "Прэтэнзіі заснавальніка мноства",
+  "Claiming…": "Атрымліваем…",
+  "The shop didn't load.": "Краму не ўдалося загрузіць.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Рэчы для вашага персанажа, якія бачаць усе, хто гуляе ў Horizon.",
+  "Free for founders": "Бясплатна для заснавальнікаў",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Для гульцоў, якія былі тут першымі. Можна атрымаць бясплатна; атрымаўшы, вы пакідаеце яго назаўсёды.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Завяршыце бясплатную аплату ў браўзеры. Набор з’явіцца тут праз імгненне.",
+  "{n} items": "{n} прадметаў",
+  "Nothing is on sale right now.": "Зараз нічога не прадаецца."
 }

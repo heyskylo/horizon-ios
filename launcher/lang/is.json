@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Enginn Minecraft: Java Edition-aðgangur heitir þessu nafni.",
   "That account already owns everything in the basket.": "Sá aðgangur á nú þegar allt í körfunni.",
   "The shop isn't selling right now. Nothing was charged.": "Verslunin selur ekki núna. Ekkert var rukkað.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle gat ekki hafið greiðsluna. Ekkert var rukkað."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle gat ekki hafið greiðsluna. Ekkert var rukkað.",
+  "Shop": "Verslun",
+  "Owned": "Í eigu",
+  "Claim the founder set": "Gerðu tilkall til stofnendasettsins",
+  "Claiming…": "Sæki…",
+  "The shop didn't load.": "Verslunin hlóðst ekki.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Hlutir til að klæðast fyrir spilarann þinn, sýnilegir öllum sem spila á Horizon.",
+  "Free for founders": "Ókeypis fyrir stofnendur",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Fyrir spilarana sem voru hér fyrst. Ókeypis að sækja; þegar þú hefur sótt það er það þitt til frambúðar.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Ljúktu ókeypis greiðslunni í vafranum þínum. Settið birtist hér augnabliki síðar.",
+  "{n} items": "{n} hlutir",
+  "Nothing is on sale right now.": "Ekkert er til sölu núna."
 }

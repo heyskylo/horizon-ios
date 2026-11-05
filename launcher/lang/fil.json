@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Walang Minecraft: Java Edition account na may ganoong pangalan.",
   "That account already owns everything in the basket.": "Pag-aari na ng account na iyon ang lahat ng nasa basket.",
   "The shop isn't selling right now. Nothing was charged.": "Hindi nagbebenta ang shop ngayon. Walang siningil.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Hindi masimulan ng Paddle ang pagbabayad. Walang siningil."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Hindi masimulan ng Paddle ang pagbabayad. Walang siningil.",
+  "Shop": "Shop",
+  "Owned": "Pag-aari",
+  "Claim the founder set": "I-claim ang founder set",
+  "Claiming…": "Kina-claim…",
+  "The shop didn't load.": "Hindi nag-load ang shop.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Mga isusuot para sa iyong player, nakikita ng lahat ng naglalaro sa Horizon.",
+  "Free for founders": "Libre para sa mga founder",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Para sa mga manlalarong nauna rito. Libreng i-claim; kapag na-claim mo na, sa iyo na ito habambuhay.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Tapusin ang libreng checkout sa iyong browser. Lalabas dito ang set pagkalipas ng ilang sandali.",
+  "{n} items": "{n} item",
+  "Nothing is on sale right now.": "Walang ibinebenta ngayon."
 }

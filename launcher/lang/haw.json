@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "ʻAʻohe moʻokāki Minecraft: Java Edition me kēlā inoa.",
   "That account already owns everything in the basket.": "Ua loaʻa mua i kēlā moʻokāki nā mea a pau o ka hīnaʻi.",
   "The shop isn't selling right now. Nothing was charged.": "ʻAʻole kūʻai aku ka hale kūʻai i kēia manawa. ʻAʻohe mea i uku ʻia.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "ʻAʻole hiki iā Paddle ke hoʻomaka i ka uku. ʻAʻohe mea i uku ʻia."
+  "Paddle couldn't start the checkout. Nothing was charged.": "ʻAʻole hiki iā Paddle ke hoʻomaka i ka uku. ʻAʻohe mea i uku ʻia.",
+  "Shop": "Hale kūʻai",
+  "Owned": "Nou",
+  "Claim the founder set": "E koi i ka mea hoʻokumu",
+  "Claiming…": "E loaʻa ana…",
+  "The shop didn't load.": "ʻAʻole i hoʻouka ʻia ka hale kūʻai.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Nā mea e ʻaʻahu ai no kāu mea pāʻani, ʻike ʻia e ka poʻe a pau e pāʻani ana ma Horizon.",
+  "Free for founders": "Manuahi no ka poʻe hoʻokumu",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "No nā mea pāʻani i hiki mua mai. Manuahi e loaʻa; i ka wā i loaʻa ai, nou mau loa.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "E hoʻopau i ka uku manuahi ma kāu polokalamu kele pūnaewele. E ʻike ʻia ana ka pūʻulu ma ʻaneʻi ma hope koke iho.",
+  "{n} items": "{n} mau mea",
+  "Nothing is on sale right now.": "ʻAʻohe mea e kūʻai ʻia ana i kēia manawa."
 }

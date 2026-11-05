@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Nijedan Minecraft: Java Edition račun nema to ime.",
   "That account already owns everything in the basket.": "Taj račun već posjeduje sve u košarici.",
   "The shop isn't selling right now. Nothing was charged.": "Trgovina trenutačno ne prodaje. Ništa nije naplaćeno.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nije mogao pokrenuti plaćanje. Ništa nije naplaćeno."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nije mogao pokrenuti plaćanje. Ništa nije naplaćeno.",
+  "Shop": "Trgovina",
+  "Owned": "U posjedu",
+  "Claim the founder set": "Preuzmi osnivački set",
+  "Claiming…": "Preuzimanje…",
+  "The shop didn't load.": "Trgovina se nije učitala.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Stvari koje tvoj igrač nosi, vidljive svima koji igraju na Horizonu.",
+  "Free for founders": "Besplatno za osnivače",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Za igrače koji su bili ovdje prvi. Besplatno; kad ga preuzmeš, tvoj je zauvijek.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Završi besplatno plaćanje u pregledniku. Set će se ovdje pojaviti za trenutak.",
+  "{n} items": "{n} predmeta",
+  "Nothing is on sale right now.": "Trenutačno se ništa ne prodaje."
 }

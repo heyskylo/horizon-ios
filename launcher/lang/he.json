@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "אין חשבון Minecraft: Java Edition בשם הזה.",
   "That account already owns everything in the basket.": "החשבון הזה כבר מחזיק בכל מה שבסל.",
   "The shop isn't selling right now. Nothing was charged.": "החנות לא מוכרת כרגע. שום דבר לא חויב.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle לא הצליח להתחיל את התשלום. שום דבר לא חויב."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle לא הצליח להתחיל את התשלום. שום דבר לא חויב.",
+  "Shop": "חנות",
+  "Owned": "בבעלותך",
+  "Claim the founder set": "תבע את סט המייסדים",
+  "Claiming…": "מקבל…",
+  "The shop didn't load.": "החנות לא נטענה.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "פריטים שהשחקן שלך לובש, גלויים לכל מי שמשחק ב־Horizon.",
+  "Free for founders": "חינם למייסדים",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "לשחקנים שהיו כאן ראשונים. חינם; אחרי שתקבל אותו, הוא שלך.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "סיים את התשלום החינמי בדפדפן. הסט יופיע כאן רגע אחר כך.",
+  "{n} items": "{n} פריטים",
+  "Nothing is on sale right now.": "שום דבר לא למכירה כרגע."
 }

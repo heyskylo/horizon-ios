@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "그 이름의 Minecraft: Java Edition 계정이 없습니다.",
   "That account already owns everything in the basket.": "그 계정은 장바구니에 있는 것을 이미 모두 가지고 있습니다.",
   "The shop isn't selling right now. Nothing was charged.": "상점이 지금은 판매하지 않습니다. 결제된 금액은 없습니다.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle이 결제를 시작하지 못했습니다. 결제된 금액은 없습니다."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle이 결제를 시작하지 못했습니다. 결제된 금액은 없습니다.",
+  "Shop": "상점",
+  "Owned": "보유",
+  "Claim the founder set": "창립자 세트 받기",
+  "Claiming…": "받는 중…",
+  "The shop didn't load.": "상점을 불러오지 못했어요.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "내 플레이어가 착용하는 아이템으로, Horizon에서 플레이하는 모두에게 보여요.",
+  "Free for founders": "창립자에게 무료",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "처음부터 함께한 플레이어를 위해. 무료로 받을 수 있고, 받으면 계속 내 것이에요.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "브라우저에서 무료 결제를 마무리하세요. 잠시 뒤 세트가 여기에 도착해요.",
+  "{n} items": "{n}개 아이템",
+  "Nothing is on sale right now.": "지금은 판매 중인 것이 없습니다."
 }

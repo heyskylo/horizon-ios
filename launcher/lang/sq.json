@@ -1178,5 +1178,16 @@
   "No Minecraft: Java Edition account has that name.": "Asnjë llogari Minecraft: Java Edition nuk e ka këtë emër.",
   "That account already owns everything in the basket.": "Kjo llogari i ka tashmë të gjitha ato që janë në shportë.",
   "The shop isn't selling right now. Nothing was charged.": "Dyqani nuk po shet tani. Nuk u tarifua asgjë.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nuk mundi të fillonte pagesën. Nuk u tarifua asgjë."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nuk mundi të fillonte pagesën. Nuk u tarifua asgjë.",
+  "Shop": "Dyqani",
+  "Owned": "I marrë",
+  "Claim the founder set": "Kërkoni grupin themelues",
+  "Claiming…": "Po merret…",
+  "The shop didn't load.": "Dyqani nuk u ngarkua.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Gjëra për të veshur për lojtarin tënd, të dukshme për këdo që luan në Horizon.",
+  "Free for founders": "Falas për themeluesit",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Për lojtarët që qenë këtu të parët. Falas për t’u marrë; pasi ta marrësh, mbetet yti.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Përfundo pagesën falas në shfletues. Seti do të shfaqet këtu pak më vonë.",
+  "{n} items": "{n} sende",
+  "Nothing is on sale right now.": "Tani nuk ka asgjë në shitje."
 }
