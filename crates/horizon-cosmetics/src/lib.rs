@@ -13,12 +13,14 @@ pub mod account;
 mod emote;
 mod feed;
 mod fetch;
+pub mod follow;
 mod fx;
 mod item;
 pub mod mark;
 mod pose;
 pub mod prefs;
 pub mod preview;
+pub mod trail;
 pub mod viewer;
 
 pub use emote::{
