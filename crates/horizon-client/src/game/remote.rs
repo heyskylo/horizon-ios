@@ -478,6 +478,10 @@ enum OwnProfile {
 
 pub(super) struct Remote {
     pub session: Session,
+    /// The single-player save this connection plays, by its folder in
+    /// `saves/`: the window's own server thread, or P1's for a splitscreen
+    /// seat. None on a server.
+    pub(super) save_folder: Option<String>,
     pub brand: String,
     /// This connection's configured feature flags, carried through reconfiguration.
     pub(super) features: Vec<String>,
@@ -1057,6 +1061,7 @@ impl Game<'_> {
             });
         self.remote = Some(Remote {
             session,
+            save_folder: None,
             brand: "unknown".into(),
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,

@@ -336,6 +336,15 @@ impl Split<'_> {
             }
             return Err(e);
         }
+        // The seat plays P1's world, so mods keep its data with P1's.
+        let save = self
+            .host
+            .remote
+            .as_ref()
+            .and_then(|r| r.save_folder.clone());
+        if let Some(r) = self.guests[i].game.remote.as_mut() {
+            r.save_folder = save;
+        }
         self.guests[i].name = Some(name);
         self.guests[i].entered = false;
         Ok(())

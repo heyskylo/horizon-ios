@@ -1,10 +1,11 @@
 //! Client services for trait mods, without exposing `Game` or the atlas.
-use super::Game;
+use super::{Game, Screen};
 use horizon_client::{
     collisions::SceneCollisions,
     hud::{HudBatch, rgba},
     hud_layout::GuiDraw,
     mod_api::Text,
+    net::shown_address,
 };
 use horizon_core::geometry::Vec3;
 
@@ -23,6 +24,69 @@ pub struct NativeClientState {
     pub yaw: f32,
     pub pitch: f32,
     pub menu_blur: f32,
+    /// What covers the world. API @API:session_state@.
+    pub screen: NativeScreenKind,
+    /// F3's debug screen is showing (`DebugScreenOverlay.showDebugScreen`).
+    /// API @API:session_state@.
+    pub debug_screen: bool,
+    /// The world joined, None before one is. API @API:session_state@.
+    pub world: Option<NativeWorldId>,
+    /// The head of the bed the player sleeps in, as the server says
+    /// (`LivingEntity.getSleepingPos`). API @API:session_state@.
+    pub sleeping_pos: Option<[i32; 3]>,
+}
+
+/// What covers the world, in the kinds a HUD tells apart (vanilla's
+/// `Minecraft.screen`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativeScreenKind {
+    /// No screen: the world is played.
+    #[default]
+    Playing,
+    /// The chat box (`ChatScreen`), which a minimap still draws under.
+    Chat,
+    /// The death screen (`DeathScreen`).
+    Death,
+    /// Any other: the pause menu, an inventory or container, a sign, book,
+    /// dialog or prompt, the loading screen, the title's screens.
+    Other,
+}
+
+impl NativeScreenKind {
+    /// `covered`: a screen Horizon keeps outside `Screen` is up over it.
+    fn of(screen: Screen, covered: bool) -> Self {
+        match screen {
+            _ if covered => Self::Other,
+            Screen::Playing => Self::Playing,
+            Screen::Chat => Self::Chat,
+            Screen::Dead => Self::Death,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The world this window plays, for a mod that keeps data per world, as
+/// Xaero's minimap and JourneyMap do. A later Horizon may add kinds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NativeWorldId {
+    /// Single player, its LAN host and splitscreen seats: the save's folder
+    /// in `saves/`, not its shown name.
+    Singleplayer(String),
+    /// A server, a LAN world joined included: its address as the player
+    /// joined it (`mc.example.com:25565`). A friend's world is named as
+    /// players see it, never by its invite code.
+    Server(String),
+}
+
+impl NativeWorldId {
+    /// `save` is set for single player's world joined through memory.
+    fn of(save: Option<&str>, address: &str) -> Self {
+        match save {
+            Some(folder) => Self::Singleplayer(folder.to_owned()),
+            None => Self::Server(shown_address(address)),
+        }
+    }
 }
 
 /// A living entity known to the client, before interpolation. No authoritative writes.
@@ -84,6 +148,16 @@ impl Game<'_> {
             yaw: self.yaw,
             pitch: self.pitch,
             menu_blur: self.settings.menu_blur as f32,
+            screen: NativeScreenKind::of(
+                self.screen,
+                self.title.is_some() || self.screen_over_playing() || self.remote_loading(),
+            ),
+            debug_screen: self.debug,
+            world: self
+                .remote
+                .as_ref()
+                .map(|r| NativeWorldId::of(r.save_folder.as_deref(), &r.session.address)),
+            sleeping_pos: self.sleeping,
         })
     }
     /// Bulk client render data. Unlike EntityRef, this snapshot expires independently of handles.
@@ -290,5 +364,58 @@ impl Game<'_> {
         if self.native_window() {
             self.titles.set_overlay(text, animate);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_world_is_its_save_in_single_player_and_its_address_on_a_server() {
+        assert_eq!(
+            NativeWorldId::of(Some("New World"), "local"),
+            NativeWorldId::Singleplayer("New World".into())
+        );
+        assert_eq!(
+            NativeWorldId::of(None, "mc.example.com:25565"),
+            NativeWorldId::Server("mc.example.com:25565".into())
+        );
+    }
+
+    #[test]
+    fn a_friends_world_never_carries_its_invite_secret() {
+        // A relay's short code: a nameplate, then the session's secret.
+        let secret = "WXYZ";
+        let address = format!("{}ABCD-{secret}", horizon_client::net::FRIEND);
+        let NativeWorldId::Server(name) = NativeWorldId::of(None, &address) else {
+            panic!("a friend's world is a server");
+        };
+        assert!(!name.contains(secret), "{name}");
+    }
+
+    #[test]
+    fn a_hud_tells_chat_and_death_from_other_screens() {
+        assert_eq!(
+            NativeScreenKind::of(Screen::Playing, false),
+            NativeScreenKind::Playing
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Chat, false),
+            NativeScreenKind::Chat
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Dead, false),
+            NativeScreenKind::Death
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Inventory, false),
+            NativeScreenKind::Other
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Chat, true),
+            NativeScreenKind::Other,
+            "a sign or dialog over chat covers the world"
+        );
     }
 }
