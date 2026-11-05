@@ -739,3 +739,64 @@ impl Game<'_> {
         self.stats_ui.scroll.release();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::KeyCode::{Digit0, Digit1, Digit2, Digit3, Numpad8, Tab};
+
+    /// `StatsScreen.keyPressed`: with Control held the tab bar takes the key -
+    /// Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs, Ctrl+1..9 pick one (Ctrl+0
+    /// is the tenth, past the last tab) - and without it the key goes on.
+    #[test]
+    fn control_and_tab_switch_the_statistics_tabs() {
+        let all = [true, true, true];
+        let mut ui = StatsUi::default();
+        assert_eq!(ui.tab, 0);
+        for expected in [1, 2, 0] {
+            assert!(ui.key(Tab, true, false, all));
+            assert_eq!(ui.tab, expected, "Ctrl+Tab");
+        }
+        assert!(ui.key(Tab, true, true, all));
+        assert_eq!(ui.tab, 2, "Ctrl+Shift+Tab wraps back to the last tab");
+        assert!(ui.key(Digit1, true, false, all));
+        assert_eq!(ui.tab, 0);
+        assert!(ui.key(Digit2, true, false, all));
+        assert_eq!(ui.tab, 1);
+        assert!(ui.key(Numpad8, true, false, all));
+        assert_eq!(ui.tab, 2, "a digit past the last tab picks the last one");
+        assert!(ui.key(Digit0, true, false, all));
+        assert_eq!(ui.tab, 2, "0 is the tenth tab, clamped to the last one");
+        // Without Control the tab bar leaves the key for the rest of the screen.
+        assert!(!ui.key(Tab, false, false, all));
+        assert!(!ui.key(Digit3, false, false, all));
+        assert_eq!(ui.tab, 2, "the last tab stays");
+    }
+
+    /// `StatsScreen.setTabActiveStateAndTooltip`: the Items and Mobs tabs that
+    /// have no rows cannot be chosen, so the cycle skips them; a digit naming
+    /// one is still taken, and switches nothing.
+    #[test]
+    fn an_empty_tab_is_skipped_by_the_keyboard() {
+        let only_general_and_mobs = [true, false, true];
+        let mut ui = StatsUi::default();
+        assert!(ui.key(Tab, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 2, "the empty Items tab is skipped");
+        assert!(ui.key(Tab, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 0);
+        assert!(ui.key(Tab, true, true, only_general_and_mobs));
+        assert_eq!(ui.tab, 2);
+        assert!(ui.key(Digit2, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 2, "an empty tab is not switched to");
+    }
+
+    /// Switching tabs starts the new list at the top, as a tab press does.
+    #[test]
+    fn a_tab_switch_scrolls_back_to_the_top() {
+        let mut ui = StatsUi::default();
+        ui.scroll.amount = 120.0;
+        assert!(ui.key(Tab, true, false, [true, true, true]));
+        assert_eq!(ui.tab, 1);
+        assert_eq!(ui.scroll.amount, 0.0);
+    }
+}
