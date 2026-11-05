@@ -2577,6 +2577,25 @@ fn slot_row(
         .children(right)
 }
 
+/// Microsoft account actions go below the profile in the fixed-width glass card.
+fn account_row(
+    slot: Option<Div>,
+    name: impl IntoElement,
+    detail: Option<AnyElement>,
+    actions: Div,
+    t: &Theme,
+) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(slot_row(slot, name, detail, None, t))
+            .child(actions.flex_wrap().px(px(16.)).pb(px(12.)));
+    }
+    slot_row(slot, name, detail, Some(actions.into_any_element()), t)
+}
+
 /// A plate that stands apart from the page: notices, the console, the agents note.
 fn plate(t: &Theme) -> Div {
     blocks::panel(t)
@@ -4386,7 +4405,7 @@ impl Launcher {
                 }))
             });
             n += 1;
-            rows = rows.child(slot_row(
+            rows = rows.child(account_row(
                 Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
                 a.name.clone(),
                 Some(
@@ -4404,7 +4423,7 @@ impl Launcher {
                         })
                         .into_any_element(),
                 ),
-                Some(actions.into_any_element()),
+                actions,
                 &t,
             ));
         }
