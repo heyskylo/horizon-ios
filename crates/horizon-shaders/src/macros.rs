@@ -157,6 +157,16 @@ impl Macros {
         for (i, material) in DH_BLOCK_MATERIALS.iter().enumerate() {
             m.define(format!("DH_BLOCK_{material}"), i.to_string());
         }
+        // The biome categories and precipitations the `biome_category` and
+        // `biome_precipitation` uniforms compare with, as custom uniforms see them (Iris's
+        // replacements define them for the stage files too: Sildur's Enhanced Default reads
+        // `biome_category == CAT_THE_END`). `BIOME_*` needs the world's registry.
+        for (i, category) in crate::biomes::CATEGORIES.iter().enumerate() {
+            m.define(format!("CAT_{category}"), i.to_string());
+        }
+        for (i, precipitation) in ["NONE", "RAIN", "SNOW"].iter().enumerate() {
+            m.define(format!("PPT_{precipitation}"), i.to_string());
+        }
         m
     }
 
@@ -656,6 +666,17 @@ mod tests {
         assert_eq!(m.get("DH_BLOCK_WATER"), Some("12"));
         assert_eq!(m.get("DH_BLOCK_ILLUMINATED"), Some("15"));
         assert_eq!(m.get("DISTANT_HORIZONS"), None);
+    }
+
+    #[test]
+    fn biome_categories_and_precipitations_are_macros_as_custom_uniforms_see_them() {
+        let m = Macros::standard();
+        let constants = crate::biomes::constants(&[]);
+        for (name, value) in &constants {
+            assert_eq!(m.get(name), Some(value.to_string().as_str()), "{name}");
+        }
+        assert_eq!(m.get("CAT_THE_END"), Some("8"));
+        assert_eq!(m.get("PPT_SNOW"), Some("2"));
     }
 
     #[test]
