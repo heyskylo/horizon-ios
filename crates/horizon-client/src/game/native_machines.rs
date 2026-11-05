@@ -23,7 +23,9 @@ impl Game<'_> {
     /// (`Block.dropResources(state, level, pos, blockEntity, null, tool)`):
     /// the break particles and sound, the block's drops with what its block
     /// entity copies into them (a shulker box's contents), experience for an
-    /// ore as with no tool, then the block's fluid in its place. `tool` picks
+    /// ore unless `tool` has silk touch (`EnchantmentHelper.processBlockExperience`),
+    /// then the block's fluid in its place. Blocks that pop off because of
+    /// the break drop as with no tool, and pop whatever `collect` says. `tool` picks
     /// the drops as a player's held item does (silk touch, fortune, shears);
     /// `None` is an empty hand. The mods' say on drops (`native_loot_drops`)
     /// applies. With `collect`, the drops are returned and nothing is popped
@@ -47,7 +49,7 @@ impl Game<'_> {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let tool_kept = tool.cloned();
         let mut drops = self.with_level(|b, level, ticks| {
-            level.drop_tool = tool_kept;
+            level.drop_tool = Some(((pos[0], pos[1], pos[2]), tool_kept));
             level.drop_into = Some(Vec::new());
             b.destroy_block(level, ticks, at, true);
             level.drop_tool = None;
