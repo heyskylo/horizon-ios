@@ -250,8 +250,11 @@ pub fn official(p: &index::Project) -> bool {
 
 /// What the player reads about a registry project before installing it: who made it, whether its
 /// files are signed, and for a mod what it may do, in the game's words (Options > Mods). A native
-/// mod says it runs with the player's rights.
-pub fn trust_and_capabilities(id: &str) -> Vec<String> {
+/// mod says it runs with the player's rights, and how it fits the Horizon `instance` plays.
+pub fn trust_and_capabilities(
+    id: &str,
+    instance: Option<&crate::instances::Instance>,
+) -> Vec<String> {
     let Ok(index) = index() else {
         return Vec::new();
     };
@@ -274,12 +277,18 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
         lines.push(
             "Native code: it is compiled into the game and runs with full access to your computer. Its source was reviewed before it was listed".into(),
         );
-        if let Some(v) = p.versions.first() {
+        if let Some(v) = p.versions.iter().find(|v| v.game == GAME) {
             let pin = v.api.split('/').nth(1).unwrap_or_default();
-            lines.push(format!(
-                "Built by the launcher on Horizon {}",
-                &pin[..pin.len().min(7)]
-            ));
+            lines.push(
+                instance
+                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Built by the launcher on Horizon {}",
+                            &pin[..pin.len().min(7)]
+                        )
+                    }),
+            );
         }
     }
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {

@@ -470,10 +470,16 @@ impl Launcher {
                 .ok_or_else(|| format!("{} isn't set up.", source.label()))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => found
-                    .iter()
-                    .map(|p| (p.id.clone(), horizon::trust_and_capabilities(&p.id)))
-                    .collect(),
+                (Ok(found), SourceId::Horizon) => {
+                    let instance = horizon_launcher::instances::selected();
+                    found
+                        .iter()
+                        .map(|p| {
+                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                            (p.id.clone(), lines)
+                        })
+                        .collect()
+                }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));

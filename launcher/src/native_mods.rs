@@ -1139,7 +1139,7 @@ fn hooks_in(source: &str) -> Option<u32> {
 }
 
 /// The native hook points' version of Horizon at `revision`, from GitHub (None: it has none).
-fn hooks_at(revision: &str) -> Option<u32> {
+pub(crate) fn hooks_at(revision: &str) -> Option<u32> {
     let url = format!(
         "https://raw.githubusercontent.com/{}/{revision}/{HOOKS_FILE}",
         backend::REPO
