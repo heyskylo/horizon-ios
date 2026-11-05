@@ -125,6 +125,7 @@ def main():
     parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
+    parser.add_argument("--armor-stand-honey-fixture", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -189,6 +190,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.armor_stand_honey_fixture:
+        try:
+            from .armor_stand_honey_corpus import armor_stand_honey
+        except ImportError:
+            from armor_stand_honey_corpus import armor_stand_honey
+        groups = [("setup", corpus_module.group_setup()), ("armor stand honey slide", armor_stand_honey())]
     if args.mob_quad_fixture:
         try:
             from .mob_quad_leash_corpus import mob_quad_leash
