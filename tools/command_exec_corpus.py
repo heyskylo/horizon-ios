@@ -5258,6 +5258,186 @@ def mob_team_command_names():
     return out
 
 
+def reinforcement_room(legacy=False):
+    ops = setup('/tick freeze', '/gamerule spawn_mobs false', '/gamerule spawn_monsters true',
+                '/gamerule mob_drops false', '/gamerule advance_time false', '/scoreboard objectives add h300 dummy',
+                '/forceload add -64 -64 63 63', '/tp @s 0.5 -63 3.5 0 0')
+    ops += [{'op': 'settle'}]
+    for x in range(-64, 64, 16):
+        for z in range(-64, 64, 16):
+            ops += [cmd(f'/execute if loaded {x} -63 {z}', expect_result=1)]
+    if not legacy:
+        # Reinforcement foot offsets can reachY-23. Solid foot cells exclude
+        # generated caves above the room; the original roof/floor stay unchanged.
+        # Prime each band with air so its stone ACK proves the complete volume.
+        for y in range(-59, -22, 3):
+            top = min(y + 2, -23)
+            ops += setup(f'/fill -50 {y} -50 50 {top} 50 air')
+            ops += [cmd(f'/fill -50 {y} -50 50 {top} 50 stone', expect_result=101 * 101 * (top - y + 1))]
+        for pos, block in [('-40 -23 -40', 'stone'), ('40 -59 40', 'stone'),
+                           ('0 -56 0', 'stone')]:
+            ops += [cmd(f'/execute if block {pos} {block}', expect_result=1)]
+    ops += setup('/fill -50 -63 -50 50 -61 50 air', '/fill -50 -64 -50 50 -64 50 air',
+                 '/fill -50 -60 -50 50 -60 50 air')
+    ops += [cmd('/fill -50 -64 -50 50 -64 50 stone', expect_result=10201),
+            cmd('/fill -50 -60 -50 50 -60 50 stone', expect_result=10201), {'op': 'settle'}]
+    if not legacy:
+        for pos, block in [('0 -63 0', 'air'), ('0 -60 0', 'stone'), ('0 -64 0', 'stone')]:
+            ops += [cmd(f'/execute if block {pos} {block}', expect_result=1)]
+    for x, z in [(0, 0), (-16, -16), (-16, 16), (16, -16), (16, 16)]:
+        ops += [{'op': 'light', 'pos': [x, -63, z], 'expect_light': [0, 0]}]
+    ops += setup('/gamerule spawn_mobs true', '/kill @e[type=zombie]', '/kill @e[type=zombified_piglin]',
+                 '/execute store result score start h300 run time query gametime',
+                 '/data modify storage h300:actor uuid set from entity @s UUID')
+    ops += [cmd('/gamerule spawn_mobs', expect_result=1), cmd('/gamerule spawn_monsters', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[0.5d,-63d,3.5d],Health:20f}]', expect_result=1)]
+    return ops
+
+def command_zombie_reinforcements(once=False, raw=False, legacy=False):
+    """Frozen accepted command hits, with typed random facts and additive raw snapshots."""
+    ops = reinforcement_room(legacy) + setup('/scoreboard objectives add parity dummy')
+    original_rows = []
+    def original(label, command):
+        op = cmd(command)
+        op['label'] = 'h300 original/' + label
+        original_rows.append(label)
+        return [op]
+    def clean(difficulty):
+        # Cleanup must not make a hurt callee call again: peaceful before /kill.
+        return setup('/difficulty peaceful', '/kill @e[type=zombie]', '/kill @e[type=zombified_piglin]',
+                     '/difficulty ' + difficulty)
+    def subject(kind, serial, tag):
+        return setup(f'/summon {kind} 0.5 -63 0.5 {{UUID:[I;300,0,0,{serial}],NoAI:1b,Tags:["{tag}"]}}') + [
+            cmd(f'/execute if entity @e[type={kind},tag={tag},nbt={{UUID:[I;300,0,0,{serial}],NoAI:1b,Health:20f,Pos:[0.5d,-63d,0.5d]}}]', expect_result=1),
+            cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Pos:[0.5d,-63d,3.5d],Health:20f}]', expect_result=1)]
+    def chance(selector, value=1):
+        return [cmd(f'/attribute {selector} minecraft:spawn_reinforcements base set {value}', expect_result=1),
+                cmd(f'/attribute {selector} minecraft:spawn_reinforcements base get', expect_result=value),
+                cmd(f'/attribute {selector} minecraft:spawn_reinforcements get', expect_result=1)]
+    def read(command, success, result_name='#value', objective='parity'):
+        return setup(f'/scoreboard players set {result_name} {objective} -99',
+                     '/scoreboard players set read_ok h300 -99',
+                     f'/execute store result score {result_name} {objective} store success score read_ok h300 run {command}') + [
+                         cmd('/scoreboard players get read_ok h300', expect_result=success)]
+    def clock(expected):
+        return setup('/execute store result score elapsed h300 run time query gametime',
+                     '/scoreboard players operation elapsed h300 -= start h300') + [cmd('/scoreboard players get elapsed h300', expect_result=expected)]
+    def callee(kind, parent_tag, case):
+        target = f'@e[type={kind},tag=!{parent_tag},limit=1]'
+        charge = 'minecraft:reinforcement_callee_charge'
+        out = [cmd(f'/execute if entity @e[type={kind},tag=!{parent_tag}]', expect_result=1)]
+        out += setup(f'/data modify storage h300:callees {case} set from entity {target}')
+        out += read(f'data get entity {target} UUID', 1, 'uuid_length', 'h300')
+        out += [cmd('/scoreboard players get uuid_length h300', expect_result=4),
+                cmd(f'/execute if data entity {target} attributes[{{id:"minecraft:spawn_reinforcements"}}].modifiers[{{id:"{charge}",amount:-0.05000000074505806d,operation:"add_value"}}]', expect_result=1)]
+        out += read(f'data get entity {target} Health 1000', 1, 'health', 'h300')
+        out += [cmd('/execute if score health h300 matches 1..', expect_result=1)]
+        for axis, bounds in enumerate(['-40..40', '-63', '-40..40']):
+            out += read(f'data get entity {target} Pos[{axis}]', 1, 'coordinate', 'h300')
+            out += [cmd(f'/execute if score coordinate h300 matches {bounds}', expect_result=1)]
+        out += [cmd(f'/execute at {target} if block ~ ~-1 ~ stone', expect_result=1)]
+        out += read(f'attribute {target} minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus 1000', 1)
+        out += [cmd('/execute if score #value parity matches 0..50', expect_result=1)]
+        if not legacy:
+            # A random baby may be a chicken jockey. These strict conditional
+            # facts never equate a missing entity with a successful query. The raw
+            # diagnostic retains vehicle presence and full snapshots separately.
+            out += setup('/scoreboard players set vehicle_present h300 0',
+                         f'/execute as {target} on vehicle run scoreboard players set vehicle_present h300 1',
+                         f'/data remove storage h300:vehicles {case}',
+                         f'/execute as {target} on vehicle run data modify storage h300:vehicles {case} set from entity @s',
+                         f'/data modify storage h300:rider uuid set from entity {target} UUID')
+            facts = [
+                (f'execute as {target} on vehicle if entity @s[type=chicken,nbt={{Health:4f}}]', '1', 1),
+                (f'execute as {target} on vehicle run data get entity @s UUID', '4', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[0]', '-40..40', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[1]', '-63', 1),
+                (f'execute as {target} on vehicle run data get entity @s Pos[2]', '-40..40', 1),
+                (f'execute as {target} on vehicle at @s if block ~ ~-1 ~ stone', '1', 1),
+                (f'execute as {target} on vehicle on passengers if entity @s[type={kind},tag=!{parent_tag}]', '1', 1),
+                (f'execute as {target} on vehicle on passengers run data modify storage h300:rider uuid set from entity @s UUID', '0', 0),
+            ]
+            for command, bounds, success in facts:
+                out += setup('/scoreboard players set vehicle_ok h300 1',
+                             '/execute if score vehicle_present h300 matches 1 run scoreboard players set vehicle_ok h300 0',
+                             '/scoreboard players set vehicle_value h300 -99',
+                             '/scoreboard players set vehicle_read h300 -99',
+                             f'/execute store result score vehicle_value h300 store success score vehicle_read h300 run {command}',
+                             f'/execute if score vehicle_present h300 matches 1 if score vehicle_read h300 matches {success} if score vehicle_value h300 matches {bounds} run scoreboard players set vehicle_ok h300 1')
+                out += [cmd('/scoreboard players get vehicle_ok h300', expect_result=1)]
+        if raw:
+            if not legacy:
+                out += [cmd(f'/data get storage h300:vehicles {case}')]
+            op = cmd(f'/data get storage h300:callees {case}')
+            op['label'] = 'h300 raw snapshot/' + case
+            out.append(op)
+        return out
+
+    if once:
+        ops += clean('hard') + subject('zombie', 30, 'origin') + chance('@e[tag=origin,limit=1]')
+        ops += [cmd('/difficulty', expect_result=3),
+                cmd('/damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s', expect_result=1)]
+        ops += callee('zombie', 'origin', 'once') + clock(0)
+        # Guarantee eligibility if an erroneously retained event runs later: .95 is not sufficient.
+        ops += chance('@e[tag=origin,limit=1]', 2)
+        marked = '@e[type=zombie,nbt={attributes:[{id:"minecraft:spawn_reinforcements",modifiers:[{id:"minecraft:reinforcement_callee_charge"}]}]}]'
+        ops += [cmd('/execute if entity ' + marked, expect_result=1)]
+        ops += setup('/data modify storage h300:once uuid set from entity @e[type=zombie,tag=!origin,limit=1] UUID', '/tick unfreeze')
+        ops += [{'op': 'tick', 'n': 1}]
+        ops += setup('/tick freeze')
+        ops += [cmd('/execute if entity ' + marked, expect_result=1),
+                cmd('/execute if data entity @e[tag=origin,limit=1] attributes[{id:"minecraft:spawn_reinforcements"}].modifiers[{id:"minecraft:reinforcement_caller_charge",amount:-0.05d}]', expect_result=1)]
+        ops += setup('/execute store success score changed h300 run data modify storage h300:once uuid set from entity ' + marked[:-1] + ',limit=1] UUID')
+        ops += [cmd('/execute if entity ' + marked, expect_result=1), cmd('/scoreboard players get changed h300', expect_result=0)] + clock(1)
+    else:
+        for difficulty, serial in [('easy', 10), ('hard', 11)]:
+            ops += clean(difficulty) + subject('zombie', serial, 'origin')
+            ops += [cmd('/difficulty', expect_result=1 if difficulty == 'easy' else 3)]
+            # These are the same six original reads, with their failure flags retained separately.
+            ops += read('attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements base get 1000', 1)
+            ops += original(difficulty + '/summoned base range', '/execute if score #value parity matches 0..100')
+            ops += read('attribute @e[tag=origin,limit=1] minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus 1000', 0)
+            ops += original(difficulty + '/summoned knockback range', '/execute if score #value parity matches 0..50')
+            ops += setup('/execute store success score #value parity run attribute @e[tag=origin,limit=1] minecraft:knockback_resistance modifier value get minecraft:random_spawn_bonus')
+            ops += original(difficulty + '/summoned knockback exists', '/execute if score #value parity matches 1')
+            ops += chance('@e[tag=origin,limit=1]')
+            ops += original(difficulty + '/first hurt', '/damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s')
+            ops += original(difficulty + '/birth', '/execute if entity @e[type=zombie,tag=!origin]')
+            ops += original(difficulty + '/birth floor', '/execute if entity @e[type=zombie,tag=!origin,x=-60,y=-63.5,z=-60,dx=120,dy=1,dz=120]')
+            ops += original(difficulty + '/caller charge', '/attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_caller_charge')
+            ops += original(difficulty + '/callee charge', '/execute as @e[type=zombie,tag=!origin,limit=1] run attribute @s minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_callee_charge')
+            ops += read('attribute @e[type=zombie,tag=!origin,limit=1] minecraft:spawn_reinforcements base get 1000', int(difficulty == 'hard'))
+            ops += original(difficulty + '/callee base range', '/execute if score #value parity matches 0..100')
+            ops += original(difficulty + '/callee target', '/execute as @e[type=zombie,tag=!origin,limit=1] on target run data get entity @s Pos')
+            if difficulty == 'hard':
+                ops += callee('zombie', 'origin', 'hard')
+            ops += setup('/data modify storage h300:health value set from entity @e[tag=origin,limit=1] Health',
+                         '/scoreboard players set rejected_result h300 -99', '/scoreboard players set rejected_success h300 -99')
+            ops += [cmd('/execute store result score rejected_result h300 store success score rejected_success h300 run damage @e[tag=origin,limit=1] 1 minecraft:player_attack by @s'),
+                    cmd('/scoreboard players get rejected_result h300', expect_result=0), cmd('/scoreboard players get rejected_success h300', expect_result=0)]
+            ops += setup('/execute store success score changed h300 run data modify storage h300:health value set from entity @e[tag=origin,limit=1] Health')
+            ops += [cmd('/scoreboard players get changed h300', expect_result=0)]
+            ops += original(difficulty + '/charge after rejected hit', '/attribute @e[tag=origin,limit=1] minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_caller_charge')
+            ops += original(difficulty + '/birth after rejected hit', '/execute if entity @e[type=zombie,tag=!origin]')
+        ops += clean('hard') + subject('zombified_piglin', 12, 'piglin')
+        ops += original('piglin/default chance', '/attribute @e[tag=piglin,limit=1] minecraft:spawn_reinforcements base get')
+        ops += chance('@e[tag=piglin,limit=1]')
+        ops += original('piglin/hurt', '/damage @e[tag=piglin,limit=1] 1 minecraft:player_attack by @s')
+        ops += original('piglin/birth', '/execute if entity @e[type=zombified_piglin,tag=!piglin]')
+        ops += callee('zombified_piglin', 'piglin', 'piglin')
+        ops += clean('hard') + setup('/summon zombified_piglin 0.5 -63 0.5 {UUID:[I;300,0,0,13],NoAI:1b,Tags:["piglin"],CanBreakDoors:1b}')
+        ops += [cmd('/execute if entity @e[type=zombified_piglin,tag=piglin,nbt={UUID:[I;300,0,0,13]}]', expect_result=1)]
+        ops += original('piglin/saved door flag', '/data get entity @e[tag=piglin,limit=1] CanBreakDoors')
+        ops += clean('hard') + subject('zombie', 14, 'origin') + chance('@e[tag=origin,limit=1]')
+        ops += original('no attacker/hurt', '/damage @e[tag=origin,limit=1] 1 minecraft:generic')
+        ops += original('no attacker/no birth', '/execute if entity @e[type=zombie,tag=!origin]')
+        assert len(original_rows) == 30
+        ops += clock(0)
+    ops += setup('/execute store success score changed h300 run data modify storage h300:actor uuid set from entity @s UUID')
+    ops += [cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,3.5d]}]', expect_result=1), cmd('/scoreboard players get changed h300', expect_result=0)]
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -5275,6 +5455,8 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('command zombie reinforcements', command_zombie_reinforcements()),
+        ('command reinforcement once', command_zombie_reinforcements(True)),
         ('advancement world loot rewards', advancement_world_loot_rewards()),
         ('advancement empty loot reference', advancement_empty_loot_reference()),
         ('crafting recipe priority', crafting_recipe_priority()),
