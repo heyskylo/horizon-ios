@@ -97,6 +97,8 @@ def main():
     parser.add_argument('--mob-home-fixture', action='store_true')
     parser.add_argument('--mob-home-holder-removal-diagnostic', action='store_true')
     parser.add_argument('--mob-home-late-detach-control', action='store_true')
+    parser.add_argument('--item-contents-fixture', action='store_true')
+    parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -168,6 +170,12 @@ def main():
         except ImportError:
             from mob_home_corpus import mob_home
         groups = [('setup', corpus_module.group_setup()), ('mob home NBT', mob_home(args.mob_home_holder_removal_diagnostic, args.mob_home_late_detach_control))]
+    if args.item_contents_fixture:
+        try:
+            from .item_contents_corpus import item_contents
+        except ImportError:
+            from item_contents_corpus import item_contents
+        groups = [('setup', corpus_module.group_setup()), ('item component contents', item_contents(args.item_contents_provider_empty_control))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
