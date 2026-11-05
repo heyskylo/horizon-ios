@@ -6,6 +6,8 @@
 use super::{Game, Screen};
 use horizon_client::{hud::HudBatch, text::Text};
 use std::time::{Duration, Instant};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// Emotes on the wheel.
 pub(super) const SLOTS: usize = 8;
@@ -74,6 +76,30 @@ impl Game<'_> {
             .is_some_and(|at| at.elapsed() >= HOLD);
         if held || self.emote_wheel.hovered.is_some() {
             self.close_emote_wheel(self.emote_wheel.hovered);
+        }
+    }
+
+    /// A window event while the wheel is open: the emote key let go, or a left click. True when
+    /// the wheel took it.
+    pub(super) fn emote_wheel_event(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Released
+                    && matches!(event.physical_key, PhysicalKey::Code(key)
+                        if self.settings.keys.translate(key) == Some(Ok(KeyCode::KeyB))) =>
+            {
+                self.emote_wheel_released();
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.emote_wheel_click();
+                true
+            }
+            _ => false,
         }
     }
 
