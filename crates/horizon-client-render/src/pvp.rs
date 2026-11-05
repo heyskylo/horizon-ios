@@ -865,6 +865,29 @@ impl Pvp {
     }
 }
 
+/// The official mods the PvP preset turns on when they are installed: the FPS counter and the
+/// keystrokes with clicks per second.
+pub const PRESET_MODS: [&str; 2] = ["fps_overlay", "keystrokes"];
+/// Fire overlay's place under the PvP preset (percent of its height down).
+const PRESET_FIRE_LOWER: u8 = 40;
+/// The PvP preset: the custom crosshair, the armour and effects widgets, vanilla's toggle sprint
+/// and toggle sneak, lower fire, and the FPS and keystrokes mods when installed. It only turns
+/// things on; each keeps its own settings, so it can be undone option by option.
+pub fn apply_preset(s: &mut crate::settings::Settings) {
+    let p = &mut s.extras.pvp;
+    p.crosshair.custom = true;
+    p.hud.armour = true;
+    p.hud.effects = true;
+    if p.tweaks.fire_lower == 0 {
+        p.tweaks.fire_lower = PRESET_FIRE_LOWER;
+    }
+    s.toggle_sprint = true;
+    s.toggle_crouch = true;
+    for id in PRESET_MODS {
+        s.mods.turn_on(id);
+    }
+}
+
 /// The options of the PvP & HUD page: each one's id (its language keys are `horizon.pvp.<id>`
 /// and `horizon.pvp.<id>.tooltip`), English caption and description (en_us.json has the same
 /// text; a test keeps them equal).
@@ -1365,6 +1388,37 @@ mod tests {
         assert!(p.parse_line("crosshairColour", "plaid") && p.crosshair.colour == Colour::White);
         assert!(!p.parse_line("fullbright", "true"));
         assert!(p.parse_line("totemSize", "5") && p.tweaks.totem_size == TOTEM_SIZES.0);
+    }
+
+    #[test]
+    fn the_pvp_preset_turns_its_options_on_and_keeps_their_settings() {
+        use crate::mod_list::{Installed, NativePage};
+        let mut s = crate::settings::Settings::default();
+        s.extras.pvp.crosshair.colour = Colour::Green;
+        s.extras.pvp.tweaks.fire_lower = 60;
+        let installed = |id: &str| Installed {
+            id: id.into(),
+            title: id.into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        };
+        s.mods.installed = vec![installed("fps_overlay"), installed("zoom")];
+        s.mods.disabled.insert("fps_overlay".into());
+        apply_preset(&mut s);
+        let p = &s.extras.pvp;
+        assert!(p.crosshair.custom && p.hud.armour && p.hud.effects);
+        assert!(s.toggle_sprint && s.toggle_crouch);
+        // What the player had chosen stays: the crosshair's colour, a lower fire already set.
+        assert_eq!(p.crosshair.colour, Colour::Green);
+        assert_eq!(p.tweaks.fire_lower, 60);
+        // The FPS counter the player had turned off is on; keystrokes isn't installed: nothing.
+        assert!(!s.mods.disabled.contains("fps_overlay"));
+        assert!(s.mods.enabled.contains("fps_overlay") && !s.mods.enabled.contains("keystrokes"));
+        let mut fresh = crate::settings::Settings::default();
+        apply_preset(&mut fresh);
+        assert_eq!(fresh.extras.pvp.tweaks.fire_lower, PRESET_FIRE_LOWER);
     }
 
     #[test]
