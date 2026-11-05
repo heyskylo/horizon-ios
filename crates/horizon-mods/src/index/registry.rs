@@ -213,9 +213,7 @@ impl Entry {
             errors.push(format!("{id}: {e}"));
         }
         if rules::REQUIRED && self.icon.is_none() {
-            errors.push(format!(
-                "{id}: has no icon (icons/{id}.png, a square PNG)"
-            ));
+            errors.push(format!("{id}: has no icon (icons/{id}.png, a square PNG)"));
         }
         if self.screenshots.len() > rules::MAX_SCREENSHOTS {
             errors.push(format!(
@@ -415,24 +413,37 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
 /// An icon (`folder` = `icons/`) or a screenshot (`screenshots/<id>/`) as the index lists it: an
 /// `https://` address as it is, or a file in the registry repository checked and served from the
 /// registry's site.
-fn image(src: &Sources, id: &str, path: &str, folder: &str, errors: &mut Vec<String>) -> Option<String> {
+fn image(
+    src: &Sources,
+    id: &str,
+    path: &str,
+    folder: &str,
+    errors: &mut Vec<String>,
+) -> Option<String> {
     if path.starts_with("https://") {
         return Some(path.to_owned());
     }
     let icon = folder == "icons/";
     let name = path.strip_prefix(folder).filter(|n| super::plain_name(n));
     let Some(name) = name else {
-        errors.push(format!("{id}: {path:?} is neither {folder}<name> nor https://"));
+        errors.push(format!(
+            "{id}: {path:?} is neither {folder}<name> nor https://"
+        ));
         return None;
     };
-    let max = if icon { MAX_ICON } else { rules::MAX_SCREENSHOT };
+    let max = if icon {
+        MAX_ICON
+    } else {
+        rules::MAX_SCREENSHOT
+    };
     let checked = std::fs::metadata(src.registry.join(path))
         .map_err(|e| format!("{path}: {e}"))
         .and_then(|m| {
             if m.len() > max {
                 return Err(format!("{path} is over {} KiB", max >> 10));
             }
-            let bytes = std::fs::read(src.registry.join(path)).map_err(|e| format!("{path}: {e}"))?;
+            let bytes =
+                std::fs::read(src.registry.join(path)).map_err(|e| format!("{path}: {e}"))?;
             if icon {
                 rules::check_icon(&bytes).map_err(|e| format!("{path}: {e}"))
             } else {

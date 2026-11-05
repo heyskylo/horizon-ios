@@ -106,7 +106,14 @@ const SHADERS: &[&str] = &[
 /// Words a tag may not hold: no listing is about gambling (Mojang's Usage
 /// Guidelines name it for every use).
 const REFUSED_TAG_WORDS: &[&str] = &[
-    "casino", "gambl", "slot-machine", "lottery", "betting", "jackpot", "roulette", "poker",
+    "casino",
+    "gambl",
+    "slot-machine",
+    "lottery",
+    "betting",
+    "jackpot",
+    "roulette",
+    "poker",
 ];
 
 /// The categories a project of `kind` picks from: Modrinth's lists, without
@@ -124,7 +131,10 @@ pub fn categories(kind: &Kind) -> &'static [&'static str] {
 /// `[a-z0-9][a-z0-9-]*`, at most [`MAX_TAG`] long.
 fn plain_tag(tag: &str) -> bool {
     tag.len() <= MAX_TAG
-        && tag.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && tag
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         && tag
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -132,7 +142,12 @@ fn plain_tag(tag: &str) -> bool {
 
 /// Every problem with a page's description, categories and tags, each a
 /// sentence a submitter can act on.
-pub fn check(kind: &Kind, description: &str, categories: &[String], tags: &[String]) -> Vec<String> {
+pub fn check(
+    kind: &Kind,
+    description: &str,
+    categories: &[String],
+    tags: &[String],
+) -> Vec<String> {
     let mut errors = Vec::new();
     let length = description.trim().chars().count();
     if length > MAX_DESCRIPTION {
@@ -174,7 +189,9 @@ pub fn check(kind: &Kind, description: &str, categories: &[String], tags: &[Stri
                 "tag {t:?}: lowercase letters, digits and '-', at most {MAX_TAG} characters"
             ));
         } else if REFUSED_TAG_WORDS.iter().any(|w| t.contains(w)) {
-            errors.push(format!("tag {t:?}: the registry lists nothing about gambling"));
+            errors.push(format!(
+                "tag {t:?}: the registry lists nothing about gambling"
+            ));
         } else if tags[..i].contains(t) {
             errors.push(format!("tag {t:?} is listed twice"));
         }
@@ -295,7 +312,12 @@ mod tests {
         assert!(wrong[0].contains("not a category of a mod"), "{wrong:?}");
         let twice = check(&Kind::Shader, "", &strings(&["pbr", "pbr"]), &[]);
         assert_eq!(twice, ["category \"pbr\" is listed twice"]);
-        let many = check(&Kind::Mod, "", &strings(&["magic", "mobs", "food", "storage"]), &[]);
+        let many = check(
+            &Kind::Mod,
+            "",
+            &strings(&["magic", "mobs", "food", "storage"]),
+            &[],
+        );
         assert_eq!(many, ["4 categories: pick at most 3"]);
         assert!(categories(&Kind::Other("world".into())).is_empty());
     }
@@ -305,7 +327,11 @@ mod tests {
         let ok = check(&Kind::Mod, "", &[], &strings(&["bosses", "1-21"]));
         assert!(ok.is_empty(), "{ok:?}");
         for bad in ["Bosses", "two words", "-x", "", &"a".repeat(25)] {
-            assert_eq!(check(&Kind::Mod, "", &[], &[bad.to_owned()]).len(), 1, "{bad:?}");
+            assert_eq!(
+                check(&Kind::Mod, "", &[], &[bad.to_owned()]).len(),
+                1,
+                "{bad:?}"
+            );
         }
         let casino = check(&Kind::Mod, "", &[], &strings(&["casino-games"]));
         assert!(casino[0].contains("gambling"), "{casino:?}");
@@ -342,7 +368,10 @@ mod tests {
     #[test]
     fn image_headers_give_their_size() {
         assert_eq!(image_size(&png(256, 128)), Some((Image::Png, 256, 128)));
-        assert_eq!(image_size(&jpeg(1920, 1080)), Some((Image::Jpeg, 1920, 1080)));
+        assert_eq!(
+            image_size(&jpeg(1920, 1080)),
+            Some((Image::Jpeg, 1920, 1080))
+        );
         assert_eq!(image_size(b"GIF89a"), None);
         assert_eq!(image_size(&[0xff, 0xd8, 0xff]), None);
     }
@@ -359,8 +388,16 @@ mod tests {
     fn screenshots_are_bounded() {
         assert!(check_screenshot("1.jpg", &jpeg(1920, 1080)).is_ok());
         assert!(check_screenshot("1.png", &png(1280, 720)).is_ok());
-        assert!(check_screenshot("1.png", &jpeg(1920, 1080)).unwrap_err().contains(".jpg"));
-        assert!(check_screenshot("1.png", &png(100, 100)).unwrap_err().contains("pixels"));
+        assert!(
+            check_screenshot("1.png", &jpeg(1920, 1080))
+                .unwrap_err()
+                .contains(".jpg")
+        );
+        assert!(
+            check_screenshot("1.png", &png(100, 100))
+                .unwrap_err()
+                .contains("pixels")
+        );
         assert!(check_screenshot("1.png", &png(7680, 4320)).is_err());
         let mut big = png(1920, 1080);
         big.resize(MAX_SCREENSHOT as usize + 1, 0);

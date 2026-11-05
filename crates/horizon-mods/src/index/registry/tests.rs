@@ -381,7 +381,10 @@ fn page_fields_and_screenshots_reach_the_index() {
     let has = |part: &str| errors.iter().any(|e| e.contains(part));
     assert!(has("\"bloom\" is not a category of a mod"), "{errors:?}");
     assert!(has("1.png: 100×100 pixels"), "{errors:?}");
-    assert!(has("\"screenshots/other/2.png\" is neither screenshots/coords_hud/"), "{errors:?}");
+    assert!(
+        has("\"screenshots/other/2.png\" is neither screenshots/coords_hud/"),
+        "{errors:?}"
+    );
     assert!(has("the icon is 128×64"), "{errors:?}");
     assert_eq!(errors.len(), 4, "{errors:?}");
 }

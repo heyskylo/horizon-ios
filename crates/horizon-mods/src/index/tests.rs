@@ -213,14 +213,22 @@ fn data_packs_and_shader_folder_packs_are_read_by_their_content() {
     assert!(e.contains("data/"), "{e}");
     assert_eq!(zip_kind(&looks), Kind::ResourcePack);
     let no_meta = pack(&["data/x/function/a.mcfunction"]);
-    assert!(inspect(&Kind::DataPack, &no_meta).unwrap_err().contains("missing"));
+    assert!(
+        inspect(&Kind::DataPack, &no_meta)
+            .unwrap_err()
+            .contains("missing")
+    );
     let shaders = pack(&["shaders/composite.fsh", "shaders/lang/en_us.lang"]);
     assert_eq!(inspect(&Kind::ShaderPack, &shaders).unwrap().api, "");
     assert_eq!(zip_kind(&shaders), Kind::ShaderPack);
     let e = inspect(&Kind::ShaderPack, &looks).unwrap_err();
     assert!(e.contains("shaders/"), "{e}");
     let sneaky = pack(&["shaders/a.fsh", "../../x"]);
-    assert!(inspect(&Kind::ShaderPack, &sneaky).unwrap_err().contains("plain path"));
+    assert!(
+        inspect(&Kind::ShaderPack, &sneaky)
+            .unwrap_err()
+            .contains("plain path")
+    );
     // Both are zips, and a reader from before them keeps them as unknown kinds.
     for kind in [Kind::DataPack, Kind::ShaderPack] {
         assert_eq!(kind.extension(), Some("zip"));
