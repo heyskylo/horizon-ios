@@ -43,6 +43,12 @@ Java reference is byte-identical to the baseline reference. Script SHA-256:
 reference SHA-256:
 `a0e157abb455dfa5e116404d746ab9647ae948890f56c502af46093269413ca9`.
 
+After merging main `624c4f6265c02296fbe8a80f029dd0d987fb94c0`, the same
+untouched-production/fixed pair again matches **370/373 → 373/373**, with the
+same byte-identical script and fresh reference. The conflict resolution retains
+map/frame and raid observation kinds; the existing frame-map fixture also
+passes **192/192 complete raw records**. Original c04-based evidence is retained.
+
 The retained-bed raid remains ongoing. Both villagers retain their stale home
 memory after removal. The bounded fix validates only known loaded bed claims
 through the existing HOME POI lookup; unavailable claims and the existing job and
