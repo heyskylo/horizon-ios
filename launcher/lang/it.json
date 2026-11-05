@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Per i giocatori che c'erano fin dall'inizio. Gratis da riscattare; una volta riscattato, è tuo per sempre.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Completa il pagamento gratuito nel browser. Il set arriva qui un attimo dopo.",
   "{n} items": "{n} oggetti",
-  "Nothing is on sale right now.": "Al momento non c'è niente in vendita."
+  "Nothing is on sale right now.": "Al momento non c'è niente in vendita.",
+  "Your basket": "Il tuo carrello",
+  "Your basket is empty.": "Il tuo carrello è vuoto.",
+  "Add to basket": "Aggiungi al carrello",
+  "Total": "Totale",
+  "This is a gift": "È un regalo",
+  "Your friend's Minecraft name": "Il nome Minecraft del tuo amico",
+  "Find": "Cerca",
+  "For {name}": "Per {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Chiedi a chi paga prima di comprare. Rimborsi entro 14 giorni per qualsiasi motivo.",
+  "Pay {price} in your browser": "Paga {price} nel browser",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Il pagamento di Paddle si apre nel tuo browser. Nel launcher non viene addebitato nulla.",
+  "US sales tax is added where a state charges it.": "L'imposta sulle vendite USA si aggiunge dove uno stato la applica.",
+  "VAT included where it applies.": "IVA inclusa dove si applica.",
+  "In a set in your basket": "In un set nel tuo carrello",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Completa il pagamento nel browser. I tuoi oggetti arrivano nel Guardaroba poco dopo."
 }

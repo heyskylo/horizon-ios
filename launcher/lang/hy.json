@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Առաջինն այստեղ եղած խաղացողների համար։ Անվճար ստացվում է. ստանալուց հետո այն ձերն է ընդմիշտ։",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Ավարտեք անվճար վճարումը ձեր դիտարկիչում։ Հավաքածուն մի պահ անց կհայտնվի այստեղ։",
   "{n} items": "{n} իր",
-  "Nothing is on sale right now.": "Հիմա ոչինչ վաճառքում չէ։"
+  "Nothing is on sale right now.": "Հիմա ոչինչ վաճառքում չէ։",
+  "Your basket": "Ձեր զամբյուղը",
+  "Your basket is empty.": "Ձեր զամբյուղը դատարկ է։",
+  "Add to basket": "Ավելացնել զամբյուղ",
+  "Total": "Ընդամենը",
+  "This is a gift": "Սա նվեր է",
+  "Your friend's Minecraft name": "Ձեր ընկերոջ Minecraft անունը",
+  "Find": "Գտնել",
+  "For {name}": "{name}-ի համար",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Գնելուց առաջ հարցրեք նրան, ով վճարում է։ Գումարի վերադարձ 14 օրվա ընթացքում՝ ցանկացած պատճառով։",
+  "Pay {price} in your browser": "Վճարել {price} դիտարկիչում",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle-ի վճարումը բացվում է ձեր դիտարկիչում։ Գործարկիչում ոչինչ չի գանձվում։",
+  "US sales tax is added where a state charges it.": "ԱՄՆ վաճառքի հարկը ավելանում է այնտեղ, որտեղ նահանգը գանձում է այն։",
+  "VAT included where it applies.": "ԱԱՀ-ն ներառված է, որտեղ կիրառվում է։",
+  "In a set in your basket": "Ձեր զամբյուղի հավաքածուում",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ավարտեք վճարումը դիտարկիչում։ Իրերը Զգեստապահարան կհասնեն մի պահ անց։"
 }

@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Бастаан кэлбит оонньооччулартан. Босхо ылыллар; биирдэ ылбыккар, эйиэхэ хаалар.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Босхо төлөбүрү браузергар түмүктээ. Хомуурунньук манна быдан кэлин көстөр.",
   "{n} items": "{n} мал",
-  "Nothing is on sale right now.": "Билигин туох да атыыламмат."
+  "Nothing is on sale right now.": "Билигин туох да атыыламмат.",
+  "Your basket": "Эн корзинаҥ",
+  "Your basket is empty.": "Корзинаҥ кураанах.",
+  "Add to basket": "Корзинаҕа эбэргэ",
+  "Total": "Барыта",
+  "This is a gift": "Бу бэлэх",
+  "Your friend's Minecraft name": "Доҕоруҥ Minecraft аата",
+  "Find": "Булуу",
+  "For {name}": "{name} иһин",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Атыылаһыаҥ иннинэ ким төлүөҕүн ыйыт. Ханнык баҕарар төрүөтүнэн 14 хонук иһигэр харчы төннөрүллэр.",
+  "Pay {price} in your browser": "{price} браузерга төлөө",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle төлөбүрэ браузергар аһыллар. Лаунчерга туох да ылыллыбат.",
+  "US sales tax is added where a state charges it.": "АХШ атыы нолуога штат ылар сиригэр эбиллэр.",
+  "VAT included where it applies.": "НДС киирэр, туттуллар сиригэр.",
+  "In a set in your basket": "Корзинаҕар баар комплекка",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлөбүрү браузерга бүтэр. Маллара Гардеробка сотору кэлиэхтэрэ."
 }

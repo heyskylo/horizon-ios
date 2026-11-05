@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "สำหรับผู้เล่นที่อยู่ที่นี่มาก่อน รับได้ฟรี เมื่อรับแล้วจะเป็นของคุณตลอดไป",
   "Finish the free checkout in your browser. The set lands here a moment later.": "ชำระเงินแบบฟรีให้เสร็จในเบราว์เซอร์ของคุณ ชุดจะมาปรากฏที่นี่อีกสักครู่",
   "{n} items": "{n} ชิ้น",
-  "Nothing is on sale right now.": "ตอนนี้ไม่มีสินค้าวางขาย"
+  "Nothing is on sale right now.": "ตอนนี้ไม่มีสินค้าวางขาย",
+  "Your basket": "ตะกร้าของคุณ",
+  "Your basket is empty.": "ตะกร้าของคุณว่างอยู่",
+  "Add to basket": "ใส่ตะกร้า",
+  "Total": "รวม",
+  "This is a gift": "นี่คือของขวัญ",
+  "Your friend's Minecraft name": "ชื่อ Minecraft ของเพื่อนคุณ",
+  "Find": "ค้นหา",
+  "For {name}": "สำหรับ {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "ถามคนที่จ่ายเงินก่อนซื้อ คืนเงินได้ภายใน 14 วันไม่ว่าด้วยเหตุผลใด",
+  "Pay {price} in your browser": "จ่าย {price} ในเบราว์เซอร์",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "การชำระเงินของ Paddle เปิดในเบราว์เซอร์ของคุณ ไม่มีการเรียกเก็บเงินในตัวเปิดเกม",
+  "US sales tax is added where a state charges it.": "เพิ่มภาษีการขายของสหรัฐฯ ในรัฐที่เรียกเก็บ",
+  "VAT included where it applies.": "รวม VAT แล้วในที่ที่ใช้",
+  "In a set in your basket": "อยู่ในชุดในตะกร้าของคุณ",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ชำระเงินให้เสร็จในเบราว์เซอร์ ไอเทมจะเข้าตู้เสื้อผ้าในอีกสักครู่"
 }

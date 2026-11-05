@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Mängijatele, kes olid siin esimesed. Tasuta välja võtta; kui olete selle välja võtnud, jääb see teile igaveseks.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Lõpetage tasuta makse oma brauseris. Komplekt ilmub siia hetke pärast.",
   "{n} items": "{n} eset",
-  "Nothing is on sale right now.": "Praegu pole midagi müügil."
+  "Nothing is on sale right now.": "Praegu pole midagi müügil.",
+  "Your basket": "Sinu ostukorv",
+  "Your basket is empty.": "Sinu ostukorv on tühi.",
+  "Add to basket": "Lisa ostukorvi",
+  "Total": "Kokku",
+  "This is a gift": "See on kingitus",
+  "Your friend's Minecraft name": "Sinu sõbra Minecrafti nimi",
+  "Find": "Otsi",
+  "For {name}": "Saajale {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Enne ostmist küsi maksjalt. Raha tagastatakse 14 päeva jooksul mis tahes põhjusel.",
+  "Pay {price} in your browser": "Maksa {price} brauseris",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle'i makse avaneb brauseris. Käivitis ei võeta midagi.",
+  "US sales tax is added where a state charges it.": "USA müügimaks lisandub seal, kus osariik seda nõuab.",
+  "VAT included where it applies.": "Käibemaks sisaldub seal, kus see kehtib.",
+  "In a set in your basket": "Komplektis sinu ostukorvis",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Lõpeta makse brauseris. Esemed jõuavad Garderoobi hetke pärast."
 }

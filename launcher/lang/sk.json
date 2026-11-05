@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pre hráčov, ktorí tu boli prví. Zadarmo; keď ho získaš, ostane tvoj.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Dokonči bezplatnú platbu v prehliadači. Sada sa tu o chvíľu objaví.",
   "{n} items": "{n} predmetov",
-  "Nothing is on sale right now.": "Teraz sa nič nepredáva."
+  "Nothing is on sale right now.": "Teraz sa nič nepredáva.",
+  "Your basket": "Váš košík",
+  "Your basket is empty.": "Košík je prázdny.",
+  "Add to basket": "Pridať do košíka",
+  "Total": "Spolu",
+  "This is a gift": "Je to darček",
+  "Your friend's Minecraft name": "Minecraft meno vášho priateľa",
+  "Find": "Nájsť",
+  "For {name}": "Pre {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Pred nákupom sa opýtajte toho, kto platí. Vrátenie peňazí do 14 dní z akéhokoľvek dôvodu.",
+  "Pay {price} in your browser": "Zaplatiť {price} v prehliadači",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Platba Paddle sa otvorí v prehliadači. V launcheri sa nič neúčtuje.",
+  "US sales tax is added where a state charges it.": "Americká daň z predaja sa pripočíta tam, kde ju štát vyberá.",
+  "VAT included where it applies.": "DPH zahrnutá tam, kde sa uplatňuje.",
+  "In a set in your basket": "V sade vo vašom košíku",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončite platbu v prehliadači. Predmety prídu do Šatníka o chvíľu."
 }

@@ -1189,5 +1189,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Til spillerne, der var her først. Gratis at hente; når det er hentet, er det dit.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Gennemfør det gratis checkout i din browser. Sættet lander her et øjeblik senere.",
   "{n} items": "{n} ting",
-  "Nothing is on sale right now.": "Intet er til salg lige nu."
+  "Nothing is on sale right now.": "Intet er til salg lige nu.",
+  "Your basket": "Din kurv",
+  "Your basket is empty.": "Din kurv er tom.",
+  "Add to basket": "Læg i kurven",
+  "Total": "I alt",
+  "This is a gift": "Det er en gave",
+  "Your friend's Minecraft name": "Din vens Minecraft-navn",
+  "Find": "Find",
+  "For {name}": "Til {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Spørg den, der betaler, før du køber. Refusion inden for 14 dage uanset årsag.",
+  "Pay {price} in your browser": "Betal {price} i din browser",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddles betaling åbner i din browser. Intet trækkes i launcheren.",
+  "US sales tax is added where a state charges it.": "Amerikansk salgsmoms lægges til, hvor en stat opkræver den.",
+  "VAT included where it applies.": "Moms inkluderet, hvor den gælder.",
+  "In a set in your basket": "I et sæt i din kurv",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gør betalingen færdig i din browser. Dine ting kommer i Garderoben et øjeblik efter."
 }
