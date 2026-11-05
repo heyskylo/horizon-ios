@@ -1,6 +1,9 @@
 //! Region codecs, including lz4-java's block framing (not the LZ4 frame format).
 use flate2::{Compression as Level, Decompress, FlushDecompress, Status};
-use std::io::{self, Read, Write};
+use std::{
+    io::{self, Read, Write},
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -9,6 +12,38 @@ pub enum Compression {
     Zlib = 2,
     None = 3,
     Lz4 = 4,
+}
+
+/// The region file versions `RegionFileVersion.register` puts in its table, in
+/// registration order: the names server.properties' `region-file-compression`
+/// takes, and the ones an invalid value is told to use.
+pub const REGION_FILE_NAMES: [&str; 4] = ["gzip", "deflate", "none", "lz4"];
+
+/// `RegionFileVersion.selected`, which starts at `DEFAULT` (VERSION_DEFLATE).
+static SELECTED: AtomicU8 = AtomicU8::new(Compression::Zlib as u8);
+
+impl Compression {
+    /// `RegionFileVersion.configure`: what `region-file-compression` names
+    /// becomes the version every region file written from here on uses,
+    /// whichever world it belongs to. An unknown name leaves the selection as
+    /// it was, as vanilla logs the value and keeps going. False for a name
+    /// that is not one of [`REGION_FILE_NAMES`].
+    pub fn configure(name: &str) -> bool {
+        let Some(compression) = REGION_FILE_NAMES
+            .iter()
+            .position(|known| *known == name)
+            .map(|i| [Self::Gzip, Self::Zlib, Self::None, Self::Lz4][i])
+        else {
+            return false;
+        };
+        SELECTED.store(compression as u8, Ordering::Relaxed);
+        true
+    }
+    /// `RegionFileVersion.getSelected`: the version a chunk or a poi region
+    /// is written with.
+    pub fn selected() -> Self {
+        Self::try_from(SELECTED.load(Ordering::Relaxed)).unwrap_or(Self::Zlib)
+    }
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {

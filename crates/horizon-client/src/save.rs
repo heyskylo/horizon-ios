@@ -2135,10 +2135,14 @@ fn compress_records(
     records: &[((i32, i32), &Record)],
     timestamp: u32,
 ) -> Vec<std::io::Result<Option<ChunkRecord>>> {
+    // `RegionFile.getVersion`: the version `region-file-compression` selected
+    // (`RegionFileVersion.getSelected`), zlib unless a dedicated server said
+    // otherwise.
+    let compression = Compression::selected();
     let compress = |record: &Record| {
         record
             .tag()
-            .map(|tag| ChunkRecord::from_nbt(&tag, Compression::Zlib, timestamp, Limits::saved()))
+            .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
             .transpose()
     };
     let helpers = horizon_threads::worker_count()
@@ -5962,7 +5966,9 @@ mod tests {
         for ((_, record), got) in records.iter().zip(compressed) {
             let want = record
                 .tag()
-                .map(|t| ChunkRecord::from_nbt(&t, Compression::Zlib, 1234, Limits::default()))
+                .map(|t| {
+                    ChunkRecord::from_nbt(&t, Compression::Zlib, 1234, Limits::default())
+                })
                 .transpose()
                 .unwrap();
             let got = got.unwrap();
