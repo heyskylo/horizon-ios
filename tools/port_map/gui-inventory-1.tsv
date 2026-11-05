@@ -122,6 +122,7 @@ CreativeModeInventoryScreen.tryRebuildTabContents	port	crates/horizon-client/src
 CreativeModeInventoryScreen.refreshCurrentTabContents	inline	crates/horizon-client/src/creative.rs::Creative::items	the grid is worked out again when the tab, search or language changed
 CreativeModeInventoryScreen.containerTick	port	crates/horizon-client/src/game.rs::Game::tick	refresh_creative_tabs each tick, then a player without infinite materials gets the survival inventory
 CreativeModeInventoryScreen.init	port	crates/horizon-client/src/creative.rs::Creative::reopen	fresh search box and scrollbar when the screen opens
+CreativeModeInventoryScreen.selectTab	port	crates/horizon-client/src/creative.rs::Creative::select	the search box is focused only on the search tab, its query empties when the tab changes, the scrollbar goes to the top and the tab's page shows
 CreativeModeInventoryScreen.resize	skip:ui		re-init on window resize keeping search text and scroll row
 CreativeModeInventoryScreen.removed	skip:other		unregisters the slot listener; Horizon sends the creative slots to the server from its own tick
 CreativeModeInventoryScreen.charTyped	port	crates/horizon-client/src/game/clipboard.rs::Game::creative_search_edit	
