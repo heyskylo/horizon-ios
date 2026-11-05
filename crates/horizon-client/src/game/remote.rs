@@ -10328,12 +10328,14 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let delta = self.world.game_time - r.clock_game_time;
+        let delta = self.world.game_time.wrapping_sub(r.clock_game_time);
         r.clock_game_time = self.world.game_time;
         let partial = f64::from(r.clock_partial) + delta as f64 * f64::from(r.clock_rate);
-        let full = partial.floor();
-        r.clock_partial = (partial - full) as f32;
-        self.world.day_time += full as i64;
+        // ClientClockManager uses Mth.floor(double), an int, before adding
+        // that step to the long total. Both long operations wrap in Java.
+        let full = partial.floor() as i32;
+        r.clock_partial = (partial - f64::from(full)) as f32;
+        self.world.day_time = self.world.day_time.wrapping_add(i64::from(full));
     }
     pub(super) fn remote_status(&self) -> Option<serde_json::Value> {
         let r = self.remote.as_ref()?;
