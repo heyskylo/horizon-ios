@@ -11,6 +11,8 @@
 //!   half-lives counted in tenths of a second (`FADE_UNIT`), `fadeIn` while rising, `fadeOut`
 //!   while falling. Each call keeps its own state, so the optional id is not needed. As in Iris
 //!   1.11.7, the first argument is that id when it is written as a number and more follow.
+//!   A `smooth` in an `if` branch not taken keeps its value until the branch is taken again:
+//!   `if` evaluates only the conditions up to the first true one and that branch (#9371).
 //! - Unknown names, as in Iris 1.11.7 (#8995): an expression naming something the custom
 //!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
 //!   the name is in an `if` branch not taken, and so does every expression using its uniform or
@@ -27,8 +29,11 @@ use crate::Properties;
 /// The seconds one unit of a `smooth` fade time lasts. Fitted to Iris 1.11.7 with a probe pack of
 /// our own (`smoothprobe`: `smooth(rainStrength, f, f)` for several fades, read across the scene
 /// suite's weather changes): a half-life of a tenth of the fade time's seconds gives every
-/// measured value within 0.016. Horizon's built-in smoothed uniforms use the same 0.1 s unit
-/// (`pack_uniforms.rs` `SECONDS_A_TICK`).
+/// measured value within 0.016. A second probe pack of ours (#9371: a square wave from `if`,
+/// `eyeBrightness`, `worldTime`; fades 0.5 to 100, the default 1, rising and falling) fits the
+/// same unit: half-life / fade between 0.085 and 0.100 over 63 readings. These are fits to our
+/// probes' Iris values, not Iris's rule. Horizon's built-in smoothed uniforms use the same 0.1 s
+/// unit (`pack_uniforms.rs` `SECONDS_A_TICK`).
 const FADE_UNIT: f64 = 0.1;
 
 /// A value: up to 16 components (matrices only as names, for `m.column.row`).
@@ -239,6 +244,13 @@ impl Custom {
         self.smooth.clear();
     }
 
+    /// Restarts `smooth` and `random` for a frame of the world's tick `tick`, so a frame drawn
+    /// again at that tick evaluates the same (`HORIZON_STILL`).
+    pub fn restart_at(&mut self, tick: u64) {
+        self.restart_smoothing();
+        self.seed = (0x9e37_79b9_7f4a_7c15 ^ tick.wrapping_mul(0xbf58_476d_1ce4_e5b9)).max(1);
+    }
+
     /// Names the game's biomes (registry identifiers, in id order) for `BIOME_*`.
     pub fn set_biomes(&mut self, biomes: &[&str]) {
         self.constants = crate::biomes::constants(biomes);
@@ -440,6 +452,18 @@ impl Custom {
                     _ => bool_(a.truth() || b.truth()),
                 }
             }
+            Expr::Call(f, args, _) if f == "if" => {
+                // Only the conditions up to the first true one and its branch are evaluated: a
+                // `smooth` in a branch not taken keeps its value and doesn't advance.
+                let mut i = 0;
+                while i + 1 < args.len() {
+                    if ev(&args[i], self).truth() {
+                        return ev(&args[i + 1], self);
+                    }
+                    i += 2;
+                }
+                args.last().map_or(Val::scalar(0.0), |e| ev(e, self))
+            }
             Expr::Call(f, args, site) => {
                 let a: Vec<Val> = args.iter().map(|e| ev(e, self)).collect();
                 let arg = |i: usize| a.get(i).copied().unwrap_or(Val::scalar(0.0));
@@ -466,7 +490,9 @@ impl Custom {
                         .copied()
                         .reduce(|p, q| p.zip(q, f64::max))
                         .unwrap_or(arg(0)),
-                    "clamp" => arg(0).zip(arg(1), f64::max).zip(arg(2), f64::min),
+                    // The upper bound first, then the lower: with min > max the lower wins, as
+                    // our probes read in Iris 1.11.7 (`clamp(5.0, 3.0, 1.0)` gives 3, #9307).
+                    "clamp" => arg(0).zip(arg(2), f64::min).zip(arg(1), f64::max),
                     "abs" => one(f64::abs),
                     "floor" => one(f64::floor),
                     "ceil" => one(f64::ceil),
@@ -490,16 +516,6 @@ impl Custom {
                         Val::scalar((x + (arg(1).x() - x) * self.random()).floor())
                     }
                     "randomInt" => Val::scalar((self.random() * f64::from(i32::MAX)).floor()),
-                    "if" => {
-                        let mut i = 0;
-                        while i + 1 < a.len() {
-                            if a[i].truth() {
-                                return a[i + 1];
-                            }
-                            i += 2;
-                        }
-                        a.last().copied().unwrap_or(Val::scalar(0.0))
-                    }
                     "smooth" => {
                         // A first argument written as a number names the call when more
                         // follow (`smooth(1, x, 2)`); any other is the value (`smooth(x, 2)`).
@@ -511,7 +527,10 @@ impl Custom {
                         let fade_out = at(2).unwrap_or(fade_in);
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
-                        if fade > 0.0 {
+                        // A value it already holds stays as it is: an infinite one too, which
+                        // the step below would turn into NaN (inf - inf). Our probe read
+                        // `smooth(1.0 / 0.0, 5, 5)` as +inf in Iris 1.11.7.
+                        if fade > 0.0 && *state != val {
                             *state = val + (*state - val) * 0.5f64.powf(dt / (fade * FADE_UNIT));
                         } else {
                             *state = val;
@@ -1055,6 +1074,46 @@ mod tests {
         );
     }
 
+    /// Iris 1.11.7, read back with probe packs of our own in three scenes: with the lower bound
+    /// above the upper one, `clamp(5.0, 3.0, 1.0)`, `clamp(0.0, 3.0, 1.0)` and
+    /// `clamp(2.0, 3.0, 1.0)` read 3, and `clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))`
+    /// reads (3, 0.5).
+    #[test]
+    fn clamp_with_its_bounds_crossed_gives_the_lower_one() {
+        let mut c = custom(
+            "uniform.float.a = clamp(5.0, 3.0, 1.0)\n\
+             uniform.float.b = clamp(0.0, 3.0, 1.0)\n\
+             uniform.float.c = clamp(2.0, 3.0, 1.0)\n\
+             uniform.float.d = clamp(2.0, 1.0, 3.0)\n\
+             uniform.float.e = clamp(-2.0, 1.0, 3.0)\n\
+             uniform.vec2.f = clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let v = c.eval(0.016, &|_| None);
+        let x: Vec<f64> = v[..5].iter().map(|v| v.v[0]).collect();
+        assert_eq!(x, [3.0, 3.0, 3.0, 2.0, 1.0]);
+        assert_eq!(&v[5].v[..2], &[3.0, 0.5]);
+    }
+
+    /// Iris 1.11.7, read back with probe packs of our own after 3 s to 30 s in a scene:
+    /// `smooth(1.0 / 0.0, 5, 5)` reads +inf, `smooth(-1.0 / 0.0, 5, 5)` -inf and
+    /// `smooth(0.0 / 0.0, 5, 5)` NaN.
+    #[test]
+    fn smooth_keeps_an_infinite_value() {
+        let mut c = custom(
+            "uniform.float.a = smooth(1.0 / 0.0, 5, 5)\n\
+             uniform.float.b = smooth(-1.0 / 0.0, 5, 5)\n\
+             uniform.float.c = smooth(0.0 / 0.0, 5, 5)\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        for _ in 0..100 {
+            let v = c.eval(0.016, &|_| None);
+            assert_eq!(v[0].v[0], f64::INFINITY);
+            assert_eq!(v[1].v[0], f64::NEG_INFINITY);
+            assert!(v[2].v[0].is_nan());
+        }
+    }
+
     #[test]
     fn smooth_halves_the_distance_per_tenth_of_its_fade_time() {
         let mut c = custom("uniform.float.s = smooth(1, target, 20, 5)\n");
@@ -1104,6 +1163,80 @@ mod tests {
         }
     }
 
+    /// Iris 1.11.7 with a probe pack of our own (#9371): a step in `worldTime / 24000` from 0.25
+    /// to 0.75, read 1.355 s later, and a square wave's fall read 0.575 s later. Read there:
+    /// fades 3, 10 and 30 give 0.7282, 0.5545 and 0.3844; the default fade 0.0186. Our probe's
+    /// values fit a half-life of 0.1 s × the fade for every input tried (a fit, not Iris's code).
+    #[test]
+    fn smooth_steps_as_iris_does_for_other_inputs_and_the_default_fade() {
+        let mut c = custom(
+            "uniform.float.a = smooth(worldTime / 24000.0, 3.0)\n\
+             uniform.float.b = smooth(worldTime / 24000.0, 10.0)\n\
+             uniform.float.c = smooth(worldTime / 24000.0, 30.0)\n\
+             uniform.float.d = smooth(if(worldTime > 15000, 0.0, 1.0))\n",
+        );
+        let mut hold = |time: f64, seconds: f64| {
+            let mut read = Vec::new();
+            for _ in 0..(seconds * 120.0).round() as usize {
+                read = c.eval(1.0 / 120.0, &|n: &str| {
+                    (n == "worldTime").then(|| Val::scalar(time))
+                });
+            }
+            read.iter().map(|v| v.v[0]).collect::<Vec<f64>>()
+        };
+        hold(6000.0, 60.0);
+        let got = hold(18000.0, 1.355);
+        for (g, iris) in got.iter().zip([0.7282, 0.5545, 0.3844]) {
+            assert!((g - iris).abs() < 0.01, "{got:?}: Iris read {iris}");
+        }
+        hold(6000.0, 60.0);
+        let got = hold(18000.0, 0.575);
+        assert!(
+            (got[3] - 0.0186).abs() < 0.005,
+            "default fade: {got:?}, Iris read 0.0186"
+        );
+    }
+
+    /// Iris 1.11.7 with a probe pack of our own (#9371): our probe's Iris readings fit a `smooth`
+    /// inside an `if` branch keeping its value while the branch isn't taken (within 0.008;
+    /// updated every frame misses by up to 0.14). A fit, not Iris's code. The probe's
+    /// `if(fmod(frameTimeCounter, 4) < 2, smooth(sq, 10), 0.5)`, with `sq` a square wave of 16 s
+    /// (1 for 8 s, then 0), read in Iris at these points of the wave: 1.214 s 0.5962, 5.557 s
+    /// 0.9205, 12.254 s 0.1965, 13.264 s 0.1041, 13.963 s 0.0603. Updated every frame, the
+    /// smooth would read 0.571, 0.979, 0.052, 0.026 and 0.016 there.
+    #[test]
+    fn smooth_in_a_branch_not_taken_keeps_its_value() {
+        let mut c = custom(
+            "variable.float.sq = if(fmod(frameTimeCounter, 16.0) < 8.0, 1.0, 0.0)\n\
+             uniform.float.br = if(fmod(frameTimeCounter, 4.0) < 2.0, smooth(sq, 10.0), 0.5)\n",
+        );
+        let dt = 1.0 / 120.0;
+        let mut iris = vec![
+            (1.214, 0.5962),
+            (5.557, 0.9205),
+            (12.254, 0.1965),
+            (13.264, 0.1041),
+            (13.963, 0.0603),
+        ];
+        for frame in 0..16 * 120 * 20 {
+            let t = frame as f64 * dt;
+            let got = c.eval(dt, &|n: &str| {
+                (n == "frameTimeCounter").then(|| Val::scalar(t))
+            })[0]
+                .v[0];
+            // The last of 20 periods: the wave has long forgotten where it started.
+            let phase = t - 16.0 * 19.0;
+            if let Some(i) = iris.iter().position(|p| (phase - p.0).abs() < dt / 2.0) {
+                let (at, want) = iris.remove(i);
+                assert!(
+                    (got - want).abs() < 0.02,
+                    "{got} at {at} s, Iris read {want}"
+                );
+            }
+        }
+        assert!(iris.is_empty(), "not reached: {iris:?}");
+    }
+
     /// After a restart `smooth` starts from its next value, as on the first frame, instead of
     /// fading from the old one (a 1000-second fade from a dry run's zero).
     #[test]
@@ -1116,6 +1249,20 @@ mod tests {
         assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
         c.restart_smoothing();
         assert_eq!(eval(&mut c, 0.6), 0.6);
+    }
+
+    #[test]
+    fn a_restart_at_a_tick_evaluates_that_tick_the_same_again() {
+        let mut c = custom("uniform.float.r = random()\nuniform.float.s = smooth(target, 1000)\n");
+        let eval = |c: &mut Custom, tick: u64, t: f64| {
+            c.restart_at(tick);
+            c.eval(0.05, &|n: &str| (n == "target").then(|| Val::scalar(t)))
+        };
+        let first = eval(&mut c, 7, 0.0);
+        let other = eval(&mut c, 8, 0.6);
+        assert_eq!(eval(&mut c, 7, 0.0), first);
+        assert_ne!(other[0], first[0], "another tick draws another random");
+        assert_eq!(other[1].v[0], 0.6, "smooth starts at its target");
     }
 
     /// Iris 1.11.7, with a probe pack of our own: a first argument written as a number is the

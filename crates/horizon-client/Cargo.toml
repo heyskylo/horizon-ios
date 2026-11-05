@@ -83,6 +83,8 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
+# Resolve virtualized folders to shell-compatible physical paths.
+dunce = "1.0.5"
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
@@ -141,6 +143,10 @@ path = "tests/launch_api.rs"
 [[test]]
 name = "mod_api_hooks"
 path = "tests/mod_api_hooks.rs"
+
+[[example]]
+name = "native_gui_overlay_probe"
+path = "examples/native_gui_overlay_probe.rs"
 
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }

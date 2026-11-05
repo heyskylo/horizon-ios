@@ -4,6 +4,13 @@ How parity work is run, checked and merged. The harnesses themselves are describ
 
 ## Running the vanilla harnesses
 
+Same-machine fixtures created with `lab.game_env` use `HORIZON_TEST_LOOPBACK=1`: Horizon
+listens on loopback and does not scan or announce LAN worlds. This avoids Windows Firewall
+permission prompts for newly compiled fixture executables. Set `HORIZON_TEST_LOOPBACK=0`
+explicitly when testing real network interfaces or multicast discovery. Local vanilla server
+fixtures also set `server-ip=127.0.0.1`; use one installed JDK via `JAVA_HOME` and its `bin`
+on `PATH`, rather than copying Java to each fixture directory. Keep the firewall enabled.
+
 `tools/parity.py` runs the `tools/test_*_parity.py` harnesses in parallel and reruns only what a change can affect:
 
 ```sh
@@ -37,6 +44,8 @@ All runners on a machine share `PARITY_MACHINE_JOBS` slots (default: half the CP
 ### Harnesses that start the game
 
 The game logs into `HORIZON_HOME` and falls back to the player's own game folder when it is unset, so a harness that starts the game, `horizon-ctl`, the launcher or the dedicated server builds the environment with `lab.game_env(**extra)`: no audio, and fresh scratch folders for `HORIZON_HOME`, `HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME`, removed when the harness exits (a folder you pass, or that the environment already has, is kept). The runner also gives each harness its own `HORIZON_HOME` under `.local/parity-runner/game-home/`. `tests/test_game_home.py` fails for a script in `tools/` that starts the game without it.
+
+`frame_identity` (`tools/test_frame_identity_parity.py`) holds the picture where a change shouldn't move it, as the HDR design note's first tests ask ([design/hdr-linear-light.md](design/hdr-linear-light.md#tests)). Its oracle is the base build, not vanilla: pictures of the game hold Minecraft's textures and can't be committed. It builds `BASE_SHA` (else the merge-base with `origin/main`) in a worktree and target folder of its own under `.local/frame-identity/`, kept between runs so a later base rebuilds incrementally, draws fixed scenes offscreen with each build under `HORIZON_STILL=1` (HDR off; the Golden Hour pack in SDR and with offscreen HDR output; HDR turned off in a running game), and requires identical pixels, writing `diff-<scene>.png` where they aren't. Both builds draw on lavapipe where Mesa's Vulkan driver is installed, else on the machine's default adapter. When the change touches only `tools/`, `tests/`, `.github/` or Markdown outside `crates/`, the base reuses the change's binaries (`--build-base` builds it anyway), so the run checks that two runs of one build agree. It is `named_only` in `tools/parity_hosts.json`, since it fails any change that moves the picture on purpose: a pull request that must leave it alone carries the `frame-identity` label (docs/release-flow.md), and `python3 tools/parity.py frame_identity` runs it by name.
 
 ### Other machines
 

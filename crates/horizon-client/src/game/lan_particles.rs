@@ -930,7 +930,7 @@ mod tests {
     ) {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, label.into(), 2)
+            ..NetConfig::loopback(0, label.into(), 2)
         };
         let mut sync = data::SyncData::empty();
         sync.builtin.registries.insert(
@@ -973,6 +973,7 @@ mod tests {
                     sender: PlayerSender::new(tx, std::sync::Arc::default()),
                     latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                     address: format!("127.0.0.1:{}", 25565 + conn).parse().unwrap(),
+                    expected: false,
                 },
                 1,
                 at,

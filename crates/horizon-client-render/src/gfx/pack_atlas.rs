@@ -519,6 +519,36 @@ const FACE: &str = "    uint hz_q = (uint(gl_VertexIndex) & ~3u) * 6u;\n    \
         }\n    \
     }\n";
 
+/// `terrain` (`PackAtlas::terrain_inputs`) drawing only solid terrain, then only cutout terrain:
+/// each leaves the other part's quads outside the clip volume. Solid: the quads over opaque
+/// texels and opaque leaves (`mesher::OPAQUE_LAYER`), as vanilla picks `ChunkSectionLayer.SOLID`
+/// per quad (`FaceBakery.computeMaterialTransparency`, `SectionCompiler.compile`), and lava's
+/// faces (sprite layers `lava`, its still and flowing sprites), which Iris 1.11.7 drew with
+/// `gbuffers_terrain_solid` in our probes, with and without `separateAo`.
+///
+/// The test reads only the vertex's sprite layer, which all four vertices of a quad share: a
+/// quad lands whole in one part. The colour's alpha can't decide it, as with `separateAo` it
+/// holds each vertex's own ambient occlusion.
+pub fn terrain_parts(
+    terrain: &horizon_shaders::GbuffersInputs,
+    lava: &[u16],
+) -> [horizon_shaders::GbuffersInputs; 2] {
+    let opaque = crate::mesher::OPAQUE_LAYER;
+    let lava: String = lava
+        .iter()
+        .map(|l| format!(" || hz_v_layer == {l}u"))
+        .collect();
+    let part = |solid: bool| {
+        let mut inputs = terrain.clone();
+        inputs.after.push_str(&format!(
+            "    bool hz_solid = (hz_v_layer & {opaque}u) != 0u{lava};\n    \
+             if (hz_solid != {solid}) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n"
+        ));
+        inputs
+    };
+    [part(true), part(false)]
+}
+
 impl PackAtlas {
     /// The vertex inputs of a gbuffers program drawing terrain (`TerrainVertex`, terrain.wgsl's
     /// `vs_terrain` or, for `flat` draws, `vs_terrain_flat`), in atlas coordinates.
@@ -577,12 +607,16 @@ impl PackAtlas {
         } else {
             "1.0"
         };
+        // A vertex's place in its section goes down to the 32768th of a block below it: read back
+        // with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` has that for every position
+        // we read (water tops at 8/9 - 0.001, plants' offsets), on all three axes (#8464). A fit,
+        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already.
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
              {cell}\
              hz_scale = vec2({:?}, {:?}) * {side};\n    \
-             hz_Vertex = vec4(hz_v_pos + hz_origin.xyz, 1.0);\n    \
+             hz_Vertex = vec4(floor(hz_v_pos * 32768.0) / 32768.0 + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
              hz_MultiTexCoord0 = vec4((hz_cell + clamp(vec2(hz_v_uv) * hz_uv_scale, 0.0, 1.0)) * hz_scale, 0.0, 1.0);\n    \
@@ -614,6 +648,13 @@ impl PackAtlas {
             "vec4(0.0)"
         };
         let attributes = [
+            // section_instance stores 1 - visibility in a positive origin's mantissa.
+            // Negative origins encode a distant-terrain handover, fully visible here
+            // just as terrain.wgsl's instance_visibility treats them.
+            (
+                "mc_chunkFade",
+                "(hz_origin.w > 0.0 ? 1.0 - float(floatBitsToUint(hz_origin.w) & 0x7fffffu) / 8388608.0 : 1.0)",
+            ),
             ("mc_Entity", entity),
             ("at_midBlock", mid_block),
             (
@@ -637,9 +678,14 @@ impl PackAtlas {
             after: String::new(),
             alpha_test: None,
             item_id_declared: false,
+            far_depth: false,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_atlas/fade_test.rs"]
+mod fade_test;
 
 #[cfg(test)]
 #[path = "pack_atlas/midpoint_test.rs"]

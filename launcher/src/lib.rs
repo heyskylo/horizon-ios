@@ -31,6 +31,7 @@ pub mod minecraft_versions;
 pub mod modpacks;
 pub mod mojang;
 mod native_cache;
+pub mod native_fit;
 pub mod native_mods;
 pub mod native_status;
 pub mod nightly;
@@ -53,5 +54,8 @@ pub mod telemetry;
 pub mod themes;
 pub mod uninstall_aside;
 pub mod update_handoff;
+pub mod update_recovery;
 pub mod wardrobe;
+#[cfg(windows)]
+mod windows_runtime;
 pub mod worlds;

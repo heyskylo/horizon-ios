@@ -158,7 +158,7 @@ jobs:
         run: |
           cargo +stable fmt --check
           cargo +stable clippy --all-targets --locked -- -D warnings
-          cargo +stable test --locked --lib
+          cargo +stable test --locked --lib --bins
   # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
   # (`gh workflow run checks --ref <branch>`): GitHub's runner queue is the bottleneck, and main's runs gate the
   # releases (tools/release_train.py waits for them), so neither pull requests nor main's pushes start this
@@ -242,6 +242,18 @@ jobs:
           $output = & $launcher --version 2>&1
           if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'horizon-launcher --version failed' }
           Write-Output ($output -join "`n")
+      - name: Build a native-mod game with the launcher's managed toolchain
+        working-directory: launcher
+        shell: pwsh
+        env:
+          HORIZON_LAUNCHER_HOME: ${{ runner.temp }}\horizon-native-arm64-toolchain
+          HORIZON_NATIVE_TARGET_DIR: ${{ runner.temp }}\horizon-native-arm64-toolchain\target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --release --locked --target aarch64-pc-windows-msvc --lib rust_toolchain::tests::managed_arm64_toolchain_builds_the_game -- --ignored --exact --nocapture
+          $client = Join-Path $env:HORIZON_NATIVE_TARGET_DIR 'fast/horizon-client.exe'
+          python ../tools/check_pe_arch.py arm64 $client
+          python ../tools/check_imports.py $client
   # Most pull requests leave the harnesses to parity-main, which runs them on main a batch of merges at a time
   # (.github/workflows/parity-main.yml; releases wait for it). A pull request still runs them itself when it changes
   # a harness, an oracle, a probe or the runner, or carries the run-parity label (run-parity.yml, when it is added).
@@ -264,7 +276,7 @@ jobs:
         run: |
           changed=$(git diff --name-only "$(git merge-base "$BASE_SHA" HEAD)" HEAD)
           harness=$(grep -E '^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs|\.github/workflows/parity[a-z-]*\.yml)' <<< "$changed" || true)
-          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]]; then
+          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]] || [[ " $LABELS " == *" frame-identity "* ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "The pull request runs its harnesses: ${harness:-label run-parity}"
           else
@@ -279,6 +291,7 @@ jobs:
       base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
+      frame_identity: ${{ contains(github.event.pull_request.labels.*.name, 'frame-identity') }}
   # Horizon never downloads the game. These jobs need a self-hosted Linux runner
   # (label horizon-game) holding the maintainer's own copy: the official launcher's
   # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in

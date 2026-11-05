@@ -75,6 +75,67 @@ pub(crate) fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Resu
     result
 }
 
+/// `[prune_chunks]` (prune.rs): a dry run in the background while the game starts, a delete before it
+/// starts. `mode` goes back to "off" first, so a crash halfway never repeats it unasked.
+fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
+    use crate::prune;
+    let settings = config.prune_chunks.clone();
+    if let Err(e) = config::update(
+        dir,
+        "prune_chunks",
+        "mode",
+        toml::Value::String("off".into()),
+    ) {
+        return note(
+            shared,
+            "WARN",
+            &format!(
+                "Chunk prune not run: server.toml's prune_chunks.mode can't be set back to \"off\" ({e})"
+            ),
+        );
+    }
+    let world = dir.join(&config.world.name);
+    let threads = thread::available_parallelism().map_or(2, |n| n.get());
+    let finish = |shared: &Shared, dir: &Path, result: Result<prune::Outcome, String>| match result
+    {
+        Ok(outcome) => {
+            let at = match prune::write_report(dir, &outcome) {
+                Ok(path) => path.display().to_string(),
+                Err(e) => format!("not written: {e}"),
+            };
+            note(
+                shared,
+                "INFO",
+                &format!("Chunk prune: {} (report: {at})", outcome.summary),
+            );
+        }
+        Err(e) => note(
+            shared,
+            "ERROR",
+            &format!("Chunk prune stopped before deleting anything: {e}"),
+        ),
+    };
+    if settings.mode == prune::Mode::Delete {
+        note(
+            shared,
+            "INFO",
+            "Chunk prune: deleting barely visited chunks before the game starts (server.toml [prune_chunks])",
+        );
+        finish(shared, dir, prune::run(&world, &settings, true, threads));
+    } else {
+        note(
+            shared,
+            "INFO",
+            "Chunk prune: dry run in the background, nothing is deleted (server.toml [prune_chunks])",
+        );
+        let (shared, dir) = (shared.clone(), dir.to_owned());
+        thread::spawn(move || {
+            let result = prune::run(&world, &settings, false, (threads / 2).max(1));
+            finish(&shared, &dir, result);
+        });
+    }
+}
+
 enum Exit {
     /// Asked to stop, or the game ended by itself without an error (`stop` typed in its console, the EULA
     /// not agreed, the port taken): not restarted.
@@ -160,6 +221,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
         let written = config
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;
+        if config.prune_chunks.mode != crate::prune::Mode::Off {
+            prune_chunks(&shared, dir, &config);
+        }
         note(
             &shared,
             "INFO",
@@ -170,8 +234,15 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
         );
         shared.set_phase(Phase::Starting);
-        let mut child = engine::spawn(&program, &resources, dir, config.engine.low_memory)
-            .map_err(|e| format!("{}: {e}", program.display()))?;
+        let transfers = config.transfer.engine_arg();
+        let mut child = engine::spawn(
+            &program,
+            &resources,
+            dir,
+            config.engine.low_memory,
+            transfers.as_deref(),
+        )
+        .map_err(|e| format!("{}: {e}", program.display()))?;
         {
             let mut state = shared.state.lock().unwrap();
             state.engine_pid = Some(child.id());

@@ -17,7 +17,12 @@ use std::{
 const REPO: &str = "horizon-rust/horizon";
 /// The release archives for this computer, most specific first: on Linux the server build (no ALSA or
 /// udev), else the full game (releases before the server build).
-fn assets_for(os: &str, arch: &str) -> &'static [&'static str] {
+fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
+    // The musl archive is manually installed; glibc updates would replace this supervisor
+    // with a binary that cannot even start to roll back on a musl system.
+    if musl {
+        return &[];
+    }
     match (os, arch) {
         ("linux", "x86_64") => &[
             "horizon-server-linux-x86_64.tar.gz",
@@ -32,8 +37,13 @@ fn assets_for(os: &str, arch: &str) -> &'static [&'static str] {
     }
 }
 
-static ASSETS: std::sync::LazyLock<&'static [&'static str]> =
-    std::sync::LazyLock::new(|| assets_for(std::env::consts::OS, std::env::consts::ARCH));
+static ASSETS: std::sync::LazyLock<&'static [&'static str]> = std::sync::LazyLock::new(|| {
+    assets_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(target_env = "musl"),
+    )
+});
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -205,18 +215,52 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::rename(&fresh, link)
 }
 
-/// Makes `link` a junction to `target` (install.ps1's links: they need no admin rights).
+/// Makes `link` a junction to `target` (install.ps1's links: they need no admin rights). The new
+/// junction is made first, beside it, so a failure leaves `current` as it was; it then takes the old
+/// one's place, and if that last step fails the old junction is put back.
 #[cfg(windows)]
 fn point(link: &Path, target: &Path) -> std::io::Result<()> {
-    if link.exists() || link.symlink_metadata().is_ok() {
-        std::fs::remove_dir(link)?;
+    let fresh = link.with_extension("switching");
+    if fresh.symlink_metadata().is_ok() {
+        std::fs::remove_dir(&fresh)?;
     }
+    junction(&fresh, target)?;
+    let old = std::fs::read_link(link).ok();
+    if link.symlink_metadata().is_ok() {
+        // A junction: removing it removes the link, never the release it points at.
+        if let Err(e) = std::fs::remove_dir(link) {
+            let _ = std::fs::remove_dir(&fresh);
+            return Err(e);
+        }
+    }
+    std::fs::rename(&fresh, link).inspect_err(|_| {
+        let _ = std::fs::remove_dir(&fresh);
+        if let Some(old) = &old {
+            let _ = junction(link, old);
+        }
+    })
+}
+
+/// `mklink /J link target` through cmd, with both paths quoted as cmd reads them: unquoted, a folder
+/// named with `&` or `^` (and no space, so std doesn't quote it) would split the command. `%` and `"`
+/// keep a meaning inside quotes, so paths holding them are refused.
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let quoted = |p: &Path| -> std::io::Result<String> {
+        let text = p.to_str().ok_or_else(|| {
+            std::io::Error::other(format!("{}: not a path cmd can take", p.display()))
+        })?;
+        if text.contains(['%', '"']) {
+            return Err(std::io::Error::other(format!(
+                "{text}: a folder whose path holds % or \" can't be linked; move the server elsewhere"
+            )));
+        }
+        Ok(format!("\"{text}\""))
+    };
+    let line = mklink_line(&quoted(link)?, &quoted(target)?);
     let status = crate::process::command("cmd")
-        .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
+        .raw_arg(line)
         .stdout(std::process::Stdio::null())
         .status()?;
     if status.success() {
@@ -226,6 +270,13 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
             "mklink /J failed ({status})"
         )))
     }
+}
+
+/// cmd's arguments for a junction, both paths already quoted: `/D` skips AutoRun, and `/S /C "..."`
+/// makes cmd take the outer quotes off and run the rest as written.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mklink_line(link: &str, target: &str) -> String {
+    format!("/D /S /C \"mklink /J {link} {target}\"")
 }
 
 /// A release on GitHub: its name here and the archive for this computer.
@@ -287,17 +338,26 @@ fn pick(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
     keys: &[horizon_release_sign::PublicKey],
 ) -> Result<Release, String> {
+    pick_for_assets(release, fetch, keys, &ASSETS)
+}
+
+fn pick_for_assets(
+    release: &Value,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+    keys: &[horizon_release_sign::PublicKey],
+    candidates: &[&str],
+) -> Result<Release, String> {
     let tag = release["tag_name"]
         .as_str()
         .ok_or("GitHub's answer has no tag")?;
     let assets = release["assets"].as_array().cloned().unwrap_or_default();
-    let asset = ASSETS
+    let asset = candidates
         .iter()
         .find_map(|name| assets.iter().find(|a| a["name"] == *name))
         .ok_or_else(|| {
             format!(
                 "release {tag} has no archive for this computer ({})",
-                ASSETS.join(", ")
+                candidates.join(", ")
             )
         })?;
     let name = asset["name"].as_str().unwrap_or_default();
@@ -322,15 +382,18 @@ fn pick(
         }
     };
     let sums = attached(horizon_release_sign::SUMS)?;
-    let signature = attached(horizon_release_sign::SIGNATURE)?
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    // A Nightly is signed for its channel, never for a tag, and installs under its date and commit.
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    // A Nightly installs under its date and commit, which its title names (strictly: nothing signs
+    // GitHub's publication time), and its SHA256SUMS.v2.sig must sign the checksums for exactly that
+    // version, so an older Nightly can't be served as a newer one.
     let (tag, sha256) = if horizon_release_sign::is_nightly(tag) {
-        let version = horizon_release_sign::nightly_version(
-            release["name"].as_str().unwrap_or_default(),
-            release["published_at"].as_str().unwrap_or_default(),
-        );
+        let title = release["name"].as_str().unwrap_or_default();
+        let version = horizon_release_sign::nightly_title_version(title).ok_or_else(|| {
+            format!("the Nightly's title {title:?} doesn't name its date and commit, so it can't be checked")
+        })?;
+        let signature = attached(horizon_release_sign::SIGNATURE_V2)?.map(text);
         let sha256 = horizon_release_sign::nightly_digest(
+            &version,
             name,
             sums.as_deref(),
             signature.as_deref(),
@@ -338,6 +401,7 @@ fn pick(
         )?;
         (version, sha256)
     } else {
+        let signature = attached(horizon_release_sign::SIGNATURE)?.map(text);
         let sha256 = horizon_release_sign::signed_digest(
             tag,
             name,
@@ -665,6 +729,13 @@ pub fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 println!("Already on the newest release ({current}).");
                 return Ok(());
             }
+            if newer(&current, &release.tag) {
+                // Asked for by --version: a rollback is allowed, never done without saying so.
+                println!(
+                    "{} is older than {current}, which this server runs: installing it as a rollback.",
+                    release.tag
+                );
+            }
             println!("Downloading Horizon {} ({})...", release.tag, release.asset);
             let archive = download(&install, &release)?;
             (release.tag, archive, true)
@@ -824,13 +895,30 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn musl_update_refuses_glibc_before_downloading() {
+        let release = json!({"tag_name": "nightly", "assets": [
+            {"name": "horizon-server-linux-x86_64.tar.gz", "browser_download_url": "server"},
+            {"name": "horizon-linux-x86_64.tar.gz", "browser_download_url": "client"},
+            {"name": "horizon-linux-musl-x86_64.tar.gz", "browser_download_url": "manual"}
+        ]});
+        let error = pick_for_assets(
+            &release,
+            |_| panic!("unsupported updates must not download an archive or signatures"),
+            &[],
+            assets_for("linux", "x86_64", true),
+        )
+        .unwrap_err();
+        assert!(error.contains("no archive for this computer"));
+    }
+
+    #[test]
     fn windows_updates_choose_the_machine_architecture() {
         assert_eq!(
-            assets_for("windows", "x86_64"),
+            assets_for("windows", "x86_64", false),
             &["horizon-windows-x64.zip"]
         );
         assert_eq!(
-            assets_for("windows", "aarch64"),
+            assets_for("windows", "aarch64", false),
             &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
         );
     }
@@ -859,6 +947,47 @@ mod tests {
         std::os::unix::fs::symlink(root.join("releases").join(tags[0]), root.join("current"))
             .unwrap();
         Install { root }
+    }
+
+    /// Real junctions, in a folder whose name cmd would split on unquoted (`&`, no space so std doesn't
+    /// quote it): `current` moves from one release to the other and nothing else changes.
+    #[cfg(windows)]
+    #[test]
+    fn junctions_switch_in_a_folder_cmd_would_split() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-server-junction-mc&co-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for tag in ["v1", "v2", "v%3"] {
+            let release = root.join("releases").join(tag);
+            std::fs::create_dir_all(&release).unwrap();
+            std::fs::write(release.join(exe("horizon-server")), tag).unwrap();
+        }
+        let install = Install { root: root.clone() };
+        let running = root.join("current").join(exe("horizon-server"));
+        install.switch("v1").unwrap();
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v1");
+        install.switch("v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v2");
+        assert!(root.join("current.switching").symlink_metadata().is_err());
+        // Replacing the junction never touched the release it pointed at.
+        let v1 = root.join("releases").join("v1").join(exe("horizon-server"));
+        assert_eq!(std::fs::read_to_string(v1).unwrap(), "v1");
+        // `%` keeps a meaning inside cmd's quotes: refused, and `current` stays where it was.
+        let refused = install.switch("v%3").unwrap_err();
+        assert!(refused.contains('%'), "{refused}");
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v2");
+        assert!(root.join("current.switching").symlink_metadata().is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_junctions_paths_are_quoted_for_cmd() {
+        assert_eq!(
+            mklink_line(r#""D:\mc&co\current""#, r#""D:\mc&co\releases\v0.2.95""#),
+            r#"/D /S /C "mklink /J "D:\mc&co\current" "D:\mc&co\releases\v0.2.95"""#
+        );
     }
 
     #[test]
@@ -931,36 +1060,56 @@ mod tests {
     }
 
     #[test]
-    fn a_nightly_is_picked_with_its_channel_signature_and_named_by_its_build() {
+    fn a_nightly_is_picked_with_its_version_signature_and_named_by_its_build() {
         use horizon_release_sign::{SigningKey, sha256_hex, sums_file};
         let Some(first) = ASSETS.first() else { return };
         let asset = |name: &str| json!({ "name": name, "browser_download_url": format!("https://example.invalid/{name}") });
         let (key, _) = SigningKey::generate().unwrap();
         let sums = sums_file(&[(first.to_string(), sha256_hex(b"server"))]);
-        let serving = |signed_for: &str| {
-            let (sums, signature) = (sums.clone(), key.sign(signed_for, sums.as_bytes()));
+        // SHA256SUMS.sig signed for `channel`, SHA256SUMS.v2.sig for `v2`.
+        let serving = |channel: &str, v2: &str| {
+            let sums = sums.clone();
+            let (one, two) = (
+                key.sign(channel, sums.as_bytes()),
+                key.sign(v2, sums.as_bytes()),
+            );
             move |url: &str| -> Result<Vec<u8>, String> {
                 match url.rsplit('/').next() {
                     Some("SHA256SUMS") => Ok(sums.clone().into_bytes()),
-                    Some("SHA256SUMS.sig") => Ok(signature.clone().into_bytes()),
+                    Some("SHA256SUMS.sig") => Ok(one.clone().into_bytes()),
+                    Some("SHA256SUMS.v2.sig") => Ok(two.clone().into_bytes()),
                     _ => Err("404".into()),
                 }
             }
         };
+        const TONIGHT: &str = "nightly-2026-10-28-0c02067";
         let nightly = json!({
             "tag_name": "nightly", "name": "Nightly 2026-10-28 · 0c02067",
             "published_at": "2026-10-28T20:40:00Z",
-            "assets": [asset(first), asset("SHA256SUMS"), asset("SHA256SUMS.sig")],
+            "assets": [asset(first), asset("SHA256SUMS"), asset("SHA256SUMS.sig"), asset("SHA256SUMS.v2.sig")],
         });
-        let picked = pick(&nightly, serving("nightly"), &[key.public()]).unwrap();
-        assert_eq!(picked.tag, "nightly-2026-10-28-0c02067");
+        let picked = pick(&nightly, serving("nightly", TONIGHT), &[key.public()]).unwrap();
+        assert_eq!(picked.tag, TONIGHT);
         assert_eq!(picked.sha256, sha256_hex(b"server"));
+        // An older Nightly's files under tonight's title: refused.
+        let old = serving("nightly", "nightly-2026-10-21-aaaaaaa");
+        assert!(pick(&nightly, old, &[key.public()]).is_err());
+        // Only the channel's signature (a Nightly from before v2): refused.
+        let mut v1_only = nightly.clone();
+        v1_only["assets"] = json!([asset(first), asset("SHA256SUMS"), asset("SHA256SUMS.sig")]);
+        let err = pick(&v1_only, serving("nightly", TONIGHT), &[key.public()]).unwrap_err();
+        assert!(err.contains("SHA256SUMS.v2.sig"), "{err}");
+        // A title that doesn't name its date and commit: refused, never dated by `published_at`.
+        let mut untitled = nightly.clone();
+        untitled["name"] = json!("Nightly");
+        let err = pick(&untitled, serving("nightly", TONIGHT), &[key.public()]).unwrap_err();
+        assert!(err.contains("doesn't name"), "{err}");
         // A release's signed list served as the Nightly: refused.
-        assert!(pick(&nightly, serving("v0.2.95"), &[key.public()]).is_err());
+        assert!(pick(&nightly, serving("v0.2.95", "v0.2.95"), &[key.public()]).is_err());
         // A Nightly's signed list served as a release: refused.
         let mut release = nightly.clone();
         release["tag_name"] = json!("v0.2.95");
-        assert!(pick(&release, serving("nightly"), &[key.public()]).is_err());
+        assert!(pick(&release, serving(TONIGHT, TONIGHT), &[key.public()]).is_err());
     }
 
     #[test]

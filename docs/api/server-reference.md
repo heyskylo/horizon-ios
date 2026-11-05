@@ -66,7 +66,7 @@ Usage: horizon-server [--dir DIR] <command>
   players [--json]
               Who is online, the operators, the whitelist and the bans
   kick NAME [REASON], ban NAME [REASON], pardon NAME, ban-ip ADDRESS|NAME [REASON], pardon-ip ADDRESS
-              Moderate the running server (vanilla's commands, as from its console)
+              Moderate the running server, or edit ban files while it is stopped
 
   --dir DIR   The server folder (default: the current folder)
 
@@ -143,6 +143,18 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `bind` | `""` |  | the control API: "" a free port on 127.0.0.1; or a fixed one, like 127.0.0.1:8131 or a tailnet address |
 | `token` | `""` |  | its token (16 characters or more); "" a new random one at every start |
 | `allow_public` | `false` |  | true lets bind be any address; the token is then all that guards the server |
+
+### `[transfer]`
+
+A proxy handing players over between servers (docs/server.md). Not vanilla's accepts-transfers (the transfer packet).
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `enabled` | `false` |  | true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret) |
+| `expect_seconds` | `10` |  | how long a player the proxy announced is waited for, when it names no time |
+| `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
+| `max_expected` | `64` |  | players waited for at once |
+| `max_freeze_seconds` | `30` |  | the longest a player stays frozen while it is handed over |
 
 ### `[discord]`
 

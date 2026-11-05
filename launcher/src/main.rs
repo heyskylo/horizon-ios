@@ -174,7 +174,7 @@ enum SelfUpdate {
     Ready(String),
     /// A newer launcher can't go in here: this copy can't replace itself
     /// (`backend::cannot_replace_itself`), or the installer said why (the error). The player
-    /// downloads the launcher again once.
+    /// follows the recovery advice for its install location.
     Stuck(Option<String>),
     Failed(String),
 }
@@ -234,6 +234,7 @@ struct Launcher {
     checked: Option<Instant>,
     update_error: Option<String>,
     self_update: SelfUpdate,
+    self_update_hidden: bool,
     /// The Horizon version being installed as an update, and whether it becomes the selected one.
     update_install: Option<(String, bool)>,
     /// The Horizon version being installed because an instance was made or saved to play it: it
@@ -590,6 +591,7 @@ impl Launcher {
             // The installer the last Update started could not put the new launcher in place.
             self_update: horizon_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
+            self_update_hidden: false,
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -768,6 +770,7 @@ impl Launcher {
         this.load_profile_heads();
         this.load_auth_statuses(true);
         this.fetch_startup_releases();
+        this.mods_auto_update();
         this.fetch_links();
         this.watch_shop(cx);
         if home::getting_ready_preview() {
@@ -888,6 +891,27 @@ impl Launcher {
         });
     }
 
+    /// Recovery text shared by both sidebar styles and Settings.
+    fn launcher_update_help(&self, error: Option<&str>) -> String {
+        if let Some(error) = error {
+            return trf("the update failed: {error}", &[("error", error)]);
+        }
+        if backend::package_managed_launcher() {
+            return tr("Update this launcher with your package manager.").to_string();
+        }
+        let folder = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from(tr("Downloads")));
+        trf(
+            "Close this launcher, move it to {folder}, and open it there to enable updates.",
+            &[("folder", &folder.display().to_string())],
+        )
+    }
+
+    fn launcher_download_available(&self) -> bool {
+        !backend::package_managed_launcher()
+    }
+
     fn update_launcher(&mut self, release: Release) {
         if !backend::self_update_allowed()
             || matches!(
@@ -920,7 +944,10 @@ impl Launcher {
     /// When another launcher already put it there, this one only restarts.
     fn apply_launcher_update(&mut self, cx: &mut App) {
         match horizon_launcher::update_handoff::start_now() {
-            Ok(true) => shut_down(cx),
+            Ok(true) => {
+                servers_page::keep_running_through_update();
+                shut_down(cx)
+            }
             Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart()),
             Err(e) => self.self_update = SelfUpdate::Failed(e),
         }
@@ -1152,8 +1179,10 @@ impl Launcher {
                             if e == account::NoOwner.to_string() {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
+                                self.client_error = Some(account::NoOwner::in_window());
+                            } else {
+                                self.client_error = Some(e);
                             }
-                            self.client_error = Some(e);
                         }
                     }
                 }
@@ -1166,7 +1195,7 @@ impl Launcher {
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
-                                self.client_error = Some(format!("{}.", tr(account::NEEDS_OWNER)));
+                                self.client_error = Some(account::NoOwner::in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
                                 self.quick_play = None;
@@ -1351,8 +1380,11 @@ impl Launcher {
                     }) {
                         Err(Ok(list)) => self.native_mismatch = Some(list),
                         Err(Err(e)) => self.native_error = Some(e),
+                        // Play waited for this build (`Mods::rebuild`).
+                        Ok(_) if std::mem::take(&mut self.mods.play_after_build) => self.play(),
                         Ok(_) => {}
                     }
+                    self.mods.play_after_build = false;
                 }
                 Msg::LauncherProgress(p) => {
                     if let SelfUpdate::Downloading(_, f) = &mut self.self_update {
@@ -1453,14 +1485,18 @@ impl Launcher {
                                 .client_started
                                 .take()
                                 .and_then(|since| backend::crash_report_since(&home, since));
-                            if error.is_some() && report.is_none() && self.switched_to_dx12() {
-                                self.client_error = Some(
+                            let switched = if error.is_some() && report.is_none() {
+                                self.switched_from_vulkan()
+                            } else {
+                                None
+                            };
+                            if let Some(api) = switched {
+                                self.client_error = Some(trf(
                                     "Horizon's Vulkan renderer crashed while starting on this \
-                                     graphics card, so the game now uses DirectX 12. Press Play \
-                                     to start it again. Video Settings > Graphics API switches \
-                                     back."
-                                        .into(),
-                                );
+                                     graphics card, so the game now uses {api}. Press Play to \
+                                     start it again. Video Settings > Graphics API switches back.",
+                                    &[("api", api)],
+                                ));
                             } else if error.is_some() || report.is_some() {
                                 let summary = report
                                     .as_ref()
@@ -1526,11 +1562,13 @@ impl Launcher {
     }
 
     /// After a crash with no report: when the game's output ends while its Vulkan renderer
-    /// started, a native crash in the graphics driver (#746), switches the game to DirectX 12
-    /// (Windows only; only where the player left the graphics API on Auto). True when it did.
-    fn switched_to_dx12(&self) -> bool {
-        if !cfg!(windows) || !backend::vulkan_start_crashed(&self.prepare_log) {
-            return false;
+    /// started, a native crash in the graphics driver (#746), switches the game to
+    /// `backend::vulkan_crash_fallback` (DirectX 12 on Windows, OpenGL on Linux; only where the
+    /// player left the graphics API on Auto). The API's label when it did.
+    fn switched_from_vulkan(&self) -> Option<&'static str> {
+        let (api, label) = backend::vulkan_crash_fallback(std::env::consts::OS)?;
+        if !backend::vulkan_start_crashed(&self.prepare_log) {
+            return None;
         }
         // The GPU is the same for every profile: the game home's setting and the crashed run's.
         let home = backend::game_home();
@@ -1538,12 +1576,12 @@ impl Launcher {
         homes.extend(self.client_home.clone().filter(|h| *h != home));
         let mut switched = false;
         for home in homes {
-            match backend::switch_to_dx12(&home) {
+            match backend::switch_from_auto(&home, api) {
                 Ok(changed) => switched |= changed,
-                Err(e) => eprintln!("Horizon launcher: could not switch to DirectX 12: {e}"),
+                Err(e) => eprintln!("Horizon launcher: could not switch to {label}: {e}"),
             }
         }
-        switched
+        switched.then_some(label)
     }
 
     /// The version Play starts: the selected instance's own, else the launcher's.
@@ -1740,6 +1778,20 @@ impl Launcher {
         if !self.can_start(&tag) {
             return;
         }
+        // Native mods the start's automatic update moved on: the game they are built into is
+        // built again first (the Mods page's Build), then plays.
+        let rebuild = self
+            .selected_instance()
+            .map(|i| i.id.clone())
+            .filter(|id| self.mods.rebuild.contains(id));
+        if let Some(id) = rebuild.filter(|_| self.native_step.is_none()) {
+            self.mods.rebuild.retain(|r| *r != id);
+            if native_mods::is_native(&tag) {
+                self.mods.play_after_build = true;
+                self.build_native(false);
+                return;
+            }
+        }
         self.starting_pack = None;
         self.start_client(tag);
     }
@@ -1807,8 +1859,25 @@ impl Launcher {
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
         let offline_without_owner = self.settings.dev_offline;
+        // Registry mods update before the game reads them (`horizon::auto`); native mods only
+        // at start, where a build can follow.
+        let auto = self
+            .selected_instance()
+            .filter(|_| self.settings.auto_updates_mods() && self.starting_pack.is_none())
+            .map(|i| mods_page::AutoTarget {
+                instance: i.clone(),
+                level: Some(backend::mod_api_level(&tag)),
+                natives: false,
+            });
+        let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
+            if let Some(auto) = auto {
+                let (lines, _) = mods_page::auto_update(&[auto]);
+                if !lines.is_empty() {
+                    let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
+                }
+            }
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
             let _ = tx.send(Msg::Session(session));
         });
@@ -2572,6 +2641,25 @@ fn slot_row(
         .children(right)
 }
 
+/// Microsoft account actions go below the profile in the fixed-width glass card.
+fn account_row(
+    slot: Option<Div>,
+    name: impl IntoElement,
+    detail: Option<AnyElement>,
+    actions: Div,
+    t: &Theme,
+) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(slot_row(slot, name, detail, None, t))
+            .child(actions.flex_wrap().px(px(16.)).pb(px(12.)));
+    }
+    slot_row(slot, name, detail, Some(actions.into_any_element()), t)
+}
+
 /// A plate that stands apart from the page: notices, the console, the agents note.
 fn plate(t: &Theme) -> Div {
     blocks::panel(t)
@@ -2951,11 +3039,8 @@ impl Launcher {
                         )),
                 )
             }
-            SelfUpdate::Stuck(error) => {
-                let why = match error {
-                    Some(e) => trf("the update failed: {error}", &[("error", e)]),
-                    None => tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.").to_string(),
-                };
+            SelfUpdate::Stuck(error) if !self.self_update_hidden => {
+                let why = self.launcher_update_help(error.as_deref());
                 let url = backend::download_page(&self.links.website);
                 foot = foot.child(
                     update(tr("A new version is available").to_string())
@@ -2965,10 +3050,29 @@ impl Launcher {
                                 .child(why),
                         )
                         .child(
-                            div().relative().flex().child(
-                                button("download-launcher", "Download again", Kind::Primary, &t)
-                                    .on_click(move |_, _, cx| cx.open_url(&url)),
-                            ),
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(6.))
+                                .when(self.launcher_download_available(), |actions| {
+                                    actions.child(
+                                        button(
+                                            "download-launcher",
+                                            "Download again",
+                                            Kind::Primary,
+                                            &t,
+                                        )
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    )
+                                })
+                                .child(
+                                    button("dismiss-launcher-update", "Dismiss", Kind::Ghost, &t)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.self_update_hidden = true;
+                                            cx.notify();
+                                        })),
+                                ),
                         ),
                 )
             }
@@ -3744,7 +3848,7 @@ impl Launcher {
             SelfUpdate::Stuck(None) => format!(
                 "{}  ·  {}",
                 backend::VERSION,
-                tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.")
+                self.launcher_update_help(None)
             ),
             SelfUpdate::Failed(e) => format!(
                 "{}  ·  {}",
@@ -3778,7 +3882,7 @@ impl Launcher {
                     }))
                     .into_any_element(),
             ),
-            SelfUpdate::Stuck(_) => {
+            SelfUpdate::Stuck(_) if self.launcher_download_available() => {
                 let url = backend::download_page(&self.links.website);
                 Some(
                     button("download-settings", "Download again", Kind::Secondary, &t)
@@ -3786,7 +3890,7 @@ impl Launcher {
                         .into_any_element(),
                 )
             }
-            SelfUpdate::Downloading(..) => None,
+            SelfUpdate::Downloading(..) | SelfUpdate::Stuck(_) => None,
             _ => Some(
                 // The glass look's About tile has the mockup's filled button.
                 button(
@@ -3913,7 +4017,8 @@ impl Launcher {
                     .child(group("Network", "globe"))
                     .child(self.proxy_row(n + 4, cx))
                     .child(group("Game", "gamepad"))
-                    .child(self.game_args_row(n + 5, cx))
+                    .child(self.game_architecture_row(n + 5, cx))
+                    .child(self.game_args_row(n + 6, cx))
                     .child(group("AI", "terminal"))
                     .child(self.no_ai_row(n + 6, cx))
                     .child(group("About", "info-box"))
@@ -4062,8 +4167,55 @@ impl Launcher {
             )
     }
 
-    /// Settings' Game arguments row: the extra arguments the game starts with, kept in
-    /// `settings.json` and appended to the launcher's own (quotes group a word with spaces).
+    /// Settings' Windows ARM game architecture choice; release installation, updates and launch
+    /// use the saved choice, while launcher updates continue to follow this process.
+    fn game_architecture_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
+        if !backend::can_choose_game_architecture() {
+            return div();
+        }
+        let t = self.theme;
+        let picker = segments(
+            "game-architecture",
+            &[
+                (backend::GameArchitecture::Auto, "Automatic"),
+                (backend::GameArchitecture::X64, "x64"),
+                (backend::GameArchitecture::Arm64, "ARM64"),
+            ],
+            self.settings.game_architecture,
+            &t,
+            {
+                let this = cx.entity().downgrade();
+                move |choice, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.settings.game_architecture == choice {
+                            return;
+                        }
+                        this.settings.game_architecture = choice;
+                        this.save_settings();
+                        // The release and update lists contain the selected game's assets.
+                        this.releases = Load::Loading;
+                        this.updates = backend::Updates::default();
+                        this.fetch_startup_releases();
+                        cx.notify();
+                    });
+                }
+            },
+        );
+        index_row(
+            n,
+            tr("Game architecture"),
+            Some(
+                div()
+                    .child(tr(
+                        "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(picker.into_any_element()),
+            &t,
+        )
+    }
+
     fn game_args_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let focused = self.args_focused;
@@ -4333,7 +4485,7 @@ impl Launcher {
                 }))
             });
             n += 1;
-            rows = rows.child(slot_row(
+            rows = rows.child(account_row(
                 Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
                 a.name.clone(),
                 Some(
@@ -4351,7 +4503,7 @@ impl Launcher {
                         })
                         .into_any_element(),
                 ),
-                Some(actions.into_any_element()),
+                actions,
                 &t,
             ));
         }
@@ -4835,6 +4987,22 @@ impl Launcher {
                         .child(progress_bar(None, &t))
                         .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
                         .into_any_element()
+                } else if installed && backend::needs_game_architecture_install(&tag, &release) {
+                    let mut b = button(
+                        format!("install-selected-architecture-{tag}"),
+                        tr("Install selected build"),
+                        Kind::Secondary,
+                        &t,
+                    );
+                    if self.installing.is_some() {
+                        b = disabled(b);
+                    } else {
+                        b = b.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.install(&release);
+                            cx.notify();
+                        }));
+                    }
+                    b.into_any_element()
                 } else if installed {
                     self.version_actions(&tag, selected, cx).into_any_element()
                 } else if release.asset.is_none() {

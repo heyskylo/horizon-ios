@@ -12,6 +12,7 @@ use horizon_client::{
     mesher::Vertex,
     particles::{ParticleOptions, ParticleType},
     pose::Pose,
+    sound_engine::unique_seed,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, traverse_blocks, trig},
@@ -22,6 +23,30 @@ use horizon_protocol::entity_data::{Value, serializer};
 use std::{collections::HashMap, sync::Arc};
 
 use super::lan_actions::GuestPlay;
+
+/// `FishingHook.retrieve`: the table's named random sequence, or the level
+/// random when a datapack table does not name one.
+fn fishing_loot(
+    loot: &horizon_world::loot::LootData,
+    sequences: &mut horizon_client::random_sequences::RandomSequences,
+    level_random: &mut LegacyRandom,
+    world_seed: i64,
+    luck: f32,
+    biome: Option<&str>,
+    open_water: bool,
+) -> Vec<horizon_world::loot::LootStack> {
+    let table = "minecraft:gameplay/fishing";
+    match loot.random_sequence(table) {
+        Some(sequence) => loot.roll(
+            table,
+            sequences.get(sequence, world_seed),
+            luck,
+            biome,
+            Some(open_water),
+        ),
+        None => loot.roll(table, level_random, luck, biome, Some(open_water)),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
@@ -56,6 +81,7 @@ pub(super) struct Hook {
     lure: i32,
     /// The position a server's update put it heading for.
     lerp: HookLerp,
+    pub(super) random: LegacyRandom,
 }
 /// A player a hook can catch (`canHitEntity`): their entity id, which
 /// guest they are (none: the host) and their box.
@@ -177,8 +203,8 @@ impl Hook {
     }
     /// `FishingHook.catchingFish`: the nibble timer, and DATA_BITING's plunge
     /// (`onSyncedDataUpdated` runs on the server too).
-    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource, game_time: i64) {
-        self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
+    pub(super) fn trigger_bite(&mut self, game_time: i64) {
+        self.nibble = 20 + self.random.next_int_bound(21).unwrap_or(0);
         self.velocity.y = bite_impulse(&mut synchronized_random(self.id, game_time));
     }
 }
@@ -194,9 +220,16 @@ fn bite_impulse(r: &mut impl RandomSource) -> f64 {
     // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
     f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
-/// RandomSource.triangle(mode, deviation).
-fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
-    mode + deviation * (f64::from(r.next_float()) - f64::from(r.next_float()))
+
+/// `FishingHook` constructor's three independent triangle draws.
+fn cast_velocity(y_sin: f32, y_cos: f32, dir_y: f32, random: &mut LegacyRandom) -> Vec3 {
+    let v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
+    let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    Vec3::new(
+        v.x * (0.6 / len + random.triangle(0.5, 0.0103365)),
+        v.y * (0.6 / len + random.triangle(0.5, 0.0103365)),
+        v.z * (0.6 / len + random.triangle(0.5, 0.0103365)),
+    )
 }
 /// `FishingHook.onHitBlock`: `getDeltaMovement().normalize().scale(hit.distanceTo(this))`,
 /// where `HitResult.distanceTo` is the *squared* distance to the hook: the bobber
@@ -205,6 +238,123 @@ fn rebound(velocity: Vec3, hit: Vec3, at: Vec3) -> Vec3 {
     velocity.normalize().scale(hit.distance_squared(at))
 }
 impl Game<'_> {
+    /// Run real `catchingFish` states for the vanilla differential harness.
+    pub(super) fn fishing_tick_reference(&mut self) -> Vec<serde_json::Value> {
+        self.world.weather.raining = false;
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            for phase in 0..5 {
+                let mut hook = Hook::remote(1, Vec3::new(0.5, 400.0, 0.5));
+                hook.random = LegacyRandom::new(seed);
+                hook.nibble = if phase == 4 { 2 } else { 0 };
+                hook.time_until_lured = if phase == 1 { 2 } else { 0 };
+                hook.time_until_hooked = match phase {
+                    2 => 3,
+                    3 => 1,
+                    _ => 0,
+                };
+                hook.fish_angle = 12.5;
+                self.catching_fish(&mut hook, [0, 400, 0]);
+                rows.push(serde_json::json!({
+                    "seed": seed, "phase": phase, "nibble": hook.nibble,
+                    "lured": hook.time_until_lured, "hooked": hook.time_until_hooked,
+                    "angle_bits": hook.fish_angle.to_bits() as i32, "next": hook.random.next_long(),
+                }));
+            }
+        }
+        rows
+    }
+    /// Exercise the actual rod-use path with a table without a named sequence.
+    pub(super) fn fishing_fallback_reference(&mut self) -> Vec<serde_json::Value> {
+        let rod = ItemStack {
+            item: Arc::from("minecraft:fishing_rod"),
+            count: 1,
+            damage: 0,
+            extra: None,
+        };
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            let position = self.player.as_ref().expect("harness player").position;
+            let mut hook = Hook::remote(1, position);
+            hook.nibble = 10;
+            hook.random = LegacyRandom::new(seed);
+            self.hook = Some(hook);
+            let item_start = self.dropped.len();
+            let orb_start = self.orbs.len();
+            self.world.random = LegacyRandom::new(seed);
+            self.use_fishing_rod(&rod);
+            let items: Vec<_> = self
+                .dropped
+                .iter()
+                .skip(item_start)
+                .map(|item| item.stack.item.to_string())
+                .collect();
+            let xp: Vec<_> = self
+                .orbs
+                .iter()
+                .skip(orb_start)
+                .map(|orb| orb.value)
+                .collect();
+            rows.push(serde_json::json!({
+                "seed": seed, "level_next": self.world.random.next_long(), "items": items, "xp": xp,
+            }));
+        }
+        rows
+    }
+    /// Exercise `FishingHook.tick` in a still-water block on the server.
+    pub(super) fn fishing_bobbing_reference(&mut self) -> Vec<serde_json::Value> {
+        let old_position = self.player.as_ref().unwrap().position;
+        let block = [
+            old_position.x.floor() as i32,
+            300,
+            old_position.z.floor() as i32,
+        ];
+        let old_block = self.world.block(block[0], block[1], block[2]);
+        let water = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        self.level_set(block, water).unwrap();
+        assert_eq!(
+            self.world.block(block[0], block[1], block[2]),
+            water,
+            "bobbing fixture water not placed"
+        );
+        let x = f64::from(block[0]) + 0.5;
+        let z = f64::from(block[2]) + 0.5;
+        self.player.as_mut().unwrap().position = Vec3::new(x, 300.0, z - 2.0);
+        let old_offhand = self.offhand.replace(ItemStack {
+            item: Arc::from("minecraft:fishing_rod"),
+            count: 1,
+            damage: 0,
+            extra: None,
+        });
+        let old_hook = self.hook.take();
+        self.world.weather.raining = false;
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            let mut hook = Hook::remote(1, Vec3::new(x, 300.5, z));
+            hook.state = State::Bobbing;
+            hook.velocity = Vec3::new(0.1, 0.03, -0.2);
+            hook.nibble = 0;
+            hook.random = LegacyRandom::new(seed);
+            self.hook = Some(hook);
+            self.tick_fishing();
+            let mut hook = self.hook.take().expect("bobbing hook removed");
+            rows.push(serde_json::json!({
+                "seed": seed,
+                "vx": hook.velocity.x.to_bits() as i64, "vy": hook.velocity.y.to_bits() as i64,
+                "vz": hook.velocity.z.to_bits() as i64, "nibble": hook.nibble, "next": hook.random.next_long(),
+            }));
+        }
+        self.hook = old_hook;
+        self.offhand = old_offhand;
+        self.player.as_mut().unwrap().position = old_position;
+        self.level_set(block, old_block).unwrap();
+        rows
+    }
     fn holds_rod(&self) -> bool {
         self.held()
             .is_some_and(|s| &*s.item == "minecraft:fishing_rod")
@@ -238,10 +388,10 @@ impl Game<'_> {
             return false;
         };
         let at = [p.position.x, p.position.y, p.position.z];
-        let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
         if self.hook.is_some() {
             let damage = self.retrieve_hook(stack);
             self.damage_held(damage);
+            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.retrieve",
                 Some(at),
@@ -249,6 +399,7 @@ impl Game<'_> {
                 pitch,
             );
         } else {
+            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.throw",
                 Some(at),
@@ -261,21 +412,14 @@ impl Game<'_> {
             let (yaw, pitch) = (self.yaw, self.pitch);
             let (y_sin, y_cos, dir_y) = cast_direction(yaw, pitch);
             let eye_y = p.position.y + f64::from(p.dimensions.eye_height);
+            // snapTo(x, getEyeY(), z): the hook's feet start at the owner's eye.
             let start = Vec3::new(
                 p.position.x - f64::from(y_sin) * 0.3,
                 eye_y,
                 p.position.z - f64::from(y_cos) * 0.3,
             );
-            let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
-            let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-            let r = &mut self.world.random;
-            v = Vec3::new(
-                v.x * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.y * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.z * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-            );
-            // A spawned hook's start position is its feet: centre the box on the eye.
-            let start = Vec3::new(start.x, start.y - SIZE / 2.0, start.z);
+            let mut random = LegacyRandom::new(unique_seed());
+            let v = cast_velocity(y_sin, y_cos, dir_y, &mut random);
             self.next_entity += 1;
             self.hook = Some(Hook {
                 id: self.next_entity,
@@ -297,7 +441,10 @@ impl Game<'_> {
                 luck,
                 lure,
                 lerp: HookLerp::default(),
+                random,
             });
+            // FishingRodItem.use counts a cast, not a reel-in.
+            self.award_stat("used", "minecraft:fishing_rod", 1);
         }
         self.swing_arm();
         true
@@ -317,7 +464,7 @@ impl Game<'_> {
     }
     /// `FishingHook.retrieve`: the rod damage it costs.
     fn retrieve_hook(&mut self, rod: &ItemStack) -> u32 {
-        let Some(hook) = self.hook.take() else {
+        let Some(mut hook) = self.hook.take() else {
             return 0;
         };
         let Some(p) = self.player.as_ref() else {
@@ -380,15 +527,19 @@ impl Game<'_> {
                 .as_mut()
                 .and_then(|p| p.attribute("minecraft:luck").ok())
                 .unwrap_or(0.0) as f32;
-            let mut random = self.world.random.clone();
-            let items = loot.roll(
-                "minecraft:gameplay/fishing",
-                &mut random,
-                hook.luck as f32 + owner_luck,
+            // FishingHook.retrieve calls LootTable.getRandomItems without an
+            // explicit random source. LootContext uses the table's sequence,
+            // or the level random if the table has no sequence.
+            let luck = hook.luck as f32 + owner_luck;
+            let items = fishing_loot(
+                &loot,
+                &mut self.rand_sequences,
+                &mut self.world.random,
+                self.level.seed,
+                luck,
                 biome.as_deref(),
-                Some(hook.open_water),
+                hook.open_water,
             );
-            self.world.random = random;
             let mut caught = Vec::new();
             for stack in items {
                 // FishingHook.retrieve: fish_caught for each catch in #minecraft:fishes.
@@ -438,8 +589,10 @@ impl Game<'_> {
                     v,
                     0,
                 );
-                let xp = self.world.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
-                self.spawn_orbs([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
+                let xp = hook.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
+                // Vanilla constructs a single orb directly; ExperienceOrb.award
+                // would split it and draw a merge id from the level random.
+                self.add_orb([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
             }
             // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
             let bobber = EntityView {
@@ -528,15 +681,14 @@ impl Game<'_> {
         let above = [b[0], b[1] + 1, b[2]];
         let sky = self.world.light(above[0], above[1], above[2]) >> 4 == 15;
         // Level.isRainingAt: rain (not snow) reaches the position.
-        if self.world.random.next_float() < 0.25
+        if h.random.next_float() < 0.25
             && self.with_level(|b, level, _| {
                 b.is_raining_at(level, BlockPos::new(above[0], above[1], above[2]))
             })
         {
             speed += 1;
         }
-        let r = &mut self.world.random;
-        if r.next_float() < 0.5 && !sky {
+        if h.random.next_float() < 0.5 && !sky {
             speed -= 1;
         }
         let at = [h.position.x, h.position.y, h.position.z];
@@ -551,7 +703,7 @@ impl Game<'_> {
             if h.time_until_hooked > 0 {
                 // The fish swimming up: a bubble now and then, and a fishing
                 // particle to each side of its path.
-                h.fish_angle += triangle(&mut self.world.random, 0.0, 9.188) as f32;
+                h.fish_angle += h.random.triangle(0.0, 9.188) as f32;
                 let angle = h.fish_angle * (std::f64::consts::PI / 180.0) as f32;
                 let (sin, cos) = (trig::sin(f64::from(angle)), trig::cos(f64::from(angle)));
                 let distance = h.time_until_hooked as f32 * 0.1;
@@ -561,7 +713,7 @@ impl Game<'_> {
                     h.position.z + f64::from(cos * distance),
                 ];
                 if self.water_block(fish) {
-                    if self.world.random.next_float() < 0.15 {
+                    if h.random.next_float() < 0.15 {
                         let spread = [f64::from(sin), 0.1, f64::from(cos)];
                         let at = [fish[0], fish[1] - f64::from(0.1f32), fish[2]];
                         self.send_particles(ParticleType::Bubble, at, spread, 0.0, 1);
@@ -586,8 +738,7 @@ impl Game<'_> {
                         return;
                     }
                 }
-                let pitch =
-                    1.0 + (self.world.random.next_float() - self.world.random.next_float()) * 0.4;
+                let pitch = 1.0 + (h.random.next_float() - h.random.next_float()) * 0.4;
                 self.audio.play(
                     "minecraft:entity.fishing_bobber.splash",
                     Some(at),
@@ -601,7 +752,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.trigger_bite(&mut self.world.random, self.world.game_time);
+                h.trigger_bite(self.world.game_time);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -613,28 +764,27 @@ impl Game<'_> {
             } else if h.time_until_lured < 60 {
                 tease += (60 - h.time_until_lured) as f32 * 0.01;
             }
-            let r = &mut self.world.random;
-            if r.next_float() < tease {
+            if h.random.next_float() < tease {
                 // A splash where a fish is teasing the bait.
-                let angle = (r.next_float() * 360.0) * (std::f64::consts::PI / 180.0) as f32;
-                let distance = r.next_float() * 35.0 + 25.0;
+                let angle = (h.random.next_float() * 360.0) * (std::f64::consts::PI / 180.0) as f32;
+                let distance = h.random.next_float() * 35.0 + 25.0;
                 let fish = [
                     h.position.x + f64::from(trig::sin(f64::from(angle)) * distance) * 0.1,
                     f64::from(h.position.y.floor() as f32 + 1.0),
                     h.position.z + f64::from(trig::cos(f64::from(angle)) * distance) * 0.1,
                 ];
                 if self.water_block(fish) {
-                    let count = 2 + self.world.random.next_int_bound(2).unwrap_or(0) as u32;
+                    let count = 2 + h.random.next_int_bound(2).unwrap_or(0) as u32;
                     let spread = [f64::from(0.1f32), 0.0, f64::from(0.1f32)];
                     self.send_particles(ParticleType::Splash, fish, spread, 0.0, count);
                 }
             }
             if h.time_until_lured <= 0 {
-                h.fish_angle = self.world.random.next_float() * 360.0;
-                h.time_until_hooked = 20 + self.world.random.next_int_bound(61).unwrap_or(0);
+                h.fish_angle = h.random.next_float() * 360.0;
+                h.time_until_hooked = 20 + h.random.next_int_bound(61).unwrap_or(0);
             }
         } else {
-            h.time_until_lured = 100 + self.world.random.next_int_bound(501).unwrap_or(0) - h.lure;
+            h.time_until_lured = 100 + h.random.next_int_bound(501).unwrap_or(0) - h.lure;
         }
     }
     /// `catchingFish`'s check below a fish: the block under it is water.
@@ -886,7 +1036,7 @@ impl Game<'_> {
                 if force.abs() < 0.01 {
                     force += force.signum() * 0.1;
                 }
-                let r = f64::from(self.world.random.next_float());
+                let r = f64::from(h.random.next_float());
                 h.velocity = Vec3::new(v.x * 0.9, v.y - force * r * 0.2, v.z * 0.9);
                 if h.nibble <= 0 && h.time_until_hooked <= 0 {
                     h.open_water = true;
@@ -897,8 +1047,10 @@ impl Game<'_> {
                 if in_water {
                     h.out_of_water = (h.out_of_water - 1).max(0);
                     if h.nibble > 0 {
-                        let r = &mut self.world.random;
-                        let dip = -0.1 * f64::from(r.next_float()) * f64::from(r.next_float());
+                        let mut sync_random = synchronized_random(h.id, self.world.game_time);
+                        let dip = -0.1
+                            * f64::from(sync_random.next_float())
+                            * f64::from(sync_random.next_float());
                         h.velocity.y += dip;
                     }
                     self.catching_fish(&mut h, b);
@@ -1179,6 +1331,7 @@ pub(super) struct RemoteHook {
     state: State,
     on_ground: bool,
     lerp: HookLerp,
+    pub(super) random: LegacyRandom,
 }
 
 /// The `onGround` of a server's update (`handleMoveEntity`), except that a
@@ -1275,6 +1428,7 @@ impl Hook {
             luck: 0,
             lure: 0,
             lerp: HookLerp::default(),
+            random: LegacyRandom::new(unique_seed()),
         }
     }
     /// `FishingHook`'s entity for the players tracking it: the owner's id in
@@ -1334,6 +1488,7 @@ impl Game<'_> {
                 state: State::Flying,
                 on_ground: false,
                 lerp: HookLerp::default(),
+                random: LegacyRandom::new(unique_seed()),
             });
         }
     }
@@ -1408,8 +1563,10 @@ impl Game<'_> {
             h.previous = h.position;
             h.position = h.lerp.step(h.position);
             let before = h.position;
-            (h.position, h.velocity, h.state, h.on_ground) =
-                self.client_hook_step((h.position, h.velocity, h.state, h.on_ground));
+            (h.position, h.velocity, h.state, h.on_ground) = self.client_hook_step(
+                (h.position, h.velocity, h.state, h.on_ground),
+                &mut h.random,
+            );
             h.lerp.moved(h.position.subtract(before));
             self.hook = Some(h);
         }
@@ -1418,18 +1575,21 @@ impl Game<'_> {
             h.previous = h.position;
             h.position = h.lerp.step(h.position);
             let before = h.position;
-            (h.position, h.velocity, h.state, h.on_ground) =
-                self.client_hook_step((h.position, h.velocity, h.state, h.on_ground));
+            (h.position, h.velocity, h.state, h.on_ground) = self.client_hook_step(
+                (h.position, h.velocity, h.state, h.on_ground),
+                &mut h.random,
+            );
             h.lerp.moved(h.position.subtract(before));
         }
         self.remote_hooks = hooks;
     }
 
-    /// One tick of `FishingHook.tick`'s movement without the fishing (the
+    /// `FishingHook.tick`: one tick of movement without the fishing (the
     /// server's): position, motion, state and whether it rests on the ground.
     fn client_hook_step(
         &mut self,
         (mut position, mut velocity, state, mut on_ground): (Vec3, Vec3, State, bool),
+        random: &mut impl RandomSource,
     ) -> (Vec3, Vec3, State, bool) {
         let b = [
             position.x.floor() as i32,
@@ -1492,7 +1652,7 @@ impl Game<'_> {
                 if force.abs() < 0.01 {
                     force += force.signum() * 0.1;
                 }
-                let r = f64::from(self.world.random.next_float());
+                let r = f64::from(random.next_float());
                 velocity = Vec3::new(
                     velocity.x * 0.9,
                     velocity.y - force * r * 0.2,
@@ -1589,6 +1749,86 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
+
+    /// Compare the production loot selector to a real FishingHook.retrieve oracle.
+    #[test]
+    #[ignore = "requires prepared resources and the vanilla fishing reference"]
+    fn fishing_retrieve_reference() {
+        use horizon_core::random::{LegacyRandom, RandomSource};
+        use horizon_world::loot::{LootData, PackOverlay};
+        let resources = std::env::var_os("HORIZON_FISHING_RESOURCES").unwrap();
+        let path = std::env::var_os("HORIZON_FISHING_REFERENCE").unwrap();
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 5, "missing vanilla retrieval cases");
+        let loot = LootData::load(std::path::Path::new(&resources), &PackOverlay::NONE).unwrap();
+        for row in rows {
+            let seed = row["sequence_seed"].as_i64().unwrap();
+            let mut sequences = horizon_client::random_sequences::RandomSequences::default();
+            let mut level_random = LegacyRandom::new(1);
+            let items = super::fishing_loot(
+                &loot,
+                &mut sequences,
+                &mut level_random,
+                seed,
+                0.0,
+                None,
+                true,
+            );
+            let drops = row["drops"].as_array().unwrap();
+            let expected_items: Vec<_> = drops.iter().filter(|d| d.get("item").is_some()).collect();
+            assert_eq!(row["damage"].as_i64(), Some(1), "seed {seed}");
+            assert!(
+                !expected_items.is_empty(),
+                "missing vanilla catch for seed {seed}"
+            );
+            assert_eq!(items.len(), expected_items.len(), "seed {seed}");
+            let mut hook_random = LegacyRandom::new(row["hook_seed"].as_i64().unwrap());
+            for (item, expected) in items.iter().zip(expected_items) {
+                assert_eq!(item.item, expected["item"].as_str().unwrap(), "seed {seed}");
+                assert_eq!(i64::from(item.count), expected["count"].as_i64().unwrap());
+                let xp = hook_random.next_int_bound(6).unwrap() + 1;
+                assert!(
+                    drops
+                        .iter()
+                        .any(|d| d["xp"].as_i64() == Some(i64::from(xp)))
+                );
+            }
+            assert_eq!(
+                hook_random.next_long(),
+                row["hook_next"].as_i64().unwrap(),
+                "seed {seed}"
+            );
+            assert_eq!(
+                sequences
+                    .get("minecraft:gameplay/fishing", seed)
+                    .next_long(),
+                row["sequence_next"].as_i64().unwrap(),
+                "seed {seed}"
+            );
+        }
+        let casts: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(std::env::var_os("HORIZON_FISHING_CAST_REFERENCE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(casts.len(), 5, "missing vanilla cast cases");
+        for row in casts {
+            let mut random = LegacyRandom::new(row["seed"].as_i64().unwrap());
+            let (sin, cos, vertical) = super::cast_direction(
+                row["yaw"].as_f64().unwrap() as f32,
+                row["pitch"].as_f64().unwrap() as f32,
+            );
+            let velocity = super::cast_velocity(sin, cos, vertical, &mut random);
+            for (name, value) in [
+                ("x_bits", velocity.x),
+                ("y_bits", velocity.y),
+                ("z_bits", velocity.z),
+            ] {
+                assert_eq!(value.to_bits() as i64, row[name].as_i64().unwrap(), "{row}");
+            }
+            assert_eq!(random.next_long(), row["next"].as_i64().unwrap(), "{row}");
+        }
+    }
     #[test]
     fn a_breeze_deflects_the_hook_without_attaching_it() {
         use super::{EntityCollision, Hook, State};
@@ -1671,7 +1911,6 @@ mod tests {
 
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
-    use horizon_core::random::LegacyRandom;
 
     #[test]
     fn casting_straight_down_aims_down_and_straight_up_aims_up() {
@@ -1789,11 +2028,10 @@ mod tests {
 
     #[test]
     fn bite_triggers_initial_downward_plunge_impulse() {
-        let mut rng = LegacyRandom::new(12345);
         for _ in 0..100 {
             let mut hook = Hook::remote(1, Vec3::ZERO);
             assert_eq!(hook.velocity.y, 0.0);
-            hook.trigger_bite(&mut rng, 0);
+            hook.trigger_bite(0);
             assert!(
                 hook.velocity.y < 0.0,
                 "vertical velocity should be negative on bite, got {}",

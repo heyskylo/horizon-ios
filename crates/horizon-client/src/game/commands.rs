@@ -14,6 +14,7 @@ mod players;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
+mod selector_bounds;
 mod terrain_cmds;
 mod test_locate;
 mod test_runs;
@@ -697,11 +698,13 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map_or_else(|| Text::translate("entity.", &[]), |m| m.command_name()),
+            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
+                || Text::translate("entity.", &[]),
+                |m| match self.mob_team_of(m) {
+                    Some(team) => team.formatted_name(m.command_name()),
+                    None => m.command_name(),
+                },
+            ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = match other {
@@ -878,13 +881,20 @@ impl Game<'_> {
                 }
                 if s.delta.iter().any(Option::is_some) {
                     let d = s.delta.map(|v| v.unwrap_or(0.0));
-                    for i in 0..3 {
-                        let (a, b) = (
-                            origin[i].min(origin[i] + d[i]),
-                            origin[i].max(origin[i] + d[i]) + 1.0,
-                        );
-                        if p[i] < a || p[i] >= b {
+                    if let Some(bounds) = self.selector_target_bounds(t) {
+                        if !selector_bounds::selector_box(origin, d).intersects(bounds) {
                             return None;
+                        }
+                    } else {
+                        // Unmodeled boxes retain their previous point fallback.
+                        for i in 0..3 {
+                            let (a, b) = (
+                                origin[i].min(origin[i] + d[i]),
+                                origin[i].max(origin[i] + d[i]) + 1.0,
+                            );
+                            if p[i] < a || p[i] >= b {
+                                return None;
+                            }
                         }
                     }
                 }
@@ -1516,7 +1526,7 @@ impl Game<'_> {
         // An entity in another level is teleported in the level that holds it.
         let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
     }
-    fn teleport_to_in_level(
+    pub(super) fn teleport_to_in_level(
         &mut self,
         t: Target,
         pos: [f64; 3],
@@ -1779,7 +1789,16 @@ impl Game<'_> {
         level: super::Dim,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
-    ) -> bool {
+        turn_riders: bool,
+    ) -> R<bool> {
+        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => {
+                log::error!("entity teleport into {}: {error}", level.id());
+                return Err(err("commands.generic.exception", &[]));
+            }
+        }
         let conn = match t {
             Target::Player => self.lan_acting,
             Target::Guest(conn) => Some(conn),
@@ -1787,7 +1806,7 @@ impl Game<'_> {
         };
         let at = self.target_level(t);
         let Some(conn) = conn.filter(|_| at != level) else {
-            return false;
+            return Ok(false);
         };
         self.level_teleports
             .push(super::server_travel::LevelTeleport {
@@ -1795,8 +1814,9 @@ impl Game<'_> {
                 dim: level,
                 at: pos,
                 rotation,
+                vehicle: None,
             });
-        true
+        Ok(true)
     }
     /// `ServerPlayer.lookAt`: besides turning the player, tell their client
     /// with a `ClientboundPlayerLookAtPacket` (`from` anchor, the point, and
@@ -1854,13 +1874,22 @@ impl Game<'_> {
         };
         if id.ends_with("destination") {
             let dest = self.entities(ctx, "destination", false)?[0];
-            let pos = self.target_position(dest).unwrap_or(self.source_position());
-            // Into the destination's level.
-            let level = self.target_level(dest);
-            // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
+            let (pos, level, rotation, destination_name) = self
+                .in_target_level(dest, |game| {
+                    (
+                        game.target_position(dest).unwrap_or(game.source_position()),
+                        game.target_level(dest),
+                        Some(game.target_rotation(dest).map(wrap_degrees)),
+                        game.target_name(dest),
+                    )
+                })
+                .ok_or_else(|| err("argument.entity.notfound.entity", &[]))?;
+            let target_name = (targets.len() == 1).then(|| {
+                self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                    .unwrap_or_else(Text::empty)
+            });
             for &t in &targets {
-                if !self.teleport_across(t, level, pos, rotation) {
+                if !self.teleport_across(t, level, pos, rotation, true)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
                     self.teleport_to(t, pos, rotation, true);
@@ -1869,15 +1898,12 @@ impl Game<'_> {
             let message = if targets.len() == 1 {
                 Text::translate(
                     "commands.teleport.success.entity.single",
-                    &[self.target_name(targets[0]), self.target_name(dest)],
+                    &[target_name.unwrap(), destination_name],
                 )
             } else {
                 Text::translate(
                     "commands.teleport.success.entity.multiple",
-                    &[
-                        Text::literal(targets.len().to_string()),
-                        self.target_name(dest),
-                    ],
+                    &[Text::literal(targets.len().to_string()), destination_name],
                 )
             };
             self.feedback(message);
@@ -1940,6 +1966,10 @@ impl Game<'_> {
             None if self.source_entity().is_none() => super::Dim::Overworld,
             None => self.dim,
         };
+        let target_name = (targets.len() == 1).then(|| {
+            self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                .unwrap_or_else(Text::empty)
+        });
         for &t in &targets {
             // `facing` teleports with the rotation unchanged (Relative.ROTATION,
             // no turn for the riders), then LookAt.perform turns the target alone.
@@ -1947,7 +1977,9 @@ impl Game<'_> {
             let turn_riders = looked.is_none();
             let rotation = looked.or_else(|| {
                 let (angles, relative) = rotation?;
-                let current = self.target_rotation(t);
+                let current = self
+                    .in_target_level(t, |game| game.target_rotation(t))
+                    .unwrap_or([0.0, 0.0]);
                 // performTeleport wraps relative deltas before calculateAbsolute
                 // adds them back; wrapping the resolved pitch changes its clamp.
                 Some(std::array::from_fn(|axis| {
@@ -1958,7 +1990,7 @@ impl Game<'_> {
                     }
                 }))
             });
-            if self.teleport_across(t, source_level, pos, rotation) {
+            if self.teleport_across(t, source_level, pos, rotation, turn_riders)? {
                 continue;
             }
             self.teleport_to(t, pos, rotation, turn_riders);
@@ -1971,7 +2003,7 @@ impl Game<'_> {
         let message = if targets.len() == 1 {
             Text::translate(
                 "commands.teleport.success.location.single",
-                &[self.target_name(targets[0]), x, y, z],
+                &[target_name.unwrap(), x, y, z],
             )
         } else {
             Text::translate(
@@ -2778,7 +2810,8 @@ impl Game<'_> {
         entity: &mut horizon_client::containers::BlockEntity,
     ) -> bool {
         use horizon_client::{containers::BlockEntity, save, structure_blocks};
-        let table = save::text(tag.get("LootTable"));
+        let table = save::text(tag.get("LootTable"))
+            .and_then(|id| horizon_client_core::identifier::normalize_id(&id));
         let rolled = match (table, entity) {
             (Some(table), BlockEntity::Chest(slots)) if slots.iter().all(Option::is_none) => {
                 let loot = structure_blocks::loot_data(&self.options.resources, &self.pack_files());
@@ -2812,7 +2845,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        save::consume_container_loot(&mut extras, key);
         let taken = rolled.is_some();
         extras.rolled_loot.extend(rolled);
         chunk.saved = Some(std::sync::Arc::new(extras));
@@ -3030,6 +3063,7 @@ impl Game<'_> {
     /// The caller reports the level change to the mods.
     fn give_points(&mut self, amount: i32) {
         let e = &mut self.experience;
+        let mut sound_level = None;
         e.progress += amount as f32 / horizon_client::entities::Experience::needed(e.level) as f32;
         e.total = e.total.saturating_add(amount).clamp(0, i32::MAX);
         while e.progress < 0.0 {
@@ -3046,7 +3080,13 @@ impl Game<'_> {
             e.progress =
                 (e.progress - 1.0) * horizon_client::entities::Experience::needed(e.level) as f32;
             e.level += 1;
+            if e.level % 5 == 0 {
+                sound_level.get_or_insert(e.level);
+            }
             e.progress /= horizon_client::entities::Experience::needed(e.level) as f32;
+        }
+        if let Some(level) = sound_level {
+            self.play_level_up(1, level);
         }
     }
     /// AdvancementCommands.perform / performCriterion.
@@ -3065,8 +3105,6 @@ impl Game<'_> {
             ),
             _ => None,
         };
-        let player = Text::literal(self.acting_player_name());
-        let players = targets.len();
         if let (Some(i), Some(Arg::Str(criterion))) = (index, ctx.get("criterion")) {
             let a = &tree.list[i];
             let name = super::advancements::adv_name(a);
@@ -3076,19 +3114,18 @@ impl Game<'_> {
                     &[name, Text::literal(criterion.clone())],
                 )));
             }
-            let changed = if grant {
-                self.grant_advancement(i, Some(criterion))
-            } else {
-                self.revoke_advancement(i, Some(criterion))
-            };
-            let to = if players == 1 { "one" } else { "many" };
-            let who = if players == 1 {
-                player
-            } else {
-                Text::literal(players.to_string())
-            };
+            // AdvancementCommands.performCriterion: each selected player's own turn.
+            let results = self.advancement_turns(&targets, |g| {
+                i32::from(if grant {
+                    g.grant_advancement(i, Some(criterion))
+                } else {
+                    g.revoke_advancement(i, Some(criterion))
+                })
+            });
+            let (who, many) = self.advancement_subject(&results);
+            let to = if many { "many" } else { "one" };
             let args = [Text::literal(criterion.clone()), name, who];
-            if !changed {
+            if results.iter().map(|r| r.1).sum::<i32>() == 0 {
                 return Err(CommandError::new(Text::translate(
                     &format!("commands.advancement.{key}.criterion.to.{to}.failure"),
                     &args,
@@ -3098,7 +3135,7 @@ impl Game<'_> {
                 &format!("commands.advancement.{key}.criterion.to.{to}.success"),
                 &args,
             ));
-            return Ok(1);
+            return Ok(results.iter().map(|r| r.1).sum());
         }
         // getAdvancements: parents first (nearest up), the target, then
         // the subtree depth first.
@@ -3127,30 +3164,32 @@ impl Game<'_> {
                 out
             }
         };
-        self.adv.quiet = index.is_none();
-        let mut count = 0;
-        for &i in &list {
-            let changed = if grant {
-                self.grant_advancement(i, None)
-            } else {
-                self.revoke_advancement(i, None)
-            };
-            count += i32::from(changed);
-        }
-        self.adv.quiet = false;
-        let to = if players == 1 { "one" } else { "many" };
-        let who = if players == 1 {
-            player
-        } else {
-            Text::literal(players.to_string())
-        };
+        let quiet = index.is_none();
+        // AdvancementCommands.perform: Action.perform for each selected player.
+        let results = self.advancement_turns(&targets, |g| {
+            let was_quiet = std::mem::replace(&mut g.adv.quiet, quiet);
+            let mut count = 0;
+            for &i in &list {
+                let changed = if grant {
+                    g.grant_advancement(i, None)
+                } else {
+                    g.revoke_advancement(i, None)
+                };
+                count += i32::from(changed);
+            }
+            g.adv.quiet = was_quiet;
+            count
+        });
+        let total: i32 = results.iter().map(|r| r.1).sum();
+        let (who, many) = self.advancement_subject(&results);
+        let to = if many { "many" } else { "one" };
         let (what, first) = if list.len() == 1 {
             ("one", super::advancements::adv_name(&tree.list[list[0]]))
         } else {
             ("many", Text::literal(list.len().to_string()))
         };
         let args = [first, who];
-        if count == 0 {
+        if total == 0 {
             return Err(CommandError::new(Text::translate(
                 &format!("commands.advancement.{key}.{what}.to.{to}.failure"),
                 &args,
@@ -3160,7 +3199,34 @@ impl Game<'_> {
             &format!("commands.advancement.{key}.{what}.to.{to}.success"),
             &args,
         ));
-        Ok(count)
+        Ok(total)
+    }
+    /// Run `f` as each selected player's own turn and collect what it changed;
+    /// a target without a turn counts as unchanged, like in `cmd_clear`.
+    fn advancement_turns(
+        &mut self,
+        targets: &[Target],
+        f: impl Fn(&mut Self) -> i32,
+    ) -> Vec<(Target, i32)> {
+        targets
+            .iter()
+            .map(|&t| (t, self.for_player(t, &f).unwrap_or(0)))
+            .collect()
+    }
+    /// The player argument of the advancement feedback: with the tracker's
+    /// NON_ZERO elements on success and every element on failure, the one
+    /// player's name, else the count (CommandResponseTracker.dispatch).
+    fn advancement_subject(&self, results: &[(Target, i32)]) -> (Text, bool) {
+        let changed: Vec<Target> = results.iter().filter(|r| r.1 != 0).map(|r| r.0).collect();
+        let picked: Vec<Target> = if changed.is_empty() {
+            results.iter().map(|r| r.0).collect()
+        } else {
+            changed
+        };
+        match picked.as_slice() {
+            [t] => (self.target_name(*t), false),
+            _ => (Text::literal(picked.len().to_string()), true),
+        }
     }
     fn cmd_experience(&mut self, ctx: &Context) -> R<i32> {
         let levels = ctx.has("levels");
@@ -3319,10 +3385,6 @@ impl Game<'_> {
         // reopen, so it follows the command.
         self.level.set_difficulty(i);
         self.sync_rules();
-        if i == 0 {
-            // Peaceful removes hostile mobs.
-            self.mobs.retain(|m| !m.hostile());
-        }
         // MinecraftServer.setDifficulty: every player, guests included, is
         // sent the new difficulty.
         if let Some(host) = self.lan.as_ref() {
@@ -3968,7 +4030,7 @@ impl Game<'_> {
             line,
             None,
             horizon_client::chat::ChatSource::Player,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
         Ok(1)
@@ -4377,5 +4439,93 @@ mod teleport_rider_tests {
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod selector_bounds_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{entities::ArmorStand, mobs::Mob};
+    use horizon_core::geometry::Vec3;
+
+    #[test]
+    fn actual_selector_uses_body_overlap_but_distance_stays_at_the_origin() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            eprintln!("Prepared resources unavailable; Game selector coverage did not run");
+            return;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs
+            .push(Mob::new(30, kind, Vec3::new(10.5, 220.0, 10.5), 0.0));
+        let target = Target::Mob(30);
+        let mut selector = Selector {
+            kind: 'e',
+            include_entities: true,
+            limit: usize::MAX,
+            delta: [Some(0.0); 3],
+            ..Default::default()
+        };
+        let origin = [9.5, 220.0, 10.5];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, origin),
+            vec![(target, 1.0)]
+        );
+        selector.distance = Some((None, Some(0.9)));
+        assert!(
+            game.select_in_level(vec![target], &selector, origin)
+                .is_empty()
+        );
+        selector.distance = None;
+        assert!(
+            game.select_in_level(vec![target], &selector, [11.0, 220.0, 10.5])
+                .is_empty()
+        );
+        selector.delta = [Some(-1.0), None, None];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, [11.5, 220.0, 10.5])
+                .len(),
+            1
+        );
+        game.armor_stands
+            .push(ArmorStand::new(31, Vec3::new(30.5, 220.0, 10.5), 0.0));
+        selector.delta = [Some(0.0); 3];
+        for (x, count) in [(29.5, 1), (29.25, 0), (30.75, 0), (29.250000000000004, 1)] {
+            assert_eq!(
+                game.select_in_level(vec![Target::Stand(31)], &selector, [x, 220.0, 10.5])
+                    .len(),
+                count
+            );
+        }
     }
 }

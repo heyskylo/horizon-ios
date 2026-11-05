@@ -253,6 +253,8 @@ impl Game<'_> {
             .unwrap_or_else(|| self.items().get(&stack.item).map_or(250, |i| i.max_damage))
     }
     /// `TridentItem.use`: start the throw unless one more use would break it.
+    /// Returns false for `InteractionResult.FAIL` (about to break, or Riptide
+    /// while dry) so callers neither dip the hand nor consume the click.
     pub(super) fn use_trident(&mut self, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:trident" {
             return false;
@@ -260,7 +262,7 @@ impl Game<'_> {
         let max = self.trident_max_damage(stack);
         let riptide = stack.enchantment_level("minecraft:riptide") > 0;
         if stack.damage >= max.saturating_sub(1) || (riptide && !self.in_water_or_rain()) {
-            return true;
+            return false;
         }
         self.start_using_item();
         true
@@ -369,10 +371,10 @@ impl Game<'_> {
         if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1) {
             return;
         }
-        let at = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
+        // Counted (on the server) before the throw or the spin.
+        if self.remote.is_none() {
+            self.award_stat("used", "minecraft:trident", 1);
+        }
         if riptide > 0 {
             // `hurtWithoutBreaking` and the sound belong to the server; a server's
             // client only launches.
@@ -414,7 +416,7 @@ impl Game<'_> {
             }
             if !server_client {
                 let sound = format!("minecraft:item.trident.riptide_{}", riptide.min(3));
-                self.audio.play(&sound, at, 1.0, 1.0);
+                self.play_player_bound_sound(&sound, 7, 1.0, 1.0, false);
                 if let (Some(player), Some(name)) =
                     (self.lan_acting_uuid, self.lan_acting_name.clone())
                 {
@@ -480,8 +482,14 @@ impl Game<'_> {
             deflected_by: None,
         });
         self.player_projectile_shot();
-        self.audio
-            .play("minecraft:item.trident.throw", at, 1.0, 1.0);
+        self.audio.play_bound(
+            "minecraft:item.trident.throw",
+            7,
+            1.0,
+            1.0,
+            horizon_client::sound_engine::SoundEntity::new(id, [start.x, start.y, start.z], false),
+            None,
+        );
     }
     /// The thrower's `PLAYER_HURT_ENTITY` for a trident hit: run as the
     /// guest that threw it, and not at all once they have left.
@@ -616,6 +624,17 @@ impl Game<'_> {
             }
             // ThrownTrident.tick: Loyalty needs its owner, who is in this level.
             let owner_eye = catchers.iter().find(|c| c.guest == t.guest).map(|c| c.eye);
+            // `isAcceptibleReturnOwner` fails for a dead or spectating owner: the
+            // trident drops as an item when it can be picked up, then goes.
+            if t.loyalty > 0
+                && (t.dealt_damage || t.no_physics)
+                && catchers.iter().any(|c| c.guest == t.guest && !c.touches)
+            {
+                if !t.creative_only {
+                    self.spawn_at_location(t.position, f64::from(0.1f32), t.stack.clone());
+                }
+                continue;
+            }
             if t.loyalty > 0
                 && (t.dealt_damage || t.no_physics)
                 && let Some(owner_eye) = owner_eye

@@ -3,6 +3,8 @@
 //! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
 //! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
+//! `player-expect <uuid> [seconds]`, `player-export <uuid> [freeze]` and `player-release <uuid> ...` are a
+//! proxy's, for a player it moves between two servers (transfer.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
@@ -47,6 +49,10 @@ impl Game<'_> {
                     super::events::since(since.trim().parse().unwrap_or(0))
                 }
                 Some(("management", rest)) => self.management(state, rest),
+                // A proxy moving a player here or away (transfer.rs, lan/arrivals.rs).
+                Some((verb, rest)) if verb.starts_with("player-") => {
+                    self.player_request(verb, rest)
+                }
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
                     let output: Vec<String> = capture_log(|| self.console_command(state, line))

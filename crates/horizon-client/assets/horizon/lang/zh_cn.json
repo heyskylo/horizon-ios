@@ -124,6 +124,7 @@
   "Done": "完成",
   "This feature is not yet available in Horizon.": "此功能在 Horizon 中尚不可用。",
   "Your display or system doesn't offer HDR output.": "你的显示器或系统不支持 HDR 输出。",
+  "Only applies to asynchronous entity culling.": "仅适用于异步实体剔除。",
   "Turn HDR on to use it.": "开启 HDR 后才能使用。",
   "Your GPU or graphics API doesn't support it.": "你的 GPU 或图形 API 不支持此功能。",
   "%s chunks": "%s 个区块",

@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "register_goals",
+      "target": "horizon_client_lib::mobs::ai::native_register_goals",
+      "neoforge": "Mob.registerGoals",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a new mob's goals (`native_register_goals`, `Mob.registerGoals`).",
+  "doc_summary": "a new mob's goals (`native_register_goals(mob)`, vanilla's `Mob.registerGoals`): `mob.ai.goals` and\n`mob.ai.targets` hold its species' goals, a mod type's template's; a mod clears them to replace them or adds its own\n`Goal`s, which steer the mob with its navigation (`nav_move_to`, `create_path_to`) and controls. Bundles need\n\"hooks\": @API:register_goals@.",
+  "comments": ["crates/horizon-client/src/mobs/ai.rs"]
+}

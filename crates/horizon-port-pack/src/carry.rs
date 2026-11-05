@@ -855,6 +855,13 @@ pub fn carry(
     }
     let file = fs::File::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", jar.display()))?;
+    // The previous harness verdict describes the content we are about to replace.
+    let verdict = out.join("harness/result.json");
+    if let Err(e) = fs::remove_file(&verdict)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("{}: {e}", verdict.display()));
+    }
     let (inside, outside) = (out.join("carry"), out.join("outside"));
     let _ = fs::remove_dir_all(&inside);
     let _ = fs::remove_dir_all(&outside);
@@ -1437,6 +1444,112 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn recarry_invalidates_the_verdict_before_replacing_content() {
+        use crate::{
+            inventory::Record,
+            report::{self, Status},
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-recarry-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("example.jar");
+        let payload = br#"{"variants":{"":{"model":"example:block/stone"}}}"#;
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "assets/example/blockstates/stone.json",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+        let work = dir.join("work");
+        let out = work.join("mods/example");
+        let verdict = out.join("harness/result.json");
+        let info = crate::jar::JarInfo {
+            mod_id: "example".into(),
+            ..Default::default()
+        };
+        let run = |source: &Path| {
+            carry(
+                source,
+                &info,
+                &out,
+                None,
+                &|_| true,
+                &Pack {
+                    loaded: &|_| true,
+                    mods: &|_| false,
+                },
+                &BTreeMap::new(),
+            )
+        };
+        let records = [Record {
+            key: "example".into(),
+            class: "content".into(),
+            tier: "data".into(),
+            ..Default::default()
+        }];
+        let row = || report::build(&records, &work).pop().unwrap();
+        run(&jar).unwrap();
+        fs::create_dir_all(verdict.parent().unwrap()).unwrap();
+        let green = br#"{"checks":{"blocks":{"passed":1,"failed":0}}}"#;
+        let untouched = work.join("mods/untouched/harness/result.json");
+        fs::create_dir_all(untouched.parent().unwrap()).unwrap();
+        fs::write(&untouched, green).unwrap();
+        for aggregate in [false, true] {
+            let result = if aggregate {
+                br#"{"passed":true,"checks":{"blocks":{"passed":1,"failed":0}}}"#.as_slice()
+            } else {
+                green.as_slice()
+            };
+            fs::write(&verdict, result).unwrap();
+            assert_eq!(row().status, Status::Ported);
+            run(&jar).unwrap();
+            assert_eq!(row().status, Status::Partial);
+            assert!(row().reason.contains("harness not run"));
+            assert!(!verdict.exists());
+            assert_eq!(fs::read(&untouched).unwrap(), green);
+        }
+        fs::write(&verdict, green).unwrap();
+        // An invalid archive has not changed the old content, so its evidence stays valid.
+        let bad = dir.join("invalid.jar");
+        fs::write(&bad, b"not a zip").unwrap();
+        assert!(run(&bad).is_err());
+        assert_eq!(row().status, Status::Ported);
+        assert_eq!(fs::read(&verdict).unwrap(), green);
+
+        // Opening this ZIP succeeds, but reading its payload fails the CRC after mutation starts.
+        let mut corrupt = fs::read(&jar).unwrap();
+        let offset = corrupt
+            .windows(payload.len())
+            .position(|w| w == payload)
+            .unwrap();
+        corrupt[offset] ^= 1;
+        fs::write(&bad, corrupt).unwrap();
+        assert!(run(&bad).is_err());
+        assert_eq!(row().status, Status::Partial);
+        assert!(!verdict.exists());
+        run(&jar).unwrap();
+        fs::write(&verdict, green).unwrap();
+        assert_eq!(row().status, Status::Ported);
+
+        // An invalidation error must leave the carried content alone.
+        fs::remove_file(&verdict).unwrap();
+        fs::create_dir(&verdict).unwrap();
+        let sentinel = out.join("carry/keep.txt");
+        fs::write(&sentinel, b"keep").unwrap();
+        assert!(run(&jar).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// YUNG's pools carry comments, which Minecraft's lenient reader skips;
     /// the carry holds them as plain JSON. A comment marker inside a string

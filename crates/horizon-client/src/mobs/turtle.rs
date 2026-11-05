@@ -176,6 +176,13 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 pos: at,
                 block: below,
             });
+            // Turtle.aiStep: `gameEvent(GameEvent.ENTITY_ACTION)` after the level event.
+            events.push(MobEvent::GameEvent {
+                event: "minecraft:entity_action",
+                at: [m.position.x, m.position.y, m.position.z],
+                source: m.id,
+                state: horizon_world::registry::BlockStateId(0),
+            });
         }
     }
 }

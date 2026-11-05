@@ -55,9 +55,14 @@ pub struct RideTarget {
     pub aimed: Option<[i32; 3]>,
 }
 /// What a piglin's or hoglin's brain remembers of its surroundings and of
-/// what it retreats from. None of it is saved: these memories have no codec.
+/// what it retreats from. Most have no codec; live guarded anger below is saved.
 #[derive(Clone, Debug, Default)]
 pub struct Memories {
+    /// The guarded-block event owns the saved ANGRY_AT entry once set.
+    /// Outer None leaves unmodeled loaded memory alone; Some(None) has no
+    /// authoritative actor identity and clears stale raw data instead of inventing one.
+    /// Its remaining TTL is the existing `Extra::anger` counter.
+    pub guarded_angry_at: Option<Option<[i32; 4]>>,
     /// `AVOID_TARGET`.
     pub avoid: Option<AvoidTarget>,
     /// `RIDE_TARGET`.
@@ -105,6 +110,14 @@ pub struct Memories {
     /// `ADMIRING_DISABLED`: the ticks left.
     pub admire_disabled: i32,
 }
+/// Existing guarded-block anger, with the causal player's authoritative UUID.
+/// This adds identity only; targeting and countdown keep their existing policy.
+pub fn set_guarded_anger_target(m: &mut Mob, player: Option<[i32; 4]>) {
+    m.extra.anger = 600;
+    m.ai.target = Some(Who::Player);
+    m.extra.piglin.guarded_angry_at = Some(player);
+}
+
 impl Memories {
     /// `StartAdmiringItemIfSeen.create(119)` (core activity) and the admire
     /// activity's `StopAdmiringIfItemTooFarAway(9)` and
@@ -140,7 +153,7 @@ fn visible(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     match who {
         Who::Player => {
             let Some(p) = &w.player else { return false };
-            let r = (range * p.visibility_percent()).max(2.0);
+            let r = (range * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
             p.alive && !p.spectator && m.distance_sqr(p.position) <= r * r && m.sees(w, who)
         }
         Who::Mob(id) => {
@@ -806,8 +819,7 @@ fn same_type(w: &MobWorld, a: Who, b: Who) -> bool {
 fn broadcast_anger(m: &Mob, w: &MobWorld, by: Who, at: Vec3, events: &mut Vec<MobEvent>) {
     let range = m.attrs.follow_range;
     let hoglin = species_of(w, by) == Some(Species::Hoglin);
-    // Hoglin.canBeHunted: an adult.
-    let huntable = matches!(by, Who::Mob(id) if w.seen(id).is_some_and(|s| !s.baby));
+    let huntable = matches!(by, Who::Mob(id) if w.seen(id).is_some_and(|s| s.huntable));
     if hoglin && !huntable {
         return;
     }
@@ -1254,7 +1266,8 @@ impl Goal for HuntHoglin {
             return false;
         }
         let hoglins: Vec<(u32, Vec3)> =
-            cx.w.nearby(pos, range, |s| s.species == Species::Hoglin && !s.baby)
+            // PiglinSpecificSensor: only a hoglin that `canBeHunted`.
+            cx.w.nearby(pos, range, |s| s.huntable)
                 .map(|s| (s.id, s.position))
                 .collect();
         self.found = hoglins

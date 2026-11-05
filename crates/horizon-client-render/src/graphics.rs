@@ -532,6 +532,67 @@ pub fn smooth_gradients_offered() -> bool {
     SMOOTH_GRADIENTS_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether GPU Culling (`Graphics::gpu_culling`) can be switched on here, and why not: set when a
+/// renderer starts, and again when its pass can't be set up or its buffers stop fitting in video
+/// memory. Where it isn't offered the settings grey its switch out with the reason, and the saved
+/// value waits for a renderer that offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuCullingOffer {
+    /// No count draws the GPU wrote, compute shaders or working first instances (OpenGL, Metal,
+    /// Vulkan without `VK_KHR_draw_indirect_count`, Intel Gen11/Gen12's Vulkan driver), vanilla
+    /// frames drawn flat, or a pass the driver couldn't build.
+    Unsupported = 0,
+    /// A software adapter (WARP, lavapipe): the pass would run on the CPU, beside the frame.
+    Software = 1,
+    /// Its buffers stopped fitting in video memory: off until the next renderer.
+    OutOfMemory = 2,
+    /// DX12 with flat page groups, whose count draws leave each draw's base vertex out of
+    /// what the near sections' packed faces are read by (`gpu_culling::loses_base_vertex`).
+    Dx12 = 3,
+    /// The graphics device was lost while its frames were drawn (`lose_gpu_culling`): off
+    /// for the renderers after it, until Horizon restarts.
+    DeviceLost = 5,
+    Offered = 4,
+}
+impl GpuCullingOffer {
+    /// The greyed switch's tooltip; `None` where it is offered.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Unsupported => Some("Your GPU or graphics API doesn't support it."),
+            Self::Software => Some("Not with software rendering, which runs it on the CPU."),
+            Self::OutOfMemory => Some("Out of video memory: off until the next start."),
+            Self::Dx12 => Some("Not on DirectX 12 yet: try the Vulkan graphics API."),
+            Self::DeviceLost => Some("The graphics device was lost: off until the next start."),
+            Self::Offered => None,
+        }
+    }
+}
+static GPU_CULLING_OFFER: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(GpuCullingOffer::Unsupported as u8);
+pub fn offer_gpu_culling(offer: GpuCullingOffer) {
+    GPU_CULLING_OFFER.store(offer as u8, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn gpu_culling_offer() -> GpuCullingOffer {
+    match GPU_CULLING_OFFER.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => GpuCullingOffer::Software,
+        2 => GpuCullingOffer::OutOfMemory,
+        3 => GpuCullingOffer::Dx12,
+        4 => GpuCullingOffer::Offered,
+        5 => GpuCullingOffer::DeviceLost,
+        _ => GpuCullingOffer::Unsupported,
+    }
+}
+/// Set once the graphics device was lost while GPU culling drew the frames (the game's
+/// `recover_device`): the renderers made after it don't offer it (`GpuCullingOffer::DeviceLost`),
+/// so a fault in its frames can't lose the device again after every recovery.
+static GPU_CULLING_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn lose_gpu_culling() {
+    GPU_CULLING_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn gpu_culling_lost() -> bool {
+    GPU_CULLING_LOST.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -608,8 +669,15 @@ pub struct Graphics {
     pub blue_map: crate::bluemap::Settings,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
+    /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
+    /// is offered (`gpu_culling_offer`). Off by default (GPU Culling, Performance graphics); it
+    /// applies at once, and no preset sets it. Every save writes it, so a default turned on later
+    /// needs a new key, as `batchTranslucent` did.
+    pub gpu_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
+    /// Minimum entity population for coarse AABB culling; zero disables it.
+    pub entity_culling_precheck: u32,
     /// Skip particles outside the view or hidden behind opaque terrain.
     pub particle_culling: ParticleCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
@@ -716,7 +784,9 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
+            gpu_culling: false,
             entity_culling: EntityCullingMode::Off,
+            entity_culling_precheck: 64,
             particle_culling: ParticleCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             cache_shulker_boxes: false,
@@ -812,7 +882,11 @@ impl Graphics {
                 }
                 "blueMapAutoDetect" => g.blue_map.auto_detect = flag(g.blue_map.auto_detect),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
+                "gpuCulling" => g.gpu_culling = flag(g.gpu_culling),
                 "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
+                "entityCullingPrecheck" => {
+                    g.entity_culling_precheck = number(g.entity_culling_precheck).min(512)
+                }
                 "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "blockEntityCache" => {
@@ -906,12 +980,13 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             self.entity_culling.name(),
+            self.entity_culling_precheck,
             self.particle_culling.name(),
             self.leaf_culling.name(),
             bool_text(self.cache_shulker_boxes),
@@ -959,6 +1034,7 @@ impl Graphics {
             self.shader_pack,
             bool_text(self.translucent_batching),
             bool_text(self.hdr_smooth_gradients),
+            bool_text(self.gpu_culling),
         );
         text += &self.blue_map.serialize();
         text
@@ -1097,7 +1173,9 @@ mod tests {
                 servers: Vec::new(),
             },
             cave_culling: false,
+            gpu_culling: true,
             entity_culling: EntityCullingMode::Synchronous,
+            entity_culling_precheck: 128,
             particle_culling: ParticleCullingMode::Asynchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             cache_shulker_boxes: true,
@@ -1183,6 +1261,9 @@ mod tests {
         assert!(Graphics::parse("hdr:true\n").wide_frame());
         assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").wide_frame());
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
+        // GPU Culling is opt-in: only the file or its switch turns it on.
+        assert!(!Graphics::default().gpu_culling);
+        assert!(Graphics::parse("gpuCulling:true\n").gpu_culling);
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);

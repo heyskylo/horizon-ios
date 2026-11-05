@@ -511,6 +511,30 @@ impl AnimateContext<'_> {
             ],
         ))
     }
+    /// The centre, in the horizontal plane, of the pick shape's bounds before
+    /// the model offset - a flower's own box, where its collision shape is
+    /// empty. `WitherRoseBlock.animateTick` reads it off `getShape`.
+    fn outline_center(&self, state: BlockStateId) -> [f64; 2] {
+        let outline = &self.facts.get(state).outline;
+        if outline.is_empty() {
+            return [0.5; 2];
+        }
+        let seed = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let [x1, z1, x2, z2] = outline.iter().fold(seed, |b, box_| {
+            [
+                b[0].min(box_[0]),
+                b[1].min(box_[2]),
+                b[2].max(box_[3]),
+                b[3].max(box_[5]),
+            ]
+        });
+        [(x1 + x2) / 2.0, (z1 + z2) / 2.0]
+    }
     /// `Level.getMaxLocalRawBrightness`: the brighter of block light and
     /// sky light less the sky darkening.
     fn max_local_raw_brightness(&self, p: [i32; 3]) -> i32 {
@@ -1378,10 +1402,10 @@ fn block_animate_tick(
         }
         Animate::PointedDripstone => dripstone_drip(tables, engine, ctx, state, pos),
         Animate::WitherRose => {
-            // WitherRoseBlock.animateTick: smoke puffs at the centre of the shape.
-            let center = ctx.shape_y(pos).map_or([0.5; 2], |s| {
-                [(s.2[0] + s.2[1]) / 2.0, (s.2[2] + s.2[3]) / 2.0]
-            });
+            // WitherRoseBlock.animateTick: smoke puffs at the centre of
+            // `getShape`, the pick shape a flower's `getOffset` moves per column,
+            // which is not the (empty) collision shape.
+            let center = ctx.outline_center(state);
             let offset = ctx.offset_of(state, pos);
             let x = fx + center[0] + offset[0];
             let z = fz + center[1] + offset[2];

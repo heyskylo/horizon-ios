@@ -111,6 +111,12 @@ pub(super) struct Fight {
     needs_scan: bool,
     pub killed: bool,
     pub previously_killed: bool,
+    /// `dragonUUID`: the fight's own dragon. Only its death wins the fight
+    /// (`setDragonKilled`); a dragon summoned after the fight is won is not it.
+    dragon_uuid: Option<[i32; 4]>,
+    /// `ticksSinceDragonSeen`: ticks since the fight's dragon last ticked
+    /// (`updateDragon`); at 1200 the fight looks for another one.
+    dragon_unseen: i32,
     gateways: Vec<i32>,
     exit_portal: Option<[i32; 3]>,
     alive_crystals: i32,
@@ -563,7 +569,9 @@ impl Dragon {
     /// (the dragon's type is fire immune) before `EnderDragon.hurt`.
     /// `direct` is the projectile that hit: a direct `AbstractArrow` or a
     /// `WindCharge` is the arrow a perched dragon shrugs off, a breeze's
-    /// `BreezeWindCharge` is neither.
+    /// `BreezeWindCharge` is neither. Gameplay calls `hurt_part_from`; this
+    /// is the no-attacker form the tests use.
+    #[cfg(test)]
     fn hurt_part(
         &mut self,
         part: usize,
@@ -571,6 +579,19 @@ impl Dragon {
         counts: Option<HurtSource<'_>>,
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
+    ) -> Hurt {
+        self.hurt_part_from(part, damage, counts, kind, direct, None)
+    }
+    /// `hurt_part` with the melee attacker's position (`DamageSource.getSourcePosition`,
+    /// the direct entity's feet). `None` for a hit that is not a player's melee.
+    fn hurt_part_from(
+        &mut self,
+        part: usize,
+        damage: f32,
+        counts: Option<HurtSource<'_>>,
+        kind: DamageKind,
+        direct: Option<&ProjectileKind>,
+        from: Option<Vec3>,
     ) -> Hurt {
         if is_fire(kind) {
             return Hurt::Refused;
@@ -581,15 +602,27 @@ impl Dragon {
                 ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::WindCharge
             )
         );
-        self.hurt(part, damage, counts, arrow)
+        self.hurt_from(part, damage, counts, arrow, from)
     }
     /// `EnderDragon.hurt(part, source, damage)`: whether the hit landed
     /// (an arrow is spent, else it turns back). `counts` is the source
     /// `reallyHurt` takes when `source.getEntity() instanceof Player` or its
     /// type always hurts dragons (explosions), and none otherwise; `arrow` a
     /// direct arrow or wind charge, which a perched dragon shrugs off
-    /// (`AbstractDragonSittingPhase.onHurt`).
+    /// (`AbstractDragonSittingPhase.onHurt`). Gameplay calls `hurt_from`.
+    #[cfg(test)]
     fn hurt(&mut self, part: usize, damage: f32, counts: Option<HurtSource>, arrow: bool) -> Hurt {
+        self.hurt_from(part, damage, counts, arrow, None)
+    }
+    /// `hurt` with the position `dealDefaultKnockback` pushes away from.
+    fn hurt_from(
+        &mut self,
+        part: usize,
+        damage: f32,
+        counts: Option<HurtSource>,
+        arrow: bool,
+        from: Option<Vec3>,
+    ) -> Hurt {
         if matches!(self.phase, Phase::Dying { .. }) || !self.alive() {
             return Hurt::Refused;
         }
@@ -646,6 +679,19 @@ impl Dragon {
                 });
             }
         }
+        // `LivingEntity.hurtServer` calls `dealDefaultKnockback` (strength
+        // `0.4F`) on a full hit, before `EnderDragon.hurt` adds sitting damage
+        // and maybe takes off. `from` is the attacker's feet for a player's
+        // melee hit. Explosions are `#no_knockback`; their push is
+        // `explosion_knockback`.
+        if full && let Some(from) = from {
+            self.knockback(
+                f64::from(0.4_f32),
+                from.x - self.position.x,
+                from.z - self.position.z,
+                source,
+            );
+        }
         if self.phase.sitting() {
             self.sitting_damage += before - self.health.max(0.0);
             if self.sitting_damage > 0.25 * MAX_HEALTH {
@@ -658,6 +704,43 @@ impl Dragon {
             }
         }
         Hurt::Landed { full }
+    }
+    /// `EnderDragon.knockback`: `LivingEntity.knockback` only when the phase
+    /// is not sitting. `(xd, zd)` points at the hit (`dealDefaultKnockback`:
+    /// the source position minus this position). Knockback resistance is the
+    /// mob default, 0. `noPhysics` never sets `onGround`, so the vertical
+    /// component stays.
+    fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: HurtSource<'_>) {
+        if self.phase.sitting() {
+            return;
+        }
+        let mut knock = horizon_client::health::Knock {
+            strength: power,
+            x: xd,
+            z: zd,
+        };
+        if horizon_client::health::knockback_canceled(
+            horizon_client::health::Hurting::Dragon(self.id as i32, source),
+            &mut knock,
+        ) {
+            return;
+        }
+        let horizon_client::health::Knock {
+            strength: power,
+            x: mut xd,
+            z: mut zd,
+        } = knock;
+        if power <= 0.0 {
+            return;
+        }
+        while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
+            xd = (self.random.next_double() - self.random.next_double()) * 0.01;
+            zd = (self.random.next_double() - self.random.next_double()) * 0.01;
+        }
+        let len = (xd * xd + zd * zd).sqrt();
+        let (kx, kz) = (xd / len * power, zd / len * power);
+        let v = self.velocity;
+        self.velocity = Vec3::new(v.x / 2.0 - kx, v.y, v.z / 2.0 - kz);
     }
     /// `ServerExplosion.hurtEntities` on the dragon: the dragon itself (its
     /// body takes it), then each part, in `Level.getEntities` order, each by
@@ -838,6 +921,10 @@ impl Game<'_> {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
                 _ => None,
             },
+            dragon_uuid: match data.and_then(|d| d.get("dragon_uuid")) {
+                Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+                _ => None,
+            },
             // The first tick scans for players.
             player_scan: 21,
             ..Default::default()
@@ -888,6 +975,9 @@ impl Game<'_> {
         ];
         if let Some(p) = f.exit_portal {
             data.push(("exit_portal_location", Tag::IntArray(p.to_vec())));
+        }
+        if let Some(u) = f.dragon_uuid {
+            data.push(("dragon_uuid", Tag::IntArray(u.to_vec())));
         }
         if let Some((stage, _)) = f.respawn {
             data.push(("respawn_stage", Tag::String(stage.name().into())));
@@ -1021,11 +1111,7 @@ impl Game<'_> {
         }
         if self.fight.players {
             if self.fight.needs_scan {
-                // scanState: a missing exit portal means a fight in progress.
-                self.fight.previously_killed = self.end_portal_active();
-                if !self.fight.previously_killed {
-                    self.fight.killed = false;
-                }
+                self.scan_state();
                 self.fight.needs_scan = false;
                 self.fight.dirty = true;
             }
@@ -1033,8 +1119,19 @@ impl Game<'_> {
                 self.tick_respawn();
             }
             if !self.fight.killed {
-                if self.dragon.is_none() {
-                    self.create_new_dragon();
+                // Without a dragon of its own, or 1200 ticks after it last
+                // ticked, the fight takes the End's dragon or makes one
+                // (`findOrCreateDragon`).
+                let look = match self.fight.dragon_uuid {
+                    None => true,
+                    Some(_) => {
+                        self.fight.dragon_unseen += 1;
+                        self.fight.dragon_unseen >= 1200
+                    }
+                };
+                if look {
+                    self.find_or_create_dragon();
+                    self.fight.dragon_unseen = 0;
                 }
                 self.fight.crystal_scan += 1;
                 if self.fight.crystal_scan >= 100 {
@@ -1055,6 +1152,12 @@ impl Game<'_> {
         for c in self.crystals.iter_mut().filter(|c| c.id == 0) {
             self.next_entity += 1;
             c.id = self.next_entity;
+        }
+        // updateDragon, from the fight's dragon's aiStep (not with NoAI) and
+        // tickDeath: it has been seen.
+        let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
+        if ticks && self.is_fight_dragon() {
+            self.fight.dragon_unseen = 0;
         }
         self.tick_dragon();
     }
@@ -1281,12 +1384,19 @@ impl Game<'_> {
     ) -> Hurt {
         let by_id = by.map(|who| self.fight_entity(who));
         let source = counts.then(|| hurt_source(kind, by_id, direct));
+        // `dealDefaultKnockback` for a player's melee: away from the attacker's
+        // feet. The scope names that player to the knockback hook.
+        let _attacker = (kind == DamageKind::PlayerAttack)
+            .then(|| self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id)));
+        let from = (kind == DamageKind::PlayerAttack)
+            .then(|| self.player.as_ref().map(|p| p.position))
+            .flatten();
         let Some(d) = self.dragon.as_mut() else {
             return Hurt::Refused;
         };
         let was_down = d.down();
         let (cooldown, last_hurt) = (d.invulnerable, d.last_hurt);
-        let hurt = d.hurt_part(part, damage, source, kind, direct);
+        let hurt = d.hurt_part_from(part, damage, source, kind, direct, from);
         // LivingEntity.hurtServer: damage that is applied sets lastHurtByPlayer
         // (100 ticks); a hit the damage cooldown absorbs returns before that.
         if counts
@@ -2424,9 +2534,10 @@ impl Game<'_> {
                 [0.0; 3],
             );
         }
-        // ServerLevel.getDragonFight: only the End has a fight; elsewhere
-        // (`/summon`) a dragon is worth 500 and its death ends nothing.
-        let fight = self.dim == Dim::End;
+        // Only the fight's own dragon has a fight (`dragonFight`): elsewhere
+        // (`/summon`), or summoned in the End after the fight is won, a
+        // dragon is worth 500 and its death ends nothing.
+        let fight = self.is_fight_dragon();
         let first_kill = fight && !self.fight.previously_killed;
         let xp = if first_kill { 12000 } else { 500 };
         let drops = self.ui.rules.bool("mob_drops");
@@ -2449,11 +2560,30 @@ impl Game<'_> {
             if drops {
                 self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.2) as u32);
             }
+            let (id, at) = self.dragon.as_ref().map_or((0, p), |d| (d.id, d.position));
             self.dragon = None;
             if fight {
                 self.dragon_killed();
             }
+            // remove, then gameEvent(ENTITY_DIE): with no health left,
+            // `Warden.canTargetEntity` refuses the dragon, so no warden hears it.
+            self.dragon_died_event(id, at, false);
         }
+    }
+    /// `Entity.gameEvent(GameEvent.ENTITY_DIE)` for the removed dragon: sculk
+    /// sensors (and, while it has health, wardens) hear it, and the nearest
+    /// catalyst blooms (`CatalystListener`). It takes no experience: the
+    /// dragon's `xpReward` is 0, its orbs come from `tickDeath`.
+    fn dragon_died_event(&mut self, id: u32, at: Vec3, targetable: bool) {
+        let at = [at.x, at.y, at.z];
+        let ctx = horizon_client::sculk::Context {
+            source: Some(Who::Mob(id)),
+            targetable,
+            living: true,
+            ..Default::default()
+        };
+        self.post_game_event("minecraft:entity_die", at, ctx);
+        self.catalyst_takes_experience(at, |_| 0);
     }
     /// `EnderDragonFight.setDragonKilled`.
     fn dragon_killed(&mut self) {
@@ -2725,7 +2855,7 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.motion.health, self.world.health_rules);
+        let (health, rules) = (&self.health_resources, self.world.health_rules);
         let id = health.damage.id("minecraft:mob_attack");
         let mut canceled = false;
         if let Some(p) = self.player.as_mut() {
@@ -3127,7 +3257,7 @@ impl Game<'_> {
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
             let bob = f64::from(horizon_client::end_crystal::y(c.time as f32 + a));
             let to = glam::DVec3::new(c.position.x, c.position.y + bob, c.position.z);
-            self.crystal_beam(pos, to - pos, self.ticks as f32 + a, camera, out);
+            self.crystal_beam(pos, to - pos, self.visual_ticks() as f32 + a, camera, out);
         }
     }
     /// `EnderDragonRenderer.submitRays`: untextured, additive death rays.
@@ -3565,9 +3695,13 @@ impl Game<'_> {
     /// drops it, and a killed dragon never gets there.
     pub(super) fn kill_dragon(&mut self, id: u32) {
         if self.dragon.as_ref().is_some_and(|d| d.id == id) {
-            self.dragon = None;
-            // ServerLevel.getDragonFight: only the End has a fight.
-            if self.dim == Dim::End {
+            // Only the fight's own dragon (`dragonFight`) ends it.
+            let fight = self.is_fight_dragon();
+            if let Some(d) = self.dragon.take() {
+                // remove, then gameEvent(ENTITY_DIE), before the fight hears of it.
+                self.dragon_died_event(d.id, d.position, d.alive());
+            }
+            if fight {
                 self.dragon_killed();
             }
         }
@@ -3862,10 +3996,67 @@ impl Game<'_> {
         }
     }
     /// `EnderDragonFight.createNewDragon`: over the podium, holding pattern, a random yaw.
+    /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = self.world.random.next_long();
-        self.dragon = Some(Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed));
+        let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // EnderDragon's constructor takes its id and its parts' from the
+        // entity counter.
+        d.id = self.next_entity + 1;
+        self.next_entity += 9;
+        let id = d.id;
+        self.dragon = Some(d);
+        self.fight.dragon_uuid = Some(self.uuid_for(id));
+        self.fight.dirty = true;
+    }
+    /// `EnderDragonFight.findOrCreateDragon`: the End's dragon becomes the
+    /// fight's, or a new one is made.
+    fn find_or_create_dragon(&mut self) {
+        match self.dragon.as_ref().map(|d| (d.id, d.alive())) {
+            None => self.create_new_dragon(),
+            Some((id, true)) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.dirty = true;
+            }
+            // `ServerLevel.getDragons` takes only living dragons, so vanilla
+            // makes a new one beside a dying one; with one dragon to a level,
+            // the new one comes once the dying one is gone.
+            Some((_, false)) => {}
+        }
+    }
+    /// `EnderDragonFight.scanState`, for a world from before the fight was
+    /// saved: an active exit portal means the dragon was killed before. A
+    /// living dragon there is the fight's, unless there is no active portal:
+    /// then it is removed for a new one.
+    fn scan_state(&mut self) {
+        let active = self.end_portal_active();
+        self.fight.previously_killed = active;
+        match self.dragon.as_ref().filter(|d| d.alive()).map(|d| d.id) {
+            None => self.fight.killed = true,
+            Some(id) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.killed = false;
+                if !active {
+                    self.dragon = None;
+                    self.fight.dragon_uuid = None;
+                }
+            }
+        }
+        if !self.fight.previously_killed && self.fight.killed {
+            self.fight.killed = false;
+        }
+    }
+    /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
+    /// only for the dragon whose UUID is the fight's `dragonUUID`).
+    fn is_fight_dragon(&mut self) -> bool {
+        if self.dim != Dim::End {
+            return false;
+        }
+        match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
+            (Some(id), Some(uuid)) if id != 0 => self.uuid_for(id) == uuid,
+            _ => false,
+        }
     }
     /// The END stage: the portal crystals blow up (no block damage) and a
     /// new dragon takes over.
@@ -4668,6 +4859,49 @@ mod tests {
         let mut d = dragon(flying());
         assert_eq!(d.hurt(0, 9.0, HIT, true), Hurt::Landed { full: true });
         assert_eq!(d.health, MAX_HEALTH - 9.0);
+    }
+
+    /// `EnderDragon.knockback` calls `LivingEntity.knockback` only when the
+    /// phase is not sitting. `dealDefaultKnockback` uses `0.4F` away from the
+    /// attacker's feet. Resistance is 0 and `onGround` stays false
+    /// (`noPhysics`), so from velocity `(1, -0.3, 0.5)` and a source 3 by 4
+    /// blocks away the push is `(0.5 - 0.6p, -0.3, 0.25 - 0.8p)` with
+    /// `p = (double) 0.4F`. A perched hit, including one that makes it take
+    /// off, leaves the velocity alone. A hit inside the damage cooldown is
+    /// not a full hit, so it does not push either.
+    #[test]
+    fn a_melee_hit_knocks_a_flying_dragon_and_not_a_perched_one() {
+        let from = Vec3::new(3.0, 70.0, 4.0);
+        let velocity = Vec3::new(1.0, -0.3, 0.5);
+        let power = f64::from(0.4_f32);
+        let pushed = Vec3::new(0.5 - 0.6 * power, -0.3, 0.25 - 0.8 * power);
+
+        let mut perched = dragon(Phase::Scanning { time: 0 });
+        perched.velocity = velocity;
+        assert_eq!(
+            perched.hurt_from(0, 9.0, HIT, false, Some(from)),
+            Hurt::Landed { full: true }
+        );
+        assert_eq!(perched.velocity, velocity);
+
+        let mut taking_off = dragon(Phase::Flaming { ticks: 0 });
+        taking_off.velocity = velocity;
+        taking_off.hurt_from(0, 60.0, HIT, false, Some(from));
+        assert!(matches!(taking_off.phase, Phase::Takeoff { .. }));
+        assert_eq!(taking_off.velocity, velocity);
+
+        let mut flying = dragon(flying());
+        flying.velocity = velocity;
+        assert_eq!(
+            flying.hurt_from(0, 9.0, HIT, false, Some(from)),
+            Hurt::Landed { full: true }
+        );
+        assert_eq!(flying.velocity, pushed);
+        assert_eq!(
+            flying.hurt_from(0, 20.0, HIT, false, Some(from)),
+            Hurt::Landed { full: false }
+        );
+        assert_eq!(flying.velocity, pushed);
     }
 
     #[test]
