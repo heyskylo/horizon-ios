@@ -407,6 +407,7 @@
   "Frame Generation": "Cynhyrchu Ffrâm",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Yn dangos ffrâm wedi'i gwneud i fyny rhwng pob dau go iawn: llyfnach, ychydig yn fwy oedi.",
   "Shadow Cache": "Cache Cysgod",
+  "Shader Packs...": "Pecynnau Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Yn ailddefnyddio'r map cysgodion pecyn pan fydd yr haul, yr olygfa a'r byd yn cyd-fynd. Wedi'i ddiffodd yn ddiofyn.",
   "Find BlueMap": "Dewch o hyd i BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Ar weinyddion, yn dod o hyd i'w map gwe BlueMap ar gyfer tir pell. Ymunwch nesaf.",

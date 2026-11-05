@@ -151,6 +151,10 @@ pub struct Project {
     /// GitHub's counts, added by the registry's publish job (hourly).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub downloads: u64,
+    /// The GitHub stars of its `source` repository, added by the registry's
+    /// publish job (hourly); 0 when it has none or isn't on GitHub.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stars: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -655,10 +659,19 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
                 ));
             }
             let m = pack.manifest;
+            // Players get only what the game draws without a switch, and a line that may
+            // still change in any release would break the packs listed for it.
+            if m.api != horizon_shader_api::Api::V0_1 {
+                return Err(format!(
+                    "it is written for shader API {}, which is experimental: the registry takes \
+                     such packs once the game draws them without a switch",
+                    m.api
+                ));
+            }
             Ok(Facts {
                 id: Some(m.id),
                 version: Some(m.version),
-                api: m.api,
+                api: m.api.to_string(),
                 ..Facts::default()
             })
         }

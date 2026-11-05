@@ -255,5 +255,6 @@
   "horizon.tempban.success": "%1$s durante %2$s, hasta %3$s",
   "horizon.tempban.list.empty": "No hay baneos temporales",
   "horizon.tempban.list.count": "Hay %s baneo(s) temporal(es):",
-  "horizon.tempban.list.entry": "%1$s fue baneado por %2$s %3$s (hasta %4$s)"
+  "horizon.tempban.list.entry": "%1$s fue baneado por %2$s %3$s (hasta %4$s)",
+  "Shader Packs...": "Paquetes de shaders..."
 }

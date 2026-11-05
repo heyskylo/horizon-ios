@@ -454,5 +454,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Auror och spår som andra spelare bär. Av som standard.",
   "horizon.extras.cosmetics.shown": "Visas",
   "horizon.extras.cosmetics.hidden": "Dold",
-  "horizon.extras.cosmetics.name_tags": "Endast namnlappar"
+  "horizon.extras.cosmetics.name_tags": "Endast namnlappar",
+  "Shader Packs...": "Shader-paket..."
 }
