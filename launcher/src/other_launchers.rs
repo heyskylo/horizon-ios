@@ -100,6 +100,16 @@ const CURSEFORGE: &str = "the CurseForge app";
 const MODRINTH_APP: &str = "the Modrinth App";
 const ATLAUNCHER: &str = "ATLauncher";
 
+fn loader_of_name(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "fabric" => Some("fabric"),
+        "quilt" => Some("quilt"),
+        "neoforge" => Some("neoforge"),
+        "forge" => Some("forge"),
+        _ => None,
+    }
+}
+
 fn loader_of_uid(uid: &str) -> Option<&'static str> {
     match uid {
         "net.fabricmc.fabric-loader" => Some("fabric"),
@@ -293,6 +303,25 @@ fn game_folders(dir: &Path, launcher: &'static str) -> Vec<Found> {
 /// The CurseForge app's instances: in its modding folder's `Instances/`.
 pub fn curseforge_instances(root: &Path) -> Vec<Found> {
     game_folders(&root.join("Instances"), CURSEFORGE)
+        .into_iter()
+        .map(with_curseforge_target)
+        .collect()
+}
+
+/// `found` with the Minecraft version and loader its CurseForge instance records
+/// (`minecraftinstance.json`, else `manifest.json`). An instance that records neither, or a
+/// loader Horizon doesn't name, keeps none.
+fn with_curseforge_target(mut found: Found) -> Found {
+    let Some((minecraft, loader, version)) =
+        horizon_port_pack::import::curseforge_instance_target(&found.game)
+    else {
+        return found;
+    };
+    found.minecraft = Some(minecraft);
+    found.loader = loader_of_name(&loader)
+        .filter(|_| !version.is_empty())
+        .map(|name| Loader { name, version });
+    found
 }
 
 /// The Modrinth App's instances: in its folder's `profiles/`.
