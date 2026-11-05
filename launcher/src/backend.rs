@@ -3817,11 +3817,16 @@ pub fn cannot_replace_itself() -> bool {
     })
 }
 
-/// Classify the update target, rather than the executable inside an AppImage's mount.
+/// Whether a package manager owns this launcher: the update target is classified, rather than
+/// the executable inside an AppImage's mount. Asked while the sidebar is drawn, and the launcher
+/// doesn't move while it runs, so the path is resolved once.
 pub fn package_managed_launcher() -> bool {
-    let target = update_target();
-    let target = target.canonicalize().unwrap_or(target);
-    crate::update_recovery::package_managed(&target)
+    static MANAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MANAGED.get_or_init(|| {
+        let target = update_target();
+        let target = target.canonicalize().unwrap_or(target);
+        crate::update_recovery::package_managed(&target)
+    })
 }
 
 fn writable(dir: &Path) -> bool {
