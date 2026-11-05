@@ -165,6 +165,23 @@ Legacy also leaves out what 1.9 added around a hit: the sweep arc and the damage
 with **1.8 hit sounds** (`combatSounds`) the `entity.player.attack.*` sounds (strong, weak, crit, sweep,
 knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
 
+## 1.8 combat in worlds you host (`combatRules`, default off)
+
+The other options only change the look; this one changes the rules, so it applies only where Horizon is the
+server: single player (its server thread) and the worlds you open to LAN, at once when switched. Servers you join
+keep their own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
+
+- no attack cooldown (every hit is full strength) and no sweep;
+- weapon damage as in 1.8.9: base 1, plus 4 for a sword, 3 for an axe, 2 for a pickaxe, 1 for a shovel, plus the
+  material (wood and gold 0, stone 1, iron 2, diamond 3; netherite 4 and copper 1, which 1.8.9 didn't have);
+  items 1.8.9 didn't have (trident, mace...) keep 26.3's damage;
+- Strength multiplies by 1 + 1.3 per level, Weakness subtracts 0.5 per level;
+- Sharpness adds 1.25 per level, Smite and Bane of Arthropods 2.5 per level against their targets;
+- a critical hit (×1.5) needs a fall, not a charge, and can be a sprinting hit.
+
+Code: `crates/horizon-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
+`game/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.
+
 It is only the look: the client sends a server exactly what Modern sends (same attacks, same timing, no
 block-hit packets), so vanilla servers and their anticheats see nothing new. Code: `first_person.rs`
 (`legacy_item_pose`), the hand in `game.rs`.
