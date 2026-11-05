@@ -123,6 +123,11 @@ impl SignText {
     }
     /// A line as the font draws it: its styled runs, `§` codes not yet applied.
     pub fn line_text(&self, i: usize) -> Text {
+        // Signs are drawn every frame: a line read as plain text (most of them) skips the
+        // NBT -> JSON -> component round trip. Its click event does not change the drawing.
+        if self.saved[i].is_none() {
+            return Text::literal(self.lines[i].as_str());
+        }
         scoreboard::comp_text(&scoreboard::tag_to_json(&self.message(i)))
     }
 }
