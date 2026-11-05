@@ -269,7 +269,7 @@ impl Game<'_> {
             );
             let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
             let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-            let r = &mut self.world.random;
+            let r = &mut LegacyRandom::new(horizon_client::sound_engine::unique_seed());
             v = Vec3::new(
                 v.x * (0.6 / len + triangle(r, 0.5, 0.0103365)),
                 v.y * (0.6 / len + triangle(r, 0.5, 0.0103365)),
