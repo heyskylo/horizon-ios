@@ -12296,9 +12296,9 @@ mod tests {
                     assert!(
                         vector_of(condition).is_none()
                             || !matches!(
-                            vector_of(accept),
-                            Some(naga::ScalarKind::Uint | naga::ScalarKind::Sint)
-                        ),
+                                vector_of(accept),
+                                Some(naga::ScalarKind::Uint | naga::ScalarKind::Sint)
+                            ),
                         "{} {:?}: select between integer vectors ({handle:?}): use scalar selects",
                         path.display(),
                         function.name
