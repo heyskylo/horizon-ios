@@ -415,7 +415,10 @@ impl GameLevel<'_> {
         let dynamic = self.pending.dynamic(at);
         // Only the block a machine breaks: a neighbour that pops off with it
         // drops as with no tool, and pops (`Level.destroyBlock` for it).
-        let machine = self.drop_tool.as_ref().is_some_and(|(target, _)| *target == key);
+        let machine = self
+            .drop_tool
+            .as_ref()
+            .is_some_and(|(target, _)| *target == key);
         let tool = self
             .drop_tool
             .as_ref()
