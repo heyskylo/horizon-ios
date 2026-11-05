@@ -11,6 +11,12 @@ import unittest
 
 from tools import command_exec_corpus as corpus
 
+# Vanilla's values for the rules the setup group leaves alone (GameRules); a
+# group that changes one must put it back, or every later group runs under it.
+WORLD_RULES = {'block_drops': 'true', 'fire_spread_radius_around_player': '128',
+               'keep_inventory': 'false', 'mob_griefing': 'true', 'random_tick_speed': '3',
+               'tnt_explodes': 'true', 'tick_freeze': 'off'}
+
 
 def forced_chunks(words):
     # /forceload add|remove <from x z> [<to x z>], block coordinates.
@@ -49,6 +55,21 @@ class CommandFixtureStateTests(unittest.TestCase):
                     forced -= forced_chunks(words)
             with self.subTest(group=group):
                 self.assertEqual(set(), objectives, 'the group must remove its scoreboard objectives')
+
+    def test_groups_leave_the_world_rules_as_they_found_them(self):
+        rules = dict(WORLD_RULES)
+        for group, operations in corpus.groups():
+            before = dict(rules)
+            for op in operations:
+                words = op.get('cmd', '').split() if op['op'] == 'cmd' else []
+                if words[:1] == ['/gamerule'] and len(words) == 3:
+                    rules[words[1].removeprefix('minecraft:')] = words[2]
+                elif words[:1] == ['/tick'] and words[1:2] in (['freeze'], ['unfreeze']):
+                    rules['tick_freeze'] = 'on' if words[1] == 'freeze' else 'off'
+            if group == 'setup':
+                continue
+            with self.subTest(group=group):
+                self.assertEqual(before, rules)
 
 
 if __name__ == '__main__':

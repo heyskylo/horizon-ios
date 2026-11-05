@@ -3684,7 +3684,8 @@ def mob_partial_block_suffocation():
             ops += setup(f'/kill @e[tag={eye}]')
         ops += setup(f'/kill {target}')
         ops.append({'op': 'tick', 'n': 25})
-    return ops
+    # Later groups run with the world's rules: piglins pick nothing up without mob_griefing.
+    return ops + setup('/gamerule mob_griefing true', '/gamerule random_tick_speed 3')
 
 
 
