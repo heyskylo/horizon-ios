@@ -713,7 +713,7 @@
       "name": "world_lifecycle",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_world_lifecycle",
-      "neoforge": "ServerStartedEvent / ServerStoppedEvent (also told when a world fails to open or close)",
+      "neoforge": "ServerStartingEvent / ServerStartedEvent / ServerStoppedEvent (WorldOpenReady answers both Starting and Started; also told when a world fails to open or close)",
       "side": "server",
       "cancellable": false,
       "mod_api": {
