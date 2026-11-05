@@ -2194,8 +2194,24 @@ impl Game<'_> {
         mod_api::dispatch_client_start(self, mod_api::mods());
     }
     /// Before an actual connection is discarded, not on a dimension change.
+    /// NeoForge's `ClientPlayerNetworkEvent.LoggingOut`, told here after
+    /// `native_client_level_unload` and only when a connection ends.
     pub(super) fn native_client_disconnecting(&self) {
         mod_api::dispatch_client_disconnecting(self, mod_api::mods());
+    }
+    /// The window's player logs in to a server (NeoForge's
+    /// `ClientPlayerNetworkEvent.LoggingIn`, in
+    /// `ClientPacketListener.handleLogin`), single player's own server or a
+    /// remote one: once per login packet, after the new client level
+    /// (`native_client_level_load`). Respawns and dimension changes don't log
+    /// in again; a server that sends its player back through configuration
+    /// does, without a `native_client_disconnecting` between. Horizon makes
+    /// the player with the server's first position, so `native_player` is
+    /// None here. A mod may send the server its own packets
+    /// (`native_send_packet`). Client only.
+    /// API @API:client_player_network_logging_in@.
+    pub(super) fn native_client_player_network_logging_in(&mut self) {
+        mod_api::dispatch_client_player_network_logging_in(self, mod_api::mods());
     }
     /// Once before this client's final save/exit. A mod can flush and join its worker here.
     pub(super) fn native_client_stopping(&self) {

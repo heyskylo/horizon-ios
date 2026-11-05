@@ -2933,6 +2933,19 @@ game runs, for seasons (a golden autumn, a pale winter) or a world that greens a
 - A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
   `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
 
+### Logging in and out
+
+`native_client_player_network_logging_in()` (client) is NeoForge's `ClientPlayerNetworkEvent.LoggingIn`: the window's
+player logs in to a server, single player's own included. It fires once per login packet
+(`ClientPacketListener.handleLogin`), after the new client level (`native_client_level_load`). Respawns and dimension
+changes don't log in again; a server that sends its player back through configuration logs it in again, with no logout
+between. Horizon makes the player with the server's first position, so `native_player()` is None here, but the
+connection is up: `native_send_packet` reaches the server. The counterpart is `native_client_disconnecting()`,
+NeoForge's `ClientPlayerNetworkEvent.LoggingOut`. It is told before a connection is discarded, after
+`native_client_level_unload`, and only when a connection ends: NeoForge's documentation says its event may also fire as
+a new integrated server is created, and Horizon's doesn't. A mod keeps its per-server state between the two: caches, a
+handshake with its server half, a welcome message. Bundles need `"hooks": @API:client_player_network_logging_in@`.
+
 ### Sounds a client mod plays
 
 `native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,

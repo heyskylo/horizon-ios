@@ -5048,7 +5048,9 @@
       "name": "client_disconnecting",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_client_disconnecting",
+      "neoforge": "ClientPlayerNetworkEvent.LoggingOut (only when a connection ends)",
       "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
