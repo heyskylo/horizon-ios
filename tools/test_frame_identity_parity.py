@@ -52,8 +52,10 @@ EXE = '.exe' if os.name == 'nt' else ''
 SIZE = (854, 480)
 SEED = '7'
 # 🤖 Agent: changes under these, and Markdown outside crates/, build no game binary, so the base can reuse the
-# change's. Not all of docs/: horizon-port-pack embeds docs/modpacks/atm10-mods.csv.
+# change's. Not all of docs/: horizon-port-pack embeds docs/modpacks/atm10-mods.csv. Not all of tools/ either:
+# horizon-mod-api-gen generates Rust from tools/native-hook-fragments/ (BUILT_FROM_TOOLS).
 NO_BINARY = ('tools/', 'tests/', '.github/')
+BUILT_FROM_TOOLS = ('tools/native-hook-fragments/',)
 BUILD = ['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins']
 # 🤖 Agent: Where the overworld scenes are built, high above seed 7's spawn, so terrain below hardly shows.
 X, Y, Z = 8, 160, 8
@@ -71,7 +73,8 @@ def base_revision(requested):
 def needs_own_build(base):
     """Whether the base can't reuse the change's binaries: it differs in a file a game binary may be built from."""
     changed = [p for p in git('diff', '--name-only', base, 'HEAD').splitlines() if p]
-    return [p for p in changed if not (p.startswith(NO_BINARY) or (p.endswith('.md') and not p.startswith('crates/')))]
+    return [p for p in changed if not ((p.startswith(NO_BINARY) and not p.startswith(BUILT_FROM_TOOLS))
+                                       or (p.endswith('.md') and not p.startswith('crates/')))]
 
 
 def checkout_base(base):
@@ -394,8 +397,14 @@ def session_checks(shots, sessions):
             for prefix, on in ((name, hdr), *(((f'{name}.off', False),) if toggle else ())):
                 if (shots / f'{prefix}.{scene}-hdr.png').exists() != on:
                     problems.append(f'{prefix}.{scene}: HDR output was {"off" if on else "on"}')
-        if 'HORIZON_SHADER_PACK' in extra and 'vanilla' in sessions and not hdr:
-            same = [s for s in scenes if compare(shots / f'vanilla.{s}.png', shots / f'{name}.{s}.png', None) is None]
+        # 🤖 Agent: the pack's pictures against the same scenes without it: vanilla's, or with HDR on hdr_toggle's
+        # first shots (the same settings), sidecars included.
+        without = 'hdr_toggle' if hdr else 'vanilla'
+        if 'HORIZON_SHADER_PACK' in extra and without in sessions:
+            same = [s for s in scenes if any(
+                compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
+                for x in ('.png', '-hdr.png')
+                if (shots / f'{without}.{s}{x}').exists() and (shots / f'{name}.{s}{x}').exists())]
             problems += [f'{name}.{s}: the same as without the pack: it didn\'t run' for s in same]
     return problems
 

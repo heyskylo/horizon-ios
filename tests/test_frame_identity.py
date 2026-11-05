@@ -107,9 +107,14 @@ class SessionCheckTests(unittest.TestCase):
             self.shot(f'hdr_toggle.{scene}.png')
             self.shot(f'hdr_toggle.off.{scene}.png')
             self.shot(f'hdr_toggle.off.{scene}-hdr.png')
-        problems = identity.session_checks(self.dir, ['vanilla', 'golden_hour', 'hdr_toggle'])
+        hdr_scenes = identity.SESSIONS['golden_hour_hdr'][2]
+        for scene in hdr_scenes:
+            self.shot(f'golden_hour_hdr.{scene}.png')
+            self.shot(f'golden_hour_hdr.{scene}-hdr.png')
+        problems = identity.session_checks(self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle'])
         self.assertEqual(sorted(problems), sorted(
             [f'golden_hour.{s}: the same as without the pack: it didn\'t run' for s in scenes]
+            + [f'golden_hour_hdr.{s}: the same as without the pack: it didn\'t run' for s in hdr_scenes]
             + [f'hdr_toggle.{s}: HDR output was off' for s in identity.SESSIONS['hdr_toggle'][2]]
             + [f'hdr_toggle.off.{s}: HDR output was on' for s in identity.SESSIONS['hdr_toggle'][2]]))
 
@@ -119,16 +124,21 @@ class SessionCheckTests(unittest.TestCase):
             self.shot(f'vanilla.{scene}.png')
             self.shot(f'golden_hour.{scene}.png', other)
         for scene in identity.SESSIONS['golden_hour_hdr'][2]:
-            self.shot(f'golden_hour_hdr.{scene}.png')
-            self.shot(f'golden_hour_hdr.{scene}-hdr.png')
-        self.assertEqual(identity.session_checks(self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr']), [])
+            self.shot(f'golden_hour_hdr.{scene}.png', other)
+            self.shot(f'golden_hour_hdr.{scene}-hdr.png', other)
+        for scene in identity.SESSIONS['hdr_toggle'][2]:
+            self.shot(f'hdr_toggle.{scene}.png')
+            self.shot(f'hdr_toggle.{scene}-hdr.png')
+            self.shot(f'hdr_toggle.off.{scene}.png')
+        self.assertEqual(identity.session_checks(
+            self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle']), [])
 
 
 class BaseTests(unittest.TestCase):
     def test_only_files_no_binary_is_built_from_let_the_base_reuse_the_change(self):
         changed = ['tools/test_frame_identity_parity.py', 'tests/test_frame_identity.py', '.github/workflows/ci.yml',
                    'docs/parity-workflow.md', 'README.md', 'docs/modpacks/atm10-mods.csv', 'crates/x/README.md',
-                   'crates/horizon-client-render/src/gfx.rs']
+                   'crates/horizon-client-render/src/gfx.rs', 'tools/native-hook-fragments/player.json']
         original = identity.git
         identity.git = lambda *args, cwd=None: '\n'.join(changed)
         try:
