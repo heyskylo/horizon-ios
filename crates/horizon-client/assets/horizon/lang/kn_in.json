@@ -422,6 +422,7 @@
   "Frame Generation": "ಫ್ರೇಮ್ ಜನರೇಷನ್",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "ಪ್ರತಿ ಎರಡು ನೈಜವಾದವುಗಳ ನಡುವೆ ಮಾಡಿದ ಚೌಕಟ್ಟನ್ನು ತೋರಿಸುತ್ತದೆ: ಸುಗಮ, ಸ್ವಲ್ಪ ಹೆಚ್ಚು ವಿಳಂಬ.",
   "Shadow Cache": "ನೆರಳು ಸಂಗ್ರಹ",
+  "Shader Packs...": "ಶೇಡರ್ ಪ್ಯಾಕ್‌ಗಳು...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "ಸೂರ್ಯ, ವೀಕ್ಷಣೆ ಮತ್ತು ಪ್ರಪಂಚವು ಹೊಂದಿಕೆಯಾದಾಗ ಪ್ಯಾಕ್ ನೆರಳು ನಕ್ಷೆಯನ್ನು ಮರುಬಳಕೆ ಮಾಡುತ್ತದೆ. ಡೀಫಾಲ್ಟ್ ಆಗಿ ಆಫ್.",
   "Find BlueMap": "ಬ್ಲೂಮ್ಯಾಪ್ ಅನ್ನು ಹುಡುಕಿ",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "ಸರ್ವರ್‌ಗಳಲ್ಲಿ, ದೂರದ ಭೂಪ್ರದೇಶಕ್ಕಾಗಿ ಅವರ ಬ್ಲೂಮ್ಯಾಪ್ ವೆಬ್ ನಕ್ಷೆಯನ್ನು ಕಂಡುಕೊಳ್ಳುತ್ತದೆ. ಮುಂದೆ ಸೇರಿಕೊಳ್ಳಿ.",

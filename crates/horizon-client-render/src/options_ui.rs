@@ -2305,6 +2305,12 @@ impl OptionsUi {
                     self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
                     self.push(Page::HdrCalibration);
                 }
+                // The Shaders page's Shader Packs...: the list of either kind, as the page
+                // opens it from anywhere.
+                Action::ShaderPacks => {
+                    events.push(Event::ListShaderPacks);
+                    self.push(Page::ShaderPacks);
+                }
                 Action::Done => events.extend(self.back(s)),
             }
         }
@@ -2562,14 +2568,12 @@ impl OptionsUi {
                             Page::GraphicsAdvanced,
                         )),
                     ),
+                    // Shader packs are on the graphics screen's Shaders page.
                     Row::Buttons(
-                        open("horizon.pages.open.shader_packs", Page::ShaderPacks),
-                        Some(open("horizon.pages.open.controller", Page::Controller)),
+                        open("horizon.pages.open.controller", Page::Controller),
+                        Some(open("horizon.pages.open.extras", Page::Extras)),
                     ),
-                    Row::Buttons(
-                        open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.mods", Page::Mods)),
-                    ),
+                    Row::Buttons(open("horizon.pages.open.mods", Page::Mods), None),
                     Row::Buttons(
                         open(
                             "horizon.pages.open.split_setup",
@@ -7562,6 +7566,37 @@ mod tests {
         assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true)]);
     }
 
+    /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
+    /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
+    #[test]
+    fn the_graphics_shaders_page_opens_the_shader_pack_list() {
+        use crate::graphics_ui::{H, Item, Target};
+        use winit::keyboard::KeyCode;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi {
+            size: (427.0, 240.0),
+            ..Default::default()
+        };
+        ui.show(Page::Graphics);
+        ui.graphics.open(crate::graphics_ui::Page::Shaders);
+        let packs = Target::Item(Item::Horizon(H::ShaderPacks));
+        assert!(
+            (0..40).any(|_| {
+                ui.key(&mut s, &atlas, KeyCode::Tab, None);
+                ui.graphics.focus == Some(packs)
+            }),
+            "{:?}",
+            ui.graphics.focus
+        );
+        let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert_eq!(ui.page(), Page::ShaderPacks);
+        assert!(events.contains(&Event::ListShaderPacks), "{events:?}");
+        ui.back(&mut s);
+        assert_eq!(ui.page(), Page::Graphics);
+        assert_eq!(ui.graphics.page(), crate::graphics_ui::Page::Shaders);
+    }
+
     #[test]
     fn horizon_settings_hang_off_options_and_reach_every_horizon_page() {
         let s = Settings::default();
@@ -7593,7 +7628,6 @@ mod tests {
             [
                 Page::Graphics,
                 Page::GraphicsAdvanced,
-                Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,

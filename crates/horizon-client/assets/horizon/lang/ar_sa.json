@@ -432,6 +432,7 @@
   "Frame Generation": "جيل الإطار",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "يُظهر إطارًا مكوّنًا بين كل إطارين حقيقيين: أكثر سلاسة وتأخرًا قليلًا.",
   "Shadow Cache": "ذاكرة التخزين المؤقت الظل",
+  "Shader Packs...": "حزم التظليل...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "يعيد استخدام خريطة ظل الحزمة عندما تتطابق الشمس والعرض والعالم. إيقاف بشكل افتراضي.",
   "Find BlueMap": "ابحث عن بلو ماب",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "على الخوادم، يتم العثور على خريطة الويب BlueMap الخاصة بهم للتضاريس البعيدة. الانضمام التالي.",

@@ -427,6 +427,7 @@
   "Frame Generation": "Кадр быуын",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Һәр ике ысын араһында ҡоролған кадр күрһәтә: шымараҡ, бер аҙ күберәк лаг.",
   "Shadow Cache": "Күләгә кэш",
+  "Shader Packs...": "Шейдер пакеттары...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ҡояш, ҡараш һәм донъя тап килгәндә пакет күләгә картаһын ҡабаттан ҡуллана. Һүндерелгән по умолчанию.",
   "Find BlueMap": "Зәңгәр картаны табығыҙ",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Серверҙарҙа, алыҫ ерҙәр өсөн уларҙы BlueMap веб-картаһын таба. Киләһе ҡушылыу.",

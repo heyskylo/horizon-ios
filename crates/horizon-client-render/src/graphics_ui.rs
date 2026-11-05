@@ -1,6 +1,6 @@
 //! Horizon's graphics settings screen: every video setting, vanilla's and
-//! Horizon's, on one list of pages (General, Quality, Performance, Advanced,
-//! HDR) with a page list beside it, a search field over it and a description
+//! Horizon's, on one list of pages (General, Quality, Performance, Shaders,
+//! Advanced, HDR) with a page list beside it, a search field over it and a description
 //! of the hovered setting with its cost. Which settings it shows, in what
 //! pages, with what description and cost, and its input live here; how it
 //! looks comes from `graphics_style`.
@@ -24,15 +24,18 @@ pub enum Page {
     General,
     Quality,
     Performance,
+    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
+    Shaders,
     Advanced,
     /// HDR output's own settings.
     Hdr,
 }
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::General,
         Page::Quality,
         Page::Performance,
+        Page::Shaders,
         Page::Advanced,
         Page::Hdr,
     ];
@@ -41,6 +44,7 @@ impl Page {
             Page::General => "General",
             Page::Quality => "Quality",
             Page::Performance => "Performance",
+            Page::Shaders => "Shaders",
             Page::Advanced => "Advanced",
             Page::Hdr => "HDR",
         }
@@ -51,6 +55,7 @@ impl Page {
             Page::General => "How far you see, the window and the HUD.",
             Page::Quality => "The sky and weather, lighting, textures and the image.",
             Page::Performance => "Chunk loading, culling and power use.",
+            Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
             Page::Advanced => "How frames reach the screen, and the performance overlay.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
         }
@@ -106,6 +111,8 @@ pub enum H {
     HdrLighting,
     BatteryMode,
     ShadowCache,
+    /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
+    ShaderPacks,
     GraphicsApi,
     TranslucentBatching,
     HdrSmoothGradients,
@@ -405,11 +412,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
                         ),
-                        h(
-                            H::ShadowCache,
-                            Saves,
-                            "Reuses the pack shadow map when sun, view and world match. Off by default.",
-                        ),
                     ],
                 ),
                 (
@@ -461,6 +463,24 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     )],
                 ),
             ],
+        ),
+        (
+            Page::Shaders,
+            vec![(
+                "Shader packs",
+                vec![
+                    h(
+                        H::ShaderPacks,
+                        High,
+                        "Picks a shader pack, Horizon's or a shaders/ folder one, and sets its options.",
+                    ),
+                    h(
+                        H::ShadowCache,
+                        Saves,
+                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                ],
+            )],
         ),
         (
             Page::Advanced,
@@ -865,6 +885,8 @@ impl H {
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
+            // A press across the row, as Calibrate...: the list it opens shows the pick.
+            H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
             // they are there, while the saved value waits for a device that can.
@@ -1075,7 +1097,10 @@ impl Item {
     fn steps(self, s: &Settings) -> bool {
         self.switch(s).is_none()
             && self.slider(s).is_none()
-            && !matches!(self, Item::Horizon(H::HdrKey | H::HdrCalibrate))
+            && !matches!(
+                self,
+                Item::Horizon(H::HdrKey | H::HdrCalibrate | H::ShaderPacks)
+            )
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
@@ -1224,6 +1249,8 @@ pub enum Action {
     BindKey(&'static str),
     /// Start HDR calibration.
     Calibrate,
+    /// Open the shader pack list.
+    ShaderPacks,
     Done,
 }
 
@@ -1298,6 +1325,10 @@ impl GraphicsUi {
     #[cfg(test)]
     pub(crate) fn scroll_amount(&self) -> f32 {
         self.scroll.amount
+    }
+    /// The page the plate shows while nothing is searched.
+    pub fn page(&self) -> Page {
+        self.page
     }
     /// The screen opens, at `page`.
     pub fn open(&mut self, page: Page) {
@@ -1713,6 +1744,7 @@ impl GraphicsUi {
                 vec![Action::ButtonClick, Action::Changed]
             }
             Item::Horizon(H::HdrCalibrate) => vec![Action::ButtonClick, Action::Calibrate],
+            Item::Horizon(H::ShaderPacks) => vec![Action::ButtonClick, Action::ShaderPacks],
             Item::Horizon(H::HdrKey) => {
                 vec![
                     Action::ButtonClick,
@@ -2112,7 +2144,7 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let cols = Columns::of(size.0, size.1);
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
@@ -2170,7 +2202,7 @@ mod tests {
                 .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
         }));
         ui.search.set_value("hdr");
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
         assert_eq!(ui.current(&ui.lines(&s).0), Some(Page::Hdr));
         let [x, y, ..] = cols.clear();
