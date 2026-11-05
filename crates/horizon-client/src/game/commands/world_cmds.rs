@@ -1458,10 +1458,17 @@ impl Game<'_> {
                     if !self.native_may_board(id) {
                         return Err(generic());
                     }
-                    self.riding = Some(id);
                     self.yaw = self.boats[i].yaw;
+                    // ServerPlayer.startRiding seats the player immediately.
+                    let at = self.player_boat_seat(i);
+                    if let Some(player) = self.player.as_mut() {
+                        player.position = at;
+                        player.velocity = horizon_core::geometry::Vec3::ZERO;
+                        player.teleported = true;
+                    }
+                    self.previous_position = at;
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
-                    self.trigger_player("minecraft:started_riding");
+                    self.start_riding(id);
                 }
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
@@ -1476,8 +1483,7 @@ impl Game<'_> {
                 {
                     return Err(generic());
                 }
-                self.riding = Some(id);
-                self.trigger_player("minecraft:started_riding");
+                self.start_riding(id);
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
                     &[name, vehicle_name],
@@ -1512,9 +1518,9 @@ impl Game<'_> {
             m.extra.counter = 0;
             self.yaw = m.yaw;
         }
-        self.riding = Some(mob_id);
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
+        self.start_riding(mob_id);
         self.feedback(Text::translate(
             "commands.ride.mount.success",
             &[name, vehicle_name],
@@ -1551,11 +1557,22 @@ impl Game<'_> {
             return;
         }
         self.mobs[i].extra.mount = None;
+        let remaining = self
+            .mobs
+            .iter()
+            .find(|m| m.extra.mount == Some(v))
+            .map(|m| m.id);
+        if let Some(vehicle) = self.mobs.iter_mut().find(|m| m.id == v) {
+            vehicle.extra.rider = remaining;
+        }
         let (width, yaw) = (f64::from(self.mobs[i].width()), self.mobs[i].yaw);
         let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
             self.boat_dismount_target(b, width, yaw)
+        } else if let Some(at) = self.horse_dismount_point(v, i) {
+            at
+        } else if let Some(at) = self.cart_dismount_point(v, i) {
+            at
         } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == v) {
-            m.extra.rider = None;
             // Entity.getDismountLocationForPassenger: on top of the vehicle.
             let p = m.position;
             horizon_core::geometry::Vec3::new(p.x, p.y + f64::from(m.height()), p.z)

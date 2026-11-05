@@ -13,6 +13,8 @@ use crate::sculk::{self, Context, Info};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
 
+pub mod interaction;
+
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
