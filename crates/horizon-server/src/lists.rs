@@ -155,7 +155,10 @@ fn edit_locked(
                     ),
                 )
             } else {
-                (false, "Nothing changed. The player is already banned".to_owned())
+                (
+                    false,
+                    "Nothing changed. The player is already banned".to_owned(),
+                )
             }
         }
         ("pardon", [name]) => {
@@ -187,7 +190,10 @@ fn edit_locked(
                     ),
                 )
             } else {
-                (false, "Nothing changed. That IP is already banned".to_owned())
+                (
+                    false,
+                    "Nothing changed. That IP is already banned".to_owned(),
+                )
             }
         }
         ("pardon-ip", [ip]) => {
