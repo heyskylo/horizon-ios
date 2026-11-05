@@ -1209,6 +1209,7 @@ impl ExperienceOrb {
         next_float: &mut dyn FnMut() -> f32,
         border: Option<&BorderGeometry>,
         fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
@@ -1294,7 +1295,8 @@ impl ExperienceOrb {
             self.velocity.y = 0.0;
         }
         // ExperienceOrb.tick applies block effects after moving, before drag.
-        let discarded = server && self.apply_lava_contact_damage(world, fluids, wanted);
+        let discarded =
+            server && self.apply_lava_contact_damage(world, fluids, wanted, next_float, on_sound);
         // `float friction = getAirDrag()` (0.98F), the ground's block
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
@@ -1324,14 +1326,20 @@ impl ExperienceOrb {
         !discarded && self.age < 6000
     }
     /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
-    /// server, through the orb's existing hurt/discard policy. This is separate
-    /// from the lava impulse at the start of the tick.
-    fn apply_lava_contact_damage(
+    /// server, through the orb's existing hurt/discard policy, playing the generic
+    /// burn sound (`minecraft:entity.generic.burn`, volume 0.4, pitch 2.0 + random * 0.4)
+    /// on each hurt contact. This is separate from the lava impulse at the start of the tick.
+    pub fn apply_lava_contact_damage(
         &mut self,
         world: &World,
         fluids: &crate::motion::FluidResources,
         wanted: Vec3,
+        next_float: &mut dyn FnMut() -> f32,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
+        if self.health <= 0 {
+            return true;
+        }
         let contacts = orb_lava_contacts(self.previous, self.position, wanted, |p| {
             let fluid = fluids.fluid(world.block(p.x, p.y, p.z));
             if !fluid
@@ -1348,7 +1356,10 @@ impl ExperienceOrb {
             })
         });
         for _ in 0..contacts {
-            if self.hurt(4.0) {
+            let dead = self.hurt(4.0);
+            let pitch = 2.0 + next_float() * 0.4;
+            on_sound([self.position.x, self.position.y, self.position.z], pitch);
+            if dead {
                 return true;
             }
         }
@@ -2775,6 +2786,7 @@ mod world_border_tests {
                 &mut || 0.0,
                 border,
                 &fluids,
+                &mut |_, _| {},
             );
             for (what, east) in [
                 ("item", item.bounds().max_position().x),
@@ -4057,8 +4069,15 @@ crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
 mod orb_lava_tests {
     use super::*;
 
-    #[test]
-    fn a_server_orb_takes_lava_damage_after_moving_and_discards_at_zero() {
+    fn with_fixture(
+        mut f: impl FnMut(
+            &mut World,
+            &BlockFacts,
+            &BlockCollisionRegistry<'_>,
+            &crate::motion::FluidResources,
+            &crate::assets::Assets,
+        ),
+    ) {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
@@ -4072,10 +4091,11 @@ mod orb_lava_tests {
         let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
         let collision = crate::collisions::load(&root, assets.registry).unwrap();
         let mut world = World::test_scene(&assets, &render, 3).unwrap();
-        let lava = assets.registry.default_state("minecraft:lava").unwrap();
-        world.set(20, 4, 20, lava).unwrap();
-        let at = Vec3::new(20.5, 4.1, 20.5);
-        let mut orb = ExperienceOrb {
+        f(&mut world, &facts, &collision, &fluids, &assets);
+    }
+
+    fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
+        ExperienceOrb {
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -4088,44 +4108,294 @@ mod orb_lava_tests {
             on_ground: false,
             count: 1,
             ticks: 0,
-            health: 5,
-        };
-        let mut client = orb.clone();
-        for expected_age in 1..=2 {
-            assert!(client.tick(
-                &world,
-                &facts,
-                &collision,
+            health,
+        }
+    }
+
+    #[test]
+    fn a_server_orb_takes_lava_damage_after_moving_and_discards_at_zero() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut client = orb.clone();
+            for expected_age in 1..=2 {
+                assert!(client.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    false,
+                    &mut || 0.0,
+                    None,
+                    fluids,
+                    &mut |_, _| {}
+                ));
+                assert_eq!((client.health, client.age), (5, expected_age));
+            }
+            let mut sounds = Vec::new();
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
                 None,
-                false,
+                true,
                 &mut || 0.0,
                 None,
-                &fluids
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
             ));
-            assert_eq!((client.health, client.age), (5, expected_age));
-        }
-        assert!(orb.tick(
-            &world,
-            &facts,
-            &collision,
-            None,
-            true,
-            &mut || 0.0,
-            None,
-            &fluids
-        ));
-        assert_eq!((orb.health, orb.age), (1, 1));
-        assert!(!orb.tick(
-            &world,
-            &facts,
-            &collision,
-            None,
-            true,
-            &mut || 0.0,
-            None,
-            &fluids
-        ));
-        assert_eq!((orb.health, orb.age), (-3, 2));
+            assert_eq!((orb.health, orb.age), (1, 1));
+            assert_eq!(sounds.len(), 1);
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.0,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!((orb.health, orb.age), (-3, 2));
+            assert_eq!(sounds.len(), 1);
+        });
+    }
+
+    #[test]
+    fn legacy_orb_in_air_or_water_or_non_lava_does_not_play_sound_or_consume_random() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            // Air scenario
+            {
+                let mut orb_air = sample_orb(Vec3::new(20.5, 6.0, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_air.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in air must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in air must not consume random float for lava"
+                );
+                assert_eq!(orb_air.health, 5);
+            }
+
+            // Water scenario
+            {
+                let water = assets.registry.default_state("minecraft:water").unwrap();
+                world.set(20, 4, 20, water).unwrap();
+                let mut orb_water = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_water.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in water must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in water must not consume random float for lava"
+                );
+                assert_eq!(orb_water.health, 5);
+            }
+        });
+    }
+
+    #[test]
+    fn negative_case_non_contact_or_client_orb_does_not_play_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // Distant orb (no contact)
+            let mut orb_away = sample_orb(Vec3::new(22.5, 4.1, 22.5), 5);
+            let mut draws = 0;
+            let mut next_float = || {
+                draws += 1;
+                0.5
+            };
+            let mut sounds = Vec::new();
+            assert!(orb_away.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut next_float,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "non-contact orb must not play burn sound"
+            );
+            assert_eq!(draws, 0, "non-contact orb must not consume random float");
+            assert_eq!(orb_away.health, 5);
+
+            // Client orb in lava (server = false)
+            let mut client_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            sounds.clear();
+            assert!(client_orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                false,
+                &mut || 0.5,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "client orb in lava must not play burn sound"
+            );
+            assert_eq!(client_orb.health, 5);
+
+            // Dead orb (health <= 0) takes no contact damage and emits no sound
+            let mut dead_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 0);
+            sounds.clear();
+            let mut dead_draws = 0;
+            let discarded = dead_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                Vec3::ZERO,
+                &mut || {
+                    dead_draws += 1;
+                    0.5
+                },
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "dead orb remains discarded");
+            assert!(sounds.is_empty(), "dead orb must not play burn sound");
+            assert_eq!(dead_draws, 0, "dead orb must not consume random float");
+        });
+    }
+
+    #[test]
+    fn positive_case_server_orb_in_lava_plays_generic_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut sounds = Vec::new();
+            let float_val = 0.35_f32;
+            let stays = orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || float_val,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(stays, "orb survives first contact with 1 HP");
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1, "exactly one burn sound played");
+            let expected_pitch = 2.0_f32 + float_val * 0.4_f32;
+            assert!((sounds[0].1 - expected_pitch).abs() < 1e-6);
+            assert_eq!(
+                sounds[0].0,
+                [orb.position.x, orb.position.y, orb.position.z]
+            );
+        });
+    }
+
+    #[test]
+    fn boundary_case_surviving_and_discarding_and_multi_contact_in_one_tick() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // 1. Surviving at 1 HP vs discarding at <= 0 HP
+            let mut orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            let mut sounds = Vec::new();
+
+            // Tick 1: 5 HP -> 1 HP (survives)
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.1,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.1 * 0.4)).abs() < 1e-6);
+
+            // Tick 2: 1 HP -> -3 HP (discarded)
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.9,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, -3);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.9 * 0.4)).abs() < 1e-6);
+
+            // 2. Multiple lava contacts in a single tick
+            world.set(21, 4, 20, lava).unwrap();
+            let mut multi_orb = sample_orb(Vec3::new(21.5, 4.1, 20.5), 5);
+            multi_orb.previous = Vec3::new(19.8, 4.1, 20.5);
+            let wanted = Vec3::new(1.7, 0.0, 0.0);
+            let mut float_draws = vec![0.2_f32, 0.8_f32];
+            let mut multi_sounds = Vec::new();
+            let discarded = multi_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                wanted,
+                &mut || float_draws.remove(0),
+                &mut |pos, pitch| multi_sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "orb is discarded after two contacts");
+            assert_eq!(multi_orb.health, -3);
+            assert_eq!(multi_sounds.len(), 2, "both contacts triggered burn sound");
+            assert!((multi_sounds[0].1 - (2.0 + 0.2 * 0.4)).abs() < 1e-6);
+            assert!((multi_sounds[1].1 - (2.0 + 0.8 * 0.4)).abs() < 1e-6);
+        });
     }
 }
 
