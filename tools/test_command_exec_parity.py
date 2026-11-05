@@ -83,6 +83,8 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
+                        help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -105,6 +107,9 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.moving_piston_history_diagnostic:
+        groups.append(('moving piston presentation diagnostic',
+                       corpus_module.moving_piston_presentation_diagnostic()))
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]

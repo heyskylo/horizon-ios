@@ -4711,13 +4711,24 @@ def advancement_reward_functions():
     return ops
 
 
+def moving_piston_presentation_diagnostic():
+    try:
+        from .moving_piston_data_corpus import moving_piston_presentation
+    except ImportError:
+        from moving_piston_data_corpus import moving_piston_presentation
+    return moving_piston_presentation(cmd, setup)
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
+        from .moving_piston_data_corpus import moving_piston_data
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
+        from moving_piston_data_corpus import moving_piston_data
     return [
         ('setup', group_setup()),
+        ('moving piston command data', moving_piston_data(cmd, setup)),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),
