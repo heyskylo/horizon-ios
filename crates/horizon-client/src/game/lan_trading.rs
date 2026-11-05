@@ -249,6 +249,8 @@ impl Game<'_> {
             names: &self.pack.names,
             trade: Some(&trade_env),
             maps: None,
+            limited_crafting: host.hub.limited_crafting,
+            known_recipes: Some(&host.hub.guests[gi].recipe_book),
         };
         let mut menu = Menu::new(Kind::Merchant);
         {

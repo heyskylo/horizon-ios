@@ -29,14 +29,14 @@ jobs:
     # the skipped runs of ordinary comments must not cancel a waiting one.
     concurrency:
       group: claim-${{ github.event.issue.number }}
-    # One of playhorizon's small runners, out of GitHub's shared pool: main's script only (docs/ci-runners.md).
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "playhorizon-light"]') || 'ubuntu-latest' }}
+    # One of our small runners (horizon-light), out of GitHub's pool: main's script only (docs/ci-runners.md).
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -50,20 +50,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
+          # Who may act is decided by this numeric ID: a login can be claimed by someone else after a rename.
+          AUTHOR_ID: ${{ github.event.comment.user.id }}
           ISSUE: ${{ github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
           REPO: ${{ github.repository }}
         run: python3 tools/ci/claim_command.py command
   release:
     if: github.event_name != 'issue_comment' && github.repository == 'horizon-rust/horizon'
-    # One of playhorizon's small runners, out of GitHub's shared pool: main's script only (docs/ci-runners.md).
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "playhorizon-light"]') || 'ubuntu-latest' }}
+    # One of our small runners (horizon-light), out of GitHub's pool: main's script only (docs/ci-runners.md).
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false

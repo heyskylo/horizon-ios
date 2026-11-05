@@ -179,9 +179,29 @@ impl Game<'_> {
             }
         }
     }
+    /// Only the connected owner's acting context supplies a verified identity.
+    /// Guests and unresolved sources retain the existing damage API behavior.
+    pub(super) fn owner_damage_uuid(&self) -> Option<[i32; 4]> {
+        if self.lan_acting.is_some() && self.lan_acting_uuid.is_none() {
+            return None;
+        }
+        let actual = self
+            .lan_acting_uuid
+            .map(horizon_client::lan::playerdata::uuid_ints)
+            .or(self.level.player_uuid)?;
+        let owner = self
+            .serving
+            .as_ref()
+            .map(|s| horizon_client::lan::playerdata::uuid_ints(s.owner))
+            .or(self.level.player_uuid)?;
+        (actual == owner).then_some(actual)
+    }
     /// `LivingEntity.hurtServer` of the mob at `index` by the player's hit:
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.
     pub(super) fn hurt_by_player(&mut self, index: usize, amount: f32, source: Damage) -> bool {
+        let player_uuid = (source.attacker == Some(horizon_client::mobs::Who::Player))
+            .then(|| self.owner_damage_uuid())
+            .flatten();
         let _attacker = self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id));
         let held = self.held().cloned();
         let aim = self.attacker_aim(source.attacker);
@@ -238,7 +258,12 @@ impl Game<'_> {
         // The causing entity's aim, for what turns a blow by where it points
         // (`SulfurCube.knockback`).
         self.mobs[index].attacker_aim = aim;
-        let hurt = self.mobs[index].damage_with(amount, source, Some(&mut breach));
+        let hurt = match player_uuid {
+            Some(uuid) => {
+                self.mobs[index].damage_with_player_uuid(amount, source, uuid, Some(&mut breach))
+            }
+            None => self.mobs[index].damage_with(amount, source, Some(&mut breach)),
+        };
         self.mobs[index].attacker_aim = None;
         if hurt && self.mobs[index].health != old_health {
             self.mob_damage_event(self.mobs[index].id);
@@ -403,7 +428,7 @@ impl Game<'_> {
         ];
         self.level_event_at(2013, on_pos, 750);
         let heavy = if fall > HEAVY_THRESHOLD { 2.0 } else { 1.0 };
-        let player = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let player = Some(self.acting_uuid());
         for m in self.mobs.iter_mut().filter(|m| {
             target != Spared::Mob(m.id) && m.alive() && !m.removed && !ally_of_player(m, player)
         }) {
@@ -511,7 +536,7 @@ impl Game<'_> {
         };
         let base = sweep_base_damage(ratio, attribute, scale);
         let (xd, zd) = self.extra_knockback_direction();
-        let uuid = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let uuid = Some(self.acting_uuid());
         let allies = self.player_allies();
         // getEntitiesOfClass walks the entity sections (x, then z, then y)
         // under the box, each in the order its entities were added.

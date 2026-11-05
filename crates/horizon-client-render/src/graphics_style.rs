@@ -209,7 +209,29 @@ pub fn button(
     }
     let color = if live { WHITE } else { MUTED };
     let ty = y + ((h - 8.0) / 2.0).floor();
-    ui::centered_text(batch, atlas, label, x + 2.0, ty, w - 4.0, color);
+    scrolling_label(batch, atlas, label, [x + 2.0, ty, w - 4.0], (y, h), color);
+}
+/// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
+/// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.
+fn scrolling_label(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    [left, y, width]: [f32; 3],
+    (top, height): (f32, f32),
+    color: u32,
+) {
+    ui::scrolling_text(
+        batch,
+        atlas,
+        text,
+        left,
+        left + width,
+        top,
+        top + height,
+        y,
+        color,
+    );
 }
 /// A slider: its value over a thin track filled in the accent up to the handle at `position`.
 pub fn slider(
@@ -222,7 +244,14 @@ pub fn slider(
 ) {
     let [x, y, w, h] = rect;
     let color = if live { WHITE } else { MUTED };
-    ui::centered_text(batch, atlas, value, x + 2.0, y + 1.0, w - 4.0, color);
+    scrolling_label(
+        batch,
+        atlas,
+        value,
+        [x + 2.0, y + 1.0, w - 4.0],
+        (y, h),
+        color,
+    );
     let line = y + h - 3.0;
     let at = x + (position.clamp(0.0, 1.0) * (w - 4.0)).round();
     fill(batch, atlas, [x, line, w, 2.0], TRACK);
@@ -260,7 +289,7 @@ pub fn cycler(
         (true, true) => WHITE,
         (true, false) => SOFT,
     };
-    batch.text_styled(atlas, value, x + 9.0, ty, color, true);
+    scrolling_label(batch, atlas, value, [x + 9.0, ty, w - 18.0], (y, h), color);
 }
 /// A screen's title, centred at the top (split-screen profiles).
 pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
@@ -270,4 +299,77 @@ pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
 /// The cost's colour in the HUD's encoding: the square beside its name.
 pub fn cost_color(cost: Cost) -> u32 {
     hex(cost.rgb(), 255)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    fn x_span(batch: &HudBatch, plain: &HudBatch) -> (f32, f32) {
+        let label = |v: &&crate::hud::HudVertex| !plain.vertices.iter().any(|p| p.pos == v.pos);
+        batch
+            .vertices
+            .iter()
+            .filter(label)
+            .map(|v| v.pos[0])
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), x| {
+                (lo.min(x), hi.max(x))
+            })
+    }
+
+    /// A label wider than its widget slides inside the widget's box instead of being cut by
+    /// characters; a short one stays centred.
+    #[test]
+    fn long_labels_stay_in_the_widget_and_short_ones_centred() {
+        let atlas = atlas();
+        let rect = [10.0, 20.0, 100.0, 20.0];
+        let long = Text::literal("Graphics API: Prefer Vulkan (Experimental)");
+        assert!(atlas.font.width_text(&long.resolved()) > rect[2]);
+        let short = Text::literal("Done");
+        let short_w = atlas.font.width_text(&short.resolved());
+        let draws: [(&str, fn(&mut HudBatch, &HudAtlas, [f32; 4], &Text)); 3] = [
+            ("button", |b, a, r, t| {
+                button(b, a, r, t, (false, true, false))
+            }),
+            ("slider", |b, a, r, t| {
+                slider(b, a, r, t, 0.5, (false, true))
+            }),
+            ("cycler", |b, a, r, t| cycler(b, a, r, t, (false, true))),
+        ];
+        for (name, draw) in draws {
+            let mut plain = HudBatch::new([640, 480]);
+            draw(&mut plain, &atlas, rect, &Text::empty());
+            let base = plain.vertices.len();
+            let mut batch = HudBatch::new([640, 480]);
+            draw(&mut batch, &atlas, rect, &long);
+            assert!(batch.vertices.len() > base, "{name}: long label drawn");
+            // The widget's own fill, track and handle also draw: only the label's vertices count.
+            let label = batch
+                .vertices
+                .iter()
+                .filter(|v| !plain.vertices.iter().any(|p| p.pos == v.pos));
+            for v in label {
+                assert!(
+                    (rect[0]..=rect[0] + rect[2]).contains(&v.pos[0])
+                        && (rect[1]..=rect[1] + rect[3]).contains(&v.pos[1]),
+                    "{name}: {:?} outside the widget",
+                    v.pos
+                );
+            }
+            // The label's own glyphs (past the widget's fill) start centred.
+            let mut batch = HudBatch::new([640, 480]);
+            draw(&mut batch, &atlas, rect, &short);
+            let (lo, hi) = x_span(&batch, &plain);
+            let middle = (lo + hi) / 2.0;
+            let want = rect[0] + rect[2] / 2.0;
+            assert!(
+                (middle - want).abs() <= short_w / 2.0 + 2.0 && (middle - want).abs() < 3.0,
+                "{name}: centre {middle}, want {want}"
+            );
+        }
+    }
 }

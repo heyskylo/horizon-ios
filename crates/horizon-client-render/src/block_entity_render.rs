@@ -11,6 +11,7 @@ use crate::{
     block_entity_anim::{self, EnchantingBook},
     breaking::entity_geometry,
     fast_hash::FxHashMap,
+    font::Glyph,
     gfx::mark_oit,
     hud::Rect,
     mesher::{CULL_BACK, Vertex},
@@ -270,10 +271,10 @@ pub const DYES: [(&str, u32); 16] = [
     ("black", 0x1D1D21),
 ];
 fn dye_prefix(name: &str) -> Option<(usize, &str)> {
-    // Longest names first so "light_gray" wins over "gray".
-    let mut order: Vec<usize> = (0..16).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(DYES[i].0.len()));
-    order.into_iter().find_map(|i| {
+    // Longest names first; this is the same stable order as sorting DYES by
+    // descending prefix length, without a Vec allocation or comparison sort.
+    const ORDER: [usize; 16] = [3, 8, 2, 1, 4, 10, 0, 12, 13, 15, 5, 6, 7, 9, 11, 14];
+    ORDER.into_iter().find_map(|i| {
         name.strip_prefix(DYES[i].0)
             .and_then(|rest| rest.strip_prefix('_'))
             .map(|rest| (i, rest))
@@ -660,7 +661,7 @@ fn sign_text_calls(
     } else {
         (dark, 0, vertex_light(packed))
     };
-    let advance = |c: char| (scene.glyph)(c).1;
+    let advance = |c: char| (scene.glyph)(c).advance;
     let width = |s: &str| s.chars().map(advance).sum::<f32>().ceil();
     text.lines
         .iter()
@@ -695,14 +696,31 @@ const TEXT_OVER_OUTLINE: f32 = 0.05;
 /// reader instead (a twentieth of a font pixel, invisible) rather than
 /// z-fighting with the outline under it.
 fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
+    text_vertices(scene.glyph, call, out);
+}
+
+/// `draw_text` with the font's glyph cells and advances from `glyph`: the
+/// text of `call` as glyph quads in its matrix's plane, 1 unit a font pixel,
+/// y down as the font's, with its outline when it has one. A native mod's
+/// block entity draws its text this way (`native_draw_text`).
+pub fn text_vertices(glyph: &dyn Fn(char) -> Glyph, call: &TextCall, out: &mut Vec<Vertex>) {
     let mut emit = |dx: f32, dy: f32, z: f32, argb: u32| {
         let mut x = call.x + dx;
         let y0 = call.y + dy;
         for ch in call.text.chars() {
-            let (cell, advance) = (scene.glyph)(ch);
-            if let Some(r) = cell {
-                let corners = [(x, y0 + 8.0), (x + 8.0, y0 + 8.0), (x + 8.0, y0), (x, y0)];
-                let uvs = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
+            let g = glyph(ch);
+            if let Some(cell) = g.rect {
+                // BakedSheetGlyph: the glyph's own box from the pen, not a
+                // fixed 8x8 cell (a Unifont glyph is 0.5 units per texel).
+                let (x0, x1) = (x + g.left, x + g.right);
+                let (top, bottom) = (y0 + g.top, y0 + g.bottom);
+                let corners = [(x0, bottom), (x1, bottom), (x1, top), (x0, top)];
+                let uvs = [
+                    [cell.u0, cell.v1],
+                    [cell.u1, cell.v1],
+                    [cell.u1, cell.v0],
+                    [cell.u0, cell.v0],
+                ];
                 let c =
                     0xFF00_0000 | (argb & 255) << 16 | (argb >> 8 & 255) << 8 | (argb >> 16 & 255);
                 for ((cx, cy), uv) in corners.into_iter().zip(uvs) {
@@ -721,7 +739,7 @@ fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
                     });
                 }
             }
-            x += advance;
+            x += g.advance;
         }
     };
     if call.outline != 0 {
@@ -818,11 +836,14 @@ pub struct Scene<'a> {
     /// profile → skin): a downloaded `skins/<sha1>` slot or the profile's
     /// `DefaultPlayerSkin` fallback; None keeps `SKIN_BY_TYPE` (`DefaultPlayerSkin.getDefaultTexture`, slim steve).
     pub skull: &'a dyn Fn([i32; 3]) -> Option<String>,
-    /// Font glyph cell (none for blank glyphs such as the space) and advance.
-    pub glyph: &'a dyn Fn(char) -> (Option<Rect>, f32),
+    /// Font glyph: atlas cell (none for blank glyphs such as the space), box and advance.
+    pub glyph: &'a dyn Fn(char) -> Glyph,
     /// Changes whenever `glyph` may answer differently (`Font::epoch`): sign
     /// text laid out under another value is laid out again.
     pub glyphs: u64,
+    /// Per-block visibility for dynamic, animated, or uncached models. Bounds
+    /// are world-space and conservatively include model animation extents.
+    pub dynamic_visible: Option<&'a dyn Fn([i32; 3], u32, DVec3, DVec3) -> bool>,
 }
 
 /// Empty by default (a dedicated server): no state has a block entity model.
@@ -1392,6 +1413,167 @@ impl BlockEntityRenderer {
     fn kind(&self, state: u32) -> &Kind {
         self.kinds.get(state as usize).unwrap_or(&Kind::None)
     }
+    fn dynamic_bounds(
+        &self,
+        scene: &Scene,
+        pos: [i32; 3],
+        kind: &Kind,
+        chest_openness: Option<(f32, Option<[i32; 3]>)>,
+    ) -> (DVec3, DVec3) {
+        let [x, y, z] = pos.map(f64::from);
+        let mut lo = DVec3::new(x, y, z);
+        let mut hi = DVec3::new(x + 1.0, y + 1.0, z + 1.0);
+        match kind {
+            Kind::Chest { double_with, .. } => {
+                if let Some(offset) = double_with {
+                    lo.x += f64::from(offset[0].min(0));
+                    lo.z += f64::from(offset[2].min(0));
+                    hi.x += f64::from(offset[0].max(0));
+                    hi.z += f64::from(offset[2].max(0));
+                }
+                let is_open = chest_openness.map_or_else(
+                    || {
+                        (scene.lid)(pos) != 0.0
+                            || double_with.is_some_and(|offset| {
+                                let other = [
+                                    pos[0].saturating_add(offset[0]),
+                                    pos[1].saturating_add(offset[1]),
+                                    pos[2].saturating_add(offset[2]),
+                                ];
+                                (scene.lid)(other) != 0.0
+                            })
+                    },
+                    |(open, _)| open != 0.0,
+                );
+                if is_open {
+                    // The lid pivots up from the rear edge. Its longest corner
+                    // rises by less than one block in the fully open pose.
+                    hi.y += 0.8;
+                }
+            }
+            Kind::Shulker { facing, .. } => {
+                let offset = step(facing);
+                lo.x += f64::from(offset[0].min(0)) * 0.52;
+                lo.y += f64::from(offset[1].min(0)) * 0.52;
+                lo.z += f64::from(offset[2].min(0)) * 0.52;
+                hi.x += f64::from(offset[0].max(0)) * 0.52;
+                hi.y += f64::from(offset[1].max(0)) * 0.52;
+                hi.z += f64::from(offset[2].max(0)) * 0.52;
+            }
+            Kind::Banner { wall: false, .. } => {
+                hi.y += 1.0;
+                lo.x -= 0.05;
+                lo.z -= 0.05;
+                hi.x += 0.05;
+                hi.z += 0.05;
+            }
+            Kind::Banner { wall: true, .. } => {
+                lo.y -= 1.0;
+                lo.x -= 0.05;
+                lo.z -= 0.05;
+                hi.x += 0.05;
+                hi.z += 0.05;
+            }
+            Kind::Sign { hanging: true, .. } => {
+                lo.y -= 1.0;
+                lo.x -= 0.15;
+                lo.z -= 0.15;
+                hi.x += 0.15;
+                hi.z += 0.15;
+            }
+            Kind::Sign { hanging: false, .. } => {
+                hi.y += 0.3;
+                lo.x -= 0.02;
+                lo.z -= 0.02;
+                hi.x += 0.02;
+                hi.z += 0.02;
+            }
+            Kind::EnchantingTable | Kind::Lectern { .. } => {
+                // The book and statue models rise above the block's collision
+                // cube; include their full rendered height and rotated corners.
+                hi.y += 1.0;
+                lo.x -= 0.25;
+                lo.z -= 0.25;
+                hi.x += 0.25;
+                hi.z += 0.25;
+            }
+            Kind::CopperGolem { .. } => {
+                // The statue pose rotates around the root, so some variants
+                // extend below the block as well as above it.
+                lo.y -= 1.0;
+                hi.y += 1.0;
+                lo.x -= 0.25;
+                lo.z -= 0.25;
+                hi.x += 0.25;
+                hi.z += 0.25;
+            }
+            Kind::Conduit => {
+                // Its animated cage is centered above the conduit block and
+                // the wind model spans multiple cells. The caller bypasses
+                // voxel occlusion for envelopes this tall, but retains frustum
+                // culling with this conservative volume.
+                lo.x -= 1.0;
+                lo.y -= 1.0;
+                lo.z -= 1.0;
+                hi.x += 1.0;
+                hi.y += 1.0;
+                hi.z += 1.0;
+            }
+            Kind::Bell => {
+                // The bell's pivoted swing moves its corners slightly outside
+                // the block even though the model starts centered in it.
+                lo.x -= 0.1;
+                lo.y -= 0.1;
+                lo.z -= 0.1;
+                hi.x += 0.1;
+                hi.y += 0.1;
+                hi.z += 0.1;
+            }
+            Kind::Skull { .. } => {
+                // Wall-mounted and dragon heads can protrude from their block.
+                lo.x -= 0.25;
+                lo.y -= 0.25;
+                lo.z -= 0.25;
+                hi.x += 0.25;
+                hi.y += 0.25;
+                hi.z += 0.25;
+            }
+            Kind::EndGateway { .. } => {
+                let anim = (scene.anim)(pos);
+                let beam = gateway_beam(anim.gateway, scene.partial, scene.max_y, scene.game_time);
+                let height = f64::from(beam.height.max(0));
+                lo.y -= height;
+                hi.y += height;
+            }
+            _ => {}
+        }
+        (lo, hi)
+    }
+
+    fn is_dynamic_visible(
+        &self,
+        scene: &Scene,
+        shapes: &Arc<BlockEntityShapes>,
+        pos: [i32; 3],
+        state: u32,
+        kind: &Kind,
+        chest_openness: Option<(f32, Option<[i32; 3]>)>,
+    ) -> bool {
+        let Some(visible) = scene.dynamic_visible else {
+            return true;
+        };
+        if matches!(kind, Kind::EndGateway { .. }) {
+            return true;
+        }
+        // A pack model may extend outside the vanilla envelope. Keep that
+        // geometry on the uncullable path unless its model bounds are known.
+        if !Arc::ptr_eq(shapes, &self.vanilla) {
+            return true;
+        }
+        let (lo, hi) = self.dynamic_bounds(scene, pos, kind, chest_openness);
+        visible(pos, state, lo, hi)
+    }
+
     fn cached_entry_is_current(
         &self,
         scene: &Scene,
@@ -1401,6 +1583,7 @@ impl BlockEntityRenderer {
         options: CacheOptions,
         entry: &StaticEntry,
         section_revision: StaticSectionRevision,
+        chest_openness: Option<(f32, Option<[i32; 3]>)>,
     ) -> bool {
         if entry.key.state != state
             || entry.key.nether != scene.nether
@@ -1412,15 +1595,24 @@ impl BlockEntityRenderer {
         }
         match kind {
             Kind::Chest { .. } => {
-                let (open, other) = self.chest_openness(
-                    pos,
-                    kind,
-                    &|p| scene.world.block(p[0], p[1], p[2]).0,
-                    scene.lid,
-                );
-                // Double chests depend on the neighboring half's light too;
-                // let those uncommon models take the full key path.
-                open == 0.0 && other.is_none()
+                let (open, other) = chest_openness.unwrap_or_else(|| {
+                    self.chest_openness(
+                        pos,
+                        kind,
+                        &|p| scene.world.block(p[0], p[1], p[2]).0,
+                        scene.lid,
+                    )
+                });
+                if open != 0.0 {
+                    return false;
+                }
+                let mut light = scene.world.light(pos[0], pos[1], pos[2]);
+                if let Some(other) = other {
+                    let other_light = scene.world.light(other[0], other[1], other[2]);
+                    light = (light >> 4).max(other_light >> 4) << 4
+                        | (light & 15).max(other_light & 15);
+                }
+                entry.key.light == light
             }
             Kind::Shulker { .. } => {
                 let (progress, old) = (scene.anim)(pos).shulker;
@@ -1683,6 +1875,17 @@ impl BlockEntityRenderer {
                 }
                 let local = static_local_index(pos, section_min_y);
                 let current_section_revision = active_section_revision.unwrap_or_default();
+                let chest_openness = (cache.is_some()
+                    && options.chests
+                    && matches!(kind, Kind::Chest { .. }))
+                .then(|| {
+                    self.chest_openness(
+                        pos,
+                        kind,
+                        &|p| scene.world.block(p[0], p[1], p[2]).0,
+                        scene.lid,
+                    )
+                });
                 if cache_only && section_revision.is_some() && active_section_revision.is_none() {
                     break 'draw;
                 }
@@ -1698,6 +1901,7 @@ impl BlockEntityRenderer {
                         options,
                         &active_entries[index].1,
                         current_section_revision,
+                        chest_openness,
                     )
                 {
                     let entry = &mut active_entries[index].1;
@@ -1717,7 +1921,9 @@ impl BlockEntityRenderer {
                             ..*vertex
                         }));
                     }
-                    if matches!(kind, Kind::Banner { .. }) {
+                    if matches!(kind, Kind::Banner { .. })
+                        && self.is_dynamic_visible(scene, &shapes, pos, state, kind, None)
+                    {
                         let packed = scene.world.light(pos[0], pos[1], pos[2]);
                         let origin =
                             (DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]))
@@ -1738,11 +1944,25 @@ impl BlockEntityRenderer {
                     }
                     break 'draw;
                 }
+                if cache_only && chest_openness.is_some_and(|(open, _)| open != 0.0) {
+                    if let Some(cache) = &mut cache
+                        && let Ok(index) =
+                            active_entries.binary_search_by_key(&local, |(index, _)| *index)
+                    {
+                        active_entries.remove(index);
+                        cache.len -= 1;
+                        cache.mark_section_dirty(section);
+                    }
+                    break 'draw;
+                }
                 let origin = (DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]))
                     - scene.camera)
                     .as_vec3();
                 let mut packed = scene.world.light(pos[0], pos[1], pos[2]);
                 if matches!(kind, Kind::Sign { .. }) && scene.texts.is_none() {
+                    if !self.is_dynamic_visible(scene, &shapes, pos, state, kind, None) {
+                        break 'draw;
+                    }
                     if options.signs {
                         self.sign_text(scene, pos, state, origin, packed, out);
                     } else {
@@ -1761,8 +1981,15 @@ impl BlockEntityRenderer {
                     break 'draw;
                 }
                 if let Some(cache) = &mut cache
-                    && let Some(key) =
-                        self.static_key(scene, pos, state, kind, options, &mut packed)
+                    && let Some(key) = self.static_key(
+                        scene,
+                        pos,
+                        state,
+                        kind,
+                        options,
+                        &mut packed,
+                        chest_openness,
+                    )
                 {
                     let slot = active_entries.binary_search_by_key(&local, |(index, _)| *index);
                     let entry = match slot {
@@ -1847,7 +2074,9 @@ impl BlockEntityRenderer {
                             ..*vertex
                         }));
                     }
-                    if matches!(kind, Kind::Banner { .. }) {
+                    if matches!(kind, Kind::Banner { .. })
+                        && self.is_dynamic_visible(scene, &shapes, pos, state, kind, None)
+                    {
                         self.render_banner(
                             &shapes,
                             scene,
@@ -1872,6 +2101,9 @@ impl BlockEntityRenderer {
                     cache.mark_section_dirty(section);
                 }
                 if cache_only {
+                    break 'draw;
+                }
+                if !self.is_dynamic_visible(scene, &shapes, pos, state, kind, chest_openness) {
                     break 'draw;
                 }
                 let base = Mat4::from_translation(origin);
@@ -1940,6 +2172,7 @@ impl BlockEntityRenderer {
         kind: &Kind,
         options: CacheOptions,
         packed: &mut u8,
+        chest_openness: Option<(f32, Option<[i32; 3]>)>,
     ) -> Option<StaticKey> {
         let mut sprite_rects = [None; 5];
         let mut sprite_count = 0;
@@ -1957,12 +2190,14 @@ impl BlockEntityRenderer {
                 part,
                 ..
             } if options.chests => {
-                let (open, other) = self.chest_openness(
-                    pos,
-                    kind,
-                    &|p| scene.world.block(p[0], p[1], p[2]).0,
-                    scene.lid,
-                );
+                let (open, other) = chest_openness.unwrap_or_else(|| {
+                    self.chest_openness(
+                        pos,
+                        kind,
+                        &|p| scene.world.block(p[0], p[1], p[2]).0,
+                        scene.lid,
+                    )
+                });
                 if open != 0.0 {
                     return None;
                 }
@@ -3342,8 +3577,9 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
+            dynamic_visible: None,
         };
         // Compare the cached world path with the original model renderer,
         // including atlas replacement, current light and animated fallback.
@@ -3610,7 +3846,13 @@ mod tests {
                 w: 8,
                 h: 8,
             };
-            (Some(rect), 6.0)
+            Glyph {
+                rect: Some(rect),
+                right: 8.0,
+                bottom: 8.0,
+                advance: 6.0,
+                ..Glyph::default()
+            }
         };
         let scene = Scene {
             camera: DVec3::ZERO,
@@ -3632,6 +3874,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            dynamic_visible: None,
         };
         let mut call = TextCall {
             matrix: Mat4::IDENTITY,
@@ -3658,6 +3901,79 @@ mod tests {
         draw_text(&scene, &call, &mut out);
         assert_eq!(out.len(), 2 * 4);
         assert!(out.iter().all(|v| v.pos[2] == 0.0));
+    }
+
+    /// BakedSheetGlyph draws a glyph over its own box from the pen
+    /// (x + left .. x + right, y + up .. y + down), not a fixed 8x8 cell. With
+    /// Force Unicode Font a Latin letter is an 8x16 Unifont glyph at half
+    /// scale: 4 units wide and 8 tall, advancing 5 (#8699).
+    #[test]
+    fn sign_text_draws_each_glyph_over_its_own_box() {
+        let world = World::new(BlockStateId(0), 1);
+        let sprites = HashMap::new();
+        let glyph = |_: char| Glyph {
+            rect: Some(Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.0625,
+                v1: 0.125,
+                w: 8,
+                h: 16,
+            }),
+            left: 0.0,
+            top: 0.0,
+            right: 4.0,
+            bottom: 8.0,
+            advance: 5.0,
+            offset: 0.5,
+        };
+        let scene = Scene {
+            camera: DVec3::ZERO,
+            orientation: Quat::IDENTITY,
+            anim: &|_| BlockAnim::default(),
+            texts: None,
+            partial: 0.0,
+            game_time: 0,
+            max_y: 320,
+            world: &world,
+            sprites: &sprites,
+            emissive: &Default::default(),
+            translucent_sprites: &HashSet::new(),
+            atlas_revision: 1,
+            nether: false,
+            lid: &|_| 0.0,
+            sign: &|_| None,
+            banner: &|_| Vec::new(),
+            skull: &|_| None,
+            glyph: &glyph,
+            glyphs: 0,
+            dynamic_visible: None,
+        };
+        let call = TextCall {
+            matrix: Mat4::IDENTITY,
+            x: 10.0,
+            y: 2.0,
+            text: "ab".into(),
+            color: 0xFF00_0000,
+            outline: 0,
+            light: 240 | 240 << 8,
+        };
+        let mut out = Vec::new();
+        draw_text(&scene, &call, &mut out);
+        let boxes: Vec<_> = out
+            .chunks(4)
+            .map(|q| {
+                let xs = q.iter().map(|v| v.pos[0]);
+                let ys = q.iter().map(|v| v.pos[1]);
+                [
+                    xs.clone().fold(f32::MAX, f32::min),
+                    xs.fold(f32::MIN, f32::max),
+                    ys.clone().fold(f32::MAX, f32::min),
+                    ys.fold(f32::MIN, f32::max),
+                ]
+            })
+            .collect();
+        assert_eq!(boxes, [[10.0, 14.0, 2.0, 10.0], [15.0, 19.0, 2.0, 10.0]]);
     }
 
     #[test]
@@ -3714,7 +4030,13 @@ mod tests {
                 w: 8,
                 h: 8,
             };
-            ((c != ' ').then_some(rect), wide.get())
+            Glyph {
+                rect: (c != ' ').then_some(rect),
+                right: 8.0,
+                bottom: 8.0,
+                advance: wide.get(),
+                ..Glyph::default()
+            }
         };
         let (first_sign, changed_sign, glowing_sign) = (
             |_| Some(&first_text),
@@ -3741,6 +4063,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            dynamic_visible: None,
         };
         let check = |scene: &Scene, pos: [i32; 3], state: u32| {
             let mut cached = Vec::new();
@@ -3879,8 +4202,9 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
+            dynamic_visible: None,
         };
         let mut verts = Vec::new();
         renderer.render_block(&scene, [0; 3], state.0, Mat4::IDENTITY, 0xff, &mut verts);
@@ -3964,8 +4288,9 @@ mod tests {
             sign: &|_| None,
             banner: &|_| Vec::new(),
             skull: &|_| None,
-            glyph: &|_| (None, 0.0),
+            glyph: &|_| Glyph::default(),
             glyphs: 0,
+            dynamic_visible: None,
         };
         // A closed single chest of `block` drawn by `renderer`: positions and UVs.
         let draw = |renderer: &BlockEntityRenderer, block: &str, texture: &'static str| {

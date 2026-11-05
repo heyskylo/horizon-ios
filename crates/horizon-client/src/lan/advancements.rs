@@ -267,6 +267,16 @@ impl ServerAdvancements {
         Some(w.data)
     }
 
+    /// `ServerAdvancementManager.get` then `PlayerAdvancements.setSelectedTab`:
+    /// `None` when the server has no advancement `id` (the tab is left as it
+    /// is), else whether a player may keep it as its tab (a root that has a
+    /// display).
+    pub fn selectable(&self, id: &str) -> Option<bool> {
+        self.tree
+            .get(id)
+            .map(|a| a.parent.is_none() && a.display.is_some())
+    }
+
     /// Which advancements a player with `progress` may see.
     pub fn visibility(&self, progress: &Progress) -> Vec<bool> {
         self.tree
@@ -871,6 +881,53 @@ mod tests {
         assert!(len >= 2, "an item list, not empty ({len}) nor a tag");
         assert_eq!(len - 1, 1, "the compound's one item");
         assert_eq!(r.varint().unwrap(), raw);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The stonecutter's recipes go out in registration order (path, then
+    /// namespace): a guest's button picks by position in the host's list,
+    /// which keeps that order too.
+    #[test]
+    fn update_recipes_lists_the_stonecutter_in_registration_order() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla = cut("minecraft:raw_copper");
+        let root = resources("stonecutter_order", &[("z_cut", vanilla.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let sync =
+            SyncData::load(&root, &horizon_world::loot::PackOverlay { files: &packs }).unwrap();
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap();
+        let mut r = Reader::new(&sync.recipes);
+        for _ in 0..r.varint().unwrap() {
+            r.string(64).unwrap();
+            for _ in 0..r.varint().unwrap() {
+                r.varint().unwrap();
+            }
+        }
+        let mut inputs = Vec::new();
+        for _ in 0..r.varint().unwrap() {
+            // An item list (its length plus one), then the result's slot
+            // display: its type, item, count and two empty component lists.
+            let len = r.varint().unwrap();
+            inputs.push((1..len).map(|_| r.varint().unwrap()).collect::<Vec<_>>());
+            for _ in 0..5 {
+                r.varint().unwrap();
+            }
+        }
+        assert_eq!(
+            inputs,
+            [
+                vec![item("minecraft:redstone")],
+                vec![item("minecraft:raw_copper")]
+            ]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

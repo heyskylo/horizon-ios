@@ -1,3 +1,26 @@
+// `invert_generic` and the formula of `pack_projection` in this file are adapted from JOML
+// 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+//
+// Copyright (c) 2015-2026 Richard Greenlees
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 //! The uniforms a shader pack's post-processing programs read once per frame (spec 5.2, class
 //! F), from the renderer's `Frame` and the few values only the game knows (`PackInputs`).
 //! Matrices follow GL's conventions (5.5): `gbufferProjection` maps view depth to clip z in
@@ -66,6 +89,10 @@ pub struct PackInputs {
     /// The player's cave mood, 0..1 (`BiomeAmbientSoundsHandler`'s moodiness):
     /// `playerMood` and `constantMood`.
     pub mood: f32,
+    /// Under `HORIZON_STILL`, the world's ticks: the pack's clock (`frameTimeCounter`,
+    /// `frameCounter`) instead of the wall clock and the frames drawn, and smoothed values
+    /// (`wetness`, `eyeBrightnessSmooth`, `centerDepthSmooth`) at their targets.
+    pub still_ticks: Option<u64>,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -265,6 +292,13 @@ pub const NAMES: &[&str] = &[
     "playerMood",
     "constantMood",
     "centerDepthSmooth",
+    "alphaTestRef",
+    "entityId",
+    "blockEntityId",
+    "entityColor",
+    GBUFFERS_FOG_MODE,
+    GBUFFERS_FOG_SHAPE,
+    GBUFFERS_CENTER_DEPTH,
     "isRightHanded",
     "is_on_ground",
     "bedrockLevel",
@@ -277,6 +311,13 @@ pub const NAMES: &[&str] = &[
     "cloudHeight",
 ];
 
+/// What programs that draw the game's geometry (gbuffers, shadow) read as `fogMode`,
+/// `fogShape` and `centerDepthSmooth`: no GLSL name can hold a dot, so no pack reads these
+/// directly.
+const GBUFFERS_FOG_MODE: &str = "gbuffers.fogMode";
+const GBUFFERS_FOG_SHAPE: &str = "gbuffers.fogShape";
+const GBUFFERS_CENTER_DEPTH: &str = "gbuffers.centerDepthSmooth";
+
 /// Values carried from frame to frame.
 pub struct FrameUniforms {
     pub values: Vec<Value>,
@@ -285,6 +326,8 @@ pub struct FrameUniforms {
     start: std::time::Instant,
     last: Option<std::time::Instant>,
     frame: u32,
+    /// The last frame's `PackInputs::still_ticks`, for `eval_custom`.
+    still_ticks: Option<u64>,
     previous: Option<(glam::DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
@@ -303,6 +346,7 @@ impl Default for FrameUniforms {
             start: std::time::Instant::now(),
             last: None,
             frame: 0,
+            still_ticks: None,
             previous: None,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
@@ -337,6 +381,116 @@ pub fn shadow_light(frame: &Frame, shadow: &Shadow) -> Vec3 {
         frame.sky.moon_angle
     };
     body(angle, shadow.sun_path_rotation).normalize()
+}
+
+/// A sky angle in degrees as the fraction of a day Iris 1.11.7 gives packs (`sunAngle`,
+/// `shadowAngle`): 0 at sunrise, 0.25 at noon. Our probes' readings fit `((angle + 90) % 360)
+/// / 360` in floats to the last bit, by day and by night.
+fn day_fraction(degrees: f32) -> f32 {
+    (degrees + 90.0) % 360.0 / 360.0
+}
+
+/// The sky angle in degrees of the body that casts the shadows: the sun by day, the moon at
+/// night (taken below 360).
+fn shadow_light_degrees(frame: &Frame) -> f32 {
+    if day_fraction(frame.sky.sun_angle) < 0.5 {
+        frame.sky.sun_angle
+    } else {
+        frame.sky.moon_angle % 360.0
+    }
+}
+
+/// `shadowModelView` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
+/// readings (20 scenes: times of day and night, `sunPathRotation` 0 and 30, cameras off the
+/// block grid) fit these JOML float operations, in this order: `rotateX(90°)`, `rotateZ(-angle)`
+/// with the light body's sky angle, `rotateX(sunPathRotation)`, then `translate` by minus the
+/// origin `shadow_camera` describes, from the camera's position as a float; and JOML's
+/// `invert()`. `shadow_camera`'s view, built in doubles, differs in the last bits (6e-17 for
+/// 0), and on a texel boundary of the map that is enough to read the other texel (#8464).
+pub fn shadow_model_view(frame: &Frame, shadow: &Shadow) -> (Mat4, Mat4) {
+    use horizon_core::geometry::trig::DEG_TO_RAD;
+    let mut m = crate::camera::joml::Mat4::IDENTITY;
+    m.rotate_x(90.0 * DEG_TO_RAD);
+    m.rotate_z(-(shadow_light_degrees(frame) * DEG_TO_RAD));
+    m.rotate_x(shadow.sun_path_rotation * DEG_TO_RAD);
+    let step = shadow.interval;
+    if step > 0.0 {
+        let camera = frame.camera.as_vec3();
+        let remainder = if shadow.euclidean_snap {
+            camera.rem_euclid(Vec3::splat(step))
+        } else {
+            camera % step
+        };
+        let origin = Vec3::splat(step / 2.0) - remainder;
+        m.translate(-origin.x, -origin.y, -origin.z);
+    }
+    let inverse = m
+        .invert_orthonormal()
+        .expect("rotations and a translation are orthonormal");
+    (m.to_glam(), inverse.to_glam())
+}
+
+/// `gbufferProjection` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
+/// readings fit JOML's `setPerspective` formula worked in doubles from the float field of view
+/// in radians, the float aspect ratio and the near plane 0.05 as a float, narrowed to floats;
+/// and JOML's general `invert()` of that, in floats. glam's perspective differs in the last
+/// bits.
+pub fn pack_projection(fov_degrees: f32, aspect: f32, far: f32) -> (Mat4, Mat4) {
+    use horizon_core::geometry::trig::DEG_TO_RAD;
+    let fov = f64::from(fov_degrees * DEG_TO_RAD);
+    let (aspect, near, far) = (f64::from(aspect), f64::from(0.05f32), f64::from(far));
+    let h = (fov * 0.5).tan();
+    let m = glam::DMat4::from_cols(
+        glam::DVec4::new(1.0 / (h * aspect), 0.0, 0.0, 0.0),
+        glam::DVec4::new(0.0, 1.0 / h, 0.0, 0.0),
+        glam::DVec4::new(0.0, 0.0, (far + near) / (near - far), -1.0),
+        glam::DVec4::new(0.0, 0.0, (far + far) * near / (near - far), 0.0),
+    )
+    .as_mat4();
+    (m, invert_generic(m))
+}
+
+/// JOML's `Matrix4f.invert()` of a matrix with no known shape (`invertGeneric`), operation by
+/// operation (JOML's `Math.fma` without `joml.useMathFma` is a product and a sum).
+fn invert_generic(m: Mat4) -> Mat4 {
+    let g = |c: usize, r: usize| m.col(c)[r];
+    let (m00, m01, m02, m03) = (g(0, 0), g(0, 1), g(0, 2), g(0, 3));
+    let (m10, m11, m12, m13) = (g(1, 0), g(1, 1), g(1, 2), g(1, 3));
+    let (m20, m21, m22, m23) = (g(2, 0), g(2, 1), g(2, 2), g(2, 3));
+    let (m30, m31, m32, m33) = (g(3, 0), g(3, 1), g(3, 2), g(3, 3));
+    let a = m00 * m11 - m01 * m10;
+    let b = m00 * m12 - m02 * m10;
+    let c = m00 * m13 - m03 * m10;
+    let d = m01 * m12 - m02 * m11;
+    let e = m01 * m13 - m03 * m11;
+    let f = m02 * m13 - m03 * m12;
+    let gg = m20 * m31 - m21 * m30;
+    let h = m20 * m32 - m22 * m30;
+    let i = m20 * m33 - m23 * m30;
+    let j = m21 * m32 - m22 * m31;
+    let k = m21 * m33 - m23 * m31;
+    let l = m22 * m33 - m23 * m32;
+    let det = 1.0 / (a * l - b * k + c * j + d * i - e * h + f * gg);
+    // `Math.fma(x, y, z)` unfused.
+    let fma = |x: f32, y: f32, z: f32| x * y + z;
+    Mat4::from_cols_array(&[
+        fma(m11, l, fma(-m12, k, m13 * j)) * det,
+        fma(-m01, l, fma(m02, k, -m03 * j)) * det,
+        fma(m31, f, fma(-m32, e, m33 * d)) * det,
+        fma(-m21, f, fma(m22, e, -m23 * d)) * det,
+        fma(-m10, l, fma(m12, i, -m13 * h)) * det,
+        fma(m00, l, fma(-m02, i, m03 * h)) * det,
+        fma(-m30, f, fma(m32, c, -m33 * b)) * det,
+        fma(m20, f, fma(-m22, c, m23 * b)) * det,
+        fma(m10, k, fma(-m11, i, m13 * gg)) * det,
+        fma(-m00, k, fma(m01, i, -m03 * gg)) * det,
+        fma(m30, e, fma(-m31, c, m33 * a)) * det,
+        fma(-m20, e, fma(m21, c, -m23 * a)) * det,
+        fma(-m10, j, fma(m11, h, -m12 * gg)) * det,
+        fma(m00, j, fma(-m01, h, m02 * gg)) * det,
+        fma(-m30, d, fma(m31, b, -m32 * a)) * det,
+        fma(m20, d, fma(-m21, b, m22 * a)) * det,
+    ])
 }
 
 /// `shadow_camera`'s view and projection in wgpu's clip space (depth 0..1), for culling.
@@ -408,18 +562,27 @@ impl FrameUniforms {
     /// This frame's values for a render size of `size` pixels.
     pub fn update(&mut self, frame: &Frame, inputs: &PackInputs, size: [u32; 2]) {
         let now = std::time::Instant::now();
-        let dt = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
+        let measured = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
         self.last = Some(now);
+        self.still_ticks = inputs.still_ticks;
+        // Smoothing over an endless step lands on its target.
+        let dt = inputs.still_ticks.map_or(measured, |_| f32::INFINITY);
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         // Packs take gbufferProjection for a plain perspective (they invert only its perspective
         // terms): the view bob and the nausea spin belong to the model-view, as GL drew them.
-        let view = frame.bob * frame.spin * crate::camera::view_matrix(frame.yaw, frame.pitch);
-        let projection = Mat4::perspective_rh_gl(
-            frame.fov_degrees.to_radians(),
-            aspect,
-            0.05,
-            frame.depth_far,
-        );
+        // Vanilla's view rotation to the last bit (Iris 1.11.7's gbufferModelView and its inverse
+        // match it bit for bit in our probes): fragments on a texel boundary of the shadow map
+        // then read the same texel as in Iris (#8464).
+        let (rotation, rotation_inverse) =
+            crate::camera::view_rotation_matrix(frame.yaw, frame.pitch);
+        let (view, view_inverse) = if frame.bob == Mat4::IDENTITY && frame.spin == Mat4::IDENTITY {
+            (rotation, rotation_inverse)
+        } else {
+            let view = frame.bob * frame.spin * rotation;
+            (view, view.inverse())
+        };
+        let (projection, projection_inverse) =
+            pack_projection(frame.fov_degrees, aspect, frame.depth_far);
         let camera = frame.camera.as_vec3();
         let first_frame = self.previous.is_none();
         let (previous_exact, previous_view, previous_projection) =
@@ -440,7 +603,7 @@ impl FrameUniforms {
         );
 
         let to_view = |v: Vec3| view.transform_vector3(v);
-        let sun_angle = (frame.sky.sun_angle / 360.0 + 0.25).rem_euclid(1.0);
+        let sun_angle = day_fraction(frame.sky.sun_angle);
         let day = sun_angle < 0.5;
         let tilt = self.shadow.sun_path_rotation;
         let sun = to_view(body(frame.sky.sun_angle, tilt));
@@ -472,25 +635,35 @@ impl FrameUniforms {
             });
         }
         let center_depth = self.center_depth.unwrap_or(1.0);
-        // Vanilla fades by the stronger of two linear fogs; a pack gets one: the pair (start
-        // and end together) of the one that is complete nearer (OQ-36). Mixing the nearer start
-        // of one with the nearer end of the other made fog begin at the camera on clear days.
+        // Vanilla fades by the stronger of two linear fogs; a pack gets the environmental one
+        // (`FogData::environmental_start`/`environmental_end`), as Iris 1.11.7 gives it in every
+        // program kind: 0 to 1024 on a clear day, -160 to 768 in rain, -8 to 96 under water, 10
+        // to 96 in the Nether (measured with a probe pack).
         let (fog_color, fog_start, fog_end) = match &frame.fog {
-            Some(f) => {
-                let (start, end) = if f.environmental_end < f.render_distance_end {
-                    (f.environmental_start, f.environmental_end)
-                } else {
-                    (f.render_distance_start, f.render_distance_end)
-                };
-                ([f.color[0], f.color[1], f.color[2]], start, end)
-            }
+            Some(f) => (
+                [f.color[0], f.color[1], f.color[2]],
+                f.environmental_start,
+                f.environmental_end,
+            ),
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
-        let (shadow_view, shadow_projection) = shadow_camera(light, frame.camera, &self.shadow);
+        let (_, shadow_projection) = shadow_camera(light, frame.camera, &self.shadow);
+        let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
-        let seconds = (now - self.start).as_secs_f32() % 3600.0;
+        let (seconds, frame_time, frame_counter) = match inputs.still_ticks {
+            Some(ticks) => (
+                (ticks as f32 / 20.0) % 3600.0,
+                0.05,
+                (ticks % 720_720) as i32,
+            ),
+            None => (
+                (now - self.start).as_secs_f32() % 3600.0,
+                measured,
+                self.frame as i32,
+            ),
+        };
 
         let value = |name: &str| -> Value {
             let v3 = |v: Vec3| Value::f(&v.to_array());
@@ -522,17 +695,21 @@ impl FrameUniforms {
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
                 "sunAngle" => Value::f(&[sun_angle]),
-                "shadowAngle" => Value::f(&[if day { sun_angle } else { sun_angle - 0.5 }]),
+                "shadowAngle" => Value::f(&[if day {
+                    sun_angle
+                } else {
+                    day_fraction(frame.sky.moon_angle % 360.0)
+                }]),
                 "worldTime" => Value::i(&[day_time]),
                 "worldDay" => Value::i(&[world_day as i32]),
                 "moonPhase" => Value::i(&[world_day.rem_euclid(8) as i32]),
-                "frameCounter" => Value::i(&[self.frame as i32]),
+                "frameCounter" => Value::i(&[frame_counter]),
                 "shadowModelView" => m4(shadow_view),
-                "shadowModelViewInverse" => m4(shadow_view.inverse()),
+                "shadowModelViewInverse" => m4(shadow_view_inverse),
                 "shadowProjection" => m4(shadow_projection),
                 "shadowProjectionInverse" => m4(shadow_projection.inverse()),
                 "atlasSize" => Value::i(&[self.atlas[0] as i32, self.atlas[1] as i32]),
-                "frameTime" => Value::f(&[dt]),
+                "frameTime" => Value::f(&[frame_time]),
                 "frameTimeCounter" => Value::f(&[seconds]),
                 "viewWidth" => Value::f(&[size[0] as f32]),
                 "viewHeight" => Value::f(&[size[1] as f32]),
@@ -545,12 +722,22 @@ impl FrameUniforms {
                 "thunderStrength" => Value::f(&[inputs.thunder]),
                 "fogColor" => Value::f(&fog_color),
                 "skyColor" => Value::f(&frame.sky.sky_color),
-                // GL_LINEAR: vanilla's fog is linear.
-                "fogMode" => Value::i(&[9729]),
+                // Iris 1.11.7, measured: programs that draw no geometry read no fog mode (0) and
+                // shape (-1); those that do read GL_LINEAR and a cylinder (1). The density is 0.
+                "fogMode" => Value::i(&[0]),
+                GBUFFERS_FOG_MODE => Value::i(&[9729]),
                 "fogStart" => Value::f(&[fog_start]),
                 "fogEnd" => Value::f(&[fog_end]),
-                "fogDensity" => Value::f(&[1.0]),
-                "fogShape" => Value::i(&[0]),
+                "fogDensity" => Value::f(&[0.0]),
+                "fogShape" => Value::i(&[-1]),
+                GBUFFERS_FOG_SHAPE => Value::i(&[1]),
+                // Iris 1.11.7 gives gbuffers programs 0 (measured in 16 scenes).
+                GBUFFERS_CENTER_DEPTH => Value::f(&[0.0]),
+                // Outside a draw (gbuffers programs get these per draw), as Iris 1.11.7 gives
+                // them to composite and final programs (measured).
+                "alphaTestRef" => Value::f(&[0.1]),
+                "blockEntityId" => Value::i(&[-1]),
+                "entityColor" => Value::f(&[0.0; 4]),
                 "isEyeInWater" => Value::i(&[inputs.eye_in]),
                 "blindness" => Value::f(&[inputs.blindness]),
                 "nightVision" => Value::f(&[frame.night_vision]),
@@ -567,9 +754,9 @@ impl FrameUniforms {
                 // Rounded down, as Iris 1.11.7 gives it (probe pack).
                 "eyeBrightnessSmooth" => Value::i(&self.eye_smooth.map(|v| v.floor() as i32)),
                 "gbufferModelView" => m4(view),
-                "gbufferModelViewInverse" => m4(view.inverse()),
+                "gbufferModelViewInverse" => m4(view_inverse),
                 "gbufferProjection" => m4(projection),
-                "gbufferProjectionInverse" => m4(projection.inverse()),
+                "gbufferProjectionInverse" => m4(projection_inverse),
                 "gbufferPreviousModelView" => m4(previous_view),
                 "gbufferPreviousProjection" => m4(previous_projection),
                 "heldItemId" => Value::i(&[inputs.held_items[0]]),
@@ -592,6 +779,9 @@ impl FrameUniforms {
     }
 
     /// `hz_fog_color` and `hz_fog` of the translator's block (the compatibility `gl_Fog`).
+    /// Its density is `fogDensity`'s (0): Iris 1.11.7 gave `gl_Fog.density` 0, not 1, in every
+    /// program kind our probe pack read it in (gbuffers_terrain and deferred, in a cave and in
+    /// the Nether), where `fogDensity` read 0 too.
     pub fn fog(&self) -> [Vec4; 2] {
         let get = |name| match index(name).and_then(|i| self.values.get(i)) {
             Some(Value::F(f)) => *f,
@@ -600,7 +790,12 @@ impl FrameUniforms {
         let (color, start, end) = (get("fogColor"), get("fogStart")[0], get("fogEnd")[0]);
         [
             Vec4::new(color[0], color[1], color[2], 1.0),
-            Vec4::new(1.0, start, end, 1.0 / (end - start).max(1e-3)),
+            Vec4::new(
+                get("fogDensity")[0],
+                start,
+                end,
+                1.0 / (end - start).max(1e-3),
+            ),
         ]
     }
 }
@@ -609,6 +804,9 @@ impl FrameUniforms {
     /// Evaluates the pack's custom uniforms with this frame's values and puts them after
     /// `NAMES`' values, in `custom.uniforms()` order.
     pub fn eval_custom(&mut self, custom: &mut horizon_shaders::Custom) {
+        if let Some(tick) = self.still_ticks {
+            custom.restart_at(tick);
+        }
         self.values.truncate(NAMES.len());
         let values = &self.values;
         let builtin = |name: &str| {
@@ -690,14 +888,34 @@ fn components(name: &str) -> usize {
         | "skyColor"
         | "endFlashPosition" => 3,
         "eyeBrightness" | "eyeBrightnessSmooth" | "atlasSize" => 2,
+        "entityColor" => 4,
         n if n.starts_with("gbuffer") || n.starts_with("shadow") && n != "shadowAngle" => 16,
         _ => 1,
     }
 }
 
+/// What `name` gives custom uniforms before the first frame: zeros, at its size, so their
+/// shapes check out as on a frame (#9086).
+pub fn zero(name: &str) -> Option<horizon_shaders::Val> {
+    index(name)?;
+    Some(horizon_shaders::Val::vector(&[0.0; 16][..components(name)]))
+}
+
 /// The position of `name` in [`NAMES`].
 pub fn index(name: &str) -> Option<usize> {
     NAMES.iter().position(|n| *n == name)
+}
+
+/// The position in [`NAMES`] of the value a program reads as `name`; `geometry`: the program
+/// draws the game's geometry (gbuffers, shadow), which reads its own fog mode and shape and no
+/// centre depth.
+pub fn index_in(name: &str, geometry: bool) -> Option<usize> {
+    match name {
+        "fogMode" if geometry => index(GBUFFERS_FOG_MODE),
+        "fogShape" if geometry => index(GBUFFERS_FOG_SHAPE),
+        "centerDepthSmooth" if geometry => index(GBUFFERS_CENTER_DEPTH),
+        _ => index(name),
+    }
 }
 
 #[cfg(test)]
@@ -715,6 +933,22 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    /// The load-time run of custom uniforms sees each built-in at its size: Iris 1.11.7 reads 2
+    /// for the first line of our probes K and X (#9086) and 0 for the others.
+    #[test]
+    fn custom_uniforms_check_the_shapes_of_built_ins_before_the_first_frame() {
+        let properties = horizon_shaders::Properties::parse(
+            "uniform.vec3.a = skyColor * vec3(0.0, 0.0, 0.0) + vec3(2.0, 2.0, 2.0)\n\
+             uniform.float.b = skyColor\n\
+             uniform.float.c = gbufferModelView * 0.0 + 2.0\n",
+            &horizon_shaders::Macros::standard(),
+        );
+        let mut custom = horizon_shaders::Custom::parse(&properties);
+        custom.eval(0.0, &zero);
+        let broken: Vec<&str> = custom.notes.iter().map(|n| &n[1..2]).collect();
+        assert_eq!(broken, ["b", "c"], "{:?}", custom.notes);
     }
 
     /// Iris's status uniforms as its documentation defines them (shaders.properties, "Status").
@@ -889,6 +1123,131 @@ mod initial_history_tests {
             _ => panic!("float uniform expected"),
         }
     }
+    /// The bits of a matrix uniform.
+    fn bits(u: &FrameUniforms, name: &str) -> [u32; 16] {
+        float(u, name).map(f32::to_bits)
+    }
+
+    /// Iris 1.11.7's camera and shadow matrices to the last bit, read back from its uniforms by
+    /// a probe pack of ours: on a texel boundary of the shadow map the last bit decides which
+    /// texel a fragment reads (#8464). Noon at 6000 ticks, looking west (yaw 90) with vanilla's
+    /// flying field of view (76.99999°) at 1280×720, the camera at (13.5, 69.62, -13.5).
+    #[test]
+    fn the_matrices_are_iris_to_the_last_bit() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        f.camera = DVec3::new(13.5, 68.0 + f64::from(1.62f32), -13.5);
+        f.yaw = 90.0;
+        f.pitch = 0.0;
+        f.fov_degrees = f32::from_bits(0x4299ffff);
+        f.depth_far = 1024.0;
+        f.sky.sun_angle = 0.0;
+        f.sky.moon_angle = 180.0;
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [1280, 720]);
+        let (o, one, minus) = (0, 0x3f800000, 0xbf800000);
+        let (z, almost) = (0x80000000, 0x3f7fffff);
+        assert_eq!(
+            bits(&u, "gbufferModelView"),
+            [
+                o, o, almost, o, o, almost, o, o, 0xbf7fffff, o, o, o, o, o, o, one
+            ]
+        );
+        assert_eq!(
+            bits(&u, "gbufferModelViewInverse"),
+            [
+                o, o, 0xbf7fffff, o, o, almost, o, o, almost, o, o, o, z, z, z, one
+            ]
+        );
+        assert_eq!(
+            bits(&u, "gbufferProjection"),
+            [
+                0x3f350867, o, o, o, o, 0x3fa0eb07, o, o, o, o, 0xbf800333, minus, o, o,
+                0xbdcccf5c, o
+            ]
+        );
+        assert_eq!(
+            bits(&u, "gbufferProjectionInverse"),
+            [
+                0x3fb5017f, z, z, z, z, 0x3f4ba1af, o, z, z, z, z, 0xc11ffe00, z, z, minus,
+                0x41200200
+            ]
+        );
+        // The origin's height is the camera's as a float, 69.620003, in steps of 2.
+        assert_eq!(
+            bits(&u, "shadowModelView"),
+            [
+                one, o, o, o, o, o, one, o, o, minus, z, o, 0x3f000000, 0x40200000, 0x3f1eb880, one
+            ]
+        );
+        assert_eq!(
+            bits(&u, "shadowModelViewInverse"),
+            [
+                one, o, o, o, o, o, minus, o, o, one, z, o, 0xbf000000, 0xbf1eb880, 0x40200000, one
+            ]
+        );
+        assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3e800000);
+
+        // 9000 ticks (the sun 34.598564° past noon), yaw 200, pitch -30.
+        f.yaw = 200.0;
+        f.pitch = -30.0;
+        f.sky.sun_angle = f32::from_bits(0x420a64ee);
+        f.sky.moon_angle = f.sky.sun_angle + 180.0;
+        u.update(&f, &PackInputs::default(), [1280, 720]);
+        assert_eq!(
+            bits(&u, "gbufferModelView"),
+            [
+                0x3f708fb1, 0xbe2f1d41, 0xbe97a745, o, o, 0x3f5db3d6, 0xbefffffe, o, 0x3eaf1d41,
+                0x3ef08fb0, 0x3f50550b, o, o, o, o, one
+            ]
+        );
+        assert_eq!(
+            bits(&u, "shadowModelView"),
+            [
+                0x3f52b9ff, o, 0xbf115cdb, o, 0x3f115cdb, o, 0x3f52b9ff, o, o, minus, z, o,
+                0x3f437d12, 0x40200000, 0x3e67e0f2, one
+            ]
+        );
+        assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3eb134f4);
+    }
+
+    /// At night the moon casts the shadows, here with `sunPathRotation = 30`: Iris 1.11.7 at
+    /// 16000 ticks (the moon at 324.4897°), the camera at (-556.5, 76.62, 212.5), whose
+    /// negative x keeps its sign in the remainder.
+    #[test]
+    fn the_moon_s_shadow_matrices_are_iris_to_the_last_bit() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        f.camera = DVec3::new(-556.5, 75.0 + f64::from(1.62f32), 212.5);
+        f.sky.sun_angle = f32::from_bits(0x43107d5b);
+        f.sky.moon_angle = f32::from_bits(0x43a23eae);
+        let mut u = FrameUniforms {
+            shadow: Shadow {
+                sun_path_rotation: 30.0,
+                ..Shadow::default()
+            },
+            ..FrameUniforms::default()
+        };
+        u.update(&f, &PackInputs::default(), [1280, 720]);
+        let (o, one) = (0, 0x3f800000);
+        assert_eq!(
+            bits(&u, "shadowModelView"),
+            [
+                0x3f506307, o, 0x3f14b28c, o, 0xbf00c699, 0xbf000000, 0x3f3477e1, o, 0x3e94b28c,
+                0xbf5db3d7, 0xbed06307, o, 0xbf9668fb, 0x3f1f7dac, 0xbf6f86e4, one
+            ]
+        );
+        assert_eq!(
+            bits(&u, "shadowModelViewInverse"),
+            [
+                0x3f506307, 0xbf00c699, 0x3e94b28c, o, o, 0xbf000000, 0xbf5db3d7, o, 0x3f14b28c,
+                0x3f3477e1, 0xbed06307, o, 0x3fc00000, 0x3ec28f00, 0x3effffff, one
+            ]
+        );
+        assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3f26bf8b);
+        assert_eq!(float(&u, "shadowAngle")[0].to_bits(), 0x3e1afe2e);
+    }
+
     #[test]
     fn first_history_is_current_then_tracks_the_actual_previous_frame() {
         let hud = HudBatch::new([800, 450]);
@@ -971,11 +1330,6 @@ mod initial_history_tests {
     #[test]
     #[ignore = "requires a host GPU; run with --ignored --nocapture"]
     fn core_matrix_inputs_render_provider_values() {
-        use horizon_shaders::{
-            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
-        };
-        use std::io::Write;
-        use wgpu::util::DeviceExt;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         eprintln!("Core matrix GPU: {:?}", adapter.get_info());
@@ -1035,137 +1389,7 @@ mod initial_history_tests {
                  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
                  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
             );
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            for (path, source) in [
-                ("shaders/gbuffers_line.vsh", vertex.as_str()),
-                (
-                    "shaders/gbuffers_line.fsh",
-                    "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
-                ),
-            ] {
-                zip.start_file(path, zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(source.as_bytes()).unwrap();
-            }
-            let pack = Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner())
-                .unwrap();
-            let macros = Macros::standard();
-            let program = translate_gbuffers(
-                &preprocess(&pack, "gbuffers_line.vsh", &macros),
-                &preprocess(&pack, "gbuffers_line.fsh", &macros),
-                Target::Buffers,
-                &GbuffersInputs::default(),
-            )
-            .unwrap();
-            let mut bytes = vec![0; program.interface.uniform_size as usize];
-            for uniform in &program.interface.uniforms {
-                if let Some(i) = index(&uniform.name) {
-                    values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
-                }
-            }
-            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: &bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let module = |module| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-                })
-            };
-            let vs = module(program.vertex);
-            let fs = module(program.fragment);
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: &vs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &fs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                }],
-            });
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&Default::default());
-            let read = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 256,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = device.create_command_encoder(&Default::default());
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            encoder.copy_texture_to_buffer(
-                texture.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &read,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: None,
-                    },
-                },
-                texture.size(),
-            );
-            queue.submit([encoder.finish()]);
-            read.slice(..)
-                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let mapped = read.slice(..).get_mapped_range().unwrap();
+            let mapped = draw_line_program(&device, &queue, &values, &vertex);
             // Independent result: translated point (1, .5, -2), perspective (aspect 2,
             // vertical FOV 90): clip (.5, .5, z, 2), hence (.25, .25, .5, 1).
             for (actual, expected) in mapped[..4].iter().zip(expected) {
@@ -1176,6 +1400,284 @@ mod initial_history_tests {
                 );
             }
         }
+    }
+
+    /// `normalMatrix` in a core-profile gbuffers program is the view's rotation; in the
+    /// compatibility profile it stays zero (the issue's Iris 1.11.7 probes, #9136).
+    #[test]
+    #[ignore = "requires a host GPU; run with --ignored --nocapture"]
+    fn core_normal_matrix_renders_the_view_rotation() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("Normal matrix GPU: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let hud = HudBatch::new([800, 400]);
+        let mut f = frame(&hud);
+        // Facing west (-X), level: view space looks down -Z with +X to the right (north).
+        f.yaw = 90.0;
+        f.pitch = 0.0;
+        let mut values = FrameUniforms::default();
+        values.update(&f, &PackInputs::default(), [800, 400]);
+        for (profile, world, expected) in [
+            // East (behind the camera) is view +Z.
+            ("330 core", "vec3(1.0, 0.0, 0.0)", [128u8, 128, 255, 255]),
+            // South (to the left) is view -X; up stays up.
+            ("330 core", "vec3(0.0, 0.0, 1.0)", [0, 128, 128, 255]),
+            ("330 core", "vec3(0.0, 1.0, 0.0)", [128, 255, 128, 255]),
+            (
+                "330 compatibility",
+                "vec3(1.0, 0.0, 0.0)",
+                [128, 128, 128, 255],
+            ),
+        ] {
+            let vertex = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nout vec3 result;\n\
+                 void main() {{\n\
+                 result = normalMatrix * {world} * 0.5 + 0.5;\n\
+                 vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
+                 gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
+            );
+            let pixel = draw_line_program(&device, &queue, &values, &vertex);
+            eprintln!("{profile} {world}: {pixel:?}");
+            for (actual, expected) in pixel.iter().zip(expected) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "{profile} {world}: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    /// Draws one fragment through a translated `gbuffers_line` program with `vertex` and the
+    /// provider's `values`, and reads it back.
+    fn draw_line_program(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        values: &FrameUniforms,
+        vertex: &str,
+    ) -> [u8; 4] {
+        use horizon_shaders::{
+            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
+        };
+        use std::io::Write;
+        use wgpu::util::DeviceExt;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, source) in [
+            ("shaders/gbuffers_line.vsh", vertex),
+            (
+                "shaders/gbuffers_line.fsh",
+                "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
+            ),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(source.as_bytes()).unwrap();
+        }
+        let pack =
+            Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner()).unwrap();
+        let macros = Macros::standard();
+        let program = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_line.vsh", &macros),
+            &preprocess(&pack, "gbuffers_line.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        let mut bytes = vec![0; program.interface.uniform_size as usize];
+        for uniform in &program.interface.uniforms {
+            if let Some(i) = index(&uniform.name) {
+                values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
+            }
+        }
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: &bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let module = |module| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            })
+        };
+        let vs = module(program.vertex);
+        let fs = module(program.fragment);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &vs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let mapped = read.slice(..).get_mapped_range().unwrap();
+        let pixel = mapped[..4].try_into().unwrap();
+        drop(mapped);
+        read.unmap();
+        pixel
+    }
+
+    fn int(u: &FrameUniforms, at: usize) -> i32 {
+        match u.values[at] {
+            Value::I(v) => v[0],
+            _ => panic!("integer uniform expected"),
+        }
+    }
+
+    /// Iris 1.11.7, read back exactly with a probe pack on a clear day (render distance 12,
+    /// cloud range 64): fogStart 0 and fogEnd 1024 (the environmental fog, not the render
+    /// distance's 172.8 to 192), fogDensity 0; composite and final programs read alphaTestRef
+    /// 0.1, blockEntityId -1, fogMode 0 and fogShape -1.
+    #[test]
+    fn fog_and_draw_uniforms_outside_a_draw_follow_iris() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        f.fog = Some(crate::fog::FogData {
+            color: [0.7, 0.8, 1.0, 1.0],
+            environmental_start: 0.0,
+            environmental_end: 1024.0,
+            render_distance_start: 172.8,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 1024.0,
+        });
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(float(&u, "fogStart")[0], 0.0);
+        assert_eq!(float(&u, "fogEnd")[0], 1024.0);
+        assert_eq!(float(&u, "fogDensity")[0], 0.0);
+        assert_eq!(float(&u, "alphaTestRef")[0], 0.1);
+        assert_eq!(int(&u, index("blockEntityId").unwrap()), -1);
+        assert_eq!(int(&u, index("entityId").unwrap()), 0);
+        assert_eq!(int(&u, index("fogMode").unwrap()), 0);
+        assert_eq!(int(&u, index("fogShape").unwrap()), -1);
+    }
+
+    /// Iris 1.11.7, read back with a probe pack in gbuffers_terrain and in deferred, in a cave
+    /// (fog 0 to 1024) and in the Nether (fog 10 to 96): `gl_Fog` holds the fog's colour, start
+    /// and end, a scale of 1 / (end - start), and a density of 0, not 1.
+    #[test]
+    fn the_compatibility_gl_fog_has_no_density() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        f.fog = Some(crate::fog::FogData {
+            color: [0.09, 0.24, 0.23, 1.0],
+            environmental_start: 10.0,
+            environmental_end: 96.0,
+            render_distance_start: 172.8,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 1024.0,
+        });
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        let [color, fog] = u.fog();
+        assert_eq!(color.truncate(), Vec3::new(0.09, 0.24, 0.23));
+        assert_eq!(fog, Vec4::new(0.0, 10.0, 96.0, 1.0 / 86.0));
+    }
+
+    /// Iris 1.11.7 (probe pack): gbuffers programs read fogMode GL_LINEAR (9729) and fogShape 1
+    /// (cylinder) where composite and final programs read 0 and -1.
+    #[test]
+    fn programs_that_draw_geometry_read_their_own_fog_and_centre_depth() {
+        let hud = HudBatch::new([800, 450]);
+        let mut u = FrameUniforms::default();
+        u.update(&frame(&hud), &PackInputs::default(), [800, 450]);
+        let at = |name, geometry| index_in(name, geometry).unwrap();
+        assert_eq!(int(&u, at("fogMode", true)), 9729);
+        assert_eq!(int(&u, at("fogShape", true)), 1);
+        assert_eq!(int(&u, at("fogMode", false)), 0);
+        assert_eq!(int(&u, at("fogShape", false)), -1);
+        assert_eq!(at("fogStart", true), at("fogStart", false));
+        // Iris 1.11.7 (probe pack): `centerDepthSmooth` reads 0 in gbuffers programs.
+        let depth = |geometry| match u.values[at("centerDepthSmooth", geometry)] {
+            Value::F(v) => v[0],
+            _ => panic!("float uniform expected"),
+        };
+        assert_eq!(depth(true), 0.0);
+        assert_eq!(depth(false), 1.0);
     }
 
     /// Iris 1.11.7, read frame by frame with a probe pack: eyeBrightnessSmooth falls by half
@@ -1216,6 +1718,42 @@ mod initial_history_tests {
         after(&mut u, 20.0);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
+    }
+
+    /// Under `HORIZON_STILL` the pack's clock is the world's ticks, whenever and however often
+    /// the frame is drawn, and smoothed values are at their targets.
+    #[test]
+    fn a_still_frame_takes_the_world_ticks_as_its_clock() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut input = PackInputs {
+            eye_light: [0, 15],
+            still_ticks: Some(47_811),
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.eye_light = [0, 0];
+        input.rain = 1.0;
+        u.center_depth_raw = Some(0.0);
+        u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
+        u.update(&f, &input, [800, 450]);
+        assert_eq!(
+            float(&u, "frameTimeCounter")[0],
+            (47_811.0f32 / 20.0) % 3600.0
+        );
+        assert_eq!(float(&u, "frameTime")[0], 0.05);
+        match u.values[index("frameCounter").unwrap()] {
+            Value::I(v) => assert_eq!(v[0], 47_811),
+            _ => panic!("integer uniform expected"),
+        }
+        match u.values[index("eyeBrightnessSmooth").unwrap()] {
+            Value::I(v) => assert_eq!(v[1], 0),
+            _ => panic!("integer uniform expected"),
+        }
+        assert_eq!(float(&u, "wetness")[0], 1.0);
+        assert_eq!(float(&u, "centerDepthSmooth")[0], 0.0);
     }
 
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
@@ -1269,6 +1807,7 @@ mod initial_history_tests {
             outline: Vec::new(),
             outline_after_terrain: false,
             outline_high_contrast: false,
+            pvp: Default::default(),
             debug_lines: &[],
             debug_lines_on_top: &[],
             debug_crosshair: &[],
@@ -1292,9 +1831,11 @@ mod initial_history_tests {
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
+            world_primitives: Default::default(),
             celestial: &[],
             stars: None,
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: 70.0,
             screen: &[],
             pack: Default::default(),

@@ -60,6 +60,8 @@ pub struct MotionResources {
     pub attributes: Arc<Catalog>,
     pub blocks: BoundMovementProperties,
     pub climbable: BTreeSet<String>,
+    /// The bound BlockTags.CAUSES_SUFFOCATION predicate input.
+    pub causes_suffocation: BTreeSet<String>,
     /// `BlockTags.SOUL_SPEED_BLOCKS`: what Soul Speed's effects look for.
     pub soul_speed_blocks: BTreeSet<String>,
     /// `LivingEntity.onClimbable` tags plus open trapdoors above a ladder.
@@ -134,6 +136,7 @@ impl MotionResources {
                 suppresses_bounce: tag("minecraft:suppresses_bounce")?,
             })?,
             climbable: tag("minecraft:climbable")?,
+            causes_suffocation: tag("minecraft:causes_suffocation")?,
             soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
             climbing,
             fall_reset: tag("minecraft:fall_damage_resetting")?,
@@ -717,6 +720,23 @@ impl PlayerMotion {
         operation: &str,
         present: bool,
     ) -> Result<()> {
+        self.set_modifier_unclamped(attribute, id, amount, operation, present)?;
+        if attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
+        Ok(())
+    }
+    /// `set_modifier` without the max_health clamp, for a remove-all/re-add
+    /// batch that ends with one `clamp_health_to_max` (vanilla only removes
+    /// the modifiers that really went away, so the hearts must survive it).
+    pub fn set_modifier_unclamped(
+        &mut self,
+        attribute: &str,
+        id: &str,
+        amount: f64,
+        operation: &str,
+        present: bool,
+    ) -> Result<()> {
         let Some(key) = self.attributes.key(attribute) else {
             return Ok(());
         };
@@ -742,6 +762,16 @@ impl PlayerMotion {
                 Ok(())
             })
             .map_err(attribute_error)?;
+        Ok(())
+    }
+    /// `LivingEntity.onAttributeUpdated` for `max_health`: a health above the
+    /// new maximum drops to it (#8573: health_boost ending at 24/24 leaves 20).
+    pub fn clamp_health_to_max(&mut self) -> Result<()> {
+        let max = self.attribute("minecraft:max_health")? as f32;
+        let health = self.health.health();
+        if health > max {
+            self.set_health(max, false)?;
+        }
         Ok(())
     }
     /// `AttributeMap.pack` in `AttributeInstance.Packed.LIST_CODEC`'s form: the
@@ -961,6 +991,8 @@ pub struct MotionWorld<'p, 'w, 'r> {
     pub assets: &'r Assets,
     pub collision_binding: &'w BlockCollisionRegistry<'r>,
     pub resources: &'w MotionResources,
+    /// This world's frozen damage definitions and current tags.
+    pub health: &'w crate::health::HealthResources,
 }
 enum TickInput {
     Living([f32; 3]),
@@ -1207,8 +1239,7 @@ impl MotionWorld<'_, '_, '_> {
         // The resident scene accepts the resolved local movement directly.
         // Vanilla dispatches this separately from travel, on packet acceptance.
         self.check_movement_statistics(previous.vector_to(self.player.position))?;
-        self.player
-            .food_tick(&self.resources.health, self.scene.health_rules)
+        self.player.food_tick(self.health, self.scene.health_rules)
     }
     pub fn controlled_simulation_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
         self.controlled_simulation_tick_with_sprint_window(keys, 7)
@@ -1430,7 +1461,6 @@ impl MotionWorld<'_, '_, '_> {
     /// `hurtServer(damageSources().freeze(), 1)` for a fully frozen player.
     fn freeze_damage(&mut self) -> Result<()> {
         let id = self
-            .resources
             .health
             .damage
             .id("minecraft:freeze")
@@ -1439,7 +1469,7 @@ impl MotionWorld<'_, '_, '_> {
             crate::health::HealthEvent::FreezeDamage(1.0),
         ));
         let rules = self.scene.health_rules;
-        self.player.hurt(&self.resources.health, rules, id, 1.0)?;
+        self.player.hurt(self.health, rules, id, 1.0)?;
         Ok(())
     }
     /// `Entity.applyEffectsFromBlocks` for the blocks Horizon's player reacts
@@ -1544,7 +1574,7 @@ impl MotionWorld<'_, '_, '_> {
                 }
             }
         }
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = crate::fast_hash::FxHashSet::default();
         let mut entered = Vec::new();
         for movement in &movements {
             let mut from = movement.from;
@@ -1625,13 +1655,33 @@ impl MotionWorld<'_, '_, '_> {
         }
         Ok(())
     }
+    /// The block effects and the frost of a window's own player while a vehicle carries it. Its
+    /// client does not travel (`passenger_pose_tick` is all it runs), but `LivingEntity.aiStep`
+    /// still applies the effects of the blocks a passenger is in (`applyEffectsFromBlocks`: powder
+    /// snow's FREEZE adds a tick of frost) and thaws it when it is out of powder snow. The
+    /// frostbite overlay reads these ticks. The server's copy does this in `server_block_damage`.
+    pub fn passenger_block_effects_tick(&mut self) -> Result<()> {
+        // Entity.baseTick
+        self.player.was_in_powder_snow = self.player.in_powder_snow;
+        self.player.in_powder_snow = false;
+        if self.player.block_effects {
+            self.apply_effects_from_blocks()?;
+        }
+        // LivingEntity.aiStep "freezing" (server), as the client predicts it on foot.
+        if !self.player.in_powder_snow || !self.player.can_freeze() {
+            self.player.ticks_frozen = (self.player.ticks_frozen - 2).max(0);
+        }
+        // The vehicle moves the passenger between ticks: the next sweep starts here.
+        self.player.old_position = self.player.position;
+        Ok(())
+    }
     /// `Entity.checkInsideBlocks(from, to, ...)`: the blocks the box at `to`
     /// sweeps through from `from`; returns the iterations used plus one.
     fn check_inside_blocks(
         &mut self,
         from: Vec3,
         to: Vec3,
-        visited: &mut std::collections::HashSet<i64>,
+        visited: &mut crate::fast_hash::FxHashSet<i64>,
         entered: &mut Vec<(i32, BlockPos)>,
         max_iterations: i32,
         damage_only: bool,
@@ -1648,6 +1698,10 @@ impl MotionWorld<'_, '_, '_> {
         let mut hits = Vec::new();
         let mut iterations = 0;
         let alive = !self.player.health.dead_or_dying();
+        // Nothing below changes a block, so each is read once, as the sweep
+        // visits it, and air (`state.isAir()`, the most of a path) is
+        // passed over there instead of being kept for the loop.
+        let (scene, registry) = (&*self.scene, self.assets.registry);
         horizon_core::geometry::sweep_intersected_blocks(
             from,
             to,
@@ -1658,23 +1712,25 @@ impl MotionWorld<'_, '_, '_> {
                     return false;
                 }
                 iterations = iteration;
-                hits.push((iteration, p));
+                let state = scene.block(p.x, p.y, p.z);
+                let air = registry.state(state).is_none_or(|d| {
+                    matches!(
+                        d.name.as_str(),
+                        "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                    )
+                });
+                if !air {
+                    hits.push((iteration, p, state));
+                }
                 true
             },
         )
         .map_err(|e| format!("block sweep: {e:?}"))?;
-        for (step, p) in hits {
-            let state = self.block(p);
+        for (step, p, state) in hits {
             let Some(definition) = self.assets.registry.state(state) else {
                 continue;
             };
             let name = definition.name.as_str();
-            if matches!(
-                name,
-                "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
-            ) {
-                continue;
-            }
             let powder_snow = name == "minecraft:powder_snow";
             // A filled cauldron's content top in blocks: the lava's 15/16
             // (LavaCauldronBlock.FILLED_SHAPE), or a layered cauldron's
@@ -1918,7 +1974,6 @@ impl MotionWorld<'_, '_, '_> {
             && (known.x.abs() >= f64::from(0.003_f32) || known.z.abs() >= f64::from(0.003_f32))
         {
             let id = self
-                .resources
                 .health
                 .damage
                 .id("minecraft:sweet_berry_bush")
@@ -1927,7 +1982,7 @@ impl MotionWorld<'_, '_, '_> {
                 crate::health::HealthEvent::SweetBerryBushDamage(1.0),
             ));
             let rules = self.scene.health_rules;
-            self.player.hurt(&self.resources.health, rules, id, 1.0)?;
+            self.player.hurt(self.health, rules, id, 1.0)?;
         }
         Ok(())
     }
@@ -2063,13 +2118,12 @@ impl MotionWorld<'_, '_, '_> {
                         pitch: 1.0,
                     }));
                 let id = self
-                    .resources
                     .health
                     .damage
                     .id("minecraft:fly_into_wall")
                     .ok_or("missing fly_into_wall damage type")?;
                 let rules = self.scene.health_rules;
-                self.player.hurt(&self.resources.health, rules, id, dmg)?;
+                self.player.hurt(self.health, rules, id, dmg)?;
                 if self.player.server_copy {
                     self.player.wall_hit_events = Some(first..self.player.events.len());
                 }
@@ -2912,6 +2966,42 @@ fn fly_into_wall_damage(before: f64, after: f64) -> f32 {
     ((before - after) * 10.0 - 3.0) as f32
 }
 
+/// `Entity.getBlockSpeedFactor` for a kind that keeps no motion world of its
+/// own (mobs, boats): the factor of the block at `position`, else of the one
+/// below it, through the same port the player's move uses.
+pub fn block_speed_factor_at(
+    world: &World,
+    properties: &BoundMovementProperties,
+    position: Vec3,
+    supporting_block: Option<BlockPos>,
+) -> f32 {
+    struct Blocks<'a>(&'a World);
+    impl MovementBlockProvider for Blocks<'_> {
+        type Error = ();
+        fn movement_block_state(&mut self, p: BlockPos) -> std::result::Result<BlockStateId, ()> {
+            Ok(self.0.block(p.x, p.y, p.z))
+        }
+    }
+    let location = movement_support::MovementLocation {
+        position,
+        block_position: BlockPos::new(
+            position.x.floor() as i32,
+            position.y.floor() as i32,
+            position.z.floor() as i32,
+        ),
+        supporting_block,
+    };
+    let mut view = Blocks(world);
+    movement_support::block_speed_factor(
+        &mut RegistryMovementWorld {
+            properties,
+            world: &mut view,
+        },
+        location,
+    )
+    .unwrap_or(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     /// The glide's collision damage: a third of a block a tick lost is 0.0 and
@@ -2989,6 +3079,87 @@ mod tests {
         assert!(!p.is_sweep_attack(1.0, false, true));
         p.velocity = Vec3::new(f64::from(p.speed) * 2.5, 0.0, 0.0);
         assert!(!p.is_sweep_attack(1.0, false, true));
+    }
+
+    #[test]
+    fn max_health_modifier_changes_clamp_health() {
+        // #8573: LivingEntity.onAttributeUpdated clamps health to max_health
+        // for every modifier change, with no explicit clamp call.
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped health clamp: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        let boost = "minecraft:effect.health_boost";
+        // Health boost I: +4 max health, and the hearts are filled.
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        // An unrelated attribute change leaves the boosted hearts alone.
+        p.set_modifier("minecraft:armor", "minecraft:x", 2.0, "add_value", true)
+            .unwrap();
+        assert_eq!(p.health.health(), 24.0);
+        p.set_modifier("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        assert_eq!(p.attribute("minecraft:max_health").unwrap(), 20.0);
+        assert_eq!(p.health.health(), 20.0);
+        // Below the maximum a lost modifier never raises or lowers health.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            6.0,
+            "add_value",
+            true,
+        )
+        .unwrap();
+        p.set_health(7.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_value",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 7.0);
+        // An equipment-style multiplier is covered the same way.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.5,
+            "add_multiplied_base",
+            true,
+        )
+        .unwrap();
+        p.set_health(30.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_multiplied_base",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 20.0);
+        // A remove-all/re-add batch keeps boosted hearts (unrelated effect).
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.clamp_health_to_max().unwrap();
+        assert_eq!(p.health.health(), 24.0);
     }
 
     #[test]
@@ -3082,6 +3253,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(keys)
             .unwrap()
@@ -3168,6 +3340,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3184,6 +3357,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3221,6 +3395,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3272,6 +3447,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3333,6 +3509,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
@@ -3347,6 +3524,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_block_damage(from)
         .unwrap();
@@ -3360,10 +3538,88 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
         assert_eq!(roses(&away), 0);
+    }
+
+    /// #8156: a window's own player carried by a boat does not travel, but it still freezes
+    /// in powder snow and thaws out of it (`LivingEntity.aiStep`), or the frostbite overlay,
+    /// which reads `ticks_frozen`, never shows.
+    #[test]
+    fn a_passenger_in_powder_snow_freezes_and_thaws() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let snow = assets
+            .registry
+            .default_state("minecraft:powder_snow")
+            .unwrap();
+        scene.set(20, 4, 20, snow).unwrap();
+        let in_snow = Vec3::new(20.5, 4.0, 20.5);
+        let clear = Vec3::new(30.5, 4.0, 30.5);
+        let mut player = PlayerMotion::new(&resources, in_snow).unwrap();
+        player.client_side = true;
+        let tick = |player: &mut PlayerMotion, scene: &mut World| {
+            MotionWorld {
+                entities: &[],
+                player,
+                scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+            }
+            .passenger_block_effects_tick()
+            .unwrap();
+        };
+        // One tick of frost for each tick in powder snow, up to the 140 that freeze fully.
+        for expected in 1..=5 {
+            tick(&mut player, &mut scene);
+            assert!(player.in_powder_snow);
+            assert_eq!(player.ticks_frozen, expected);
+        }
+        for _ in 0..200 {
+            tick(&mut player, &mut scene);
+        }
+        assert_eq!(player.ticks_frozen, PlayerMotion::TICKS_REQUIRED_TO_FREEZE);
+        assert!(player.is_fully_frozen());
+        // Carried out of it: two ticks of frost thaw each tick.
+        player.position = clear;
+        player.old_position = clear;
+        player.ticks_frozen = 5;
+        for expected in [3, 1, 0, 0] {
+            tick(&mut player, &mut scene);
+            assert!(!player.in_powder_snow);
+            assert_eq!(player.ticks_frozen, expected);
+        }
+        // What cannot freeze (a freeze-immune player) takes no frost in it.
+        player.position = in_snow;
+        player.old_position = in_snow;
+        player.freeze_immune = true;
+        tick(&mut player, &mut scene);
+        assert_eq!(player.ticks_frozen, 0);
+        // Block effects off (a mod's switch): nothing is sampled, the frost thaws.
+        player.freeze_immune = false;
+        player.block_effects = false;
+        player.ticks_frozen = 10;
+        tick(&mut player, &mut scene);
+        assert!(!player.in_powder_snow);
+        assert_eq!(player.ticks_frozen, 8);
     }
 
     #[test]
@@ -3409,6 +3665,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .server_block_damage(from)
             .unwrap();
@@ -3439,6 +3696,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_block_damage(at)
         .unwrap();
@@ -3452,6 +3710,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
@@ -3481,6 +3740,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .server_travel()
             .unwrap()
@@ -3556,6 +3816,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_travel()
         .unwrap();
@@ -3595,6 +3856,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(crate::sprint::Keys {
                 forward: true,
@@ -3653,6 +3915,7 @@ mod tests {
                     assets: &assets,
                     collision_binding: &binding,
                     resources: &resources,
+                    health: &resources.health,
                 }
                 .controlled_simulation_tick(keys)
                 .unwrap();
@@ -3986,6 +4249,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.travel_fall_flying().unwrap();
             let v = w.player.velocity;
@@ -4024,6 +4288,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.player_movement_tick([0.0, 0.0], false).unwrap();
             assert!(w.player.fall_flying);
@@ -4076,6 +4341,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.move_self(Vec3::new(0.0, -30.0, 0.0)).unwrap();
             assert!(w.player.ground.on_ground);
@@ -4113,6 +4379,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             horizon_world::entity_fluid_tick::EntityFluidTickWorld::water_splash(&mut w).unwrap();
             assert_eq!(w.player.events.is_empty(), spectator);
@@ -4146,6 +4413,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.move_self(Vec3::new(0.0, -30.0, 0.0)).unwrap();
             assert!(w.player.ground.on_ground);
@@ -4199,6 +4467,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             for _ in 0..200 {
                 if w.player.ground.on_ground {
@@ -4238,6 +4507,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.update_player_pose().unwrap();
         assert_eq!(w.player.pose, crate::pose::Pose::SpinAttack);
@@ -4281,6 +4551,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.server_player_pose_tick().unwrap();
         assert_eq!(w.player.dimensions.width, 0.6);
@@ -4333,6 +4604,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.passenger_pose_tick().unwrap();
         assert!(!w.player.swimming);
@@ -4366,6 +4638,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         assert!(!w.can_fit_pose(crate::pose::Pose::Standing).unwrap());
         w.passenger_pose_tick().unwrap();
@@ -4440,6 +4713,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         // `fluid_base_tick` samples `was_eye_in_water` before it updates the
         // fluids (`motion/fluids.rs:222`), so a fresh body needs one tick
@@ -4488,6 +4762,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.simulation_tick([0.0, 0.0], false).unwrap();
             if target.is_some() {
@@ -4525,6 +4800,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.move_self(Vec3::new(0.0, -1.0, 0.0)).unwrap();
         assert!(w.player.ground.on_ground);
@@ -4573,6 +4849,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.move_self(Vec3::new(0.0, -1.0, 0.0)).unwrap();
         assert!(w.player.ground.on_ground);
@@ -4645,6 +4922,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.controlled_simulation_tick(Default::default()).unwrap();
         assert!(
@@ -4898,6 +5176,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.player.local_crouching = true;
         let sprint = crate::sprint::Keys {
@@ -4974,6 +5253,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.fluid_base_tick().unwrap();
             assert_eq!(
@@ -5026,6 +5306,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         for (extra_effect, expected_air) in [
             (None, -19),
@@ -5111,6 +5392,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.fluid_base_tick().unwrap();
             assert!(w.player.fluids.was_touching_water && w.player.is_in_lava());
@@ -5149,6 +5431,7 @@ mod tests {
                     assets: &assets,
                     collision_binding: &binding,
                     resources: &resources,
+                    health: &resources.health,
                 }
                 .controlled_simulation_tick(keys)
                 .unwrap();
@@ -5220,6 +5503,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             let mut speed = Vec::new();
             for tick in 0..12 {
@@ -5270,6 +5554,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let forward = crate::sprint::Keys {
             forward: true,
@@ -5327,6 +5612,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let forward = crate::sprint::Keys {
             forward: true,
@@ -5378,6 +5664,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let sprint_key = crate::sprint::Keys {
             forward: true,
@@ -5427,6 +5714,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         // Idle, movement in all directions, and repeated jump presses must
         // neither cancel server-forced flight nor move a zero-speed flyer.
@@ -5479,6 +5767,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.player.may_fly = true;
         w.player.flying = true;

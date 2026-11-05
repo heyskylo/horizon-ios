@@ -126,7 +126,7 @@ impl Run<'_> {
                 while n < lines.len()
                     && n - first < MAX_CALL_LINES
                     && !lines[n].trim_start().starts_with('#')
-                    && self.macros.unfinished_call(&line)
+                    && self.macros.unfinished_call(&line, &lines[n..])
                 {
                     line.push(' ');
                     line.push_str(lines[n]);
@@ -215,27 +215,9 @@ impl Run<'_> {
         }
     }
 
-    /// `#define NAME body` or `#define NAME(a, b) body` (no space before the `(`).
     fn define(&mut self, rest: &str, origin: Origin) {
-        let len = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        let (name, tail) = rest.split_at(len);
-        if name.is_empty() {
-            return self.diagnose(origin, "`#define` without a name");
-        }
-        if let Some(params) = tail.strip_prefix('(') {
-            let Some((params, body)) = params.split_once(')') else {
-                return self.diagnose(origin, &format!("`#define {name}(` without `)`"));
-            };
-            let params = params
-                .split(',')
-                .map(|p| p.trim().to_owned())
-                .filter(|p| !p.is_empty())
-                .collect();
-            self.macros.define_function(name, params, body.trim());
-        } else {
-            self.macros.define(name, tail.trim());
+        if let Err(e) = self.macros.define_line(rest) {
+            self.diagnose(origin, &e);
         }
     }
 

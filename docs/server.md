@@ -7,8 +7,7 @@ should beat vanilla, Paper and Fabric + Lithium on TPS/MSPT, RAM, CPU, chunk gen
 Gameplay stays vanilla: there are no Paper-style rule changes unless the owner turns one on.
 
 This page covers what the server does today (measured), the design of `horizon-server`, and what ships for the
-first working version (2026-10-23). The owner's guide is docs/hosting.md, also at
-https://playhorizon.dev/server.
+first working version (2026-10-23). The owner's guide is [docs/hosting.md](hosting.md).
 
 ## 1. Today
 
@@ -31,8 +30,9 @@ The dedicated server is the game itself, run headless:
   online. It supports `pause-when-empty-seconds`, `player-idle-timeout` and the autosave.
 - **Console (stdin).** `stop`, `save-all`, `save-on`/`save-off`, `list [uuids]`, `op`/`deop`,
   `whitelist on|off|list|reload|add|remove`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `banlist`, `kick` and
-  `say` behave as in `DedicatedServer`. Every other command goes to the game's own dispatcher as the server
-  (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
+  `say` behave as in `DedicatedServer`. `tempban <player> <duration> [reason]` is Horizon's own: a ban that
+  ends by itself ([hosting](hosting.md#temporary-bans)). Every other command goes to the game's own dispatcher as the
+  server (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
 - **Player names.** `usercache.json` in the universe folder works as vanilla's `CachedUserNameToIdResolver`.
   Players are added when they join and kept for a month, and the file keeps the 1000 most recently used,
   newest first. The console finds a player by name in it, in any case. A name it doesn't hold is asked of the
@@ -141,8 +141,100 @@ The supervisor/engine split stays even after the engine becomes headless, for th
 **The engine today** is `horizon-client --dedicated`. It needs one small, additive change: a status endpoint.
 With `--control-socket <dir>/.horizon/engine.json` (the existing control protocol: TCP on 127.0.0.1 plus a token, on
 every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P50/P95/P99 from the tick
-clock `/tick query` uses), players (name, UUID, address, ping), loaded chunks and uptime. It answers
+clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
+
+**A proxy moving a player between two servers** uses more requests on this endpoint (`lan/arrivals.rs`,
+`game/dedicated/transfer.rs`). They are a built-in module, **off by default**, that the owner turns on in
+`server.toml`:
+
+```toml
+[transfer]
+enabled = false              # true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret)
+expect_seconds = 10          # how long a player the proxy announced is waited for, when it names no time
+max_expect_seconds = 60      # the longest the proxy may ask for
+max_expected = 64            # players waited for at once
+max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
+```
+
+The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
+`--control-socket`, and not as a `server.properties` key: that file stays vanilla's. The section has nothing to do
+with vanilla's `accepts-transfers`, which is about the transfer packet a server sends a client. While it is off,
+every `player-*` request is answered `{"error": "transfers are off on this server"}`, the engine keeps no table
+and does nothing for transfers on a tick.
+
+With it on, the engine refuses to start unless Velocity forwarding is on (`forwarding.secret`,
+[velocity-forwarding.md](velocity-forwarding.md)). The proxy must be the only way in: a player who joined a
+source server directly would find there the older copy of itself that a hand-over left behind, and items would
+double.
+
+**Who can ask.** The requests do not widen who can reach the engine: they use the control endpoint, a Unix socket
+or TCP on 127.0.0.1 only (horizon-server starts it on TCP with a token). A proxy on another machine needs
+something local to each engine to relay for it. The token is all or nothing: whoever can move players can also
+run any console command.
+
+Answers are one JSON line, `{"ok": true, ...}` or `{"error": "..."}`, and a refused request changes nothing. A
+unique id is written as 32 hexadecimal digits with or without dashes in a request, and as lowercase text with
+dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 32 lowercase hexadecimal digits.
+
+`player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
+`expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
+`max_expected` players are expected at once. The reply is `{"ok": true, "renewed": false, "ttl_seconds": 10}`;
+asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
+malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
+table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
+limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
+required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
+still expected. An expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
+the player still logs in as any other.
+
+`player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
+menu as vanilla does when a menu closes, in the player's own level (the cursor stack, a crafting table's grid and
+the inventory's own 2x2 grid go back into the inventory, a trade back to its villager; the client is told to close
+it and is sent its inventory), then answers:
+
+```json
+{"ok": true, "record": {
+  "version": 1,
+  "data_version": 5023,
+  "handover": "9f2c4be0a1d34e6b8c0f1e2d3c4b5a69",
+  "uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "name": "Alex",
+  "dimension": "minecraft:overworld",
+  "position": [10.5, 70.0, -3.25],
+  "rotation": [90.0, 15.0],
+  "velocity": [0.0, 0.0, 0.0],
+  "game_mode": 0,
+  "player": "<base64>",
+  "advancements": { },
+  "stats": {"stats": { }, "DataVersion": 5023}
+}}
+```
+
+`player` is the base64 of the uncompressed named NBT (root name empty) of the player compound: what the server
+writes to `players/data/<uuid>.dat` before it gzips it, taken from the connected player at that moment, with the
+values mods attached to the player. `advancements` and `stats` are the JSON the server writes to
+`players/advancements/<uuid>.json` and `players/stats/<uuid>.json`, or null on a server that keeps none.
+`version` is the version of this record (1); `data_version` is the world data version of the server that made it
+(5023 for 26.3). The other fields are a few of the compound's values, for a proxy that does not read NBT. While the
+player is frozen, the reply also gives `"freeze_ticks_left"` beside the record: the ticks before the hand-over ends
+by itself, so that a proxy does not commit on the target too late for its release to come in time.
+
+How a server reads a record (the target's `player-import`):
+- A record of another `version`, or of another `data_version` than the server's own, is refused.
+- The NBT in `player` wins over the plain fields: they are copies of its values, for a proxy.
+- Fields the reader does not know are ignored, so a later version 1 record may carry more.
+
+**The hand-over.** `freeze` starts one: the record gets a `handover` id, which the later requests name, and the
+player's own inputs (moves, clicks, chat, commands) stop being acted on, while what answers the server (teleport
+confirmations, chunk batch acknowledgements, keep-alives, pings, tick ends, client information and chat
+acknowledgements, and the messages a chat packet says the client has seen, in the order they came) still is. A frozen player is not
+kicked for floating. Every later export of that player, with or without `freeze`, answers with the same record,
+byte for byte, and does not restart the freeze: a proxy that lost the reply asks again. The hand-over ends after
+`max_freeze_seconds` (counted in ticks, 600 by default) with a warning in the log, and the id is then forgotten.
+Without `freeze` the export is a read: `handover` is null and the player goes on. The request is refused for a
+player who is not connected, has not finished joining, is leaving, is riding, is asleep or is dead.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
@@ -182,7 +274,13 @@ prepared on their own computer to the server (`scp -r`). Planned wrappers:
 - **On this machine:** `horizon-server prepare --server-jar PATH` runs `horizon-prepare` on the owner's own
   server jar plus their launcher install.
 - **Prepared elsewhere:** `horizon-server import-resources DIR` copies a folder prepared on the owner's own
-  computer, for example by the launcher, to a headless machine.
+  computer, for example by the launcher, to a headless machine. It first checks the folder: `horizon-resources.json`
+  is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
+  aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
+  renames the copy in, so a failure partway keeps the old copy. The destination is the first place the server
+  reads: `[engine] resources` when set, else `resources/` in the server folder when it exists or the server
+  wasn't installed by `install.sh`, else the installer's `game-files/horizon-client/26.3` (where the release's
+  `.local/horizon-client` points). It ends by saying to start or restart the server.
 
 A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
 removes the last Java step. It needs a list of which prepared files the server really reads, and that list
@@ -294,7 +392,7 @@ keep = 1                     # other releases kept by updates, besides the one i
 ```
 
 This is the file `init` writes today, and it also writes `[panel]` (`bind = "127.0.0.1:8130"` and
-`allow_public = false`, section 6), `[api]` and `[discord]`. The defaults are vanilla 26.3's (a test checks
+`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. The defaults are vanilla 26.3's (a test checks
 each one). Unknown keys are errors, as are a typed key set again under `[properties]` and values vanilla would
 refuse. There is no `backups.before_update` setting: an update always backs up the world first (section 7).
 
@@ -310,9 +408,11 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 - **Changes without opening the file.** `horizon-server config set KEY=VALUE...` (the launcher's Servers
   page uses it) writes through `toml_edit`, checks the result as `server.toml` is checked, and writes nothing
   if a value is wrong. On a running server it sends what vanilla changes live through its console:
-  `difficulty`, `defaultgamemode` and `whitelist on|off`; the backup settings apply at once because the
+  `difficulty`, `defaultgamemode` and `whitelist on|off`; `server.motd` and `server.max_players` go to the
+  game as the management protocol's `serversettings/motd/set` and `serversettings/max_players/set` do, so
+  the server list and the next logins use them at once; the backup settings apply at once because the
   supervisor reads them each time. Everything else waits for the next start, and the command says which. A
-  real hot reload (view distance, MOTD) needs engine support and comes later.
+  hot reload of the view distance needs engine support and comes later.
 - `server.properties`, `ops.json`, `whitelist.json`, `banned-*.json` and `world/` keep vanilla's names and
   formats. A vanilla server folder works as is, and so does going back to vanilla.
 
@@ -321,7 +421,7 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 ```
 horizon-server init                      first run (section 3)
 horizon-server run                       supervisor + engine in the foreground; the console on stdin
-horizon-server start | stop | restart    in the background (detached `run`); each waits for the game
+horizon-server start | stop | restart    in the background (detached `run`); start also resumes a stopped supervisor
 horizon-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 horizon-server cmd <command…>            one console command, with its output
 horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
@@ -338,9 +438,10 @@ horizon-server panel                     the panel's address and a one-time logi
 horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
+horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
 
 Planned:
-horizon-server import-resources <dir>      prepare --server-jar PATH
+horizon-server prepare --server-jar PATH
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).
@@ -401,7 +502,15 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
-  starts again if it was running. One command, or one click with confirmation in the panel.
+  starts again if it was running. One command, or one click with confirmation in the panel. `restore NAME
+  --dimension minecraft:the_nether` (API: `dimension` in the body; MCP: `dimension`) brings back only that
+  dimension's folder (`dimensions/<namespace>/<path>`), the same way, and leaves the other dimensions,
+  `level.dat` and the players as they are; the folder it replaces goes to `backups/replaced-<time>/`.
+- **Stopped game.** A `stop` that reaches the game in game, over RCON or through `horizon-server cmd` leaves the
+  supervisor, control API and panel alive with no engine process; `stop` on the supervisor's own stdin (`run`, a
+  hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
+  `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` and the management
+  protocol's `server/stop` (as vanilla's, the process exits) still shut down both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
@@ -444,12 +553,13 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `.horizon/api.json`. It's plain HTTP/1.1 on `std::net` (`crates/horizon-server/src/http.rs`), no runtime.
   - built (PR 2b, 2c): `GET status` (phase, uptime, crashes, RSS, CPU, and the engine's TPS, MSPT
     average/P50/P95/P99, players, chunks), `GET logs?since=`, `POST command {line}` (returns the output),
-    `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
+    `POST start`, `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
     {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
     that says how it went), `GET metrics?since=`;
-  - built (server-admin): `GET players` (online with address, ping and op level; ops, whitelist, bans, IP
+  - built (server-admin): `GET players` (online with address, ping, position and op level; ops, whitelist, bans, IP
     bans), `POST players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `POST whitelist {enabled}`,
-    `POST whitelist/{add,remove}` (each runs vanilla's console command and answers `changed` and its lines),
+    `POST whitelist/{add,remove}` (list edits also work while the game is stopped; running edits use
+    vanilla's console command and answer `changed` and its lines),
     `GET metrics/prometheus` (Prometheus text);
   - built (server-admin): `GET config` (the token hidden), `PATCH config {changes}` (as `config set`;
     not `engine.*`, `panel.*`, `api.*`, nor the RCON, query and management keys, so the API can't widen who

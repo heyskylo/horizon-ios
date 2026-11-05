@@ -31,6 +31,33 @@ pub(super) struct Recorded {
     xp: Option<i32>,
     level: Option<i32>,
 }
+impl Recorded {
+    /// The food, air, armor, xp and level criteria whose value differs from the last
+    /// recorded one, recorded as they are returned (`ServerPlayer.doTick`).
+    fn changed_scores(
+        &mut self,
+        food: i32,
+        air: i32,
+        armor: i32,
+        xp: i32,
+        level: i32,
+    ) -> Vec<(&'static str, i32)> {
+        let mut out = Vec::new();
+        for (criteria, last, value) in [
+            (sb::CRITERIA_FOOD, &mut self.food, food),
+            (sb::CRITERIA_AIR, &mut self.air, air),
+            (sb::CRITERIA_ARMOR, &mut self.armor, armor),
+            (sb::CRITERIA_XP, &mut self.xp, xp),
+            (sb::CRITERIA_LEVEL, &mut self.level, level),
+        ] {
+            if *last != Some(value) {
+                *last = Some(value);
+                out.push((criteria, value));
+            }
+        }
+        out
+    }
+}
 #[derive(Default)]
 pub(super) struct ScoreState {
     pub board: Scoreboard,
@@ -324,7 +351,16 @@ impl Game<'_> {
                 // EntityPredicates: the datapack predicate with the entity as
                 // `this` and the entity's position as origin.
                 self.ensure_datapacks();
-                let view = self.entity_view_of(t);
+                // The player's records only as far as the predicates may ask.
+                let asked = (s.predicates.iter())
+                    .filter_map(|(id, _)| self.fns.store.predicates.get(id))
+                    .fold(
+                        Default::default(),
+                        |all: horizon_client::advancements::FactsAsked, p| {
+                            all.or(horizon_client::advancements::facts_asked_in(p))
+                        },
+                    );
+                let view = self.entity_view_asking(t, asked);
                 let origin = self.target_position(t).unwrap_or_default();
                 for (id, negated) in &s.predicates {
                     // EntitySelectorOptions rejects a missing registry entry
@@ -434,6 +470,7 @@ impl Game<'_> {
         };
         let health_and_absorption = p.health.health() + p.health.absorption();
         let food = p.health.food.food;
+        let air = p.air;
         // getArmorValue: the armor attribute rounded down.
         let armor = p
             .attribute("minecraft:armor")
@@ -446,18 +483,9 @@ impl Game<'_> {
             let value = health_and_absorption.ceil() as i32;
             board.for_all_objectives_with(sb::CRITERIA_HEALTH, &name, Some(&display), |_| value);
         }
-        for (criteria, last, value) in [
-            (sb::CRITERIA_FOOD, &mut rec.food, food),
-            // The air supply is full unless the player is drowning.
-            (sb::CRITERIA_AIR, &mut rec.air, 300),
-            (sb::CRITERIA_ARMOR, &mut rec.armor, armor),
-            (sb::CRITERIA_XP, &mut rec.xp, self.experience.total),
-            (sb::CRITERIA_LEVEL, &mut rec.level, self.experience.level),
-        ] {
-            if *last != Some(value) {
-                *last = Some(value);
-                board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
-            }
+        let (xp, level) = (self.experience.total, self.experience.level);
+        for (criteria, value) in rec.changed_scores(food, air, armor, xp, level) {
+            board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
         }
     }
     /// `ServerPlayer.die`: the acting player's `deathCount` objectives go up by one.
@@ -837,7 +865,7 @@ impl Game<'_> {
             objective,
             screen_width: batch.width as i32,
             online_mode,
-            gui_ticks: self.ticks as i64,
+            gui_ticks: self.visual_ticks() as i64,
             // Horizon has no "chat background only" option: vanilla's default (on).
             background: tab_list::row_background(
                 true,
@@ -947,6 +975,7 @@ mod tab_list_tests {
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(42)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             uuid as i32,
             [0.0, 64.0, 0.0],
@@ -1071,5 +1100,21 @@ mod team_tests {
         let looped = |uuid: [i32; 4]| Some(if uuid == WOLF { CAT } else { WOLF });
         let root = root_owner(WOLF, looped);
         assert!(root == WOLF || root == CAT);
+    }
+
+    #[test]
+    fn air_score_follows_the_air_supply_and_updates_only_on_change() {
+        let mut rec = Recorded::default();
+        let first = rec.changed_scores(20, 120, 0, 0, 0);
+        assert!(first.contains(&(sb::CRITERIA_AIR, 120)));
+        assert!(rec.changed_scores(20, 120, 0, 0, 0).is_empty());
+        assert_eq!(
+            rec.changed_scores(20, 119, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, 119)]
+        );
+        assert_eq!(
+            rec.changed_scores(20, -5, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, -5)]
+        );
     }
 }

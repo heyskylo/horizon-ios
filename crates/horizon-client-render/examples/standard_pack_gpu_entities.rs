@@ -79,7 +79,10 @@ fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let post = horizon_shaders::load_post(&pack, "", &properties, &macros, &renderer.pack_inputs());
     assert_eq!(post.notes.is_empty(), valid, "{:?}", post.notes);
-    let (_, notes) = renderer.set_shader_pack(0, Some(post), &[]).unwrap();
+    let (_, notes) = renderer
+        .set_shader_pack(0, Some(post), &[])
+        .unwrap()
+        .unwrap();
     assert!(
         !valid || notes.iter().all(|n| !n.contains("skipped")),
         "{notes:?}"
@@ -120,6 +123,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         None,
         GraphicsApi::Vulkan,
+        false,
         false,
         true,
     ))?;
@@ -351,6 +355,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
+        pvp: Default::default(),
         debug_lines: &[],
         debug_lines_on_top: &[],
         debug_crosshair: &[],
@@ -373,10 +378,12 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         shadow_only: &[],
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

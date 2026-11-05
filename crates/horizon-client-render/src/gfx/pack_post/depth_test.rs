@@ -3,15 +3,15 @@ use super::*;
 use crate::{gfx::Frame, hud::HudBatch};
 use wgpu::{TextureFormat as T, util::DeviceExt};
 
-const SIZE: [u32; 2] = [16, 16];
+pub(super) const SIZE: [u32; 2] = [16, 16];
 
-struct Gpu {
+pub(super) struct Gpu {
     adapter: wgpu::Adapter,
-    device: wgpu::Device,
+    pub(super) device: wgpu::Device,
     queue: wgpu::Queue,
 }
 impl Gpu {
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -27,7 +27,7 @@ impl Gpu {
             queue,
         })
     }
-    fn texture(&self, format: T) -> wgpu::TextureView {
+    pub(super) fn texture(&self, format: T) -> wgpu::TextureView {
         self.device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("Original depth fixture input"),
@@ -47,7 +47,7 @@ impl Gpu {
             })
             .create_view(&Default::default())
     }
-    fn load(
+    pub(super) fn load(
         &self,
         files: Vec<(String, String)>,
         world: World<'_>,
@@ -83,7 +83,8 @@ impl Gpu {
             post,
             T::Rgba8Unorm,
             world,
-        );
+        )
+        .expect("the pack runs");
         assert!(
             built.passes.iter().any(|p| p.group == Group::Final),
             "{:?}",
@@ -121,7 +122,7 @@ impl Gpu {
         });
         self.queue.submit([encoder.finish()]);
     }
-    fn render(
+    pub(super) fn render(
         &self,
         post: &mut PackPost,
         color: &wgpu::TextureView,
@@ -212,7 +213,7 @@ enum Scene {
     WaterOnly,
 }
 
-const VERTEX: &str =
+pub(super) const VERTEX: &str =
     "#version 120\nvarying vec2 uv;void main(){uv=gl_MultiTexCoord0.xy;gl_Position=ftransform();}";
 
 fn shaders(sampler: &str, stage: Stage, scene: Scene) -> Vec<(String, String)> {
@@ -315,23 +316,26 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
     let hand = matches!(scene, Scene::Terrain { hand: true, .. });
     let water = matches!(scene, Scene::Terrain { water: true, .. } | Scene::WaterOnly);
     let inputs=horizon_shaders::GameInputs {
-        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None }),
+        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None,item_id_declared:false }),
         hand:hand.then(crate::gfx::pack_hand::inputs),..Default::default()
     };
     let mut post = gpu.load(
         shaders(sampler, stage, scene),
         World {
             atlas: None,
+            material_maps: None,
             lightmap: color.clone(),
             terrain: terrain.then_some(Geometry {
                 buffers: &layouts,
                 table: None,
                 depth_write: true,
                 atlas: None,
+                material_maps: false,
                 ids: None,
                 cull: false,
             }),
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: SIZE,
             clouds: None,
@@ -557,7 +561,7 @@ fn attached_compute_preserves_distinct_hand_snapshots() {
 }
 
 // Frame literal adapted from MIT Horizon f700231 pack_uniforms.rs test API setup.
-fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
+pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         eye: glam::DVec3::ZERO,
         eye_rotation: [0.0; 2],
@@ -591,6 +595,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
+        pvp: Default::default(),
         debug_lines: &[],
         debug_lines_on_top: &[],
         debug_crosshair: &[],
@@ -614,9 +619,11 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -633,5 +640,146 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         menu_blur: None,
         chunk_fade: 0.0,
         post_effects: crate::post_chain::Request::none(),
+    }
+}
+
+/// shadowtex0 and shadowtex1 read through a plain sampler a quarter texel past a texel's centre,
+/// over a shadow map whose depth rises a sixteenth a texel: red and green are how far each
+/// moved toward the next texel, times four (0 nearest, 255 linear). `nearest` is a line for
+/// both stage files.
+fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
+    let gpu = Gpu::new()?;
+    if !gpu
+        .device
+        .features()
+        .contains(wgpu::Features::FLOAT32_FILTERABLE)
+    {
+        eprintln!("DEPTH_FIXTURE_NO_FLOAT32_FILTERABLE");
+        return None;
+    }
+    let color = gpu.texture(T::Rgba8Unorm);
+    let depth = gpu.texture(T::Depth32Float);
+    gpu.clear(&color, &depth, 0.0);
+    const ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0=>Float32x3];
+    let layouts = [Some(wgpu::VertexBufferLayout {
+        array_stride: 12,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &ATTRS,
+    })];
+    let inputs = horizon_shaders::GameInputs {
+        terrain: Some(horizon_shaders::GbuffersInputs {
+            declarations: "layout(location=0)in vec3 fixture_position;\n".into(),
+            body: "hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);\
+                   hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);\
+                   hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n"
+                .into(),
+            attributes: vec![],
+            after: String::new(),
+            alpha_test: None,
+            item_id_declared: false,
+        }),
+        ..Default::default()
+    };
+    let settings = format!("const int shadowMapResolution = 16;\n{nearest}\n");
+    let files = vec![
+        ("final.vsh".to_string(), VERTEX.to_string()),
+        (
+            "final.fsh".into(),
+            format!(
+                "#version 330 compatibility\n{settings}\
+                 uniform sampler2D shadowtex0;\nuniform sampler2D shadowtex1;\n\
+                 float moved(sampler2D s, ivec2 t) {{\n\
+                     float a = texelFetch(s, t, 0).r;\n\
+                     return (texture(s, (vec2(t) + vec2(0.75, 0.5)) / 16.0).r - a) * 16.0;\n\
+                 }}\n\
+                 void main() {{\n\
+                     ivec2 t = ivec2(int(gl_FragCoord.x) % 15, 8);\n\
+                     gl_FragColor = vec4(moved(shadowtex0, t) * 4.0, moved(shadowtex1, t) * 4.0, 0.0, 1.0);\n\
+                 }}\n"
+            ),
+        ),
+        // The shadow map's depth runs from 0 at its left edge to 1 at its right.
+        (
+            "shadow.vsh".into(),
+            "#version 120\nvoid main(){gl_Position=vec4(gl_Vertex.xy,gl_Vertex.x,1.0);}".into(),
+        ),
+        (
+            "shadow.fsh".into(),
+            format!("#version 120\n{settings}void main(){{gl_FragData[0]=vec4(1.0);}}"),
+        ),
+    ];
+    let mut post = gpu.load(
+        files,
+        World {
+            sprite_rects: &[],
+            atlas: None,
+            material_maps: None,
+            lightmap: color.clone(),
+            terrain: Some(Geometry {
+                buffers: &layouts,
+                table: None,
+                depth_write: true,
+                atlas: None,
+                ids: None,
+                cull: false,
+                material_maps: false,
+            }),
+            block_ids: &[],
+            celestial: None,
+            gui_size: SIZE,
+            clouds: None,
+            weather: false,
+            hand: false,
+        },
+        inputs,
+    );
+    assert!(post.has_shadow(), "{:?}", post.notes);
+    let positions: [[f32; 3]; 6] = [
+        [-1., -1., 0.],
+        [1., -1., 0.],
+        [1., 1., 0.],
+        [-1., -1., 0.],
+        [1., 1., 0.],
+        [-1., 1., 0.],
+    ];
+    let vertices = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original shadow depth ramp"),
+            contents: bytemuck::cast_slice(&positions),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+    let hud = HudBatch::new(SIZE);
+    let frame = fixture_frame(&hud);
+    Some(
+        gpu.render(&mut post, &color, &depth, &frame, &mut |rp, list, _, _| {
+            if list == TerrainList::ShadowSolid {
+                rp.set_vertex_buffer(0, vertices.slice(..));
+                rp.draw(0..6, 0..1);
+            }
+        }),
+    )
+}
+
+#[test]
+fn shadow_depth_is_read_linearly_through_a_plain_sampler() {
+    // Iris 1.11.7 filters both (probe packs of our own; the PR has the readings).
+    if let Some(pixels) = shadow_depth_filtering("") {
+        all_pixels(&pixels, [255, 255, 0, 255], "shadowtex linear");
+    }
+}
+
+#[test]
+fn shadowtex_nearest_settings_read_the_nearest_texel() {
+    for (line, expected) in [
+        ("const bool shadowtex0Nearest = true;", [0, 255, 0, 255]),
+        ("const bool shadowtexNearest = true;", [0, 255, 0, 255]),
+        ("const bool shadow0MinMagNearest = true;", [0, 255, 0, 255]),
+        ("const bool shadowtex1Nearest = true;", [255, 0, 0, 255]),
+        ("const bool shadow1MinMagNearest = true;", [255, 0, 0, 255]),
+    ] {
+        if let Some(pixels) = shadow_depth_filtering(line) {
+            all_pixels(&pixels, expected, line);
+        }
     }
 }

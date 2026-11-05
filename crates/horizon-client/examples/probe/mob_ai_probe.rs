@@ -898,7 +898,9 @@ pub fn main() -> horizon_client::Result<()> {
     let biomes = Biomes::load(root)?;
     let items = Items::load(root, registry, &facts, &PackOverlay::NONE)?;
     let tables = LightTables::load(root, registry, &facts)?;
-    let collision = collisions::load(root, registry)?;
+    let collision = std::sync::Arc::new(collisions::load(root, registry)?);
+    let suffocation =
+        horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)?;
     let air = registry.default_state("minecraft:air").ok_or("no air")?;
     let layers = [
         state(registry, "minecraft:bedrock"),
@@ -1128,6 +1130,9 @@ pub fn main() -> horizon_client::Result<()> {
                 main_hand: s.hand.as_deref().map(Into::into),
                 off_hand: None,
                 head: None,
+                chest: None,
+                legs: None,
+                feet: None,
                 armor_cover: 0.0,
                 invisible: false,
                 spectator: false,
@@ -1146,6 +1151,7 @@ pub fn main() -> horizon_client::Result<()> {
                 sleeping: false,
                 sleep_timer: 0,
                 passenger: false,
+                riding_vehicle: None,
                 vehicle: None,
             }
         });
@@ -1172,14 +1178,17 @@ pub fn main() -> horizon_client::Result<()> {
                     fluid_tables: &motion.fluids,
                     movement: &motion.blocks,
                     collision: &collision,
+                    suffocation: &suffocation,
                     data: &data,
                     player: player.clone(),
+                    controlling_player_movement: None,
                     nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
                     others: $snapshot,
                     dragon: None,
                     leash_boats: &[],
                     others_grid: $grid,
                     others_index: None,
+                    others_villagers: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
                     monsters_burn: !(12542..23460).contains(&world.day_time.rem_euclid(24000)),
                     game_time: world.game_time,
@@ -1605,7 +1614,14 @@ pub fn main() -> horizon_client::Result<()> {
                 let _ = writeln!(out, "{t} leads {dropped_leads}");
             }
             for e in &events {
-                if let MobEvent::Sound(name, _, volume, pitch) = e {
+                if let MobEvent::Sound(name, _, volume, pitch)
+                | MobEvent::EntitySound {
+                    name,
+                    volume,
+                    pitch,
+                    ..
+                } = e
+                {
                     let _ = writeln!(
                         out,
                         "{t} sound minecraft:{name} {} {}",

@@ -13,13 +13,7 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -636,7 +630,8 @@ pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(
     if let Some(cached) = cache::load_registry(root) {
         return Ok(cached);
     }
-    let loaded = BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
+    // Read whole, then parsed from the slice: see `BlockRegistry::from_facts_json_bytes`.
+    let loaded = BlockRegistry::from_facts_json_bytes(&fs::read(root.join("facts.json"))?)?;
     cache::store_registry(root, &loaded.0, &loaded.1);
     Ok(loaded)
 }

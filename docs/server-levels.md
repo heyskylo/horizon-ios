@@ -5,6 +5,15 @@ Horizon's server does the same. That covers the dedicated server and single play
 (`Game::serving`, the default since #1114). So a LAN world's host and each guest can be in different
 dimensions at the same time.
 
+## Contents
+
+- [How the single-level `Game` maps onto vanilla's levels](#how-the-single-level-game-maps-onto-vanillas-levels)
+- [One code path for both](#one-code-path-for-both)
+- [Cost of an extra level](#cost-of-an-extra-level)
+- [Saving](#saving)
+- [What's checked](#whats-checked)
+- [Not done yet](#not-done-yet)
+
 ## How the single-level `Game` maps onto vanilla's levels
 
 The game's tick code reads one level: the one held in `Game`'s own fields (the world, its streaming

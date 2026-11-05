@@ -68,6 +68,8 @@ enum Arriving {
     Saved(Tag),
     /// A thrown ender pearl (projectiles are not saved).
     Pearl(Box<Projectile>),
+    /// A vehicle remains in this level while its destination loads.
+    Vehicle(u32),
 }
 
 impl GatewayJob {
@@ -110,6 +112,14 @@ fn exact_teleport(entity: Option<&BlockEntity>) -> bool {
 /// else the spot [`Game::resolve_gateway`] finds around it (`findExitPosition`).
 fn exit_target(exit: [i32; 3], exact: bool, find: impl FnOnce([i32; 3]) -> [i32; 3]) -> [i32; 3] {
     if exact { exit } else { find(exit) }
+}
+
+fn fallback_spawn(own: Option<Vec3>, world: Option<[i32; 3]>) -> Vec3 {
+    let s = own.unwrap_or_else(|| {
+        let [x, y, z] = world.unwrap_or([0, 64, 0]);
+        Vec3::new(f64::from(x), f64::from(y), f64::from(z))
+    });
+    Vec3::new(s.x.floor() + 0.5, s.y, s.z.floor() + 0.5)
 }
 
 #[derive(Default)]
@@ -589,8 +599,7 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ));
         }
-        let s = self.level.spawn.unwrap_or([0.0, 64.0, 0.0]);
-        Some(Vec3::new(s[0].floor() + 0.5, s[1], s[2].floor() + 0.5))
+        Some(fallback_spawn(self.spawn, self.level.world_spawn))
     }
 
     /// Where an End portal's traveller lands once `target` has loaded, and
@@ -616,6 +625,15 @@ impl Game<'_> {
                             "minecraft:air"
                         };
                         if &*self.block_name(p) != name {
+                            // Portal arrivals rebuild the platform with drops enabled.
+                            self.with_level(|b, level, ticks| {
+                                b.destroy_block(
+                                    level,
+                                    ticks,
+                                    BlockPos::new(p[0], p[1], p[2]),
+                                    true,
+                                );
+                            });
                             self.set_state_named(p, name, &[])?;
                         }
                     }
@@ -632,8 +650,7 @@ impl Game<'_> {
             if let Some((at, yaw)) = self.find_respawn_and_use(c, false)? {
                 return Ok(Some((at, Some(yaw))));
             }
-            let s = self.level.spawn.unwrap_or([0.0, 64.0, 0.0]);
-            target = Vec3::new(s[0].floor() + 0.5, s[1], s[2].floor() + 0.5);
+            target = fallback_spawn(self.spawn, self.level.world_spawn);
         }
         let (x, z) = (target.x.floor() as i32, target.z.floor() as i32);
         // TeleportTransition.missingRespawnBlock: PlayerSpawnFinder around
@@ -1346,6 +1363,32 @@ impl Game<'_> {
             .iter()
             .filter(|m| self.mob_can_use_portal(m))
             .map(|m| (m.id, m.position, m.width(), m.height()))
+            .chain(
+                self.boats
+                    .iter()
+                    .filter(|b| self.vehicle_can_use_portal(b.id))
+                    .map(|b| {
+                        (
+                            b.id,
+                            b.position,
+                            super::boats::WIDTH as f32,
+                            super::boats::HEIGHT as f32,
+                        )
+                    }),
+            )
+            .chain(
+                self.carts
+                    .iter()
+                    .filter(|c| self.vehicle_can_use_portal(c.id))
+                    .map(|c| {
+                        (
+                            c.id,
+                            c.position,
+                            super::minecarts::WIDTH as f32,
+                            super::minecarts::HEIGHT as f32,
+                        )
+                    }),
+            )
             .collect();
         let mut inside: Vec<(u32, BlockPos)> = Vec::new();
         for (id, to, width, height) in items.into_iter().chain(mobs) {
@@ -1414,6 +1457,16 @@ impl Game<'_> {
             .map(|e| (e.id, true))
             .chain(self.mobs.iter().map(|m| (m.id, self.mob_can_use_portal(m))))
             .chain(
+                self.boats
+                    .iter()
+                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id))),
+            )
+            .chain(
+                self.carts
+                    .iter()
+                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id))),
+            )
+            .chain(
                 self.creatures
                     .projectiles
                     .iter()
@@ -1425,6 +1478,7 @@ impl Game<'_> {
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().filter_map(|a| match &a.traveller {
             Arriving::Pearl(p) => Some(p.id),
+            Arriving::Vehicle(id) => Some(*id),
             Arriving::Saved(_) => None,
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
@@ -1447,8 +1501,27 @@ impl Game<'_> {
     }
 
     /// `Entity.teleportToPortalDestination` for an entity that goes through an
-    /// End gateway: it is saved and waits for the exit's chunks.
+    /// End gateway: a same-level vehicle stays live while the exit loads.
     fn send_through_gateway(&mut self, id: u32, gateway: BlockPos) {
+        if matches!(
+            self.level_entity(id as i32),
+            Some(
+                super::commands::Target::Mob(_)
+                    | super::commands::Target::Boat(_)
+                    | super::commands::Target::Cart(_)
+            )
+        ) {
+            let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
+            let arrival = GatewayArrival {
+                traveller: Arriving::Vehicle(id),
+                job,
+                target,
+            };
+            if let Some(waiting) = self.arrive_through_gateway(arrival) {
+                self.end.arrivals.push(waiting);
+            }
+            return;
+        }
         let tag = if let Some(i) = self.dropped.iter().position(|e| e.id == id) {
             let uuid = self.uuid_for(id);
             let tag = horizon_client::entity_nbt::item_entity_to_nbt(
@@ -1461,31 +1534,6 @@ impl Game<'_> {
             self.dropped.remove(i);
             self.native_leave_skip(id);
             self.detach_entity(id);
-            tag
-        } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
-            let mut tag = self.mob_tree_nbt(i);
-            // Entity.removeAfterChangingDimensions drops the leash.
-            if let Tag::Compound(c) = &mut tag {
-                c.remove(&"leash".into());
-            }
-            // The mobs riding it travel with it (their tags are in its compound).
-            let mut gone = vec![id];
-            let mut k = 0;
-            while k < gone.len() {
-                let v = gone[k];
-                gone.extend(
-                    self.mobs
-                        .iter()
-                        .filter(|m| m.extra.mount == Some(v))
-                        .map(|m| m.id),
-                );
-                k += 1;
-            }
-            self.mobs.retain(|m| !gone.contains(&m.id));
-            for g in gone {
-                self.native_leave_skip(g);
-                self.detach_entity(g);
-            }
             tag
         } else if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
             let pearl = Box::new(self.creatures.projectiles.remove(i));
@@ -1549,6 +1597,15 @@ impl Game<'_> {
         };
         let key = chunk(at);
         match arrival.traveller {
+            Arriving::Vehicle(id) => {
+                if let Some(target) = self.level_entity(id as i32) {
+                    // Entity.teleportSameDimension keeps the live entity and
+                    // its motion, and moves every passenger in the same operation.
+                    self.teleport_to_in_level(target, [at.x, at.y, at.z], None, false);
+                    self.set_portal_cooldown(id);
+                    self.place_portal_ticket(key);
+                }
+            }
             Arriving::Saved(mut tag) => {
                 if let Tag::Compound(c) = &mut tag {
                     c.insert("Pos".into(), doubles([at.x, at.y, at.z]));
@@ -1680,6 +1737,17 @@ mod tests {
             exit_target(exit, false, |e| [e[0], e[1] + 11, e[2]]),
             [8, 111, 0]
         );
+    }
+
+    #[test]
+    fn leaving_the_end_without_a_point_of_its_own_goes_to_the_world_spawn() {
+        let world = Some([220, 63, -41]);
+        assert_eq!(fallback_spawn(None, world), Vec3::new(220.5, 63.0, -40.5));
+        assert_eq!(
+            fallback_spawn(Some(Vec3::new(10.5, 70.0, 12.5)), world),
+            Vec3::new(10.5, 70.0, 12.5)
+        );
+        assert_eq!(fallback_spawn(None, None), Vec3::new(0.5, 64.0, 0.5));
     }
 
     #[test]

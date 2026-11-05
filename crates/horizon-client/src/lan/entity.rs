@@ -877,6 +877,81 @@ fn encode_all(packets: &[play::Clientbound], bodies: &mut Vec<Vec<u8>>) {
 }
 
 impl Entities {
+    /// `ChunkMap.addEntity` after this tick's tracking pass: pair now without
+    /// running sendChanges or advancing either clock. The first sendChanges
+    /// belongs to the next pass, including for an arrow that lands meanwhile.
+    pub fn pair_after_tick(
+        &mut self,
+        entities: &[EntityState],
+        riding: &Riding,
+        viewers: &mut [Viewer],
+        mut kind: impl FnMut(&str) -> Option<i32>,
+    ) {
+        for e in entities {
+            if self.states.contains_key(&e.id) {
+                continue;
+            }
+            let mut s = ServerEntity::new(e, kind(&e.kind), riding);
+            s.seen = self.tick;
+            // Pairing has already happened by the time the next pass runs.
+            s.added = false;
+            let mut range = s.range;
+            let mut pending = riding.passengers(e.id).to_vec();
+            while let Some(id) = pending.pop() {
+                if let Some(passenger) = self.states.get(&id) {
+                    range = range.max(passenger.range);
+                } else if let Some(passenger) = entities.iter().find(|p| p.id == id) {
+                    range = range.max(i32::from(tracking::settings(&passenger.kind).0));
+                }
+                pending.extend_from_slice(riding.passengers(id));
+            }
+            let probe = Probe {
+                x: e.position[0],
+                z: e.position[2],
+                id: e.id,
+                range: self
+                    .range_percent
+                    .map_or(range * 16, |p| p * (range * 16) / 100),
+                chunk: 0,
+                spectator: e.spectator,
+                watching: e.watching,
+                hidden: e.hidden,
+            };
+            let chunks = [(
+                (e.position[0].floor() as i32) >> 4,
+                (e.position[2].floor() as i32) >> 4,
+            )];
+            let mut bodies = None;
+            for v in &mut *viewers {
+                if v.entity_id == e.id
+                    || v.tracker.is_tracking(e.id)
+                    || !sees(v, &probe, &chunks, &mut [0])
+                {
+                    continue;
+                }
+                let Some(kind) = s.kind else {
+                    continue;
+                };
+                let bodies = bodies.get_or_insert_with(|| {
+                    let mut packets = Vec::new();
+                    s.pairing(e, kind, riding, &mut packets);
+                    packets
+                        .iter()
+                        .map(play::Clientbound::encode)
+                        .collect::<Vec<_>>()
+                });
+                v.out.extend(bodies.iter().cloned());
+                v.tracker.seen.insert(e.id, Arc::clone(&s.tracked));
+                v.tracker.events.push(TrackEvent {
+                    start: true,
+                    entity: e.id,
+                    tracked: Arc::clone(&s.tracked),
+                });
+            }
+            self.states.insert(e.id, s);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.states.len()
     }
@@ -1155,9 +1230,12 @@ impl Entities {
             };
             self.packets.clear();
             // Paired as it joined, then its first changes go to everyone
-            // tracking it, those just paired with it included.
+            // tracking it, those just paired with it included. Arrows wait for the
+            // next tick's send_changes so impact updates (e.g. IN_GROUND) arrive after
+            // the client's first tick (#7461).
             let synced = s.added
                 && e.kind != "minecraft:player"
+                && !s.arrow
                 && self
                     .synced
                     .iter()
@@ -1216,6 +1294,9 @@ impl Entities {
         self.states.retain(|_, s| s.seen == now);
     }
 }
+
+#[cfg(test)]
+mod late_pair_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1902,6 +1983,50 @@ mod tests {
         for synced in [vec![], vec![(i32::MIN, 6)], vec![(7, 9)]] {
             assert_eq!(passes(synced), (vec![], vec![move_by(-164)]));
         }
+    }
+
+    /// ChunkMap.addEntity (#7461): a fresh arrow (shot point-blank into a wall)
+    /// is paired with IN_GROUND=false, and its first update is deferred to the
+    /// next tick's send_changes so that IN_GROUND=true arrives after the client's
+    /// first tick has completed, satisfying AbstractArrow.onSyncedDataUpdated's
+    /// !this.firstTick guard and triggering the shake animation.
+    #[test]
+    fn fresh_arrow_pairs_as_joined_and_defers_in_ground_update_to_next_tick() {
+        let mut level = Entities {
+            synced: vec![(i32::MIN, 7)],
+            ..Entities::default()
+        };
+        let mut c = Clients::new();
+        let mut joined = state(0.0);
+        joined.kind = "minecraft:arrow".into();
+        joined.meta = vec![(8, serializer::BYTE, Value::Byte(0))];
+
+        let mut stuck = joined.clone();
+        stuck.meta = vec![(8, serializer::BYTE, Value::Byte(1))];
+
+        let mut entities = vec![&stuck];
+        let joins = level.joined_states(&entities, vec![joined.clone()]);
+        Entities::starting_from(&mut entities, &joins);
+        assert_eq!(
+            entities[0].meta,
+            vec![(8, serializer::BYTE, Value::Byte(0))]
+        );
+
+        // Tick 0: arrow is paired. Because it's an arrow, send_changes does not run on tick 0
+        // even though level.synced contains its id.
+        c.tick(&mut level, &entities);
+        let in_ground_true = body(play::Clientbound::SetEntityData(SetEntityData {
+            id: 7,
+            values: vec![(8, serializer::BYTE, Value::Byte(1))],
+        }));
+        assert!(!c.out[0].contains(&in_ground_true));
+
+        // Tick 1: arrow is in the wall (IN_GROUND = true).
+        let next_entities = vec![&stuck];
+        c.tick(&mut level, &next_entities);
+
+        // Tick 1 sends SetEntityData with IN_GROUND=true.
+        assert!(c.out[0].contains(&in_ground_true), "{:?}", c.out[0]);
     }
 
     #[test]

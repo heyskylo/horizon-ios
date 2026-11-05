@@ -115,6 +115,9 @@ impl Removal {
 /// `ServerPackManager.ServerPackData`.
 #[derive(Debug)]
 struct Pack {
+    /// Which `ServerPackData` this is: a pushed id replaces its pack while the old
+    /// one can still be active, so a reload names its packs by this, not by `id`.
+    key: u64,
     id: u128,
     url: String,
     sha1: Option<String>,
@@ -137,8 +140,8 @@ impl Pack {
 /// `triggerReloadIfNeeded` gives `scheduleReload`).
 #[derive(Debug)]
 struct Reload {
-    load: Vec<u128>,
-    unload: Vec<u128>,
+    load: Vec<u64>,
+    unload: Vec<u64>,
     /// It reloads what was active before a failed one (`isRecovery`).
     recovery: bool,
 }
@@ -155,6 +158,7 @@ pub struct ServerPacks {
     /// statuses are only logged, as for a local world.
     reporting: bool,
     replies: Vec<(u128, i32)>,
+    next_key: u64,
 }
 impl Default for ServerPacks {
     fn default() -> Self {
@@ -165,6 +169,7 @@ impl Default for ServerPacks {
             update: false,
             reporting: false,
             replies: Vec::new(),
+            next_key: 0,
         }
     }
 }
@@ -216,7 +221,9 @@ impl ServerPacks {
         for pack in self.packs.iter_mut().filter(|p| p.id == id) {
             pack.remove(Removal::ServerReplaced);
         }
+        self.next_key += 1;
         self.packs.push(Pack {
+            key: self.next_key,
             id,
             url: url.to_owned(),
             sha1,
@@ -241,7 +248,9 @@ impl ServerPacks {
         for pack in self.packs.iter_mut().filter(|p| p.id == id) {
             pack.remove(Removal::ServerReplaced);
         }
+        self.next_key += 1;
         self.packs.push(Pack {
+            key: self.next_key,
             id,
             // Never downloaded: the file is already on disk.
             url: String::new(),
@@ -256,6 +265,10 @@ impl ServerPacks {
             self.accept(self.packs.len() - 1);
         }
         self.update = true;
+    }
+    /// What the player answered for this server's packs (splitscreen: the others follow P1).
+    pub fn prompt(&self) -> Prompt {
+        self.prompt
     }
     fn accept(&mut self, i: usize) {
         self.packs[i].accepted = true;
@@ -342,12 +355,12 @@ impl ServerPacks {
             let wanted = pack.accepted && pack.download == Download::Done && !pack.removed();
             match pack.activation {
                 Activation::Inactive if wanted => {
-                    load.push(pack.id);
+                    load.push(pack.key);
                     changed = true;
                 }
-                Activation::Active if wanted => load.push(pack.id),
+                Activation::Active if wanted => load.push(pack.key),
                 Activation::Active => {
-                    unload.push(pack.id);
+                    unload.push(pack.key);
                     changed = true;
                 }
                 _ => {}
@@ -357,8 +370,8 @@ impl ServerPacks {
             return None;
         }
         for pack in &mut self.packs {
-            let loading = load.contains(&pack.id) && pack.activation != Activation::Active;
-            if loading || unload.contains(&pack.id) {
+            let loading = load.contains(&pack.key) && pack.activation != Activation::Active;
+            if loading || unload.contains(&pack.key) {
                 pack.activation = Activation::Pending;
             }
         }
@@ -371,14 +384,11 @@ impl ServerPacks {
         Some(paths)
     }
     /// The packs to load (`PackReloadConfig.Callbacks.packsToLoad`), bottom first.
-    fn paths(&self, ids: &[u128]) -> Vec<(u128, PathBuf)> {
-        ids.iter()
-            .filter_map(|id| {
-                let pack = self
-                    .packs
-                    .iter()
-                    .find(|p| p.id == *id && p.path.is_some())?;
-                Some((*id, pack.path.clone()?))
+    fn paths(&self, keys: &[u64]) -> Vec<(u128, PathBuf)> {
+        keys.iter()
+            .filter_map(|key| {
+                let pack = self.packs.iter().find(|p| p.key == *key)?;
+                Some((pack.id, pack.path.clone()?))
             })
             .collect()
     }
@@ -428,12 +438,12 @@ impl ServerPacks {
         if ok {
             let mut applied = Vec::new();
             for pack in &mut self.packs {
-                if reload.load.contains(&pack.id) {
+                if reload.load.contains(&pack.key) {
                     pack.activation = Activation::Active;
                     if pack.removal.is_none() {
                         applied.push(pack.id);
                     }
-                } else if reload.unload.contains(&pack.id) {
+                } else if reload.unload.contains(&pack.key) {
                     pack.activation = Activation::Inactive;
                 }
             }
@@ -459,7 +469,7 @@ impl ServerPacks {
                     pack.activation = Activation::Inactive;
                     pack.remove(Removal::ActivationFailed);
                 }
-                Activation::Active => reload.load.push(pack.id),
+                Activation::Active => reload.load.push(pack.key),
             }
         }
         reload.recovery = true;
@@ -629,6 +639,22 @@ mod tests {
             &mut |_| true,
         );
         assert_eq!(urls, ["http://a/new.zip"]);
+    }
+
+    #[test]
+    fn replacing_an_active_pack_settles_after_one_reload() {
+        let mut sp = ServerPacks::default();
+        sp.connect(Prompt::Allowed);
+        sp.push(1, "http://a/old.zip", None);
+        settle(&mut sp, &mut |r| ok(r[0].id), &mut |_| true);
+        // The server pushes the same id again while the first is active.
+        sp.push(1, "http://a/new.zip", None);
+        let mut reloads = Vec::new();
+        settle(&mut sp, &mut |r| ok(r[0].id), &mut |p| {
+            reloads.push(p.to_vec());
+            true
+        });
+        assert_eq!(reloads, [[(1, PathBuf::from("/p/1"))]]);
     }
 
     #[test]

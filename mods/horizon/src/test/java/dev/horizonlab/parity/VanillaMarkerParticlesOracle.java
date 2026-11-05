@@ -12,6 +12,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
@@ -28,7 +30,8 @@ import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
 
 /** Invoke shipped marker selection and ambient sampling in a dry barrier world,
- * and the campfire's own particles over a stand-in level that records them. */
+ * the campfire block's tick over a world that is all campfire, and the
+ * campfire block entity's particles over a stand-in level that records them. */
 public final class VanillaMarkerParticlesOracle {
     static Field field(Class<?> type, String name) throws Exception {
         var field = type.getDeclaredField(name);
@@ -89,6 +92,37 @@ public final class VanillaMarkerParticlesOracle {
             record(options, x, y, z, dx, dy, dz);
         }
     }
+    /** The level a campfire block tick runs over: every position holds the
+     * case's campfire, so the whole animateTick loop reaches one, and every
+     * particle and local sound it asks for is recorded. */
+    public static final class TickLevel extends ClientLevel {
+        BlockState state = Blocks.AIR.defaultBlockState();
+        java.util.List<String> particles;
+        java.util.List<String> sounds;
+        net.minecraft.world.attribute.EnvironmentAttributeSystem attributes;
+        TickLevel() { super(null, null, null, null, 0, 0, null, false, 0L, 0); }
+        @Override public BlockState getBlockState(BlockPos pos) { return state; }
+        @Override public FluidState getFluidState(BlockPos pos) { return Fluids.EMPTY.defaultFluidState(); }
+        /** Dry weather, as the probe's stand-in world reports it. */
+        @Override public boolean isRainingAt(BlockPos pos) { return false; }
+        @Override public net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes() {
+            return attributes;
+        }
+        @Override public void addParticle(ParticleOptions options, double x, double y, double z,
+                                          double dx, double dy, double dz) {
+            particles.add(BuiltInRegistries.PARTICLE_TYPE.getKey(options.getType()).getPath()
+                          + " " + bits(x) + " " + bits(y) + " " + bits(z)
+                          + " " + bits(dx) + " " + bits(dy) + " " + bits(dz));
+        }
+        @Override public void playLocalSound(double x, double y, double z, SoundEvent sound,
+                                             SoundSource source, float volume, float pitch,
+                                             boolean distanceDelay) {
+            sounds.add(BuiltInRegistries.SOUND_EVENT.getKey(sound)
+                       + " " + bits(x) + " " + bits(y) + " " + bits(z)
+                       + " " + Integer.toHexString(Float.floatToIntBits(volume))
+                       + " " + Integer.toHexString(Float.floatToIntBits(pitch)));
+        }
+    }
     /** A `minecraft:name[k=v,...]` state through the real block state definition. */
     @SuppressWarnings({"unchecked", "rawtypes"})
     static BlockState parseState(String spec) {
@@ -117,10 +151,15 @@ public final class VanillaMarkerParticlesOracle {
         var mc = (Minecraft) allocate.invoke(unsafe, Minecraft.class);
         var level = (MarkerLevel) allocate.invoke(unsafe, MarkerLevel.class);
         var campfireLevel = (CampfireLevel) allocate.invoke(unsafe, CampfireLevel.class);
+        var tickLevel = (TickLevel) allocate.invoke(unsafe, TickLevel.class);
         var player = (Player) allocate.invoke(unsafe, Player.class);
         var mode = (Mode) allocate.invoke(unsafe, Mode.class);
         field(ClientLevel.class, "minecraft").set(level, mc);
         field(ClientLevel.class, "minecraft").set(campfireLevel, mc);
+        field(ClientLevel.class, "minecraft").set(tickLevel, mc);
+        tickLevel.attributes = net.minecraft.world.attribute.EnvironmentAttributeSystem.builder().build();
+        tickLevel.particles = new java.util.ArrayList<>();
+        tickLevel.sounds = new java.util.ArrayList<>();
         mc.player = player;
         mc.gameMode = mode;
         var select = ClientLevel.class.getDeclaredMethod("getMarkerParticleTarget");
@@ -132,6 +171,35 @@ public final class VanillaMarkerParticlesOracle {
             for (int index = 0; index < lines.size(); index++) {
                 var c = JsonParser.parseString(lines.get(index)).getAsJsonObject();
                 var kind = c.has("kind") ? c.get("kind").getAsString() : "marker";
+                if (kind.equals("tick")) {
+                    // The block's own tick through the whole ClientLevel.animateTick
+                    // loop: the level random it is seeded with drives both the
+                    // sampled positions and the block's draws, as the probe's one
+                    // engine random does.
+                    var random = RandomSource.create(c.get("seed").getAsLong());
+                    field(Level.class, "random").set(tickLevel, random);
+                    tickLevel.state = parseState(c.get("state").getAsString());
+                    tickLevel.particles.clear();
+                    tickLevel.sounds.clear();
+                    var pos = new BlockPos.MutableBlockPos();
+                    out.write("== " + index + " tick");
+                    out.newLine();
+                    for (int round = 0; round < 667; round++) {
+                        tickLevel.doAnimateTick(0, 64, 0, 16, random, null, pos);
+                        tickLevel.doAnimateTick(0, 64, 0, 32, random, null, pos);
+                    }
+                    for (var line : tickLevel.sounds) {
+                        out.write("sound " + line);
+                        out.newLine();
+                    }
+                    for (var line : tickLevel.particles) {
+                        out.write(line);
+                        out.newLine();
+                    }
+                    out.write("next " + random.nextInt());
+                    out.newLine();
+                    continue;
+                }
                 if (!kind.equals("marker")) {
                     // The campfire cases seed the level random and tick the fire.
                     var random = RandomSource.create(c.get("seed").getAsLong());

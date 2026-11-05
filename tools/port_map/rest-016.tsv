@@ -57,12 +57,12 @@ TimeCommand.setTotalTicks	port	crates/horizon-client/src/game/commands.rs::Game:
 TimeCommand.addTime	port	crates/horizon-client/src/game/commands.rs::Game::cmd_time	time.add arm
 TimeCommand.setTimeToTimeMarker	port	crates/horizon-client/src/game/commands.rs::Game::cmd_time	time.set.marker arm
 TimeCommand.setRate	port	crates/horizon-client/src/game/commands.rs::Game::cmd_time	time.rate arm
-TimeCommand.getDefaultClock	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	overworld clock; the Nether has no default clock
+TimeCommand.getDefaultClock	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	built-in dimension defaults: Overworld and End select their own clocks; Nether has none
 TitleCommand.sendPacketToPlayers	port	crates/horizon-client/src/game/commands/text_commands.rs::Game::titles_or_packet	per-player send
 TitleCommand.showTitle	port	crates/horizon-client/src/game/commands/text_commands.rs::Game::cmd_title	title, subtitle and actionbar
 TitleCommand.setTimes	port	crates/horizon-client/src/game/commands/text_commands.rs::Game::cmd_title	times arm
-TransferCommand.register	missing		minor: no /transfer node; the client follows an incoming transfer (net.rs) but no command sends one
-TransferCommand.transfer	missing		minor: no command sends a ClientboundTransferPacket to a player
+TransferCommand.register	port	crates/horizon-client/src/game/commands.rs::Game::execute_command	the node (the literal, the permission level, the `hostname` and optional `port` arguments, the `players` selector) comes from the data generator's commands.json through lan/commands.rs, which lists `transfer` as dedicated-only; this branch is its execute
+TransferCommand.transfer	port	crates/horizon-client/src/game/commands/profiles.rs::Game::cmd_transfer	each target's `lan/hub.rs::Hub::transfer` sends the Transfer packet with the host and port; the reply is one name or a count, both with the host and port
 TriggerCommand.suggestObjectives	port	crates/horizon-command/src/lib.rs::Suggests::suggest	Suggests::Triggers arm
 TriggerCommand.addValue	port	crates/horizon-client/src/scoreboard_cmd.rs::trigger	trigger.add arm
 TriggerCommand.setValue	port	crates/horizon-client/src/scoreboard_cmd.rs::trigger	trigger.set arm
@@ -117,7 +117,7 @@ ItemCommands.wrapSetItems	port	crates/horizon-command/src/tree_misc.rs::item	/it
 ItemCommands.setItems	port	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item	item replace
 ItemCommands.modifyItems	port	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item_modify	item modify
 ItemCommands.getItems	inline	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item	from-source branch
-ItemCommands.getSlotsFromProvider	port	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	slot name matching
+ItemCommands.getSlotsFromProvider	port	crates/horizon-client/src/game/commands/items.rs::Game::command_slots	inline groups/ranges/filters/limits and named ranges; gap: minor: registered holder/tag sources and contents component adapters remain unsupported
 DedicatedPlayerList.saveIpBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::save	ban and list saves go through UserList::save
 DedicatedPlayerList.saveUserBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::save	
 DedicatedPlayerList.loadIpBanList	port	crates/horizon-server-files/src/user_lists.rs::UserList::load	

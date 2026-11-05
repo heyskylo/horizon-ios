@@ -1,5 +1,5 @@
 //! Startup shared by the gameplay library and its executable.
-use crate::{crash, game, logging, ram_limit};
+use crate::{crash, game, logging};
 
 /// Start the game. The executable supplies the allocator and retains the mod API marker.
 pub fn main() {
@@ -53,7 +53,6 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
-        ram_limit::start(&home, side);
     }
     let renderers = crate::mod_api::mods()
         .iter()
@@ -109,6 +108,16 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 max_stack,
             );
         },
+        player_chat: |player, name, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                replies,
+                cancel,
+            );
+        },
         living_heal: |entity, amount, cancel| {
             crate::mod_api::dispatch_living_heal(crate::mod_api::mods(), entity, amount, cancel);
         },
@@ -145,6 +154,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         },
         living_jump: |entity, kind| {
             crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
+        },
+        register_goals: |mob| {
+            crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
         },
         ingredient: |kind, data, items| {
             crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);

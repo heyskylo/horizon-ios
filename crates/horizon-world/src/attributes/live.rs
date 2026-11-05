@@ -355,6 +355,30 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
     pub fn value(&mut self, key: Option<Key>, kind: ValueKind) -> Result<f64, Error> {
         self.map.value(key, kind, &mut self.data)
     }
+    /// The computed value exactly as the instance's cache holds it, without
+    /// recomputing a dirty instance. An absent instance reads its supplier
+    /// base, the same fallback `AttributeMap.getValue` uses (only an instance
+    /// carries modifiers). Native `AttributeInstance.getValue` is the only
+    /// thing that recomputes and clears the dirty flag, so a reader vanilla
+    /// performs on some paths only must take this rather than `value`.
+    pub fn cached_value(&self, key: Option<&Key>) -> Result<f64, Error> {
+        if let Some(handle) = self.map.instances.get(key) {
+            return Ok(self.data.node(&handle)?.value.cached_value());
+        }
+        let key = key.ok_or(Error::NullAttribute)?;
+        let base = self.data.base(key).ok_or(Error::MissingAttribute)?;
+        Ok(self
+            .data
+            .catalog
+            .attribute(key.id)
+            .definition
+            .sanitize(base))
+    }
+    /// `cached_value` of the attribute with this registered name.
+    pub fn cached_value_of(&self, name: &str) -> Result<f64, Error> {
+        let key = self.key(name).ok_or(Error::MissingAttribute)?;
+        self.cached_value(Some(&key))
+    }
     pub fn modifier_value(&mut self, key: Option<Key>, id: &str) -> Result<f64, Error> {
         self.map
             .modifier_value(key, id, &mut self.data)

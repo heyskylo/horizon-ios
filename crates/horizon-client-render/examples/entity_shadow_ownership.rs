@@ -64,10 +64,11 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
+        false,
         true,
     ))?;
     assert!(!renderer.pack_entity_shadows(), "no selected pack");
-    renderer.set_shader_pack(0, None, &[]);
+    renderer.set_shader_pack(0, None, &[]).unwrap();
     assert!(
         !renderer.pack_entity_shadows(),
         "selected pack without a compiled post"
@@ -164,6 +165,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             }
             let (_, notes) = renderer
                 .set_shader_pack(dimension, Some(post), &[])
+                .unwrap()
                 .unwrap();
             if break_pipeline {
                 assert!(

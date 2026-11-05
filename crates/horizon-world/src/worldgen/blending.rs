@@ -404,6 +404,13 @@ pub trait OldWorld: Send + Sync {
     /// `WorldGenRegion.isOldChunkAround`: a chunk within `range` of `center`
     /// (a square) is old, as far as the storage can tell without reading it.
     fn is_old_chunk_around(&self, center: ChunkPos, range: i32) -> bool;
+    /// Whether the chunk at `x, z` is old, as `StructureCheck.tryLoadFromStorage` finds out:
+    /// from that chunk's record alone. A structure search asks this of one chunk per spacing
+    /// cell across thousands of cells; scanning each region it touched, as the blender does,
+    /// read every chunk an explored world saved there (#8669).
+    fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        self.is_old_chunk_around(ChunkPos::new(x, z), 0)
+    }
     /// The blending data of the old chunk at `x, z`, its border columns
     /// calculated, or None for a chunk that is not old.
     fn blending(&self, x: i32, z: i32) -> Option<Arc<BlendingData>>;

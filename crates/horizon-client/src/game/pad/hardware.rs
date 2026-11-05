@@ -116,6 +116,7 @@ impl Pads {
         let Some(gilrs) = self.devices.gilrs.as_mut() else {
             return PadState::default();
         };
+        let active = self.devices.active;
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             use gilrs::EventType as E;
             match event {
@@ -142,6 +143,10 @@ impl Pads {
                 }
                 _ => {}
             }
+        }
+        // Another pad, or none: its A going away isn't a release.
+        if self.devices.active != active {
+            self.menu.armed = None;
         }
         let Some(pad) = self
             .devices

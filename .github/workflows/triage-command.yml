@@ -21,14 +21,15 @@ jobs:
       startsWith(github.event.comment.body, '/reopen') ||
       startsWith(github.event.comment.body, '/label') ||
       startsWith(github.event.comment.body, '/unlabel'))
-    runs-on: ubuntu-latest
+    # One of our small runners (label horizon-light, docs/ci-runners.md): main's script only, as above.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -42,6 +43,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
+          # Who may act is decided by this numeric ID: a login can be claimed by someone else after a rename.
+          AUTHOR_ID: ${{ github.event.comment.user.id }}
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
           COMMENT_URL: ${{ github.event.comment.html_url }}

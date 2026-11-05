@@ -4,6 +4,7 @@ use crate::{
         ModelPart, SIGN_TEXT_KEEP, Scene, StaticSectionRevision, classify,
     },
     chunk::Chunk,
+    font::Glyph,
     hud::Rect,
     mesher::Vertex,
     signs::{SignData, SignText},
@@ -355,8 +356,9 @@ fn batched_callbacks_preserve_entity_ranges_and_allow_immediate_culling() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     // Reverse local-position order to check that cache indexing does not
     // change the order of emitted entities.
@@ -443,8 +445,9 @@ fn static_cache_qualifies_local_positions_by_section_and_drops_old_entries() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let options = CacheOptions {
         shulker_boxes: true,
@@ -497,8 +500,9 @@ fn gpu_static_cache_uses_section_local_chests_and_keeps_visibility_separate() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([100, 70, -32], 0)];
     let other_block = [([116, 70, -32], 0)];
@@ -651,18 +655,19 @@ fn sign_text_cache_can_be_disabled_and_reenabled_without_changing_output() {
     };
     let sign_data = &data;
     let sign = move |_: [i32; 3]| Some(sign_data);
-    let glyph = |_: char| {
-        (
-            Some(Rect {
-                u0: 0.0,
-                v0: 0.0,
-                u1: 0.0625,
-                v1: 0.0625,
-                w: 8,
-                h: 8,
-            }),
-            6.0,
-        )
+    let glyph = |_: char| Glyph {
+        rect: Some(Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 0.0625,
+            v1: 0.0625,
+            w: 8,
+            h: 8,
+        }),
+        right: 8.0,
+        bottom: 8.0,
+        advance: 6.0,
+        ..Glyph::default()
     };
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
@@ -684,6 +689,7 @@ fn sign_text_cache_can_be_disabled_and_reenabled_without_changing_output() {
         skull: &|_| None,
         glyph: &glyph,
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let enabled = CacheOptions {
@@ -735,8 +741,9 @@ fn shulker_cache_tracks_settled_poses_and_does_not_freeze_opening_animation() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let options = CacheOptions {
@@ -836,8 +843,9 @@ fn shulker_cache_covers_all_colors_and_facing_directions() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let options = CacheOptions {
         shulker_boxes: true,
@@ -890,8 +898,9 @@ fn cached_bells_keep_shaking_until_the_animation_ends() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let options = CacheOptions {
@@ -951,8 +960,9 @@ fn cached_closed_chests_match_the_direct_model_and_rebuild_when_opening() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let options = CacheOptions {
@@ -1046,8 +1056,9 @@ fn closed_chest_cache_covers_all_materials_and_atlas_reloads() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let pos = [0, 64, 0];
     let options = CacheOptions {
@@ -1134,8 +1145,9 @@ fn double_chest_cache_bypasses_both_halves_while_either_lid_is_open() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let pair = [([0, 64, 0], 0), ([1, 64, 0], 1)];
     let options = CacheOptions {
@@ -1209,8 +1221,9 @@ fn decorated_pot_cache_tracks_sherds_and_bypasses_wobble_animation() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let options = CacheOptions {
@@ -1287,8 +1300,9 @@ fn banner_cache_keeps_the_pole_static_while_the_flag_and_patterns_update() {
         sign: &|_| None,
         banner: &banner_patterns,
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let blocks = [([0, 64, 0], 0)];
     let options = CacheOptions {
@@ -1353,8 +1367,9 @@ fn cached_wall_banner_poles_use_the_wall_model() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let pos = [0, 64, 0];
     let options = CacheOptions {
@@ -1400,8 +1415,9 @@ fn copper_statue_cache_rebuilds_when_its_pose_state_changes() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let options = CacheOptions {
         copper_golem_statues: true,
@@ -1505,8 +1521,9 @@ fn copper_statue_cache_covers_weathering_waxing_and_all_poses() {
         sign: &|_| None,
         banner: &|_| Vec::new(),
         skull: &|_| None,
-        glyph: &|_| (None, 0.0),
+        glyph: &|_| Glyph::default(),
         glyphs: 0,
+        dynamic_visible: None,
     };
     let options = CacheOptions {
         copper_golem_statues: true,

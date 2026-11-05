@@ -76,7 +76,7 @@ harness named checks that loader against vanilla).
 | Paintings, mob effect icons | `atlases/paintings.json`, `textures/mob_effect/` | works | loaded from the overlay |
 | Locator bar styles | `waypoint_style/` | **no** | the locator bar isn't drawn yet |
 | Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | **no** | Horizon's effects are WGSL; a pack's GLSL post chain isn't run |
-| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), translated by naga (`horizon-shaders` `core_shader.rs`, `hud/pack_text.rs`); the other core shaders aren't run |
+| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects) and `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), translated by naga (`horizon-shaders` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`); the other core shaders aren't run |
 | OptiFine / CIT Resewn custom item textures (`type=item`: `texture`, `model`, `texture.<name>`, `model.<name>`; `type=armor`: `texture`, `texture.<layer>` with the pre-1.21.2 layer names such as `diamond_layer_1`, `leather_layer_2_overlay`; `type=elytra`: `texture`; `type=enchantment` layers on GUI items; `useGlint=false` in `cit.properties`, which removes vanilla's glint from items) | `optifine/cit/`, `mcpatcher/cit/`, `citresewn/cit/` | partly | `item_render/cit.rs`, `cit_armor.rs`, `cit_glint.rs` and `hud/cit_glint.rs` tests; enchantment layers on held, dropped, framed and worn items, and `anim/` glints, come later; special renderers (heads, shields, banners) keep their vanilla look; only players and armour stands wear CIT armour and elytra, other mobs keep vanilla's; worn trims are unchanged; armour textures above 1024x512 (16 times vanilla's 64x32) draw vanilla |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
@@ -96,7 +96,7 @@ shaders, the missing pieces are missing vanilla features too, and each vanilla p
 | Trims on worn armour (paletted textures) | medium | [#337](https://github.com/horizon-rust/horizon/issues/337) |
 | Credits and end poem screen | medium | [#338](https://github.com/horizon-rust/horizon/issues/338) |
 | Locator bar | medium | [#339](https://github.com/horizon-rust/horizon/issues/339) |
-| Post effects, core shaders but GUI text | large | none yet |
+| Post effects, core shaders but GUI text and the block outline | large | none yet |
 
 ## Testing a pack
 

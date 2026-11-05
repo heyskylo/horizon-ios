@@ -827,18 +827,15 @@ impl Game<'_> {
                 &[self.target_name(t)],
             ));
         }
-        let [a, b, c, d] = self.level.player_uuid.unwrap_or([0; 4]);
-        let id = (u128::from(a as u32) << 96)
-            | (u128::from(b as u32) << 64)
-            | (u128::from(c as u32) << 32)
-            | u128::from(d as u32);
-        let name = super::super::chat::PLAYER_NAME;
+        // The player in place: a guest's own profile while their command runs.
+        let id = horizon_client::lan::playerdata::ints_uuid(self.acting_uuid());
+        let name = self.acting_player_name().to_owned();
         self.report_resolved_profile(
             "commands.fetchprofile.entity.success",
-            Text::literal(name),
+            Text::literal(&name),
             &ResolvedProfile {
                 id,
-                name: name.to_owned(),
+                name,
                 properties: Vec::new(),
             },
         );

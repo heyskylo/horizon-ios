@@ -62,6 +62,22 @@ pub(super) fn record_events(events: &[horizon_world::level::LevelEvent]) {
     }
 }
 
+/// The `S` line for a level event whose sound `LevelEventHandler` plays on the
+/// client (`playLocalSound`), so Horizon plays it unshared and never captures
+/// it: the lava fizz (1501, #7652) and `ComposterBlock.handleFill` (1500,
+/// `data > 0` = success, #9069).
+fn event_sound(line: &str) -> Option<String> {
+    let mut parts = line.strip_prefix("L ")?.split(' ');
+    let (id, pos, data) = (parts.next()?, parts.next()?, parts.next()?);
+    let sound = match id {
+        "1501" => "minecraft:block.lava.extinguish",
+        "1500" if data.parse::<i32>().ok()? > 0 => "minecraft:block.composter.fill_success",
+        "1500" => "minecraft:block.composter.fill",
+        _ => return None,
+    };
+    Some(format!("S {pos} {sound}"))
+}
+
 /// Java's `String.format("%.6f")`: the exact value rounded half up (away
 /// from zero) where Rust rounds a tie to even.
 fn num(v: f64) -> String {
@@ -431,18 +447,11 @@ impl Game<'_> {
             out.push(self.fixture_describe(i, t));
         }
         let log = LOG.with(|log| log.borrow_mut().take()).unwrap_or_default();
-        // LevelEventHandler's lava fizz (1501): the client plays it from the
-        // level event, so it is not captured as a shared sound (#7652).
-        let fizzes: Vec<String> = log
-            .iter()
-            .filter_map(|line| line.strip_prefix("L 1501 "))
-            .filter_map(|rest| rest.split(' ').next())
-            .map(|pos| format!("S {pos} minecraft:block.lava.extinguish"))
-            .collect();
+        let event_sounds: Vec<String> = log.iter().filter_map(|l| event_sound(l)).collect();
         out.extend(log);
-        out.extend(fizzes);
-        for (sound, at, _, _) in self.audio.capture.take().unwrap_or_default() {
-            out.push(format!("S {} {sound}", floor_pos(at)));
+        out.extend(event_sounds);
+        for sound in self.audio.capture.take().unwrap_or_default() {
+            out.push(format!("S {} {}", floor_pos(sound.position), sound.event));
         }
         out.extend(used);
         out.push(format!("rng {}", self.world.random.next_long()));

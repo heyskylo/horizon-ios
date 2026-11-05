@@ -99,9 +99,10 @@ and some are waiting for Ludovic:
   (#1024), which removes anything a pull request left in the work folder by accident, but
   not a deliberate attack. The protection is review: only agents and maintainers push to this repository, and a
   maintainer reads a fork's change before labelling it.
-- **The first install** with `install.sh` / `install.ps1` checks the checksum GitHub publishes, not the
-  signature: verifying Ed25519 signatures needs OpenSSL 3, which macOS doesn't ship. Every update after that
-  checks the signature.
+- **The first install** with `install.sh` checks the signature when OpenSSL 3 is installed: it verifies
+  `SHA256SUMS.sig` against the release key built into the script, then the archive against `SHA256SUMS`. With
+  an older OpenSSL, LibreSSL (what macOS ships) or none, it says so and checks only the SHA-256 GitHub
+  publishes. `install.ps1` still checks only that SHA-256. Every update after that checks the signature.
 
 ## Reporting a security problem
 

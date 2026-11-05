@@ -30,10 +30,12 @@ def ids(report, state, direction):
     return packets
 
 
-def table(source, target):
-    """For each id of `source` (in order), the id `target` gives the same packet, or None."""
+def table(source, target, renames=None):
+    """For each id of `source` (in order), the id `target` gives the same packet (or the one it was renamed
+    to), or None."""
+    renames = renames or {}
     by_id = sorted(source.items(), key=lambda kv: kv[1])
-    return [target.get(name) for name, _ in by_id]
+    return [target.get(renames.get(name, name)) for name, _ in by_id]
 
 
 def rust_table(name, values):
@@ -50,7 +52,12 @@ def main():
     parser.add_argument("--old", type=Path, required=True, help="the older version's prepared directory")
     parser.add_argument("--new", type=Path, help="the pinned version's prepared directory (default: .local)")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
+                        help="a packet the pinned version knows by another name, e.g. "
+                             "minecraft:horse_screen_open=minecraft:mount_screen_open")
     args = parser.parse_args()
+    forward = dict(spec.split("=", 1) for spec in args.rename)
+    backward = {new: old for old, new in forward.items()}
     old = json.loads((args.old / "datagen/reports/packets.json").read_text())
     old_info = lab.version_info(args.old / "jars/client.jar")
     if args.new:
@@ -77,7 +84,7 @@ def main():
         for direction in ["clientbound", "serverbound"]:
             o, n = ids(old, state, direction), ids(new, state, direction)
             # Clientbound: indexed by the old server's id. Serverbound: indexed by Horizon's id.
-            values = table(o, n) if direction == "clientbound" else table(n, o)
+            values = table(o, n, forward) if direction == "clientbound" else table(n, o, backward)
             assert all(v is None or v < 256 for v in values)
             lines.append("#[rustfmt::skip]")
             lines.extend(rust_table(f"{state.upper()}_{direction.upper()}", values))

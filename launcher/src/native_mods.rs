@@ -29,13 +29,14 @@ use std::process::{Command, Stdio};
 mod api;
 mod crates;
 mod dependencies;
+mod diagnostics;
 mod inject;
 mod inject_cache;
 
 const PREFIX: &str = "native-";
 /// horizon-mixins, for bundles that don't name the revision they were tested with.
 const MIXINS_GIT: &str = "https://github.com/horizon-rust/horizon-mixins";
-pub const MIXINS_REV: &str = "ddd9700b21997c95d95ac6ee5ecafe3830cf622a";
+pub const MIXINS_REV: &str = "e8cd0aa38cffef49cb2e088ef716baa107148c02";
 /// The features of the release's own game (game-build.yml).
 const FEATURES: &str = "horizon-client/mods";
 
@@ -403,7 +404,20 @@ pub fn append_log(message: &str) -> Result<(), String> {
 
 /// Records the whole attempt, including selection or export after compilation.
 fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    // Another build or a cleanup holds the lease on the same target/: refuse. Any other
+    // failure (a filesystem without file locks, a `native` folder linked to another drive)
+    // only stops the cleanup: the build goes ahead without the lease, as it did before.
+    let (cache, unavailable) = match crate::native_cache::Cache::acquire(&backend::build_dir()) {
+        Ok(cache) => (Some(cache), None),
+        Err(crate::native_cache::Error::Busy) => {
+            return Err(cache_error(crate::native_cache::Error::Busy));
+        }
+        Err(error) => (None, Some(cache_error(error))),
+    };
     clear_log()?;
+    if let Some(warning) = &unavailable {
+        log_warning(warning);
+    }
     let result = build();
     match &result {
         Ok(_) => {
@@ -413,7 +427,71 @@ fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
             let _ = append_log(&format!("The build failed: {error}"));
         }
     }
+    // The installed binary and post-build programs have left target/ before trimming. Keep
+    // this lease through installation/export, including failed builds, and never wait on Cargo.
+    let Some(cache) = cache else {
+        return result;
+    };
+    let limit = backend::Settings::load()
+        .native_cache_gib
+        .unwrap_or(DEFAULT_CACHE_GIB);
+    match cache.trim(limit.saturating_mul(1 << 30)) {
+        Ok(bytes) if bytes > 0 => {
+            let _ = append_log(&trf(
+                "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.",
+                &[("bytes", &bytes.to_string())],
+            ));
+        }
+        Err(error) => log_warning(&cache_error(error)),
+        _ => {}
+    }
     result
+}
+
+pub const DEFAULT_CACHE_GIB: u64 = 30;
+
+fn cache_error(error: crate::native_cache::Error) -> String {
+    match error {
+        crate::native_cache::Error::Busy => {
+            tr("A native build or cache cleanup is running. Try again when it finishes.").into()
+        }
+        crate::native_cache::Error::Unsafe(path) => trf(
+            "Refusing native cache cleanup at an unexpected file or link: {path}",
+            &[("path", &path.display().to_string())],
+        ),
+        crate::native_cache::Error::Io(error) => trf(
+            "Could not access the native build cache: {error}",
+            &[("error", &error.to_string())],
+        ),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct CacheInfo {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub cleared_bytes: u64,
+    pub limit_gib: u64,
+}
+
+/// Inspect or clear only Cargo's native fast/release outputs, while no build is using them.
+/// This does not remove installed versions, instances, mods, saves, toolchains or downloads.
+pub fn cache_info(clear: bool) -> Result<CacheInfo, String> {
+    let cache = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
+    let bytes = cache.bytes().map_err(cache_error)?;
+    let cleared_bytes = if clear {
+        cache.clear().map_err(cache_error)?
+    } else {
+        0
+    };
+    Ok(CacheInfo {
+        path: root().join("target"),
+        bytes,
+        cleared_bytes,
+        limit_gib: backend::Settings::load()
+            .native_cache_gib
+            .unwrap_or(DEFAULT_CACHE_GIB),
+    })
 }
 
 const MANIFEST: &str = "horizon-mixin.toml";
@@ -1082,6 +1160,25 @@ pub struct About {
     /// What it compiles: the game the player plays (also the only kind a `native-mods.json`
     /// from before the target was recorded builds), or the headless engine a server runs.
     pub target: Target,
+    /// The commit of `base` itself, when the build knew it (not for builds made before it was
+    /// recorded): `horizon` differs from it when mods pin another.
+    pub base_horizon: Option<String>,
+    /// The mods whose pin made the build use `horizon` instead of `base_horizon` (empty when the
+    /// build is on `base`'s own commit).
+    pub pinned_by: Vec<String>,
+    /// The player chose to build on `base`'s own commit even where mods pin another: a rebuild
+    /// from this build keeps doing so.
+    pub on_base: bool,
+}
+
+impl About {
+    /// A build from before `base_horizon` was recorded that compiled another commit than its
+    /// Nightly's (the last word of its name): mods pinned it.
+    pub fn off_its_nightly(&self) -> bool {
+        let nightly = self.base.strip_prefix("nightly-").and_then(|r| r.get(11..));
+        self.base_horizon.is_none()
+            && nightly.is_some_and(|commit| !commit.is_empty() && !self.horizon.starts_with(commit))
+    }
 }
 
 /// What installed native build `version` was made from; None for any other version.
@@ -1105,7 +1202,37 @@ fn about_in(dir: &Path) -> Option<About> {
             Some("server") => Target::Server,
             _ => Target::Client,
         },
+        base_horizon: field("base_horizon").filter(|r| is_revision(r)),
+        pinned_by: json["pinned_by"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.as_str().map(str::to_owned))
+            .collect(),
+        on_base: json["on_base"].as_bool().unwrap_or(false),
     })
+}
+
+/// The Horizon commit the mods that pin one (`pins`: those naming no hook points' version) give a
+/// build, and which of them pin it. With `on_base`, the player chose the commit of the version the
+/// build starts from (`base`) whatever the pins say; with no pin, it is `base`'s too. Mods
+/// pinning different commits give the newest of them ([`newest`]).
+fn pinned_revision(
+    pins: &[Bundle],
+    on_base: bool,
+    base: impl FnOnce() -> Result<String, String>,
+    date: impl Fn(&str) -> Result<String, String>,
+) -> Result<(String, Vec<String>), String> {
+    if on_base {
+        return Ok((base()?, Vec::new()));
+    }
+    let revision = newest(pins, "Horizon", |b| b.horizon.as_ref(), base, None, date)?;
+    let by = pins
+        .iter()
+        .filter(|b| b.horizon.as_ref() == Some(&revision))
+        .map(|b| b.id.clone())
+        .collect();
+    Ok((revision, by))
 }
 
 /// The newest installed release or Nightly in `installed` (newest first).
@@ -1373,43 +1500,66 @@ impl Step {
 /// Runs `cmd`, its output appended to the build log; `line` sees each line of its standard error.
 /// An error ends with its first `error` lines and the last lines: a failed build script's output
 /// alone could push the line naming its crate out of the last ones.
-fn run(mut cmd: Command, what: &str, mut line: impl FnMut(&str)) -> Result<(), String> {
+fn run(cmd: Command, what: &str, line: impl FnMut(&str)) -> Result<(), String> {
+    run_with_compiler(cmd, what, line, None)
+}
+
+fn run_with_compiler(
+    mut cmd: Command,
+    what: &str,
+    mut line: impl FnMut(&str),
+    compiler: Option<diagnostics::Compiler<'_>>,
+) -> Result<(), String> {
     let mut log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path())
         .map_err(|e| e.to_string())?;
     let _ = writeln!(log, "$ {cmd:?}");
-    let stdout = log.try_clone().map_err(|e| e.to_string())?;
+    let stdout = if compiler.is_some() {
+        cmd.stdout(Stdio::piped());
+        Some(log.try_clone().map_err(|e| e.to_string())?)
+    } else {
+        cmd.stdout(log.try_clone().map_err(|e| e.to_string())?);
+        None
+    };
     let mut child = cmd
-        .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start {what}: {e}"))?;
-    let mut tail = std::collections::VecDeque::new();
-    let mut errors = Vec::new();
-    for text in BufReader::new(child.stderr.take().expect("piped"))
-        .lines()
-        .map_while(Result::ok)
-    {
-        if let Some(kept) = log_text(&text) {
-            let _ = writeln!(log, "{kept}");
+    std::thread::scope(|scope| {
+        let messages = compiler.zip(stdout).map(|(compiler, log)| {
+            let input = BufReader::new(child.stdout.take().expect("piped"));
+            scope.spawn(move || diagnostics::capture(&compiler, input, log))
+        });
+        let mut tail = std::collections::VecDeque::new();
+        let mut errors = Vec::new();
+        for text in BufReader::new(child.stderr.take().expect("piped"))
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(kept) = log_text(&text) {
+                let _ = writeln!(log, "{kept}");
+            }
+            line(&text);
+            if text.starts_with("error") && errors.len() < 4 {
+                errors.push(text.clone());
+            }
+            if tail.len() == 12 {
+                tail.pop_front();
+            }
+            tail.push_back(text);
         }
-        line(&text);
-        if text.starts_with("error") && errors.len() < 4 {
-            errors.push(text.clone());
+        let status = child.wait().map_err(|e| e.to_string())?;
+        let messages = messages
+            .map(|m| m.join().expect("compiler output reader"))
+            .unwrap_or_default();
+        if status.success() {
+            return Ok(());
         }
-        if tail.len() == 12 {
-            tail.pop_front();
-        }
-        tail.push_back(text);
-    }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    if status.success() {
-        return Ok(());
-    }
-    let tail: Vec<String> = tail.into();
-    Err(failure(what, &status.to_string(), &errors, &tail))
+        let tail: Vec<String> = tail.into();
+        Err(messages.explain(failure(what, &status.to_string(), &errors, &tail)))
+    })
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -1434,12 +1584,41 @@ fn failure(what: &str, status: &str, errors: &[String], tail: &[String]) -> Stri
     )
 }
 
-/// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line.
+/// Extracts the mod id from a mixin manifest or mod file path (e.g. `.../mixins.incoming/<mod_id>/...`
+/// or `.../mods.incoming/<mod_id>/...`).
+fn mod_id_from_file(file: &str) -> Option<&str> {
+    for prefix in ["mixins.incoming", "mods.incoming"] {
+        if let Some(pos) = file.find(prefix) {
+            let rest = &file[pos + prefix.len()..];
+            let sub = rest.trim_start_matches(['/', '\\']);
+            if let Some(end) = sub.find(['/', '\\']) {
+                let id = &sub[..end];
+                if !id.is_empty() {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line, led by the mod it
+/// names (`mod_id`, its `injection_id`, or extracted from its `file` path for `E_MODULE_CONFLICT`),
+/// so a player with several mods sees which one doesn't apply to the build's Horizon: their files'
+/// paths are deep in the launcher's folder.
 fn diagnostic(text: &str) -> Option<String> {
     let start = text.find('{')?;
     let value: serde_json::Value = serde_json::from_str(&text[start..]).ok()?;
+    let mod_id = value["mod_id"]
+        .as_str()
+        .or_else(|| value["file"].as_str().and_then(mod_id_from_file));
+    let culprit = match (mod_id, value["injection_id"].as_str()) {
+        (Some(m), Some(i)) => format!("{m} ({i}): "),
+        (Some(m), None) => format!("{m}: "),
+        _ => String::new(),
+    };
     let mut line = format!(
-        "{}: {}",
+        "{culprit}{}: {}",
         value["code"].as_str()?,
         value["message"].as_str()?
     );
@@ -1502,7 +1681,12 @@ fn compile(
         .env("CARGO_TERM_PROGRESS_WHEN", "always")
         .env("CARGO_TERM_PROGRESS_WIDTH", "100");
     let (cargo_profile, configs) = profile.cargo();
-    cmd.args(["--locked", "--profile", cargo_profile]);
+    cmd.args([
+        "--locked",
+        "--message-format=json",
+        "--profile",
+        cargo_profile,
+    ]);
     cmd.args(configs.iter().flat_map(|config| ["--config", config]));
     if target == Target::Server {
         cmd.arg("--no-default-features");
@@ -1741,12 +1925,14 @@ struct Built {
 /// the profile and the target). A build already made is used again. Mods pinning different
 /// revisions build on the newest one, with the newest horizon-mixins they name, only when the
 /// player agreed to try (`anyway`): else the error starts with [`MISMATCH`] and says which.
+/// With `on_base`, every mod builds on `base`'s own commit, pinned or not (the player's choice).
 /// Nothing of the player's outside the launcher's data is touched: no instance is edited and
 /// no version selected here.
 fn pipeline(
     base: &str,
     folder: &Path,
     anyway: bool,
+    on_base: bool,
     profile: Profile,
     target: Target,
     progress: &impl Fn(Step),
@@ -1812,22 +1998,40 @@ fn pipeline(
     // A mod naming a hook points' version doesn't pin: it follows the others, else the game.
     let pins: Vec<Bundle> = mods.iter().filter(|b| b.hooks.is_none()).cloned().collect();
     let free = pins.iter().all(|b| b.horizon.is_none());
-    let pinned = newest(
-        &pins,
-        "Horizon",
-        |b| b.horizon.as_ref(),
-        || match &built_on {
-            Some(about) => Ok(about.horizon.clone()),
-            None => revision_of(base),
+    let on_base = on_base || built_on.as_ref().is_some_and(|a| a.on_base);
+    // The commit of the release or Nightly the build starts from. A native build's own is that
+    // of the version it started from when it recorded it; else, outside `on_base`, the commit it
+    // compiled, so a rebuild stays on the Horizon it plays.
+    let base_revision = || match &built_on {
+        Some(about) => match &about.base_horizon {
+            Some(r) => Ok(r.clone()),
+            None if !on_base && !about.off_its_nightly() => Ok(about.horizon.clone()),
+            None => revision_of(origin),
         },
-        None,
-        |r| committed(backend::REPO, r),
-    )?;
+        None => revision_of(base),
+    };
+    let date = |r: &str| committed(backend::REPO, r);
+    let (pinned, mut pinned_by) = pinned_revision(&pins, on_base, base_revision, date)?;
+    // Known without asking GitHub again unless a pin chose the commit.
+    let base_horizon = match pinned_by.is_empty() {
+        true => Some(pinned.clone()),
+        false => base_revision().ok(),
+    };
     let game = || revision_of(origin).ok();
-    let revision = with_hooks(&mods, pinned, free, game, hooks_at)?;
+    let revision = with_hooks(&mods, pinned.clone(), free, game, hooks_at)?;
+    // Nothing to say when the pin is the base's own commit, or the hook points moved the build.
+    if base_horizon.as_ref() == Some(&revision) || revision != pinned {
+        pinned_by.clear();
+    }
     let other = mismatch(&mods, &revision);
-    if let (Some(list), false) = (&other, anyway) {
+    if let (Some(list), false) = (&other, anyway || on_base) {
         return Err(format!("{MISMATCH}{list}."));
+    }
+    if let Some(list) = &other {
+        log_warning(&format!(
+            "Some mods were made for other Horizon versions ({list}). Building anyway on {}.",
+            &revision[..revision.len().min(7)]
+        ));
     }
     for b in mods
         .iter()
@@ -1836,13 +2040,18 @@ fn pipeline(
         repin(b, &revision)?;
     }
     // Said with a failure: a mod made for another revision may not apply or compile on this one.
-    let blame = |e: String| {
-        match &other {
-        Some(list) => format!(
-            "{e}\n\nSome mods were made for other Horizon versions ({list}), which may be why. Install versions made for the same Nightly."
-        ),
+    let blame = |e: String| match &other {
+        Some(list) => {
+            let by = match pinned_by.as_slice() {
+                [] => String::new(),
+                [single] => format!(" (pinned by {single})"),
+                many => format!(" (pinned by {})", many.join(", ")),
+            };
+            format!(
+                "{e}\n\nSome mods were made for other Horizon versions ({list}{by}), which may be why. Install versions made for the same Nightly."
+            )
+        }
         None => e,
-    }
     };
     let mixins = newest(
         &mods,
@@ -1944,7 +2153,11 @@ fn pipeline(
         let compiled = profile_of(&stage, profile);
         built.profile = compiled;
         let (mut crates, mut total, mut name) = (0, None, String::new());
-        run(
+        let identities: Vec<_> = mods
+            .iter()
+            .map(|m| (m.id.clone(), m.version.clone()))
+            .collect();
+        run_with_compiler(
             compile(
                 &rust,
                 &stage,
@@ -1980,6 +2193,11 @@ fn pipeline(
                     }
                 }
             },
+            Some(diagnostics::Compiler {
+                stage: &stage,
+                source: &source,
+                mods: &identities,
+            }),
         )
         .map_err(|e| blame(crates::locked(e)))?;
         save_record(target, profile, &now);
@@ -2001,6 +2219,9 @@ fn pipeline(
         let about = serde_json::json!({
             "base": origin,
             "horizon": revision,
+            "base_horizon": base_horizon,
+            "pinned_by": pinned_by,
+            "on_base": on_base,
             "horizon_mixins": mixins,
             "hooks": mods.iter().find_map(|m| m.hooks),
             "rust": rust_toolchain::VERSION,
@@ -2035,17 +2256,30 @@ fn pipeline(
 /// and points `instance` at the build, the default one included. Returns the build's version; a
 /// build already made is used again. Mods pinning different revisions build on the newest one,
 /// with the newest horizon-mixins they name, only when the player agreed to try (`anyway`): else
-/// the error starts with [`MISMATCH`] and says which.
+/// the error starts with [`MISMATCH`] and says which. With `on_base`, every mod builds on `base`'s
+/// own commit, pinned or not: the player's Rebuild on Horizon.
 pub fn build(
     base: &str,
     folder: &Path,
     instance: &Instance,
     anyway: bool,
+    on_base: bool,
     profile: Profile,
     progress: impl Fn(Step),
 ) -> Result<String, String> {
+    if let Some(error) = backend::native_mod_architecture_error() {
+        return Err(error);
+    }
     logged(|| {
-        let built = pipeline(base, folder, anyway, profile, Target::Client, &progress)?;
+        let built = pipeline(
+            base,
+            folder,
+            anyway,
+            on_base,
+            profile,
+            Target::Client,
+            &progress,
+        )?;
         instances::edit(&instance.id, |meta| {
             meta.version = Some(built.version.clone())
         })?;
@@ -2076,6 +2310,7 @@ pub fn build_server(
     folder: &Path,
     output: &Path,
     anyway: bool,
+    on_base: bool,
     profile: Profile,
     progress: impl Fn(Step),
 ) -> Result<PathBuf, String> {
@@ -2104,7 +2339,15 @@ pub fn build_server(
                 return Err(tr("Export the server outside the launcher's managed folders.").into());
             }
         }
-        let built = pipeline(base, folder, anyway, profile, Target::Server, &progress)?;
+        let built = pipeline(
+            base,
+            folder,
+            anyway,
+            on_base,
+            profile,
+            Target::Server,
+            &progress,
+        )?;
         export(&Target::Server.directory(&built.version), &output)?;
         // Exports are independent; keep only the newest cached server builds.
         let cached = root().join("server-builds");
@@ -2321,7 +2564,7 @@ fn stale(
 
 #[cfg(test)]
 mod tests {
-    static LOG_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static LOG_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     use super::*;
 
@@ -2859,6 +3102,46 @@ mod tests {
         assert!(agreed(&bad, "Horizon", get, never).is_err());
     }
 
+    /// A player's report (11-04): Right-Click Crops 1.0.0 pins Nightly 2026-10-31's commit, so
+    /// every build of their instance compiled that commit, whatever Nightly or profile they
+    /// picked. The pin still chooses by default, and the build now says which mod chose it;
+    /// Rebuild on Horizon (`on_base`) compiles the picked version's own commit.
+    #[test]
+    fn a_pin_chooses_the_commit_unless_the_player_builds_on_the_picked_version() {
+        let pinned = |id: &str, horizon: Option<&str>| Bundle {
+            id: id.into(),
+            version: "1".into(),
+            dir: PathBuf::new(),
+            horizon: horizon.map(str::to_owned),
+            mixins: None,
+            hooks: None,
+            injections: Vec::new(),
+            api: None,
+            mixins_content: false,
+        };
+        // A: the pin (an older Nightly); B: the Nightly the player picked.
+        let picked = || -> Result<String, String> { Ok(B.into()) };
+        let no_date = |_: &str| -> Result<String, String> { panic!("one pin: no date needed") };
+        let mods = [pinned("right_click_crops", Some(A)), pinned("zoom", None)];
+        assert_eq!(
+            pinned_revision(&mods, false, picked, no_date).unwrap(),
+            (A.to_owned(), vec!["right_click_crops".to_owned()]),
+            "the pin wins over the picked Nightly, and the build knows whose it is"
+        );
+        assert_eq!(
+            pinned_revision(&mods, true, picked, no_date).unwrap(),
+            (B.to_owned(), Vec::new()),
+            "Rebuild on Horizon builds on the picked Nightly"
+        );
+        assert_eq!(
+            pinned_revision(&mods[1..], false, picked, no_date).unwrap(),
+            (B.to_owned(), Vec::new()),
+            "no pin: the picked Nightly"
+        );
+        let offline = || -> Result<String, String> { Err("offline".into()) };
+        assert!(pinned_revision(&mods, true, offline, no_date).is_err());
+    }
+
     #[test]
     fn mods_made_for_different_revisions_build_on_the_newest() {
         let pinned = |id: &str, horizon: Option<&str>, mixins: Option<&str>| Bundle {
@@ -3346,6 +3629,22 @@ mod tests {
         assert_eq!(record(Some("server")).target, Target::Server);
         assert_eq!(record(Some("anything-else")).target, Target::Client);
         assert_eq!(record(None).horizon, A);
+        let old = record(None);
+        assert_eq!(
+            (old.base_horizon, old.pinned_by, old.on_base),
+            (None, Vec::new(), false),
+            "a build from before pins were recorded"
+        );
+        fs::write(
+            d.join("native-mods.json"),
+            format!(
+                r#"{{"base":"nightly-2026-11-04-bbbbbbb","horizon":"{A}","base_horizon":"{B}","pinned_by":["right_click_crops"],"on_base":false}}"#
+            ),
+        )
+        .unwrap();
+        let pinned = about_in(&d).unwrap();
+        assert_eq!(pinned.base_horizon.as_deref(), Some(B));
+        assert_eq!(pinned.pinned_by, ["right_click_crops"]);
     }
 
     /// The export ([`build_server`]): a standalone runtime folder with the engine, the mods'
@@ -3467,6 +3766,7 @@ mod tests {
             &folder,
             &output,
             true,
+            false,
             Profile::Performance,
             |_| {},
         )
@@ -3479,6 +3779,7 @@ mod tests {
             &folder,
             &managed,
             true,
+            false,
             Profile::Performance,
             |_| {},
         )
@@ -3534,6 +3835,7 @@ mod tests {
             &folder,
             &out.join("server"),
             true,
+            false,
             Profile::Performance,
             |_| {},
         )
@@ -3872,6 +4174,73 @@ mod tests {
         assert_eq!(
             diagnostic(err).as_deref(),
             Some("E_REVISION: requires exact Horizon revision a (m.toml)")
+        );
+    }
+
+    #[test]
+    fn a_tool_error_starts_with_the_mod_that_does_not_apply() {
+        // horizon-mixins e8cd0aa on Horizon 998b1d8 with fast_items 0.1.0 and appleskin 1.0.0
+        // (made for ba6344a), as a player's build was on 2026-11-04.
+        let err = r#"{
+  "code": "E_TARGET_NOT_FOUND",
+  "message": "no source function 'horizon_client::game::titles::Game<'_>::draw_titles'",
+  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/appleskin/horizon-mixin.toml",
+  "mod_id": "appleskin",
+  "injection_id": "hud",
+  "target": "horizon_client::game::titles::Game<'_>::draw_titles"
+}"#;
+        let line = diagnostic(err).unwrap();
+        assert!(
+            line.starts_with("appleskin (hud): E_TARGET_NOT_FOUND: no source function"),
+            "{line}"
+        );
+        // About a whole mod, no injection in it.
+        let err = r#"{"code": "E_REVISION", "message": "pinned to a", "mod_id": "chop"}"#;
+        assert_eq!(
+            diagnostic(err).as_deref(),
+            Some("chop: E_REVISION: pinned to a")
+        );
+    }
+
+    #[test]
+    fn a_tool_error_without_mod_id_extracts_culprit_from_file_path() {
+        // horizon-mixins e8cd0aa emits E_MODULE_CONFLICT without mod_id (issue #9391).
+        let err = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module horizon_physics",
+  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/horizon_physics/horizon-mixin.toml"
+}"#;
+        let line = diagnostic(err).unwrap();
+        assert!(
+            line.starts_with(
+                "horizon_physics: E_MODULE_CONFLICT: conflict in module horizon_physics"
+            ),
+            "{line}"
+        );
+
+        // Windows path with backslashes
+        let err_win = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module biomecompass",
+  "file": "C:\\Users\\p\\AppData\\Local\\horizon-launcher\\native\\mixins.incoming\\biomecompass\\horizon-mixin.toml"
+}"#;
+        let line_win = diagnostic(err_win).unwrap();
+        assert!(
+            line_win
+                .starts_with("biomecompass: E_MODULE_CONFLICT: conflict in module biomecompass"),
+            "{line_win}"
+        );
+
+        // mods.incoming path
+        let err_mods = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module worldedit",
+  "file": "/home/p/.local/share/horizon-launcher/native/mods.incoming/worldedit/horizon-mod.toml"
+}"#;
+        let line_mods = diagnostic(err_mods).unwrap();
+        assert!(
+            line_mods.starts_with("worldedit: E_MODULE_CONFLICT: conflict in module worldedit"),
+            "{line_mods}"
         );
     }
 

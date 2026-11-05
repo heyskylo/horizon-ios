@@ -268,6 +268,10 @@ pub fn draw(
             true,
             ui::hovered(cursor, x, 45.0, (ROW_WIDTH / 3.0).floor(), 20.0),
         );
+        crate::widgets::target_as(
+            [x, 45.0, (ROW_WIDTH / 3.0).floor(), 20.0],
+            crate::widgets::Kind::Tab(view.page == page),
+        );
     }
     // The search box: an `EditBox` with the focus from the start (`setInitialFocus`), so its
     // hint, shown only while unfocused, never shows.
@@ -277,7 +281,15 @@ pub fn draw(
     search.text_color = WHITE;
     search.focused = true;
     search.draw(batch, atlas, None);
-    // The rows, clipped to the list.
+    // The rows, clipped to the list. It draws no scrollbar, but a focus step still walks them.
+    let max = max_scroll(h, view.entries.len());
+    if max > 0.0 {
+        crate::widgets::scroll_area(
+            [0.0, LIST_START + 4.0, w, list_end(h) - LIST_START - 4.0],
+            view.scroll,
+            max,
+        );
+    }
     let start = batch.vertices.len();
     let mut faces = Vec::new();
     for (i, y) in visible(view, h) {
@@ -370,9 +382,10 @@ pub fn draw(
     batch.clip_since(start, 0.0, LIST_START + 4.0, w, list_end(h));
     // `Done`.
     let [dx, dy, dw, dh] = done(w, h);
-    ui::button(
+    ui::action_button(
         batch,
         atlas,
+        crate::widgets::Action::Done,
         dx,
         dy,
         dw,

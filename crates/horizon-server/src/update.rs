@@ -17,20 +17,33 @@ use std::{
 const REPO: &str = "horizon-rust/horizon";
 /// The release archives for this computer, most specific first: on Linux the server build (no ALSA or
 /// udev), else the full game (releases before the server build).
-const ASSETS: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    &[
-        "horizon-server-linux-x86_64.tar.gz",
-        "horizon-linux-x86_64.tar.gz",
-    ]
-} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    &["horizon-macos-arm64.zip"]
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    &["horizon-macos-x64.zip"]
-} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-    &["horizon-windows-x64.zip"]
-} else {
-    &[]
-};
+fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
+    // The musl archive is manually installed; glibc updates would replace this supervisor
+    // with a binary that cannot even start to roll back on a musl system.
+    if musl {
+        return &[];
+    }
+    match (os, arch) {
+        ("linux", "x86_64") => &[
+            "horizon-server-linux-x86_64.tar.gz",
+            "horizon-linux-x86_64.tar.gz",
+        ],
+        ("macos", "aarch64") => &["horizon-macos-arm64.zip"],
+        ("macos", "x86_64") => &["horizon-macos-x64.zip"],
+        // A release without an ARM64 build: the x64 one, which Windows runs under emulation.
+        ("windows", "aarch64") => &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"],
+        ("windows", "x86_64") => &["horizon-windows-x64.zip"],
+        _ => &[],
+    }
+}
+
+static ASSETS: std::sync::LazyLock<&'static [&'static str]> = std::sync::LazyLock::new(|| {
+    assets_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(target_env = "musl"),
+    )
+});
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -284,17 +297,26 @@ fn pick(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
     keys: &[horizon_release_sign::PublicKey],
 ) -> Result<Release, String> {
+    pick_for_assets(release, fetch, keys, &ASSETS)
+}
+
+fn pick_for_assets(
+    release: &Value,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+    keys: &[horizon_release_sign::PublicKey],
+    candidates: &[&str],
+) -> Result<Release, String> {
     let tag = release["tag_name"]
         .as_str()
         .ok_or("GitHub's answer has no tag")?;
     let assets = release["assets"].as_array().cloned().unwrap_or_default();
-    let asset = ASSETS
+    let asset = candidates
         .iter()
         .find_map(|name| assets.iter().find(|a| a["name"] == *name))
         .ok_or_else(|| {
             format!(
                 "release {tag} has no archive for this computer ({})",
-                ASSETS.join(", ")
+                candidates.join(", ")
             )
         })?;
     let name = asset["name"].as_str().unwrap_or_default();
@@ -819,6 +841,35 @@ fn switch_stopped(dir: &Path, install: &Install, tag: &str) -> Result<(), String
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn musl_update_refuses_glibc_before_downloading() {
+        let release = json!({"tag_name": "nightly", "assets": [
+            {"name": "horizon-server-linux-x86_64.tar.gz", "browser_download_url": "server"},
+            {"name": "horizon-linux-x86_64.tar.gz", "browser_download_url": "client"},
+            {"name": "horizon-linux-musl-x86_64.tar.gz", "browser_download_url": "manual"}
+        ]});
+        let error = pick_for_assets(
+            &release,
+            |_| panic!("unsupported updates must not download an archive or signatures"),
+            &[],
+            assets_for("linux", "x86_64", true),
+        )
+        .unwrap_err();
+        assert!(error.contains("no archive for this computer"));
+    }
+
+    #[test]
+    fn windows_updates_choose_the_machine_architecture() {
+        assert_eq!(
+            assets_for("windows", "x86_64", false),
+            &["horizon-windows-x64.zip"]
+        );
+        assert_eq!(
+            assets_for("windows", "aarch64", false),
+            &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
+        );
+    }
 
     #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {

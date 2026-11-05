@@ -9,7 +9,7 @@ pub const SCHEMA: u32 = 1;
 /// the inputs a pack's WGSL may read.
 pub const API: &str = "0.1";
 /// Full-screen passes a pack may chain.
-pub const MAX_POST_PASSES: usize = 8;
+pub const MAX_POST_PASSES: usize = 12;
 /// Options a pack may declare.
 pub const MAX_OPTIONS: usize = 64;
 /// Settings pages a pack may declare, and the items one page may hold.
@@ -72,7 +72,35 @@ pub struct Manifest {
     pub reflection: Option<Reflection>,
     /// The shadow map the material and post stages read, if the pack asks for one.
     pub shadow: Option<Shadow>,
+    /// Relief as geometry near the camera, if the pack asks for it; needs `[material]`.
+    pub displacement: Option<Displacement>,
 }
+
+/// `[displacement]`: within `distance` of the camera, the faces of solid terrain whose
+/// resource pack textures have LabPBR heights are drawn as a grid of `cells` by `cells`, each
+/// corner moved along the face's normal by the material stage's
+/// `fn displacement(input: DisplacementInput) -> f32`: relief that is geometry, which
+/// occludes itself, writes its depth and is lit at its true place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Displacement {
+    /// How far from the camera faces are displaced, in blocks; the relief eases out over the
+    /// last quarter.
+    pub distance: f32,
+    /// The grid's cells along a face's side (fewer where the textures have fewer texels).
+    pub cells: u32,
+    /// The `bool` option that turns it on, if any (else it is always on).
+    pub option: Option<String>,
+    /// A `choice` option whose values are cell counts, if any: the player's value replaces
+    /// `cells`.
+    pub cells_option: Option<String>,
+    /// A `bool` option, if any: while it is on each cell is a flat step with walls, the
+    /// height map's texels standing out sharply, rather than a smooth surface through them.
+    pub steps_option: Option<String>,
+}
+
+/// How far from the camera `[displacement]` reaches, in blocks, and its grid's cells a side.
+pub const DISPLACEMENT_DISTANCES: std::ops::RangeInclusive<f32> = 4.0..=32.0;
+pub const DISPLACEMENT_CELLS: std::ops::RangeInclusive<u32> = 4..=64;
 
 /// `[shadow]`: the renderer draws the solid terrain and entities as the sun (the moon by night)
 /// sees them into a square depth map each frame, which the material and post stages read.
@@ -89,12 +117,58 @@ pub struct Shadow {
     /// a full shadow, say, whatever holes they show.
     #[serde(default)]
     pub solid_materials: Vec<u32>,
+    /// The option the map is drawn while it is not 0 (a bool on, a number other than 0), if
+    /// any: while it is 0 there is no map and no shadow pass, and `has_shadow` reads 0.
+    #[serde(default)]
+    pub option: Option<String>,
+    /// An `int` option, or a `choice` whose values are numbers, if any: the player's value
+    /// replaces `resolution`.
+    #[serde(default)]
+    pub resolution_option: Option<String>,
+    /// An `int` option, or a `choice` whose values are numbers, if any: the player's value
+    /// replaces `distance`.
+    #[serde(default)]
+    pub distance_option: Option<String>,
+}
+
+impl Default for Shadow {
+    /// `[shadow]` with no keys.
+    fn default() -> Self {
+        Shadow {
+            resolution: default_shadow_resolution(),
+            distance: default_shadow_distance(),
+            solid_materials: Vec::new(),
+            option: None,
+            resolution_option: None,
+            distance_option: None,
+        }
+    }
 }
 
 /// The shadow map's side, in texels.
 pub const SHADOW_RESOLUTIONS: std::ops::RangeInclusive<u32> = 256..=8192;
 /// Half the side of the square the shadow map covers, in blocks.
 pub const SHADOW_DISTANCES: std::ops::RangeInclusive<f32> = 32.0..=512.0;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDisplacement {
+    #[serde(default = "default_displacement_distance")]
+    distance: f32,
+    #[serde(default = "default_displacement_cells")]
+    cells: u32,
+    option: Option<String>,
+    cells_option: Option<String>,
+    steps_option: Option<String>,
+}
+
+fn default_displacement_distance() -> f32 {
+    12.0
+}
+
+fn default_displacement_cells() -> u32 {
+    16
+}
 
 fn default_shadow_resolution() -> u32 {
     2048
@@ -373,6 +447,7 @@ struct Raw {
     budget: RawBudget,
     reflection: Option<Reflection>,
     shadow: Option<Shadow>,
+    displacement: Option<RawDisplacement>,
 }
 
 #[derive(Deserialize)]
@@ -761,7 +836,88 @@ impl Manifest {
                     s.distance
                 )));
             }
+            if let Some(id) = &s.option
+                && !options.iter().any(|o| o.id == *id)
+            {
+                return Err(err(format!("shadow.option: `{id}` is no option")));
+            }
+            let resolution = |v: f64| v.fract() == 0.0 && SHADOW_RESOLUTIONS.contains(&(v as u32));
+            if let Some(id) = &s.resolution_option
+                && !numbers_in(&options, id, resolution)
+            {
+                return Err(err(format!(
+                    "shadow.resolution_option: `{id}` is no int or choice of resolutions in \
+                     {SHADOW_RESOLUTIONS:?}"
+                )));
+            }
+            let distance = |v: f64| SHADOW_DISTANCES.contains(&(v as f32));
+            if let Some(id) = &s.distance_option
+                && !numbers_in(&options, id, distance)
+            {
+                return Err(err(format!(
+                    "shadow.distance_option: `{id}` is no int or choice of distances in \
+                     {SHADOW_DISTANCES:?}"
+                )));
+            }
         }
+        let displacement = match raw.displacement {
+            Some(_) if raw.material.is_none() => {
+                return Err(err("[displacement] needs [material]".into()));
+            }
+            Some(d) if !DISPLACEMENT_DISTANCES.contains(&d.distance) => {
+                return Err(err(format!(
+                    "displacement.distance {} is not in {DISPLACEMENT_DISTANCES:?}",
+                    d.distance
+                )));
+            }
+            Some(d) if !DISPLACEMENT_CELLS.contains(&d.cells) => {
+                return Err(err(format!(
+                    "displacement.cells {} is not in {DISPLACEMENT_CELLS:?}",
+                    d.cells
+                )));
+            }
+            Some(d) => {
+                if let Some(id) = &d.option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.steps_option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.steps_option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.cells_option
+                    && !options.iter().any(|o| {
+                        o.id == *id
+                            && matches!(&o.kind, OptionKind::Choice { values, .. } if values
+                                .iter()
+                                .all(|v| v.parse().is_ok_and(|c| DISPLACEMENT_CELLS.contains(&c))))
+                    })
+                {
+                    return Err(err(format!(
+                        "displacement.cells_option: `{id}` is no choice of cell counts in \
+                         {DISPLACEMENT_CELLS:?}"
+                    )));
+                }
+                Some(Displacement {
+                    distance: d.distance,
+                    cells: d.cells,
+                    option: d.option,
+                    cells_option: d.cells_option,
+                    steps_option: d.steps_option,
+                })
+            }
+            None => None,
+        };
         Ok(Manifest {
             id: raw.id,
             name: raw.name,
@@ -786,6 +942,7 @@ impl Manifest {
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
+            displacement,
         })
     }
 
@@ -898,6 +1055,23 @@ impl Manifest {
         }
         files
     }
+}
+
+/// Whether `id` is an `int` option or a `choice` whose every value stands for a number
+/// (`OptionKind::number`) that `valid` takes.
+fn numbers_in(options: &[PackOption], id: &str, valid: impl Fn(f64) -> bool) -> bool {
+    options.iter().any(|o| {
+        o.id == id
+            && match &o.kind {
+                OptionKind::Int { min, max, .. } => {
+                    valid(f64::from(*min)) && valid(f64::from(*max))
+                }
+                OptionKind::Choice { values, .. } => {
+                    (0..values.len()).all(|i| o.kind.number(i as f64).is_some_and(&valid))
+                }
+                _ => false,
+            }
+    })
 }
 
 /// A WGSL identifier the renderer leaves to packs: ASCII, not starting
@@ -1160,6 +1334,16 @@ impl OptionKind {
             OptionKind::Float { .. } => "f32",
             OptionKind::Int { .. } => "i32",
             OptionKind::Choice { .. } => "u32",
+        }
+    }
+
+    /// The number the pipeline constant `value` stands for: an `int`'s own, the value a
+    /// `choice` picks read as a number; none for other kinds, or a choice that is no number.
+    pub fn number(&self, value: f64) -> Option<f64> {
+        match self {
+            OptionKind::Int { .. } => Some(value),
+            OptionKind::Choice { values, .. } => values.get(value as usize)?.parse().ok(),
+            _ => None,
         }
     }
 

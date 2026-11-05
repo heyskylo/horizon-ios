@@ -490,7 +490,7 @@ pub struct Globals {
 
 impl Globals {
     /// The std140 block: `ivec3, float, vec3, float, vec2, int, int`.
-    fn bytes(&self, size: [u32; 2], menu_blur_radius: i32) -> [u8; 48] {
+    pub(crate) fn bytes(&self, size: [u32; 2], menu_blur_radius: i32) -> [u8; 48] {
         let mut out = Vec::with_capacity(48);
         for v in self.camera_block_pos {
             out.extend_from_slice(&v.to_le_bytes());

@@ -82,6 +82,11 @@ impl Game<'_> {
                 }
             } else if key == KeyCode::Escape {
                 self.close_gamemode_switcher(false);
+            } else if name == self.settings.keys.get("key.debug.debugOptions") {
+                // The debug options screen interrupts the switcher too
+                // (`canInterruptScreen`): it closes, then F6 opens over the game.
+                self.close_gamemode_switcher(false);
+                self.toggle_debug_options();
             } else if matches!(key, KeyCode::F2 | KeyCode::F11) {
                 return false;
             }
@@ -550,7 +555,9 @@ impl Game<'_> {
     }
     /// `LocalPlayer.isReducedDebugInfo`: the server's rule or the option.
     pub(super) fn reduced_debug_info(&self) -> bool {
-        self.settings.reduced_debug_info || self.ui.rules.bool("reduced_debug_info")
+        self.settings.reduced_debug_info
+            || self.ui.rules.bool("reduced_debug_info")
+            || self.remote.as_ref().is_some_and(|r| r.reduced_debug_info)
     }
     /// `DebugScreenEntryList.isCurrentlyEnabled` for an entry's path.
     pub(super) fn debug_entry(&self, path: &str) -> bool {

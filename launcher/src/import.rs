@@ -12,7 +12,7 @@
 //!
 //! Only what an instance holds is taken from a shared zip ([`crate::export::FILES`],
 //! [`crate::export::FOLDERS`], `saves/`), and every path is checked to stay inside its folder.
-use crate::browser::{download, FileRef};
+use crate::browser::{download, installed, FileRef};
 use crate::export::{FILES, FOLDERS};
 use crate::instances::{self, Instance};
 use crate::packs;
@@ -35,6 +35,17 @@ pub enum Dropped {
     Pack(packs::Kind),
     /// A data pack: it goes into a world.
     DataPack,
+    /// A game build: a `horizon-client` program, or a release archive or an
+    /// Actions artifact around one. `build_import` installs it as its own
+    /// version beside the releases, so a build can be played without waiting
+    /// for a Nightly.
+    Build,
+}
+
+/// Whether `file` holds a game build (`build_import::holds_game`). Asked only
+/// where the cheap checks have not matched: it reads the whole program.
+fn is_build(file: &Path) -> bool {
+    crate::build_import::holds_game(file)
 }
 
 fn open(file: &Path) -> Result<zip::ZipArchive<fs::File>, String> {
@@ -68,6 +79,11 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
         .map(|e| e.to_string_lossy().to_ascii_lowercase());
     match ext.as_deref() {
         Some("hshader") => return Ok(Dropped::Pack(packs::Kind::Shader)),
+        // A game build: the program itself, or a release archive around it.
+        // Taken on the extension alone, unread, so that `build_import` is the
+        // one to say why a file with this name is not a game -- a better answer
+        // than this function's "nothing in it that Horizon reads".
+        Some("exe" | "gz" | "tgz") => return Ok(Dropped::Build),
         Some("mrpack") => {
             let index = read_index(&mut open(file)?)?;
             let loaders = index["dependencies"]
@@ -79,10 +95,12 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
             });
         }
         Some("zip") => {}
+        // A build for Linux or macOS is named `horizon-client` with no
+        // extension, so a file nothing else claims is read before giving up.
+        _ if is_build(file) => return Ok(Dropped::Build),
         _ => {
-            return Err(format!(
-                "{name} can't be imported: drop a .mrpack, a .zip or a .hshader."
-            ))
+            let kinds = "a .mrpack, a .zip, a .hshader or a Horizon game build";
+            return Err(format!("{name} can't be imported: drop {kinds}."));
         }
     }
     let zip = open(file)?;
@@ -110,17 +128,31 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
     {
         return Ok(Dropped::Instance);
     }
+    // An Actions artifact is a zip holding the release archive: the last thing
+    // a zip can be, once nothing a pack or an instance holds has matched.
+    if is_build(file) {
+        return Ok(Dropped::Build);
+    }
     Err(format!(
-        "{name} is neither a pack nor a shared instance: nothing in it that Horizon reads."
+        "{name} is neither a pack, a shared instance nor a game build: nothing in it that Horizon reads."
     ))
 }
 
 /// Where an archive entry goes in the instance's folder, when it is one an instance holds and
-/// stays inside it.
-fn target(home: &Path, relative: &str) -> Option<PathBuf> {
+/// stays inside it. A Java instance (`java`) holds whatever its pack carries (`mods/`,
+/// `kubejs/`...), as long as it stays inside.
+fn target(home: &Path, relative: &str, java: bool) -> Option<PathBuf> {
     let path = Path::new(relative);
     if relative.ends_with('/') || !path.components().all(|c| matches!(c, Component::Normal(_))) {
         return None;
+    }
+    // The browser's list of what it installed is the launcher's, never a pack's: it names the
+    // files Update and Remove delete.
+    if relative.eq_ignore_ascii_case(installed::MANIFEST) {
+        return None;
+    }
+    if java {
+        return Some(home.join(path));
     }
     let top = relative.split('/').next()?;
     let kept = FILES.contains(&relative)
@@ -134,6 +166,11 @@ pub fn import_instance(file: &Path, progress: &dyn Fn(&str, f32)) -> Result<Inst
     import_into(file, progress, &|name| instances::create(name, None))
 }
 
+/// The most a shared instance or a `.mrpack` may unpack to, all files together. A zip's sizes are its
+/// own claim, so [`fill`] counts the bytes actually inflated: a few kilobytes of zip bomb can't fill the
+/// disk.
+pub const MAX_IMPORT: u64 = 8 << 30;
+
 /// [`import_instance`] with the instance made by `create`.
 pub fn import_into(
     file: &Path,
@@ -143,6 +180,34 @@ pub fn import_into(
     if what(file)? != Dropped::Instance {
         return Err(format!("{} is not a shared instance.", name_of(file)));
     }
+    import_any(file, progress, create, false, MAX_IMPORT)
+}
+
+/// A `.mrpack`'s index.
+pub fn mrpack_index(file: &Path) -> Result<serde_json::Value, String> {
+    read_index(&mut open(file)?)
+}
+
+/// A `.mrpack`, with or without mod loaders, into the Java instance `create` makes
+/// (`crate::instances_mrpack`): every override and file it carries.
+pub fn import_mrpack_into(
+    file: &Path,
+    progress: &dyn Fn(&str, f32),
+    create: &dyn Fn(&str) -> Result<Instance, String>,
+) -> Result<Instance, String> {
+    mrpack_index(file)?;
+    import_any(file, progress, create, true, MAX_IMPORT)
+}
+
+/// [`import_into`] without asking what the file is, into a Java instance when `java`, with at most
+/// `limit` bytes unpacked from the archive.
+fn import_any(
+    file: &Path,
+    progress: &dyn Fn(&str, f32),
+    create: &dyn Fn(&str) -> Result<Instance, String>,
+    java: bool,
+    limit: u64,
+) -> Result<Instance, String> {
     let mut zip = open(file)?;
     let mrpack = zip.index_for_name(INDEX).is_some();
     let index = match mrpack {
@@ -168,7 +233,7 @@ pub fn import_into(
         .find_map(|name| create(&name).ok())
         .ok_or_else(|| format!("Could not make an instance called {base}."))?;
     let home = instance.home.clone();
-    let filled = fill(&mut zip, index.as_ref(), &home, progress);
+    let filled = fill(&mut zip, index.as_ref(), &home, java, progress, limit);
     if let Err(e) = filled {
         let _ = fs::remove_dir_all(&home);
         return Err(e);
@@ -176,13 +241,25 @@ pub fn import_into(
     Ok(instance)
 }
 
+/// `limit` as people read it: GiB from 1 GiB up, else KiB.
+fn size_text(limit: u64) -> String {
+    if limit >= 1 << 30 {
+        format!("{} GiB", limit >> 30)
+    } else {
+        format!("{} KiB", limit.div_ceil(1024))
+    }
+}
+
 fn fill(
     zip: &mut zip::ZipArchive<fs::File>,
     index: Option<&serde_json::Value>,
     home: &Path,
+    java: bool,
     progress: &dyn Fn(&str, f32),
+    limit: u64,
 ) -> Result<(), String> {
     let count = zip.len();
+    let mut total = 0u64;
     for i in 0..count {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().map_err(|e| e.to_string())?.into_owned();
@@ -193,12 +270,22 @@ fn fill(
             },
             None => name.clone(),
         };
-        let Some(to) = target(home, &relative) else {
+        let Some(to) = target(home, &relative, java) else {
             continue;
         };
         fs::create_dir_all(to.parent().expect("inside home")).map_err(|e| e.to_string())?;
         let mut out = fs::File::create(&to).map_err(|e| format!("{}: {e}", to.display()))?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| format!("{}: {e}", to.display()))?;
+        // At most one byte past what is left: reading it means the archive holds more than `limit`.
+        let room = limit.saturating_sub(total);
+        let written = std::io::copy(&mut (&mut entry).take(room.saturating_add(1)), &mut out)
+            .map_err(|e| format!("{}: {e}", to.display()))?;
+        total = total.saturating_add(written);
+        if written > room {
+            return Err(crate::i18n::trf(
+                "{file} unpacks to more than {limit}: it isn't imported.",
+                &[("file", &name_of(&to)), ("limit", &size_text(limit))],
+            ));
+        }
         progress(
             &format!("Copying {relative}"),
             (i + 1) as f32 / count as f32,
@@ -213,7 +300,7 @@ fn fill(
             continue;
         }
         let relative = f["path"].as_str().unwrap_or_default();
-        let to = target(home, relative)
+        let to = target(home, relative, java)
             .ok_or_else(|| format!("{relative} isn't a place an instance keeps files."))?;
         let file = FileRef {
             url: f["downloads"][0].as_str().unwrap_or_default().to_string(),

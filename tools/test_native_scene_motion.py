@@ -480,8 +480,51 @@ def swim_corpus():
         ops+=[op('air_tick') for _ in range(40)]+[tick() for _ in range(40)]+clear((21,4,21),(29,7,29))+fill('stone',(25,3,25),(25,3,25))
         yield dict(position=vec((25.5,5,25.5)),ops=ops)
 
+def entity_box_corpus():
+    """Other entities as boxes the player walks into. `Level.getEntityCollisions`
+    queries with the box inflated by 1e-7, so the corpus puts shapes exactly on
+    that boundary; `Entity.move` then resolves against them like block shapes.
+    The bodies themselves are not simulated: the snapshot carries player state,
+    and LivingEntity.pushEntities (their velocity, cramming) is out of scope."""
+    def tick(direction=(0,0,.98),jumping=False):
+        return op('simulation_tick',vec(direction),jumping=jumping)
+    def box(minimum,maximum):
+        return dict(entities=[vec(minimum)+vec(maximum)])
+    # A one-block wall in front of a player walking along +z, its near face put
+    # at the player's leading face (z 25.8) plus or minus the amounts the 1e-7
+    # query inflation decides between: strict AABB intersection keeps the wall
+    # out at 0 and 5e-8, and only the inflation admits it there.
+    for delta in [-1e-4,-2e-7,-1e-7,-5e-8,-0.,0.,5e-8,1e-7,2e-7,1e-4,1.]:
+        z=25.8+delta
+        yield dict(position=vec((25.5,4,25.5)),**box((25,4,z),(26,6,z+1)),
+                   ops=[op('speed',single(.2))]+[tick() for _ in range(30)])
+    # A low box the player steps onto, and the same box too tall to step.
+    for height in [.5,.6,1.]:
+        yield dict(position=vec((25.5,4,25.5)),**box((24,4,26),(27,4+height,27)),
+                   ops=[op('speed',single(.2))]+[tick() for _ in range(30)])
+    # A box the player starts inside: Entity.move's collect-collisions path with
+    # a shape that already overlaps the moving bounds.
+    for inset in [0.,.25,.5,1.]:
+        yield dict(position=vec((25.5,4,25.5)),**box((25.5-inset,4,25.5-inset),(25.5+inset,6,25.5+inset)),
+                   ops=[op('speed',single(.2))]+[tick() for _ in range(20)]+[tick((0,0,-.98)) for _ in range(20)])
+    # Two boxes leaving a gap narrower than the player, and a diagonal approach
+    # into their corner (one axis blocked, the other sliding).
+    for width in [0.,.2,.5]:
+        yield dict(position=vec((25.5,4,20.5)),
+                   entities=[vec((20,4,25)) + vec((26,6,26)), vec((20,4,26+width)) + vec((26,6,27+width))],
+                   ops=[op('speed',single(.2)),op('yaw',single(0))]+[tick() for _ in range(60)])
+    for yaw in [0,45,90,225]:
+        yield dict(position=vec((25.5,4,24.5)),**box((24,4,26),(27,6,27)),
+                   ops=[op('speed',single(.2)),op('yaw',single(yaw)),op('sprint',True)]+[tick((0,0,.98)) for _ in range(40)])
+    # A box that only meets the player while jumping over it, and one above the
+    # head so the jump is cut short.
+    for height in [.5,1.5,2.5,3.5]:
+        yield dict(position=vec((25.5,4,25.5)),entities=[vec((25,4,26))+vec((26,4+height,27)),vec((25,4+height+1.8,26))+vec((26,4+height+2.8,27))],
+                   ops=[op('speed',single(.2))]+[tick(jumping=i%20==0) for i in range(60)])
+
 def corpus():
     yield from flight_corpus()
+    yield from entity_box_corpus()
     yield from attribute_corpus(False)
     yield from portal_corpus()
     yield from pose_corpus(False)

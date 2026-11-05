@@ -368,7 +368,7 @@ impl Game<'_> {
     /// The UUID of the player who last hurt a mob (`last_hurt_by_player`:
     /// None for the host, else the guest's connection): the reputation a
     /// villager keeps is that player's, the one trading looks up.
-    fn player_uuid_of(&self, who: Option<u32>) -> Option<[i32; 4]> {
+    pub(super) fn player_uuid_of(&self, who: Option<u32>) -> Option<[i32; 4]> {
         let uuid = match who {
             None => return self.level.player_uuid,
             // While that guest acts its own UUID is swapped in.
@@ -517,5 +517,20 @@ impl Game<'_> {
         if let Err(e) = self.handle_mob_events(events) {
             log::warn!("waking villager {id}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod entity_event_particle_tests {
+    /// The raid sweat (42) and the dolphin's treasure hearts (38) are in the
+    /// table that now decides which entity events draw particles.
+    #[test]
+    fn the_table_draws_the_raid_sweat_and_the_dolphin_event() {
+        let kind = |entity, event| {
+            horizon_client::particles::entity_event_burst(entity, event).map(|(k, _)| k)
+        };
+        assert_eq!(kind("villager", 42), Some("splash"));
+        assert_eq!(kind("dolphin", 38), Some("happy_villager"));
+        assert_eq!(kind("villager", 2), None);
     }
 }

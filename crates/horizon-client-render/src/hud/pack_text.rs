@@ -29,36 +29,47 @@ const GLUE: Glue = Glue {
     vertex_id: "hz_vertex_id()",
 };
 
-const VERTEX: &str = "assets/minecraft/shaders/core/text.vsh";
-const FRAGMENT: &str = "assets/minecraft/shaders/core/text.fsh";
-
-/// The packs' text shader over `defaults` (the game's own resources, which have vanilla's and
-/// its includes), when a pack replaces either stage.
+/// The packs' text shader, when a pack replaces either stage.
 pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
+    load_core(root, defaults, "text", &["IS_GUI"], &GLUE)
+}
+
+/// The packs' core shader `name` (`shaders/core/<name>.vsh` and `.fsh`) over `defaults` (the
+/// game's own resources, which have vanilla's and its includes), when a pack replaces either
+/// stage.
+pub(super) fn load_core(
+    root: &Path,
+    defaults: &Path,
+    name: &str,
+    defines: &[&str],
+    glue: &Glue,
+) -> Option<Arc<CoreProgram>> {
     if root == defaults {
         return None;
     }
     let read = |base: &Path, path: &str| std::fs::read_to_string(base.join(path)).ok();
     let own =
         |path: &str| read(root, path).filter(|text| read(defaults, path).as_ref() != Some(text));
-    let (own_vertex, own_fragment) = (own(VERTEX), own(FRAGMENT));
+    let vertex_path = format!("assets/minecraft/shaders/core/{name}.vsh");
+    let fragment_path = format!("assets/minecraft/shaders/core/{name}.fsh");
+    let (own_vertex, own_fragment) = (own(&vertex_path), own(&fragment_path));
     if own_vertex.is_none() && own_fragment.is_none() {
         return None;
     }
-    let vertex = own_vertex.or_else(|| read(defaults, VERTEX))?;
-    let fragment = own_fragment.or_else(|| read(defaults, FRAGMENT))?;
+    let vertex = own_vertex.or_else(|| read(defaults, &vertex_path))?;
+    let fragment = own_fragment.or_else(|| read(defaults, &fragment_path))?;
     let include = |id: &str| {
         let (namespace, path) = id.split_once(':')?;
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match horizon_shaders::translate_core(&vertex, &fragment, &["IS_GUI"], &include, &GLUE) {
+    match horizon_shaders::translate_core(&vertex, &fragment, defines, &include, glue) {
         Ok(program) => {
-            log::info!("the resource pack's text shader draws the GUI's text");
+            log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
         }
         Err(e) => {
-            log::warn!("the resource pack's text shader is not used: {e}");
+            log::warn!("the resource pack's {name} shader is not used: {e}");
             None
         }
     }

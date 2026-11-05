@@ -81,6 +81,10 @@ pub fn edges(top: Hsla, bottom: Hsla, lip: f32) -> [AnyElement; 2] {
 
 /// A panel: rows, cards, notices, dialogs.
 pub fn panel(t: &Theme) -> Div {
+    // The glass look: a glass plate, round at 16 (its tokens leave no border or bevel to see).
+    if t.glass {
+        return crate::glass::plate(horizon_theme::glass::radius::POPOVER);
+    }
     div()
         .relative()
         .bg(t.panel)

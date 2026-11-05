@@ -23,10 +23,59 @@ struct Head {
     images: RefCell<HashMap<(u32, u32), Arc<RenderImage>>>,
 }
 
+/// The key an offline name's head is kept under: its offline UUID, as the game makes it, whose
+/// default skin it wears without one of its own.
+pub fn offline_key(name: &str) -> String {
+    format!("{:032x}", horizon_protocol::crypto::offline_uuid(name))
+}
+
 impl Heads {
-    pub fn request(&mut self, accounts: &[account::Account], resources: PathBuf, tx: &Sender<Msg>) {
+    /// Asks for the heads of `accounts` and of the offline names `offline` (drawn by
+    /// [`offline_key`]); forgets the others.
+    pub fn request(
+        &mut self,
+        accounts: &[account::Account],
+        offline: &[String],
+        resources: PathBuf,
+        tx: &Sender<Msg>,
+    ) {
+        let keys: Vec<String> = offline.iter().map(|n| offline_key(n)).collect();
         self.0
-            .retain(|uuid, _| accounts.iter().any(|a| &a.uuid == uuid));
+            .retain(|uuid, _| accounts.iter().any(|a| &a.uuid == uuid) || keys.contains(uuid));
+        for (name, key) in offline.iter().zip(keys) {
+            // The name's own skin, by when it was last changed, so a new one is read again.
+            let file = horizon_launcher::skins::files(&horizon_launcher::skins::dir(), name).0;
+            let url = std::fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| format!("{t:?}"));
+            if self
+                .0
+                .get(&key)
+                .is_some_and(|h| h.url == url && (h.pending || h.face.is_some()))
+            {
+                continue;
+            }
+            let previous = self.0.remove(&key).and_then(|h| h.face);
+            self.0.insert(
+                key.clone(),
+                Head {
+                    url: url.clone(),
+                    pending: true,
+                    face: previous,
+                    retry_at: None,
+                    images: RefCell::default(),
+                },
+            );
+            let (resources, tx) = (resources.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let face = std::fs::read(&file)
+                    .ok()
+                    .and_then(|png| horizon_launcher::heads::face(&png))
+                    .or_else(|| horizon_launcher::heads::default_face(&resources, &key));
+                let _ = tx.send(Msg::AccountHead(key, url, face, false));
+            });
+        }
         for account in accounts {
             let url = account.skin.as_ref().map(|s| s.0.clone());
             if self.0.get(&account.uuid).is_some_and(|h| {

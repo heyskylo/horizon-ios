@@ -7,7 +7,7 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -65,7 +65,10 @@ pub enum H {
     BlueMapAutoDetect,
     BlueMapRadius,
     CaveCulling,
+    GpuCulling,
     EntityCulling,
+    EntityCullingPrecheck,
+    ParticleCulling,
     LeafCulling,
     CacheShulkerBoxes,
     CacheSigns,
@@ -99,10 +102,12 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
+    HdrLighting,
     BatteryMode,
     ShadowCache,
     GraphicsApi,
     TranslucentBatching,
+    HdrSmoothGradients,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,9 +380,24 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Skips terrain hidden behind closed sections. Off costs a lot.",
                         ),
                         h(
+                            H::GpuCulling,
+                            Saves,
+                            "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+                        ),
+                        h(
                             H::EntityCulling,
                             None,
                             "Hides entities behind opaque blocks.",
+                        ),
+                        h(
+                            H::ParticleCulling,
+                            Saves,
+                            "Skips particles outside the view, below one pixel or behind terrain.",
+                        ),
+                        h(
+                            H::EntityCullingPrecheck,
+                            Saves,
+                            "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.",
                         ),
                         h(
                             H::LeafCulling,
@@ -491,6 +511,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
                         ),
                         h(
+                            H::HdrSmoothGradients,
+                            Low,
+                            "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
+                        ),
+                        h(
                             H::HdrCalibrate,
                             None,
                             "Sets the three below full screen, one test picture at a time.",
@@ -520,6 +545,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "How bright the HUD and menus are, against paper white.",
                         ),
+                        h(
+                            H::HdrLighting,
+                            None,
+                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                        ),
                     ],
                 ),
                 (
@@ -533,15 +563,15 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             ],
         ),
     ];
-    // Only Windows and Linux have more than one graphics API, and translucent batching
-    // (Metal draws flat).
+    // Only Windows and Linux have more than one graphics API, translucent batching (Metal
+    // draws flat) and GPU culling (Metal draws no count the GPU wrote).
     if cfg!(target_os = "macos") {
         for (_, groups) in &mut pages {
             for (_, rows) in groups {
                 rows.retain(|r| {
                     !matches!(
                         r.item,
-                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching)
+                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching | H::GpuCulling)
                     )
                 });
             }
@@ -620,6 +650,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         },
         (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Hidden => {
+                "Drops leaf faces behind two leaf layers: faster, same crowns."
+            }
             LeafCullingMode::Solid => {
                 "Leaves fully inside a canopy draw solid: fewer see-through layers."
             }
@@ -627,6 +660,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
                 "Leaves with one open side draw solid too: faster, chunkier edges."
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
+        },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
         },
         _ => text,
     }
@@ -662,6 +704,7 @@ impl H {
         let g = &s.horizon;
         match self {
             H::ChunkUpdates => Some(g.chunk_updates as f32 / 64.0),
+            H::EntityCullingPrecheck => Some(g.entity_culling_precheck as f32 / 512.0),
             H::UploadBudget => {
                 let i = UPLOAD_STEPS
                     .iter()
@@ -693,6 +736,7 @@ impl H {
     pub fn slider_steps(self) -> Option<u32> {
         match self {
             H::ChunkUpdates => Some(64),
+            H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
@@ -718,7 +762,22 @@ impl H {
                 lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
+            // the saved value waits.
+            H::GpuCulling => labelled(
+                "GPU Culling",
+                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+            ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::EntityCullingPrecheck => labelled(
+                "Entity Culling Precheck",
+                if g.entity_culling_precheck == 0 {
+                    "Off".to_string()
+                } else {
+                    lang::tr("%s mobs", &[&g.entity_culling_precheck])
+                },
+            ),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
@@ -799,17 +858,22 @@ impl H {
                 n => labelled("Black Level", format!("{:.2}", n as f32 / 100.0)),
             },
             H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
+            H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::HdrKey => {
                 Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
-            // Greyed out where the device can't (`Item::blocked`): Off, as it is there,
-            // while the saved value waits for a device that can.
+            // These two are greyed out where the device can't (`Item::blocked`): Off, as
+            // they are there, while the saved value waits for a device that can.
             H::TranslucentBatching => labelled(
                 "Translucent Batching",
                 on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
+            ),
+            H::HdrSmoothGradients => labelled(
+                "Smooth Gradients",
+                on_off(g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()),
             ),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -825,6 +889,7 @@ impl H {
         let g = &mut s.horizon;
         match self {
             H::ChunkUpdates => g.chunk_updates = (v * 64.0).round() as u32,
+            H::EntityCullingPrecheck => g.entity_culling_precheck = (v * 512.0).round() as u32,
             H::UploadBudget => {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
@@ -868,8 +933,12 @@ impl H {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
             }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
@@ -916,10 +985,12 @@ impl H {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
+            H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
+            H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -951,7 +1022,9 @@ impl Item {
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
     /// while it is on; Translucent Batching switches only where the device can batch
-    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can.
+    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
+    /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -963,22 +1036,37 @@ impl Item {
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
-                | H::HdrUiBrightness,
+                | H::HdrUiBrightness
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
             ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
+            }
+            Item::Horizon(H::HdrSmoothGradients)
+                if !crate::graphics::smooth_gradients_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
             }
             Item::Horizon(
                 H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
-                | H::HdrUiBrightness,
+                | H::HdrUiBrightness
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::EntityCullingPrecheck)
+                if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
+            {
+                Some("Only applies to asynchronous entity culling.")
+            }
+            Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
             _ => None,
         }
     }
@@ -994,6 +1082,9 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::GpuCulling) => {
+                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
+            }
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -1007,9 +1098,15 @@ impl Item {
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
+            Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
-            Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
+            Item::Horizon(H::TranslucentBatching) => {
+                g.translucent_batching && crate::graphics::translucent_batching_offered()
+            }
+            Item::Horizon(H::HdrSmoothGradients) => {
+                g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
+            }
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -1039,7 +1136,7 @@ impl Item {
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
-        if !self.available() {
+        if !self.available() || self.blocked(s).is_some() {
             return;
         }
         match self {
@@ -1076,6 +1173,8 @@ impl Item {
                     | H::ShadowCache
                     | H::GraphicsApi
                     | H::TranslucentBatching
+                    | H::HdrSmoothGradients
+                    | H::GpuCulling
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen
@@ -1631,6 +1730,9 @@ impl GraphicsUi {
             crate::widgets::widget_cursor(hovered(rect), true);
             crate::widgets::target(rect);
             let primary = target == Target::Done;
+            if primary {
+                crate::widgets::declare_action(crate::widgets::Action::Done, rect, true);
+            }
             style::button(batch, atlas, rect, &label, (hover, true, primary));
         }
     }
@@ -1844,7 +1946,18 @@ impl GraphicsUi {
             return;
         };
         let x = cols.bar_x();
-        let track = [x, cols.top, style::SCROLLER_W, cols.bottom - cols.top];
+        let height = cols.bottom - cols.top;
+        crate::widgets::scroll_area(
+            [
+                cols.list_x,
+                cols.top,
+                x + style::SCROLLER_W - cols.list_x,
+                height,
+            ],
+            self.scroll.amount,
+            content - height,
+        );
+        let track = [x, cols.top, style::SCROLLER_W, height];
         style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
     }
     /// The strip under the plate: the hovered or focused setting's name and
@@ -1902,6 +2015,7 @@ impl GraphicsUi {
         framebuffer: [i32; 2],
         drag: bool,
         right: bool,
+        shift: bool,
     ) -> Vec<Action> {
         self.keep(s);
         let (cols, lines, content) = self.layout(s, w, h);
@@ -1979,7 +2093,7 @@ impl GraphicsUi {
             return Vec::new();
         }
         self.focus = Some(Target::Item(item));
-        let actions = self.activate(s, item, false, framebuffer, Some((x, &cols)));
+        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
         self.mark(&actions);
         actions
     }
@@ -2141,7 +2255,8 @@ impl GraphicsUi {
         content: f32,
     ) {
         self.focus = Some(target);
-        self.can_change_value = matches!(target, Target::Item(i) if i.slider(s).is_some());
+        self.can_change_value =
+            matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
         if let Target::Item(_) = target {
             let [_, y, _, h] = rect;
             if y < cols.top {
@@ -2210,6 +2325,7 @@ impl GraphicsUi {
             && self.can_change_value
             && let Some(Target::Item(item)) = self.focus
             && item.slider(s).is_some()
+            && item.blocked(s).is_none()
         {
             item.step_slider(s, key == K::ArrowRight, cols.track().1 + 8.0);
             self.changed = true;
@@ -2358,7 +2474,15 @@ mod tests {
         [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
     }
     fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false)
+        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    }
+    fn press_shift(
+        ui: &mut GraphicsUi,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        shift: bool,
+    ) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, shift)
     }
 
     #[test]
@@ -2449,7 +2573,15 @@ mod tests {
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
-        ui.click(&mut s, (x + w / 2.0, y + h / 2.0), size, FB, false, false);
+        ui.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            FB,
+            false,
+            false,
+            false,
+        );
         let (_, lines, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(ui.current(&lines), Some(Page::Hdr));
     }
@@ -2566,12 +2698,37 @@ mod tests {
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false),
+            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
             [Action::SliderDrag]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
         assert!(ui.release());
         assert!(!ui.release());
+    }
+
+    #[test]
+    fn smooth_gradients_wait_for_a_device_that_draws_the_16_bit_frame() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        let mut s = Settings::default();
+        s.horizon.hdr = true;
+        let item = Item::Horizon(H::HdrSmoothGradients);
+        // Where the device can't, the saved On reads Off.
+        crate::graphics::offer_smooth_gradients(false);
+        assert_eq!(
+            item.blocked(&s),
+            Some("Your GPU or graphics API doesn't support it.")
+        );
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: Off");
+        assert_eq!(item.switch(&s), Some(false));
+        assert!(s.horizon.hdr_smooth_gradients);
+        // Where it can, it waits only for HDR, like the rest of the page.
+        crate::graphics::offer_smooth_gradients(true);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
+        assert_eq!(item.switch(&s), Some(true));
+        s.horizon.hdr = false;
+        assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
     }
 
     #[test]
@@ -2638,7 +2795,7 @@ mod tests {
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
         let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(s, (x, y), SIZE, FB, drag, false)
+            ui.click(s, (x, y), SIZE, FB, drag, false, false)
         };
         assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
         drag(&mut ui, &mut s, cols.top + 15.0, true);
@@ -2658,13 +2815,13 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
-        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
         assert!(ui.scroll.held());
         // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
         let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
-            ui.click(&mut s, (x, 80.0), short, FB, true, false)
+            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
                 .is_empty()
         );
         assert!(!ui.scroll.held());
@@ -2974,6 +3131,168 @@ mod tests {
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
     }
 
+    #[test]
+    fn particle_culling_modes_are_opt_in_and_cycle_from_its_row() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::ParticleCulling);
+        assert_eq!(s.horizon.particle_culling, ParticleCullingMode::Off);
+        assert_eq!(item.label(&s).plain(), "Particle Culling: Off");
+        for mode in ParticleCullingMode::ALL {
+            s.horizon.particle_culling = mode;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.particle_culling, mode);
+            }
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
+                mode
+            );
+        }
+        s.horizon.particle_culling = ParticleCullingMode::Off;
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        for (mode, label) in [
+            (ParticleCullingMode::Synchronous, "Synchronous"),
+            (ParticleCullingMode::Asynchronous, "Asynchronous"),
+            (ParticleCullingMode::Off, "Off"),
+        ] {
+            s.horizon.preset = Preset::Balanced;
+            assert_eq!(
+                press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+                [Action::ButtonClick, Action::Changed]
+            );
+            assert_eq!(s.horizon.particle_culling, mode);
+            assert_eq!(s.horizon.preset, Preset::Custom);
+            assert_eq!(item.label(&s).plain(), format!("Particle Culling: {label}"));
+        }
+    }
+
+    #[test]
+    fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::EntityCulling);
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        let at = (r[0] + 4.0, r[1] + 4.0);
+
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
+    #[test]
+    fn entity_culling_precheck_slider_is_only_live_for_async() {
+        let item = Item::Horizon(H::EntityCullingPrecheck);
+        let mut s = Settings::default();
+        let initial = s.horizon.entity_culling_precheck;
+
+        for mode in [EntityCullingMode::Off, EntityCullingMode::Synchronous] {
+            s.horizon.entity_culling = mode;
+            assert_eq!(
+                item.blocked(&s),
+                Some("Only applies to asynchronous entity culling.")
+            );
+
+            let mut ui = GraphicsUi::default();
+            let row_rect = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (row_rect[0] + 4.0, row_rect[1] + 4.0)).is_empty());
+            item.set_slider(&mut s, 1.0);
+            assert_eq!(s.horizon.entity_culling_precheck, initial);
+
+            let (cols, lines, content) = ui.layout(&s, SIZE.0, SIZE.1);
+            assert!(
+                !ui.focusables(&s, &cols, &lines, false)
+                    .iter()
+                    .any(|(target, _)| *target == Target::Item(item))
+            );
+            ui.focus_on(&s, Target::Item(item), row_rect, &cols, content);
+            assert!(!ui.can_change_value);
+        }
+
+        for (code, expected) in [
+            ("en_us", "Only applies to asynchronous entity culling."),
+            ("de_de", "Nur für asynchrones Objekt-Culling."),
+            (
+                "es_es",
+                "Solo se aplica a la oclusión asíncrona de entidades.",
+            ),
+            (
+                "fr_fr",
+                "S'applique uniquement à l'occlusion asynchrone des entités.",
+            ),
+            ("pl_pl", "Dotyczy tylko asynchronicznego pomijania bytów."),
+            (
+                "ru_ru",
+                "Применяется только при асинхронном отсечении сущностей.",
+            ),
+            ("tr_tr", "Yalnızca eşzamansız varlık elemesine uygulanır."),
+            (
+                "uk_ua",
+                "Застосовується лише для асинхронного відсікання сутностей.",
+            ),
+            ("zh_cn", "仅适用于异步实体剔除。"),
+        ] {
+            let (shown, missed) = lang::scoped(lang::Language::load(&[], code), || {
+                lang::get(item.blocked(&s).unwrap())
+            });
+            assert_eq!(shown, expected, "{code}");
+            assert!(missed.is_empty(), "{code}: {missed:?}");
+        }
+
+        s.horizon.entity_culling = EntityCullingMode::Asynchronous;
+        assert_eq!(item.blocked(&s), None);
+        let mut ui = GraphicsUi::default();
+        let row_rect = row(&mut ui, &s, item);
+        let (cols, _, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        let (track_x, track_w) = cols.track();
+        assert_eq!(
+            press(
+                &mut ui,
+                &mut s,
+                (track_x + track_w - 4.0, row_rect[1] + 4.0)
+            ),
+            [Action::SliderDrag]
+        );
+        assert_eq!(s.horizon.entity_culling_precheck, 512);
+    }
+
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
     /// preset, and greyed out, reading Off, where the device can't batch.
     #[test]
@@ -2991,13 +3310,13 @@ mod tests {
         assert_eq!(page, Some(Page::Advanced));
         let mut s = Settings::default();
         s.horizon.preset = Preset::Balanced;
-        assert_eq!(item.switch(&s), Some(true));
         let mut ui = GraphicsUi::default();
         // Where the device can't, the saved On reads Off, and neither a click nor Enter
         // after it does anything: no sound, no change, no save.
         crate::graphics::offer_translucent_batching(false);
         assert!(item.blocked(&s).is_some());
         assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(item.switch(&s), Some(false));
         let r = row(&mut ui, &s, item);
         let point = (r[0] + 4.0, r[1] + 4.0);
         assert!(press(&mut ui, &mut s, point).is_empty());
@@ -3008,6 +3327,7 @@ mod tests {
         // Where it can, a click switches it and keeps the preset.
         crate::graphics::offer_translucent_batching(true);
         assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
+        assert_eq!(item.switch(&s), Some(true));
         assert_eq!(
             press(&mut ui, &mut s, point),
             [Action::ButtonClick, Action::Changed]
@@ -3025,13 +3345,78 @@ mod tests {
         }
     }
 
+    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
+    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    #[test]
+    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+        use crate::graphics::GpuCullingOffer;
+        let item = Item::Horizon(H::GpuCulling);
+        let at = |item| items().into_iter().position(|(_, i)| i == item);
+        if cfg!(target_os = "macos") {
+            // Metal draws no count the GPU wrote: never offered, so not shown.
+            assert_eq!(at(item), None);
+            return;
+        }
+        let i = at(item).unwrap();
+        assert_eq!(items()[i].0, Page::Performance);
+        assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
+        let mut s = Settings::default();
+        assert_eq!(item.switch(&s), Some(false));
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.gpu_culling = true;
+        // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
+        // it does anything.
+        for offer in [
+            GpuCullingOffer::Unsupported,
+            GpuCullingOffer::Software,
+            GpuCullingOffer::OutOfMemory,
+            GpuCullingOffer::Dx12,
+            GpuCullingOffer::DeviceLost,
+        ] {
+            crate::graphics::offer_gpu_culling(offer);
+            assert!(offer.reason().is_some());
+            assert_eq!(item.blocked(&s), offer.reason());
+            assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
+            // The box, the narrator and the widget tree read the switch.
+            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
+            let mut ui = GraphicsUi::default();
+            let r = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
+            ui.focus = Some(Target::Item(item));
+            let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+            assert!(enter.0.is_empty());
+            assert!(s.horizon.gpu_culling, "{offer:?}");
+        }
+        // Where it is, a click switches it and keeps the preset.
+        crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
+        assert_eq!(item.switch(&s), Some(true));
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        assert_eq!(
+            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.gpu_culling);
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.gpu_culling = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
+            }
+        }
+    }
+
     #[test]
     fn leaf_culling_cycles_modes_beside_the_other_culling() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::LeafCulling);
         assert_eq!(item.switch(&s), None);
         assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
-        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
+        for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
             item.cycle(&mut s, false, FB);
             assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
             assert_eq!(
@@ -3050,7 +3435,12 @@ mod tests {
             .unwrap();
         assert_eq!(culling.0, Page::Performance);
         let block: Vec<Item> = culling.1.iter().map(|r| r.item).collect();
-        for h in [H::CaveCulling, H::EntityCulling, H::LeafCulling] {
+        for h in [
+            H::CaveCulling,
+            H::EntityCulling,
+            H::ParticleCulling,
+            H::LeafCulling,
+        ] {
             assert!(block.contains(&Item::Horizon(h)), "{h:?}");
         }
         // The block-entity caches are the group after it, in this order.
@@ -3101,7 +3491,7 @@ mod tests {
             press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
             [Action::ButtonClick, Action::Changed]
         );
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
@@ -3204,6 +3594,17 @@ mod tests {
             ] {
                 lang::get(text);
             }
+            // Every reason GPU Culling's switch can give, whatever this device offers.
+            use crate::graphics::GpuCullingOffer as O;
+            for offer in [
+                O::Unsupported,
+                O::Software,
+                O::OutOfMemory,
+                O::Dx12,
+                O::DeviceLost,
+            ] {
+                lang::get(offer.reason().unwrap());
+            }
         });
         // `labelled` also looks up values that are already words in the language ("An") or
         // numbers with a unit ("12 chunks", "Auto (8)"); those are not keys, and "FSR 3.1" is
@@ -3266,36 +3667,47 @@ mod tests {
         let mut s = Settings::default();
         s.horizon.leaf_culling = LeafCullingMode::Hollow;
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
-        for (code, leaf, entity, leaf_text) in [
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
             (
                 "de_de",
                 "Laub-Culling: Hohl",
                 "Objekt-Culling: Asynchron",
                 "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
             ),
             (
                 "pl_pl",
                 "Pomijanie liści: Puste",
                 "Pomijanie bytów: Asynchroniczne",
                 "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
             ),
             (
                 "uk_ua",
                 "Відсікання листя: Порожнє",
                 "Відсік. сутностей: Асинхронно",
                 "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
             ),
             (
                 "zh_cn",
                 "树叶剔除: 镂空",
                 "实体剔除: 异步",
                 "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
             ),
             (
                 "fr_fr",
                 "Occlusion feuillage: Creux",
                 "Occlusion des entités: Asynchrone",
                 "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
             ),
         ] {
             let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
@@ -3304,11 +3716,19 @@ mod tests {
                     item(H::LeafCulling).label(&s).plain(),
                     item(H::EntityCulling).label(&s).plain(),
                     lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
                 )
             });
             assert_eq!(
                 shown,
-                (leaf.into(), entity.into(), leaf_text.into()),
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
                 "{code}"
             );
         }

@@ -349,6 +349,8 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
+        // The window's mod configs before the server's, as on NeoForge.
+        self.native_configs_client_start();
         let auth = horizon_client::auth::current();
         let player = auth
             .as_ref()
@@ -716,6 +718,10 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // The mods' server configs, read before the server starts.
+        if let Ok(dir) = std::env::current_dir() {
+            self.native_configs_server_start(&dir.join("saves").join(&launch.folder), false);
+        }
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
@@ -829,6 +835,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(false);
+        self.native_configs_server_stop();
         self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
@@ -1246,14 +1253,17 @@ fn server_game(
     Game::new(res, pack, gui, options, settings, audio, None)
 }
 
-/// Who the integrated server turns away: anyone but the owner until it is opened to the LAN,
-/// except a splitscreen seat. A seat's name is let in only through memory, so a LAN player
-/// logging in under it never gets its place or the owner's permissions it holds.
+/// Who the integrated server turns away: anyone but the owner until it is opened to the LAN.
+/// The owner and splitscreen seats are let in only through memory: their window never joins over
+/// the network. A host without a Microsoft account opens the world in offline mode, where a
+/// player's UUID comes from their name alone, so a LAN or friends player naming themselves after
+/// the host would otherwise get the host's UUID, kick the host and take their operator rights and
+/// player data (vanilla always authenticates LAN guests, so there it can't happen).
 fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool {
-    if split_seat {
+    if owner || split_seat {
         !memory
     } else {
-        !owner && !published
+        !published
     }
 }
 
@@ -1262,7 +1272,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_splitscreen_seat_is_let_in_only_through_memory() {
+    fn the_owner_and_splitscreen_seats_are_let_in_only_through_memory() {
         // (owner, published, seat, memory)
         assert!(!refused(false, false, true, true), "a local seat joins");
         assert!(
@@ -1276,6 +1286,15 @@ mod tests {
         );
         assert!(refused(false, false, false, false), "nobody else before");
         assert!(!refused(true, false, false, true), "the owner");
+        assert!(
+            !refused(true, true, false, true),
+            "the owner once open to the LAN"
+        );
+        assert!(
+            refused(true, true, false, false),
+            "a LAN player under the owner's offline name"
+        );
+        assert!(refused(true, false, false, false));
     }
 
     #[test]

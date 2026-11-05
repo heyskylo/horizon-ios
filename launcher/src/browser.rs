@@ -18,9 +18,9 @@ pub mod modrinth;
 
 use serde::{Deserialize, Serialize};
 
-/// The Minecraft version Horizon plays. A version port updates it with the other `"26.3"` sites
-/// (docs/version-ports.md).
-pub const GAME: &str = "26.3";
+/// The Minecraft version Horizon plays: the pinned version, so a port's regenerated
+/// `crates/horizon-core/src/version.rs` moves it with everything else (docs/version-ports.md).
+pub const GAME: &str = horizon_core::version::VERSION_ID;
 
 /// What a project is, as far as Horizon is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

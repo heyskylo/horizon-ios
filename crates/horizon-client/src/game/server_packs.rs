@@ -243,6 +243,12 @@ impl Game<'_> {
         let setting = entry.as_ref().and_then(|e| e.accept_textures);
         state.address = entry.map(|e| e.ip);
         state.packs.connect(Prompt::for_server(setting));
+        // GetServerDetailsTask.scheduleResourcePackDownload: the Realm's own pack, which the
+        // player agreed to before connecting (`allowServerPacks`, then `pushPack`).
+        if let Some(pack) = horizon_client::realms::take_pending_pack(address) {
+            state.packs.allow();
+            state.packs.push(pack.id, &pack.url, parse_sha1(&pack.hash));
+        }
     }
     /// `Minecraft.clearDownloadedResourcePacks`: every server pack goes at once.
     pub(super) fn server_packs_disconnect(&mut self) {
@@ -302,6 +308,19 @@ impl Game<'_> {
         }
     }
 
+    /// Splitscreen: this player's answer for the server's packs, once it gave one (or its
+    /// server list entry did).
+    pub(super) fn pack_answer(&self) -> Option<bool> {
+        match self.server_packs.packs.prompt() {
+            Prompt::Allowed => Some(true),
+            Prompt::Declined => Some(false),
+            Prompt::Pending => None,
+        }
+    }
+    /// Splitscreen: this player is asked about a server's packs right now.
+    pub(super) fn pack_prompt_open(&self) -> bool {
+        self.server_packs.prompt.is_some()
+    }
     /// The prompt's answer (`PackConfirmScreen`'s callback): the server's
     /// setting follows it, declining a required pack disconnects, and every
     /// pack it asked about is pushed.

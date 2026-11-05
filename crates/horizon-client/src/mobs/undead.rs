@@ -1162,7 +1162,10 @@ impl Goal for AttackTurtleEgg {
             self.base.next_start -= 1;
             return false;
         }
-        if self.base.find_nearest(m, cx.w, turtle_egg_target) {
+        // Most of the level holds no turtle egg: its sections' palettes say
+        // so without the walk of every cell in reach.
+        let egg = |s| &*cx.w.facts.get(s).name == "minecraft:turtle_egg";
+        if self.base.may_find(m, cx.w, egg) && self.base.find_nearest(m, cx.w, turtle_egg_target) {
             self.base.next_start = super::goals::reduced(20);
             return true;
         }
@@ -1259,7 +1262,7 @@ impl Goal for AttackTurtleEgg {
             }
             // The break sound's pitch draws from the level random.
             cx.events.push(MobEvent::Sound(
-                "block.turtle_egg.break",
+                "entity.turtle.egg_break",
                 [
                     f64::from(eat[0]) + 0.5,
                     f64::from(eat[1]) + 0.5,

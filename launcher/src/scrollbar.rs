@@ -53,8 +53,8 @@ impl Scrollbar {
     pub fn wrap(&self, content: Stateful<Div>, theme: &Theme) -> Div {
         let state = self.clone();
         // Dark wears the glass look's thin bar: white at 14 % on no track (`scrollbar-color`).
-        let (track_color, thumb_color) = if theme.dark {
-            (gpui::transparent_black(), gpui::white().opacity(0.14))
+        let (track_color, thumb_color) = if theme.glass {
+            (gpui::transparent_black(), crate::glass_ui::white(0.14))
         } else {
             (theme.well, theme.muted)
         };
@@ -69,7 +69,7 @@ impl Scrollbar {
                     .track_scroll(&self.handle)
                     // The glass look's bar lies over the page's own margin, as an overlay
                     // scrollbar does; the old look keeps a gutter for its track.
-                    .mr(px(if theme.dark { 0. } else { GUTTER }))
+                    .mr(px(if theme.glass { 0. } else { GUTTER }))
                     // Nested scroll areas must not also move the page behind them.
                     .on_scroll(|_, _, cx| cx.stop_propagation()),
             )

@@ -73,6 +73,28 @@ fn vehicle_meta(hurt_time: i32, hurt_dir: i32, damage: f32) -> Vec<(u8, i32, Val
     meta
 }
 
+/// `AbstractMinecart`'s DATA_ID_CUSTOM_DISPLAY_BLOCK (entry 11, an optional
+/// block state, empty by default) and DATA_ID_DISPLAY_OFFSET (entry 12, the
+/// kind's `getDefaultDisplayOffset` by default).
+fn cart_display_data(
+    e: &mut EntityState,
+    shown: Option<BlockStateId>,
+    offset: Option<i32>,
+    default_offset: i32,
+) {
+    e.defaults
+        .push((11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(0)));
+    e.defaults
+        .push((12, serializer::INT, Value::Int(default_offset)));
+    if let Some(s) = shown {
+        e.meta
+            .push((11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(s.0 as i32)));
+    }
+    if let Some(o) = offset.filter(|&o| o != default_offset) {
+        e.meta.push((12, serializer::INT, Value::Int(o)));
+    }
+}
+
 /// An armor stand's pose (`ArmorStandPose`), each part that differs from the
 /// default, as DATA_HEAD_POSE to DATA_RIGHT_LEG_POSE (entries 16 to 21).
 fn stand_poses(a: &horizon_client::entities::ArmorStand) -> Vec<(u8, i32, Value)> {
@@ -204,6 +226,11 @@ impl Game<'_> {
                 });
             }
             e.meta = vehicle_meta(c.hurt_time, c.hurt_dir, c.damage);
+            let shown = c.custom_display.as_ref().and_then(|t| {
+                horizon_client::entity_nbt::state_from_nbt(self.pack.assets.registry, t)
+            });
+            let default = super::minecarts::default_display_offset(c.kind) as i32;
+            cart_display_data(&mut e, shown, c.custom_offset, default);
             match c.kind {
                 // MinecartFurnace.DATA_ID_FUEL.
                 super::minecarts::CartKind::Furnace => {
@@ -647,7 +674,60 @@ impl Game<'_> {
                         Value::Item(hub.stack(&Some((**stack).clone()))),
                     ));
                 }
+                // Fireball.DATA_ITEM_STACK: the item it is drawn as, which a
+                // guest has no other way of learning. A plain fire charge is
+                // the client's default and is not sent.
+                K::SmallFireball | K::LargeFireball { .. }
+                    if p.item.as_ref().is_some_and(|i| {
+                        &*i.item != "minecraft:fire_charge" || i.count != 1 || i.extra.is_some()
+                    }) =>
+                {
+                    e.meta
+                        .push((8, serializer::ITEM_STACK, Value::Item(hub.stack(&p.item))));
+                }
                 _ => {}
+            }
+            // ChunkMap.addEntity (#7461): a fresh arrow joined before its first tick
+            // is paired as it joined with IN_GROUND=false, and its first update is deferred
+            // to the next tick's send_changes so impact updates (e.g. point-blank wall
+            // collision) arrive after the client's first tick has completed.
+            if !hub.tracks(p.id as i32)
+                && let Some(a) = p.arrow.as_deref()
+                && let (Some(spawn_pos), Some(spawn_vel), Some((pitch, yaw))) =
+                    (a.spawn_pos, a.spawn_velocity, a.spawn_rot)
+            {
+                let mut joined = state(p.id, kind, at(spawn_pos), yaw, false);
+                joined.pitch = pitch;
+                joined.velocity = at(spawn_vel);
+                joined.needs_sync = p.needs_sync;
+                joined.data = e.data;
+                joined.uuid = e.uuid;
+                if a.on_fire() {
+                    joined.meta.push((0, serializer::BYTE, Value::Byte(1)));
+                }
+                match &p.kind {
+                    K::Arrow { critical, .. } => {
+                        joined
+                            .meta
+                            .extend(arrow_meta(*critical, a.no_physics, a.pierce, false));
+                        let color = p.arrow_effect_color();
+                        if color != -1 {
+                            joined.meta.push((11, serializer::INT, Value::Int(color)));
+                        }
+                    }
+                    K::Trident => {
+                        joined
+                            .meta
+                            .extend(arrow_meta(false, a.no_physics, 0, false));
+                        if a.pickup_item.has_any_enchantments() {
+                            joined
+                                .meta
+                                .push((12, serializer::BOOLEAN, Value::Bool(true)));
+                        }
+                    }
+                    _ => {}
+                }
+                hub.note_fresh_joined(&[joined]);
             }
             out.push(e);
         }
@@ -684,6 +764,10 @@ impl Game<'_> {
                 None => owner(Some(horizon_client::mobs::Who::Player)),
             };
             e.meta = arrow_meta(false, t.no_physics, 0, t.in_ground);
+            // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE.
+            if t.fire_ticks > 0 {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
             // ThrownTrident.ID_LOYALTY and ID_FOIL.
             if t.loyalty != 0 {
                 e.meta
@@ -849,5 +933,31 @@ mod tests {
         );
         let plain = horizon_client::entities::ArmorStand::new(1, Default::default(), 0.0);
         assert!(stand_poses(&plain).is_empty());
+    }
+
+    /// Issue #8050: a cart's custom display block and offset reach clients
+    /// as entries 11 and 12, the offset only off the kind's default.
+    #[test]
+    fn cart_display_block_and_offset_are_synched() {
+        let mut e = state(1, "minecraft:minecart", [0.0; 3], 0.0, false);
+        cart_display_data(&mut e, Some(BlockStateId(42)), Some(14), 6);
+        assert_eq!(
+            e.meta,
+            vec![
+                (11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(42)),
+                (12, serializer::INT, Value::Int(14)),
+            ]
+        );
+        assert_eq!(
+            e.defaults,
+            vec![
+                (11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(0)),
+                (12, serializer::INT, Value::Int(6)),
+            ]
+        );
+        let mut plain = state(2, "minecraft:hopper_minecart", [0.0; 3], 0.0, false);
+        cart_display_data(&mut plain, None, Some(1), 1);
+        assert!(plain.meta.is_empty());
+        assert_eq!(plain.defaults[1], (12, serializer::INT, Value::Int(1)));
     }
 }

@@ -298,6 +298,8 @@ impl Game<'_> {
                 names: &self.pack.names,
                 trade: None,
                 maps: None,
+                limited_crafting: self.limited_crafting(),
+                known_recipes: Some(&self.level.recipe_book),
             };
             for i in 0..36 {
                 menu.set_player_item(i, self.inventory[i].clone());
@@ -828,6 +830,25 @@ impl Game<'_> {
     /// How many displays the client's book holds.
     pub(super) fn recipe_book_known(&self) -> usize {
         self.recipe_ui.client.displays().len()
+    }
+    /// The next or previous page, as the arrows turn it: nothing past either end, or with a
+    /// pointer button held.
+    pub(super) fn pad_recipe_page(&mut self, next: bool) {
+        if self.pad.menu.held != [false; 2] {
+            return;
+        }
+        let pages = self.recipe_ui.view.buttons.len().div_ceil(20);
+        let page = self.recipe_ui.page;
+        let Some(to) = (if next {
+            (page + 1 < pages).then_some(page + 1)
+        } else {
+            page.checked_sub(1)
+        }) else {
+            return;
+        };
+        self.recipe_ui.page = to;
+        self.audio
+            .play("minecraft:ui.button.click", None, 0.25, 1.0);
     }
     /// The recipe book's buttons a controller can focus: the book button,
     /// recipes, page arrows, the craftable filter and the tabs (GUI pixels;

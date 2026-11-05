@@ -180,6 +180,9 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
+                if session.version.at_most(ServerVersion::V1_21_10) {
+                    v1_21_10::entity_data(session, d);
+                }
                 v1_21_11::entity_data(session, d);
             }
             strip_id(p.encode())
@@ -622,6 +625,69 @@ fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
     w.varint(id);
     w.u8(action);
     Ok((packet_ids::play::clientbound::ANIMATE, w.data))
+}
+
+/// 1.21.10 (and 1.21.9) to 1.21.11.
+mod v1_21_10 {
+    use super::*;
+
+    // 1.21.10's packets are laid out as 1.21.11's but for `horse_screen_open`, which 1.21.11 renamed
+    // `mount_screen_open` (the id tables pair them): only entity data needs a step.
+    use crate::entity_data::{Value, serializer};
+
+    /// Entity types (26.3 ids) whose entity data 1.21.11 changed.
+    const BEE: i32 = 11;
+    const WOLF: i32 = 152;
+    const MANNEQUIN: i32 = 84;
+    const PLAYER: i32 = 159;
+
+    /// 1.21.11 made the bee's and the wolf's anger end a LONG (an INT before) and an avatar's main arm a
+    /// HUMANOID_ARM (a BYTE before, with the same 0 left, 1 right). Indexes as 1.21.10 numbers them.
+    pub fn entity_data(session: &Session, data: &mut play::SetEntityData) {
+        let Some(kind) = session.kinds.lock().unwrap().get(&data.id).copied() else {
+            return;
+        };
+        for (index, ser, value) in &mut data.values {
+            match (kind, *index, &*value) {
+                (BEE, 18, Value::Int(v)) | (WOLF, 21, Value::Int(v)) => {
+                    *value = Value::Long(i64::from(*v));
+                    *ser = serializer::LONG;
+                }
+                (PLAYER | MANNEQUIN, 15, Value::Byte(v)) => {
+                    *value = Value::Id(i32::from(*v));
+                    *ser = serializer::HUMANOID_ARM;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_bee_s_anger_and_a_player_s_arm_take_1_21_11_s_types() {
+            let session = Session::new(ServerVersion::V1_21_10);
+            session.kinds.lock().unwrap().insert(1, BEE);
+            session.kinds.lock().unwrap().insert(2, PLAYER);
+            let mut bee = play::SetEntityData {
+                id: 1,
+                values: vec![(18, serializer::INT, Value::Int(400))],
+            };
+            entity_data(&session, &mut bee);
+            assert_eq!(bee.values, vec![(18, serializer::LONG, Value::Long(400))]);
+            let mut player = play::SetEntityData {
+                id: 2,
+                values: vec![(15, serializer::BYTE, Value::Byte(1))],
+            };
+            entity_data(&session, &mut player);
+            assert_eq!(
+                player.values,
+                vec![(15, serializer::HUMANOID_ARM, Value::Id(1))]
+            );
+        }
+    }
 }
 
 /// 1.21.11 to 26.1.
