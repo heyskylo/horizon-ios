@@ -2923,6 +2923,19 @@ held while any owner holds it. It is kept as a `/forceload`ed chunk is: it is lo
 and its level stays open. `/forceload` neither lists nor releases it. `native_forced_chunks(owner)` lists what an owner
 holds. Tickets are not saved: keep what you hold (a level attachment) and hold it again in `native_level_load`.
 
+Where this differs from NeoForge, and its limits today:
+
+- The ticket goes to the level in place, with no level argument, and every ticket ticks. Hold and release from a hook
+  tied to that level (`native_level_load`, a block entity's tick), not from a server-wide one such as
+  `native_lifecycle_server_tick_start`, where the level in place is whichever ticked last.
+- The Nether and the End open only when something goes there, so their `native_level_load` doesn't run at start: a
+  ticket held there before a restart stays released until the level opens again. `/forceload` has the same limit.
+- A dedicated server that pauses when empty (`pause-when-empty-seconds`) stops ticking held chunks too.
+- `owner` is any namespaced string, not tied to the calling mod, and `native_forced_chunks` needs it exactly: keep the
+  owners you hold for, or a chunk stays held until the server stops.
+- A chunk past the world's edge (beyond 30,000,000 blocks, as `/forceload` refuses) is refused. Each ticket keeps a
+  5x5 ring loaded and the forced set is scanned per column: keep to what a machine needs (dozens, not thousands).
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
