@@ -2476,11 +2476,30 @@ impl Game<'_> {
             if drops {
                 self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.2) as u32);
             }
+            let (id, at) = self.dragon.as_ref().map_or((0, p), |d| (d.id, d.position));
             self.dragon = None;
             if fight {
                 self.dragon_killed();
             }
+            // remove, then gameEvent(ENTITY_DIE): with no health left,
+            // `Warden.canTargetEntity` refuses the dragon, so no warden hears it.
+            self.dragon_died_event(id, at, false);
         }
+    }
+    /// `Entity.gameEvent(GameEvent.ENTITY_DIE)` for the removed dragon: sculk
+    /// sensors (and, while it has health, wardens) hear it, and the nearest
+    /// catalyst blooms (`CatalystListener`). It takes no experience: the
+    /// dragon's `xpReward` is 0, its orbs come from `tickDeath`.
+    fn dragon_died_event(&mut self, id: u32, at: Vec3, targetable: bool) {
+        let at = [at.x, at.y, at.z];
+        let ctx = horizon_client::sculk::Context {
+            source: Some(Who::Mob(id)),
+            targetable,
+            living: true,
+            ..Default::default()
+        };
+        self.post_game_event("minecraft:entity_die", at, ctx);
+        self.catalyst_takes_experience(at, |_| 0);
     }
     /// `EnderDragonFight.setDragonKilled`.
     fn dragon_killed(&mut self) {
@@ -3594,7 +3613,10 @@ impl Game<'_> {
         if self.dragon.as_ref().is_some_and(|d| d.id == id) {
             // Only the fight's own dragon (`dragonFight`) ends it.
             let fight = self.is_fight_dragon();
-            self.dragon = None;
+            if let Some(d) = self.dragon.take() {
+                // remove, then gameEvent(ENTITY_DIE), before the fight hears of it.
+                self.dragon_died_event(d.id, d.position, d.alive());
+            }
             if fight {
                 self.dragon_killed();
             }
