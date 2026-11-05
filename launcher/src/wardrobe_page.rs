@@ -576,7 +576,7 @@ impl Launcher {
         // The founder set's order: head, shirt, back, name tag.
         let order = |i: &Item| {
             use horizon_cosmetics::Slot::*;
-            [Head, Torso, Back, Shoulder, NameTag]
+            [Head, Torso, Back, Shoulder, Companion, Trail, Aura, NameTag]
                 .iter()
                 .position(|s| *s == i.slot)
         };
@@ -588,6 +588,9 @@ impl Launcher {
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
             horizon_cosmetics::Slot::Emote => "emote",
+            horizon_cosmetics::Slot::Companion => "companion",
+            horizon_cosmetics::Slot::Trail => "trail",
+            horizon_cosmetics::Slot::Aura => "aura",
         };
         let state = std::env::var("HORIZON_WARDROBE_STATE").unwrap_or_default();
         let mut equipped = std::collections::BTreeMap::new();
