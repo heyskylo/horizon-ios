@@ -1147,7 +1147,7 @@
   "Move…": "Mover…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "O launcher fecha enquanto os teus dados são copiados e verificados, e volta a abrir no fim. As pastas antigas são mantidas e continuam a ocupar espaço no disco até confirmares que a transferência foi bem-sucedida e as apagares manualmente.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Get more cosmetics on playhorizon.dev": "Mais cosméticos em playhorizon.dev",
+  "Get more cosmetics": "Mais cosméticos",
   "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automático segue a arquitetura deste iniciador. No Windows ARM, escolha x64 ou ARM64. Versões sem ARM64 usam a compilação x64 assinada.",
   "Game architecture": "Arquitetura do jogo",

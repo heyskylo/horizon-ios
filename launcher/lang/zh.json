@@ -1147,7 +1147,7 @@
   "Move…": "迁移…",
   "Move and restart": "迁移并重启",
   "Could not open the data folder: {error}": "无法打开数据文件夹：{error}",
-  "Get more cosmetics on playhorizon.dev": "在 playhorizon.dev 获取更多装扮",
+  "Get more cosmetics": "获取更多装扮",
   "You don't own any cosmetics yet.": "你还没有任何装饰。",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "自动使用此启动器的架构。在 Windows ARM 上可选择 x64 或 ARM64。没有 ARM64 版本的发行版将使用已签名的 x64 版本。",
   "Game architecture": "游戏架构",

@@ -1147,7 +1147,7 @@
   "Move…": "Перенести…",
   "Move and restart": "Перенести и перезапустить",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Get more cosmetics on playhorizon.dev": "Больше косметики на playhorizon.dev",
+  "Get more cosmetics": "Больше косметики",
   "You don't own any cosmetics yet.": "У вас пока нет косметики.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Автоматически использует архитектуру этого лаунчера. В Windows на ARM можно выбрать x64 или ARM64. В выпусках без ARM64 используется подписанная сборка x64.",
   "Game architecture": "Архитектура игры",

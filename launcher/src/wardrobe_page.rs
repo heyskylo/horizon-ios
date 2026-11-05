@@ -3,7 +3,7 @@
 //! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items in 3D
 //! (`viewer`: drag to turn, scroll to zoom, a hovered card tries its item on), a
 //! row per slot, what the account owns for the chosen slot, the purchase history, one plain button
-//! to the Shop tab ("Get more cosmetics on playhorizon.dev"; `shop.rs`: browsing, prices, the
+//! to the Shop tab ("Get more cosmetics"; `shop.rs`: browsing, prices, the
 //! basket and the founder claim, paid on the website; "Claim for free" where Paddle doesn't sell:
 //! `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
@@ -1055,7 +1055,7 @@ impl Launcher {
     /// The Wardrobe's one way to the Shop tab, a plain secondary button (the Shop has the
     /// cosmetics to try on and buy; paying happens on playhorizon.dev).
     fn shop_link(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
-        let label = "Get more cosmetics on playhorizon.dev";
+        let label = "Get more cosmetics";
         button(id, label, Kind::Secondary, &self.theme).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
                 this.go(Page::Shop);

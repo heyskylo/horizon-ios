@@ -1147,7 +1147,7 @@
   "Move…": "Taşı…",
   "Move and restart": "Taşı ve yeniden başlat",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Get more cosmetics on playhorizon.dev": "Daha fazla kozmetik için playhorizon.dev",
+  "Get more cosmetics": "Daha fazla kozmetik",
   "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Otomatik, bu başlatıcının mimarisini izler. Windows ARM'de x64 veya ARM64 seçebilirsiniz. ARM64 bulunmayan sürümlerde imzalı x64 derlemesi kullanılır.",
   "Game architecture": "Oyun mimarisi",
