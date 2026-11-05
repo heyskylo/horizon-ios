@@ -388,6 +388,36 @@ pub fn apply_deprecated(map: &mut HashMap<String, String>, json: &[u8]) {
     }
 }
 
+/// `Language.loadFromJson` for one `lang/<code>.json`: its entries go into `map` in file order.
+/// A file that is plain JSON reads as before; any other goes through Gson's lenient reader
+/// (`#`, `//` and `/* */` comments, unquoted or single-quoted names and values, raw control
+/// characters in strings, `=` or `=>` and `;`), which vanilla reads lang files with (expected
+/// from `Language.loadFromJson`, Gson). A file that is not JSON even so adds nothing; a value
+/// that is not a string, number or boolean (`GsonHelper.convertToString`) ends the file there.
+fn read_lang_file(bytes: &[u8], map: &mut HashMap<String, String>) {
+    use horizon_world::datafix::json::{Json, parse_lenient};
+    if let Ok(entries) = serde_json::from_slice::<HashMap<String, String>>(bytes) {
+        map.extend(entries);
+        return;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    // Gson's JsonReader skips a leading byte order mark.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let Some(Json::Obj(entries)) = parse_lenient(&utf16) else {
+        return;
+    };
+    for (key, value) in entries {
+        let value = match value {
+            Json::Str(s) => String::from_utf16_lossy(&s),
+            Json::Num(n) => n,
+            Json::Bool(b) => b.to_string(),
+            Json::Null | Json::Arr(_) | Json::Obj(_) => break,
+        };
+        map.insert(String::from_utf16_lossy(&key), value);
+    }
+}
+
 impl Language {
     /// ClientLanguage.loadFrom: en_us first, then the selected language, each
     /// from every namespace and every source in priority order (later sources
@@ -413,9 +443,7 @@ impl Language {
                     else {
                         continue;
                     };
-                    if let Ok(entries) = serde_json::from_slice::<HashMap<String, String>>(&bytes) {
-                        map.extend(entries);
-                    }
+                    read_lang_file(&bytes, &mut map);
                 }
             }
         }
@@ -874,5 +902,166 @@ mod tests {
             langs.iter().map(|l| l.code.as_str()).collect::<Vec<_>>(),
             ["en_us", "fr_fr"]
         );
+    }
+
+    fn read(body: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        read_lang_file(body.as_bytes(), &mut map);
+        map
+    }
+    fn entries(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_plain_json_lang_file_reads_as_before() {
+        let body = "{\"a\": \"Apple \\\"quoted\\\" \\u00e9\", \"b\": \"\", \"a\": \"Again\"}";
+        let strict: HashMap<String, String> = serde_json::from_str(body).unwrap();
+        assert_eq!(read(body), strict);
+        assert_eq!(read(body), entries(&[("a", "Again"), ("b", "")]));
+    }
+
+    #[test]
+    fn lang_files_read_with_comments() {
+        let want = entries(&[("a", "Apple"), ("b", "Banana # not a comment // either")]);
+        for body in [
+            "# header\n{\n# a comment\n\"a\": \"Apple\",\n\"b\": \"Banana # not a comment // either\"\n}\n",
+            "// header\n{\"a\": \"Apple\", // after\n\"b\": \"Banana # not a comment // either\"}",
+            "/* header\n over lines */{\"a\": /* inline */ \"Apple\", \"b\": \"Banana # not a comment // either\"}",
+        ] {
+            assert_eq!(read(body), want, "{body}");
+        }
+    }
+
+    #[test]
+    fn lang_files_read_unquoted_and_single_quoted_names_and_values() {
+        assert_eq!(
+            read("{a: 'Apple', 'b': \"Banana\", c: Cherry}"),
+            entries(&[("a", "Apple"), ("b", "Banana"), ("c", "Cherry")])
+        );
+        // A single-quoted string may hold a double quote, and the reverse.
+        assert_eq!(
+            read("{'a': 'say \"hi\"', \"b\": \"it's\"}"),
+            entries(&[("a", "say \"hi\""), ("b", "it's")])
+        );
+    }
+
+    #[test]
+    fn lang_files_read_raw_control_characters_in_strings() {
+        assert_eq!(
+            read("{\"a\": \"tab\there\", \"b\": \"two\nlines\"}"),
+            entries(&[("a", "tab\there"), ("b", "two\nlines")])
+        );
+    }
+
+    #[test]
+    fn lang_files_read_gson_separators_and_a_byte_order_mark() {
+        assert_eq!(
+            read("\u{feff}{\"a\" = \"Apple\"; \"b\" => \"Banana\"}"),
+            entries(&[("a", "Apple"), ("b", "Banana")])
+        );
+        // A trailing comma before `}` is not JSON even to Gson's lenient reader.
+        assert_eq!(read("{# c\n\"a\": \"Apple\",}"), HashMap::new());
+    }
+
+    #[test]
+    fn numbers_and_booleans_read_as_their_text() {
+        // GsonHelper.convertToString: a primitive reads as its text.
+        assert_eq!(
+            read("{\"a\": 1.50, \"b\": true, \"c\": -2e3}"),
+            entries(&[("a", "1.50"), ("b", "true"), ("c", "-2e3")])
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_no_text_ends_the_file_there() {
+        assert_eq!(
+            read("# c\n{\"a\": \"Apple\", \"b\": [\"x\"], \"c\": \"Cherry\"}"),
+            entries(&[("a", "Apple")])
+        );
+        assert_eq!(read("{\"a\": null, \"b\": \"Banana\"}"), HashMap::new());
+    }
+
+    #[test]
+    fn a_lang_file_that_is_not_json_adds_nothing() {
+        for body in [
+            "# c\n{\"a\": \"Apple\"",
+            "[\"a\"]",
+            "\"a\"",
+            "",
+            "{\"a\": \"Apple\"} {",
+        ] {
+            assert_eq!(read(body), HashMap::new(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_pack_lang_file_with_comments_layers_over_english() {
+        let base = Mem(HashMap::from([(
+            "assets/minecraft/lang/en_us.json".into(),
+            br#"{"a":"Apple","b":"Banana"}"#.to_vec(),
+        )]));
+        let pack = Mem(HashMap::from([(
+            "assets/minecraft/lang/fr_fr.json".into(),
+            b"{\n# Fruits\n\"a\": \"Pomme\"\n}\n".to_vec(),
+        )]));
+        let sources: [&dyn ResourceSource; 2] = [&base, &pack];
+        let fr = Language::load(&sources, "fr_fr");
+        assert_eq!(fr.get("a"), Some("Pomme"));
+        assert_eq!(fr.get("b"), Some("Banana"));
+    }
+
+    /// Every lang file of a downloaded pack, e.g. BACAP Language Pack:
+    /// `HORIZON_LANG_PACK_DIR=<pack>/assets/minecraft/lang cargo test -p horizon-client-core
+    /// lang::tests::every_lang_file_of_a_pack_reads -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs a downloaded pack in HORIZON_LANG_PACK_DIR"]
+    fn every_lang_file_of_a_pack_reads() {
+        let Ok(dir) = std::env::var("HORIZON_LANG_PACK_DIR") else {
+            return;
+        };
+        let mut failed = Vec::new();
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            let bytes = std::fs::read(&path).unwrap();
+            let strict = serde_json::from_slice::<HashMap<String, String>>(&bytes).is_ok();
+            let mut map = HashMap::new();
+            read_lang_file(&bytes, &mut map);
+            // An independent count: the distinct `"name":` that start a line.
+            let text = String::from_utf8_lossy(&bytes);
+            let names: std::collections::HashSet<&str> = text
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.trim_start().strip_prefix('"')?;
+                    let mut escaped = false;
+                    let end = rest.char_indices().find_map(|(i, c)| {
+                        let close = c == '"' && !escaped;
+                        escaped = c == '\\' && !escaped;
+                        close.then_some(i)
+                    })?;
+                    rest[end + 1..]
+                        .trim_start()
+                        .starts_with(':')
+                        .then(|| &rest[..end])
+                })
+                .collect();
+            println!(
+                "{}: strict {strict}, {} keys, {} names",
+                path.display(),
+                map.len(),
+                names.len()
+            );
+            if map.is_empty() || map.len() != names.len() {
+                failed.push(path);
+            }
+        }
+        assert!(failed.is_empty(), "{failed:?}");
     }
 }

@@ -844,7 +844,7 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
         if !d.charged.is_empty() {
             entries.push((
                 "minecraft:charged_projectiles",
-                Tag::List(d.charged.iter().map(crate::item_nbt::item_to_nbt).collect()),
+                Tag::List(d.charged.iter().map(template_tag).collect()),
             ));
         }
         if d.ominous_banner {
@@ -1435,5 +1435,63 @@ mod tests {
             Some("axis")
         );
         assert_eq!(data.debug_stick_property("minecraft:dirt"), None);
+    }
+}
+
+#[cfg(test)]
+mod charged_projectile_template_tests {
+    use super::*;
+
+    #[test]
+    fn charged_templates_omit_default_count_and_keep_components() {
+        for count in [1, 2] {
+            let mut projectile = ItemStack::new("minecraft:arrow", count);
+            let marker = Tag::compound([("audit", Tag::Int(7))]);
+            projectile
+                .data_mut()
+                .other
+                .push(("minecraft:custom_data".into(), marker.clone()));
+            let mut outer = ItemStack::new("minecraft:crossbow", 1);
+            outer.data_mut().charged.push(projectile.clone());
+            outer.data_mut().other.push((
+                "minecraft:custom_data".into(),
+                Tag::compound([("audit", Tag::Int(9))]),
+            ));
+            let encoded = encode_components(&outer).unwrap();
+            let Tag::List(list) = encoded.get("minecraft:charged_projectiles").unwrap() else {
+                panic!("projectile list")
+            };
+            assert_eq!(list.len(), 1);
+            assert_eq!(
+                list[0].get("count"),
+                (count != 1).then_some(Tag::Int(count as i32)).as_ref()
+            );
+            assert_eq!(
+                list[0]
+                    .get("components")
+                    .unwrap()
+                    .get("minecraft:custom_data"),
+                Some(&marker)
+            );
+            assert_eq!(
+                encoded.get("minecraft:custom_data"),
+                Some(&Tag::compound([("audit", Tag::Int(9))]))
+            );
+            // Generic ItemStack/inventory encoding retains its required count.
+            assert_eq!(
+                crate::item_nbt::item_to_nbt(&projectile).get("count"),
+                Some(&Tag::Int(count as i32))
+            );
+            let (_, decoded) = decode_components(Some(&encoded));
+            let restored = decoded.unwrap();
+            assert_eq!(restored.charged[0].count, count);
+            assert_eq!(
+                restored.charged[0]
+                    .data()
+                    .unwrap()
+                    .other("minecraft:custom_data"),
+                Some(&marker)
+            );
+        }
     }
 }

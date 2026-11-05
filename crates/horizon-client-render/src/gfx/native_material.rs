@@ -173,7 +173,8 @@ struct HorizonMaterialSolid {
     @location(0) color: vec4<f32>,
     // The surface target's data: `set_surface`'s, then the fragment's depth, which the post
     // stage's `surface_at` compares with the final depth.
-    @location(1) surface: vec4<f32>,
+    // Its four floats' bits (`SURFACE_FORMAT` is an integer format).
+    @location(1) surface: vec4<u32>,
 }
 // What `fs_solid` leaves in the frame's alpha for HDR output, from the sprite before the pack's
 // material: the pack decides the colour, Horizon still knows which pixels are light sources.
@@ -209,7 +210,7 @@ fn horizon_material_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
     var out: HorizonMaterialSolid;
     let mark = horizon_material_mark(in, texel);
     out.color = horizon_material_fogged(vec4(color.rgb, mark), in.spherical, in.cylindrical);
-    out.surface = vec4(horizon_surface.xyz, in.clip.z);
+    out.surface = bitcast<vec4<u32>>(vec4(horizon_surface.xyz, in.clip.z));
     return out;
 }
 @fragment fn horizon_material_fs_translucent(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
@@ -335,9 +336,12 @@ fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: v
 }
 ";
 
-/// The surface target (the post stage's `scene_surface`): x the normal (two snorm16 in its
-/// bits), y smoothness, z the pack's data, w the fragment's depth.
-pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// The surface target (the post stage's `scene_surface`): the bits of four floats, x the normal
+/// (two snorm16 in its bits), y smoothness, z the pack's data, w the fragment's depth. Stored
+/// as unsigned integers, not `Rgba32Float`: RGBA32UI is colour-renderable on every backend,
+/// where OpenGL (GLES 3 semantics) refuses RGBA32F as a render attachment, and integers keep
+/// the packed normal's bits exact.
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 
 /// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
 /// `materials`, and the vertex stage in its module when `vertex`.
