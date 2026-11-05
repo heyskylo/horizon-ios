@@ -315,3 +315,92 @@ fn atlauncher_loader_types_match_whatever_the_case() {
     assert!(atlauncher_loader(&json!({"loaderVersion": {"type": "Forge"}})).is_none());
     assert!(atlauncher_loader(&json!({})).is_none());
 }
+
+#[test]
+fn curseforge_instances_read_their_version_and_loader() {
+    let root = scratch("cf-target");
+    let instance = |name: &str, files: &[(&str, &str)]| {
+        let dir = root.join("Instances").join(name);
+        fs::create_dir_all(dir.join("mods")).unwrap();
+        for (file, text) in files {
+            write(&dir.join(file), text);
+        }
+    };
+    instance(
+        "fabric",
+        &[(
+            "minecraftinstance.json",
+            r#"{"gameVersion": "1.21.5", "baseModLoader": {"name": "fabric-0.16.14-1.21.5"}}"#,
+        )],
+    );
+    instance(
+        "neo",
+        &[(
+            "minecraftinstance.json",
+            r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+        )],
+    );
+    instance(
+        "manifest",
+        &[(
+            "manifest.json",
+            r#"{"minecraft": {"version": "1.20.1", "modLoaders": [{"id": "forge-47.2.0", "primary": true}]}}"#,
+        )],
+    );
+    instance("neither", &[]);
+    instance("broken", &[("minecraftinstance.json", "{ not json")]);
+    instance(
+        "unknown",
+        &[(
+            "minecraftinstance.json",
+            r#"{"gameVersion": "1.12.2", "baseModLoader": {"name": "liteloader-1.0"}}"#,
+        )],
+    );
+    instance(
+        "vanilla",
+        &[("minecraftinstance.json", r#"{"gameVersion": "1.21.4"}"#)],
+    );
+    let found = curseforge_instances(&root);
+    let by = |name: &str| found.iter().find(|f| f.name == name).unwrap();
+    let loader = |name, version: &str| {
+        Some(Loader {
+            name,
+            version: version.into(),
+        })
+    };
+    assert_eq!(by("fabric").minecraft.as_deref(), Some("1.21.5"));
+    assert_eq!(by("fabric").loader, loader("fabric", "0.16.14"));
+    assert_eq!(by("neo").minecraft.as_deref(), Some("1.21.1"));
+    assert_eq!(by("neo").loader, loader("neoforge", "21.1.133"));
+    assert_eq!(by("manifest").minecraft.as_deref(), Some("1.20.1"));
+    assert_eq!(by("manifest").loader, loader("forge", "47.2.0"));
+    assert_eq!(by("unknown").minecraft.as_deref(), Some("1.12.2"));
+    assert_eq!(by("unknown").loader, None);
+    assert_eq!(by("vanilla").minecraft.as_deref(), Some("1.21.4"));
+    assert_eq!(by("vanilla").loader, None);
+    for name in ["neither", "broken"] {
+        assert_eq!(
+            (by(name).minecraft.clone(), by(name).loader.clone()),
+            (None, None)
+        );
+    }
+    // Without a recorded version, a version is still asked for; with one, it is not.
+    assert!(import(by("neither"), "x", None)
+        .unwrap_err()
+        .contains("--minecraft"));
+    // A folder pointing at one instance reads it the same way.
+    let one = in_folder(&root.join("Instances/neo"), None);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].minecraft.as_deref(), Some("1.21.1"));
+    assert_eq!(one[0].loader, loader("neoforge", "21.1.133"));
+    // The Modrinth App's profiles are left as they were.
+    let profile = root.join("profiles/p");
+    write(
+        &profile.join("minecraftinstance.json"),
+        r#"{"gameVersion": "1.21.1"}"#,
+    );
+    fs::create_dir_all(profile.join("mods")).unwrap();
+    let modrinth = modrinth_app_profiles(&root);
+    assert_eq!(modrinth[0].minecraft, None);
+    let _ = fs::remove_dir_all(&root);
+}
