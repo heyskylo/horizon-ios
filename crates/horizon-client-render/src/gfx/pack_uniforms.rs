@@ -390,28 +390,43 @@ fn day_fraction(degrees: f32) -> f32 {
     (degrees + 90.0) % 360.0 / 360.0
 }
 
-/// The sky angle in degrees of the body that casts the shadows: the sun by day, the moon at
-/// night (taken below 360).
-fn shadow_light_degrees(frame: &Frame) -> f32 {
-    if day_fraction(frame.sky.sun_angle) < 0.5 {
-        frame.sky.sun_angle
+/// `shadowAngle`: the day fraction of the body that casts the shadows, the sun by day and the
+/// moon (taken below 360) at night.
+fn shadow_angle(frame: &Frame) -> f32 {
+    let sun = day_fraction(frame.sky.sun_angle);
+    if sun < 0.5 {
+        sun
     } else {
-        frame.sky.moon_angle % 360.0
+        day_fraction(frame.sky.moon_angle % 360.0)
+    }
+}
+
+/// The angle in degrees `shadowModelView` turns the light's path by, from `shadowAngle`:
+/// `(shadowAngle - 0.25) * 360` in floats, plus 360 when that is negative. Our probes' readings
+/// of Iris 1.11.7 (50: 25 ticks of day and night, among them 7295 to 7305 one by one, with
+/// `sunPathRotation` 0 and 30) fit this to the last bit; the body's own sky angle, which the
+/// fraction is made from, misses 16 of them by 1 to 6 ulps (#8464).
+fn shadow_matrix_degrees(frame: &Frame) -> f32 {
+    let degrees = (shadow_angle(frame) - 0.25) * 360.0;
+    if degrees < 0.0 {
+        degrees + 360.0
+    } else {
+        degrees
     }
 }
 
 /// `shadowModelView` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
-/// readings (20 scenes: times of day and night, `sunPathRotation` 0 and 30, cameras off the
-/// block grid) fit these JOML float operations, in this order: `rotateX(90°)`, `rotateZ(-angle)`
-/// with the light body's sky angle, `rotateX(sunPathRotation)`, then `translate` by minus the
-/// origin `shadow_camera` describes, from the camera's position as a float; and JOML's
-/// `invert()`. `shadow_camera`'s view, built in doubles, differs in the last bits (6e-17 for
-/// 0), and on a texel boundary of the map that is enough to read the other texel (#8464).
+/// readings (times of day and night, `sunPathRotation` 0 and 30, cameras off the block grid)
+/// fit these JOML float operations, in this order: `rotateX(90°)`, `rotateZ(-angle)` with
+/// `shadow_matrix_degrees`, `rotateX(sunPathRotation)`, then `translate` by minus the origin
+/// `shadow_camera` describes, from the camera's position as a float; and JOML's `invert()`.
+/// `shadow_camera`'s view, built in doubles, differs in the last bits (6e-17 for 0), and on a
+/// texel boundary of the map that is enough to read the other texel (#8464).
 pub fn shadow_model_view(frame: &Frame, shadow: &Shadow) -> (Mat4, Mat4) {
     use horizon_core::geometry::trig::DEG_TO_RAD;
     let mut m = crate::camera::joml::Mat4::IDENTITY;
     m.rotate_x(90.0 * DEG_TO_RAD);
-    m.rotate_z(-(shadow_light_degrees(frame) * DEG_TO_RAD));
+    m.rotate_z(-(shadow_matrix_degrees(frame) * DEG_TO_RAD));
     m.rotate_x(shadow.sun_path_rotation * DEG_TO_RAD);
     let step = shadow.interval;
     if step > 0.0 {
@@ -695,11 +710,7 @@ impl FrameUniforms {
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
                 "sunAngle" => Value::f(&[sun_angle]),
-                "shadowAngle" => Value::f(&[if day {
-                    sun_angle
-                } else {
-                    day_fraction(frame.sky.moon_angle % 360.0)
-                }]),
+                "shadowAngle" => Value::f(&[shadow_angle(frame)]),
                 "worldTime" => Value::i(&[day_time]),
                 "worldDay" => Value::i(&[world_day as i32]),
                 "moonPhase" => Value::i(&[world_day.rem_euclid(8) as i32]),
@@ -1246,6 +1257,86 @@ mod initial_history_tests {
         );
         assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3f26bf8b);
         assert_eq!(float(&u, "shadowAngle")[0].to_bits(), 0x3e1afe2e);
+    }
+
+    /// Between whole ticks of the timeline, Iris 1.11.7 turns `shadowModelView` by an angle made
+    /// from `shadowAngle`, not by the sky's own angle: read back by a probe pack of ours at 7297,
+    /// 7300 and 16000 ticks, and at 7303 with `sunPathRotation = 30`, the camera at
+    /// (13.5, 69.62, -13.5). The sky angles are vanilla's timeline at those ticks.
+    #[test]
+    fn the_shadow_matrices_turn_by_iris_s_angle_between_ticks() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        f.camera = DVec3::new(13.5, 68.0 + f64::from(1.62f32), -13.5);
+        let (o, z, one, minus) = (0, 0x80000000, 0x3f800000, 0xbf800000);
+        let cases: [(f32, u32, u32, [u32; 16], [u32; 16]); 4] = [
+            (
+                0.0,
+                0x415d5e10,
+                0x4341d5e1,
+                [
+                    0x3f789291, o, 0xbe74dfb0, o, 0x3e74dfb0, o, 0x3f789291, o, o, minus, z, o,
+                    0x3f223deb, 0x40200000, 0x3ef7034a, one,
+                ],
+                [
+                    0x3f789291, 0x3e74dfb0, o, o, o, o, minus, o, 0xbe74dfb0, 0x3f789291, z, o,
+                    0xbf000000, 0xbf1eb87f, 0x40200000, one,
+                ],
+            ),
+            (
+                0.0,
+                0x415de96f,
+                0x4341de97,
+                [
+                    0x3f788940, o, 0xbe7576d1, o, 0x3e7576d1, o, 0x3f788940, o, o, minus, z, o,
+                    0x3f2250af, 0x40200000, 0x3ef6d1f4, one,
+                ],
+                [
+                    0x3f788940, 0x3e7576d1, o, o, o, o, minus, o, 0xbe7576d1, 0x3f788940, z, o,
+                    0xbeffffff, 0xbf1eb87f, 0x40200000, one,
+                ],
+            ),
+            (
+                0.0,
+                0x43107d5b,
+                0x43a23eae,
+                [
+                    0x3f506307, o, 0x3f14b28c, o, 0xbf14b28c, z, 0x3f506307, o, o, minus, z, o,
+                    0x3d400268, 0x40200000, 0x3f4b8c94, one,
+                ],
+                [
+                    0x3f506307, 0xbf14b28c, o, o, o, z, minus, o, 0x3f14b28c, 0x3f506307, z, o,
+                    0xbf000000, 0xbf1eb880, 0x40200000, one,
+                ],
+            ),
+            (
+                30.0,
+                0x415e74d7,
+                0x4341e74d,
+                [
+                    0x3f787fe8, o, 0xbe760e06, o, 0x3e5516f6, 0xbf000000, 0x3f5734fd, o,
+                    0xbdf60e06, 0xbf5db3d7, 0xbef87fe8, o, 0x3f6a2bc6, 0x3fed72ac, 0x3fcea5f8, one,
+                ],
+                [
+                    0x3f787fe8, 0x3e5516f6, 0xbdf60e06, o, o, 0xbf000000, 0xbf5db3d7, o,
+                    0xbe760e06, 0x3f5734fd, 0xbef87fe8, o, 0xbf000001, 0xbf1eb881, 0x40200000, one,
+                ],
+            ),
+        ];
+        for (tilt, sun, moon, view, inverse) in cases {
+            f.sky.sun_angle = f32::from_bits(sun);
+            f.sky.moon_angle = f32::from_bits(moon);
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    sun_path_rotation: tilt,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            assert_eq!(bits(&u, "shadowModelView"), view, "{sun:x}");
+            assert_eq!(bits(&u, "shadowModelViewInverse"), inverse, "{sun:x}");
+        }
     }
 
     #[test]
