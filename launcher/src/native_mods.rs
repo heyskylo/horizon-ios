@@ -1685,7 +1685,7 @@ fn app_control(error: String) -> String {
 }
 
 fn with_app_control(error: String) -> String {
-    format!("{}\n\n{error}", rust_toolchain::SMART_APP_CONTROL)
+    format!("{}\n\n{error}", rust_toolchain::smart_app_control())
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -4543,7 +4543,7 @@ mod tests {
             exit 101
         "#]);
         let e = run(cmd, "Building horizon-mixins", |_| {}).unwrap_err();
-        assert!(e.starts_with(rust_toolchain::SMART_APP_CONTROL), "{e}");
+        assert!(e.starts_with(&rust_toolchain::smart_app_control()), "{e}");
         assert!(e.contains("quote v1.0.47"), "{e}");
         // Another failure says nothing about it.
         let mut cmd = Command::new("sh");
