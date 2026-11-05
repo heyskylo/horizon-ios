@@ -688,6 +688,7 @@ pub fn tick(
             farm::chicken_egg_step(m, events);
         }
         if m.species() == Species::Allay {
+            super::allay::passive_heal(m);
             super::allay::update_duplication_cooldown(m);
         }
         if horse {
@@ -697,6 +698,10 @@ pub fn tick(
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
+        }
+        if m.species() == Species::Pufferfish {
+            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
+            aquatic::sting_touching_mobs(m, w, events);
         }
     } else {
         ai_step(m, w, level_random, events);
@@ -2745,6 +2750,9 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
     if m.species() == Species::Turtle {
         return super::turtle::travel(m, w, input, events);
     }
+    if m.species() == Species::Frog {
+        return super::frog::travel(m, w, input, events);
+    }
     match family(m.species()) {
         Family::Aquatic => aquatic::travel(m, w, input, events),
         Family::Guardian => super::guardian::travel(m, w, input, events),
@@ -4775,6 +4783,51 @@ mod iron_golem_push_tests {
 }
 
 #[cfg(test)]
+mod allay_healing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn allays_heal_on_tenth_ticks_without_enabling_noai_work() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            for no_ai in [true, false] {
+                for initial in [10.0_f32, 19.5, 20.0] {
+                    let kind = Arc::new(types.types["minecraft:allay"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(16.5, 101.0, 16.5), 0.0);
+                    mob.no_ai = no_ai;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.health = initial;
+                    mob.extra.ints[2] = 37;
+                    mob.extra.ints[3] = 41;
+                    mob.extra.egg_time = 30;
+                    assert_eq!(mob.attrs.max_health, 20.0);
+                    assert_eq!(mob.age, 0);
+                    let mut random = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    for elapsed in 1..=20 {
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        assert_eq!(mob.age, elapsed);
+                        assert_eq!(
+                            mob.health,
+                            (initial + (elapsed / 10) as f32).min(20.0),
+                            "NoAI={no_ai}, initial={initial}, tick={elapsed}"
+                        );
+                        assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
+                        let skipped = if no_ai { 0 } else { elapsed as i32 };
+                        assert_eq!(mob.extra.ints[2], 37 - skipped);
+                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                    }
+                }
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Allay tick coverage did not run");
+        }
+    }
+}
+
+#[cfg(test)]
 mod ravager_noai_tests {
     use super::*;
     use std::sync::Arc;
@@ -4820,5 +4873,61 @@ mod ravager_noai_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+
+    /// A mob of `kind` in a pool, its eyes under, after `ticks` base ticks.
+    fn air_after(kind: &str, air: i32, ticks: u32) -> Option<i32> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let water = registry.default_state("minecraft:water").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    for y in 0..=8 {
+                        world.set(x, y, z, water).unwrap();
+                    }
+                }
+            }
+        };
+        let mut out = None;
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types[kind].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            m.air = air;
+            let mut events = Vec::new();
+            for _ in 0..ticks {
+                base_tick(&mut m, w, &mut events);
+            }
+            out = Some(m.air);
+        });
+        out
+    }
+
+    /// `Dolphin.handleAirSupply` is empty and the dolphin isn't in
+    /// `#can_breathe_under_water`: under water it loses a breath a tick from
+    /// its 4800, as `LivingEntity.baseTick` takes it, so it must surface.
+    #[test]
+    fn a_dolphin_holds_its_breath_under_water() {
+        let Some(air) = air_after("minecraft:dolphin", 4800, 10) else {
+            return;
+        };
+        assert_eq!(air, 4790);
+    }
+
+    /// A copper golem is in `#can_breathe_under_water`: its air stays full.
+    #[test]
+    fn a_copper_golem_breathes_under_water() {
+        let Some(air) = air_after("minecraft:copper_golem", 300, 10) else {
+            return;
+        };
+        assert_eq!(air, 300);
     }
 }

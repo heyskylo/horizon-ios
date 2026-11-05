@@ -43,6 +43,9 @@ mod shadow_faces_tests;
 #[cfg(test)]
 mod forced_flip_tests;
 
+#[cfg(test)]
+mod weather_depth_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -516,8 +519,14 @@ pub struct PackPost {
     passes: Vec<Pass>,
     /// Shadow cache for temporal reprojection.
     shadow_cache: ShadowCache,
-    /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`.
+    /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`;
+    /// when the pack draws terrain in two parts, solid terrain only (`gbuffers_terrain_solid` or
+    /// its fallback).
     terrain: Option<Pass>,
+    /// What draws cutout terrain (`gbuffers_terrain_cutout` or its fallback), after `terrain`,
+    /// when the pack draws terrain in two parts. A pack with no program for one part has only
+    /// the other.
+    terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
     /// What draws the sky (`gbuffers_skybasic` or its fallback), before terrain, and its vertices.
@@ -1079,6 +1088,11 @@ pub(super) struct ShadowView {
     /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
     /// a cave's ceiling, which faces away, is often all that shadows the cave.
     pub every_face: bool,
+    /// Only the sections whose shadow can fall into the camera's view: those the camera's
+    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
+    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
+    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
+    pub view_casters: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -2163,8 +2177,13 @@ impl PackPost {
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
         });
-        let terrain = post
+        let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let mut terrain = post
             .terrain
+            .zip(terrain_geometry.as_ref())
+            .and_then(|(p, g)| build(p, Some(g)));
+        let mut terrain_cutout = post
+            .terrain_cutout
             .zip(terrain_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let water = post
@@ -2295,7 +2314,7 @@ impl PackPost {
         let weather_geometry = world.weather.then(|| Geometry {
             buffers: &entity_buffers,
             table: None,
-            depth_write: true,
+            depth_write: post.rain_depth,
             atlas: None,
             material_maps: false,
             ids: None,
@@ -2371,8 +2390,31 @@ impl PackPost {
             .filter_map(|p| build(p, None))
             .collect();
         let stand_ins = pack_images::stand_ins(device, stand_ins.take());
-        if let Some(t) = &terrain {
-            notes.push(format!("terrain draws with {}", t.name));
+        // Terrain in two parts draws both or neither: one alone would leave the other part's
+        // terrain undrawn. Without either, the game draws all terrain, as when the terrain
+        // program of a pack that doesn't split can't draw.
+        if split
+            && terrain.is_some() != terrain_cutout.is_some()
+            && let Some(p) = terrain.take().or(terrain_cutout.take())
+        {
+            notes.push(format!(
+                "{}: the other part of terrain can't draw; the game draws all terrain",
+                p.name
+            ));
+        }
+        match (&terrain, &mut terrain_cutout) {
+            (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
+            (t, Some(c)) => {
+                if let Some(t) = t {
+                    notes.push(format!("solid terrain draws with {}", t.name));
+                }
+                notes.push(format!("cutout terrain draws with {}", c.name));
+                // Timed (and labelled) apart from the solid part when it runs the same program.
+                if t.as_ref().is_some_and(|t| t.name == c.name) {
+                    c.name.push_str(" (cutout)");
+                }
+            }
+            (None, None) => {}
         }
         for (part, pass) in [
             ("terrain", &shadow_terrain),
@@ -2456,6 +2498,7 @@ impl PackPost {
                 .iter()
                 .chain(&shadow_comp)
                 .chain(&terrain)
+                .chain(&terrain_cutout)
                 .chain(&water))
             .chain(shadow_terrain.iter().chain(&shadow_water))
             .chain(sky.iter().flat_map(|s| s.basic.iter().chain(&s.textured)))
@@ -2513,6 +2556,7 @@ impl PackPost {
                 .iter()
                 .flat_map(|s| s.basic.iter().chain(&s.textured))
                 .chain(&terrain)
+                .chain(&terrain_cutout)
                 .chain(entities.iter().flat_map(|e| e.passes.iter().flatten()))
                 .chain(&clouds)
                 .chain(&lines)
@@ -2528,6 +2572,7 @@ impl PackPost {
         }
         // Terrain tests against the world's depth (entities...), so the blit copies it then.
         let blit_depth = terrain.is_some()
+            || terrain_cutout.is_some()
             || water.is_some()
             || sky.is_some()
             || entities.as_ref().is_some_and(Entities::drawn)
@@ -2665,6 +2710,7 @@ impl PackPost {
             setup_pending: true,
             passes,
             terrain,
+            terrain_cutout,
             water,
             sky,
             entities,
@@ -3153,7 +3199,8 @@ impl PackPost {
     }
 
     /// Terrain (or, `translucent`, translucent terrain) with the pack's program; `draw` issues
-    /// the game's draws.
+    /// the game's draws. Solid terrain in two parts has its cutout part drawn second, from the
+    /// same draws.
     fn draw_terrain(
         &mut self,
         device: &wgpu::Device,
@@ -3163,13 +3210,35 @@ impl PackPost {
         list: TerrainList,
         draw: &mut TerrainDraw<'_>,
     ) {
-        let slot = match list {
+        self.draw_terrain_part(device, queue, encoder, size, list, false, draw);
+        if list == TerrainList::Solid {
+            self.draw_terrain_part(device, queue, encoder, size, list, true, draw);
+        }
+    }
+
+    /// The pass that draws `list`, or the cutout part of the solid list.
+    fn terrain_slot(&mut self, list: TerrainList, cutout: bool) -> &mut Option<Pass> {
+        match list {
+            TerrainList::Solid if cutout => &mut self.terrain_cutout,
             TerrainList::Solid => &mut self.terrain,
             TerrainList::Translucent => &mut self.water,
             TerrainList::ShadowSolid => &mut self.shadow_terrain,
             TerrainList::ShadowTranslucent => &mut self.shadow_water,
-        };
-        let Some(mut pass) = slot.take() else {
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_terrain_part(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        list: TerrainList,
+        cutout: bool,
+        draw: &mut TerrainDraw<'_>,
+    ) {
+        let Some(mut pass) = self.terrain_slot(list, cutout).take() else {
             return;
         };
         let translucent = list.translucent();
@@ -3207,12 +3276,7 @@ impl PackPost {
         if !pass.group.shadow() {
             self.mips_valid &= !pass.written;
         }
-        *match list {
-            TerrainList::Solid => &mut self.terrain,
-            TerrainList::Translucent => &mut self.water,
-            TerrainList::ShadowSolid => &mut self.shadow_terrain,
-            TerrainList::ShadowTranslucent => &mut self.shadow_water,
-        } = Some(pass);
+        *self.terrain_slot(list, cutout) = Some(pass);
     }
 
     /// The sky's parts in vanilla's order, each with the program that draws it; one render pass
@@ -3846,12 +3910,13 @@ impl PackPost {
                 horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
             },
             every_face: true,
+            view_casters: true,
         })
     }
 
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
-        self.terrain.is_some()
+        self.terrain.is_some() || self.terrain_cutout.is_some()
     }
 
     /// Whether the pack's shadow pass draws terrain (`shadow_view`).
@@ -3902,6 +3967,7 @@ impl PackPost {
             .passes
             .iter_mut()
             .chain(&mut self.terrain)
+            .chain(&mut self.terrain_cutout)
             .chain(&mut self.water)
             .chain(sky)
             .chain(entities)
@@ -4561,6 +4627,7 @@ impl PackPost {
         let mut shown = false;
         // A water-only pack still needs the opaque phase to populate requested snapshots.
         let mut terrain_drawn = self.terrain.is_none()
+            && self.terrain_cutout.is_none()
             && self.sky.is_none()
             && !self.entities.as_ref().is_some_and(Entities::drawn)
             && self.clouds.is_none()
@@ -4734,6 +4801,10 @@ mod snorm_tests;
 #[cfg(test)]
 #[path = "pack_post/depth_test.rs"]
 mod depth_test;
+
+#[cfg(test)]
+#[path = "pack_post/terrain_parts_tests.rs"]
+mod terrain_parts_tests;
 
 #[cfg(test)]
 mod tests {

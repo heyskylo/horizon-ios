@@ -247,6 +247,7 @@ mod native_shaders;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
+pub mod native_world_draw;
 mod native_world_edit;
 mod native_world_read;
 mod natural_spawning;
@@ -254,6 +255,7 @@ mod nautili;
 mod net_harness;
 mod nether_portal;
 mod no_resources;
+mod occlusion_culling;
 mod ominous_item_spawner;
 mod options;
 mod ordered_tick;
@@ -332,6 +334,7 @@ mod storage;
 mod structure_blocks;
 mod structure_edit;
 mod structures;
+mod studio;
 mod subtitle_hud;
 mod sulfur_cubes;
 mod tempban;
@@ -387,6 +390,7 @@ use horizon_client::{
     first_person::{Hand, SwingAnimation},
     furnace::FurnaceCooking,
     gfx::{Frame, Renderer},
+    graphics::EntityCullingMode,
     hud::{HudAtlas, HudBatch, rgba},
     hud_layout, hud_overlays,
     items::{ItemStack, Items},
@@ -441,6 +445,7 @@ pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_world_columns::NativeColumnBlocks;
+pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use std::{
@@ -527,6 +532,9 @@ struct Options {
     /// `--dedicated`: run as a dedicated server; vanilla's server arguments
     /// (`--nogui`, `--port`, `--world`, `--universe`, `--initSettings`) follow.
     dedicated: Option<Vec<String>>,
+    /// `--transfers SETTINGS`: a dedicated server takes a proxy's hand-over requests
+    /// (`server.toml`'s `[transfer]`, which horizon-server passes; lan/arrivals.rs).
+    transfers: Option<horizon_client::lan::arrivals::Settings>,
     /// `--benchmark SCENARIO`: run the benchmark, write its report and quit.
     benchmark: Option<String>,
     /// `--dev-mod PATH` (repeatable): content mods always on.
@@ -662,6 +670,7 @@ impl Options {
                 .ok()
                 .filter(|n| !n.is_empty()),
             dedicated: None,
+            transfers: None,
             benchmark: None,
             dev_mods: Vec::new(),
             execution_role: execution_role::ExecutionRole::Client,
@@ -675,7 +684,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --transfers SETTINGS    A dedicated server takes a proxy's hand-over requests (server.toml [transfer], docs/server.md)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -778,6 +787,10 @@ impl Options {
                             "--name" => o.player_name = Some(value),
                             "--session-file" => o.session_file = Some(value),
                             "--control-socket" => o.control = Some(value.into()),
+                            "--transfers" => {
+                                o.transfers =
+                                    Some(horizon_client::lan::arrivals::Settings::parse(&value)?)
+                            }
                             "--time" => o.time = Some(value.parse()?),
                             "--weather" => o.weather = Some(value),
                             "--dimension" => {
@@ -1005,9 +1018,11 @@ struct GameLevel<'w> {
     debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
-    /// The tool a mod's machine breaks blocks with (`native_machine_destroy_block`):
-    /// `Block.dropResources` rolls the loot with it instead of with none.
-    drop_tool: Option<ItemStack>,
+    /// The block a mod's machine breaks and the tool it breaks it with
+    /// (`native_machine_destroy_block`): `Block.dropResources` rolls that
+    /// block's loot with the tool instead of with none. Neighbours that pop
+    /// off because of the break drop as with no tool, as in vanilla.
+    drop_tool: Option<((i32, i32, i32), Option<ItemStack>)>,
     /// Where `Block.dropResources` puts the drops instead of popping them,
     /// while a mod's machine breaks a block (`native_machine_destroy_block`).
     drop_into: Option<Vec<ItemStack>>,
@@ -1991,6 +2006,15 @@ struct WorldTables {
     /// The values of the data map types native mods registered
     /// (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
+    /// The entity type, biome and damage type tags with the packs' over the
+    /// game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
+    /// what the predicates' `#tag`s of those registries read.
+    pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+}
+
+impl WorldTables {
+    /// The registries [`WorldTables::pack_tags`] holds.
+    const PACK_TAG_REGISTRIES: [&'static str; 3] = ["entity_type", "worldgen/biome", "damage_type"];
 }
 
 impl Resources {
@@ -3000,9 +3024,13 @@ struct Game<'a> {
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
-    entity_culler: Option<horizon_client::entity_culling::Culler>,
-    async_entity_culler: Option<entity_culling::AsyncCuller>,
-    async_entity_culling_failed: bool,
+    /// Whether the renderer's section-occlusion graph is active for this view.
+    entity_section_visibility_valid: bool,
+    /// The camera section in the current world layout.
+    entity_section_camera: Option<(i32, i32, i32)>,
+    sync_occlusion_culler: Option<horizon_client::voxel_occlusion::Culler>,
+    async_occlusion_culler: Option<Box<occlusion_culling::AsyncOcclusionCuller>>,
+    async_occlusion_culling_failed: bool,
     async_particle_culler: RefCell<particle_culling::ParticleAsyncState>,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
@@ -3869,7 +3897,14 @@ impl Game<'_> {
     /// `HoneyBlock.showSlideParticles` (entity event 53): five honey block
     /// particles at the entity.
     fn honey_slide_particles(&mut self, at: [f64; 3]) {
+        self.honey_entity_particles(at, 53);
+    }
+    /// `HoneyBlock.showParticles`: the crumb count of entity event 53 or 54.
+    fn honey_entity_particles(&mut self, at: [f64; 3], event: i8) {
         use horizon_client::particles::{ParticleOptions, ParticleType};
+        let Some(count) = horizon_client::landing::honey_particle_count(event) else {
+            return;
+        };
         let Some(honey) = self
             .pack
             .assets
@@ -3884,7 +3919,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         ];
         if let Some((sprite, tint)) = self.particle_sprite(honey, block) {
-            for _ in 0..5 {
+            for _ in 0..count {
                 self.particles.add(
                     &ParticleOptions::block(ParticleType::Block, sprite.clone(), tint),
                     at,
@@ -6218,8 +6253,15 @@ impl Game<'_> {
         {
             return Ok(());
         }
-        // ServerPlayerGameMode.destroyBlock.
+        // ServerPlayerGameMode.destroyBlock (and MultiPlayerGameMode.destroyBlock
+        // on the client): a GameMasterBlock stays when the player cannot use
+        // game master blocks (Player.canUseGameMasterBlocks).
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.can_use_game_master_blocks()
+            && is_game_master_block(&self.res.facts().get(state).name)
+        {
+            return Ok(());
+        }
         // Native mods, once the game allowed the break: a canceled one keeps
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
@@ -7672,6 +7714,25 @@ impl Game<'_> {
         };
         self.with_level(|b, level, ticks| b.notify_written(level, ticks, position, flags));
     }
+    /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
+    /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
+    /// moves only while the world runs.
+    pub(super) fn visual_ticks(&self) -> u64 {
+        if self.clock.still() {
+            self.world.game_time.max(0) as u64
+        } else {
+            self.ticks
+        }
+    }
+    /// `Util.getMillis` for what the frame shows (the world border's scroll, the hearts' blink,
+    /// the glint's under the switch): under `HORIZON_STILL`, the world's ticks in milliseconds.
+    pub(super) fn visual_millis(&self) -> i64 {
+        if self.clock.still() {
+            self.visual_ticks() as i64 * 50
+        } else {
+            self.started.elapsed().as_millis() as i64
+        }
+    }
     fn tick(&mut self) -> Result<()> {
         if self.agent.hold_server {
             return Ok(());
@@ -7719,8 +7780,9 @@ impl Game<'_> {
                 self.world.weather.tick_timers(&mut self.world.random);
             }
             self.world.weather.tick_levels();
-            self.tick_weather_effects();
         }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.tick_weather_effects();
         let _ = self.finish_player_autosaves(false);
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.
@@ -8831,6 +8893,7 @@ impl Game<'_> {
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 }
             });
+            let (visual_ticks, visual_millis) = (self.visual_ticks(), self.visual_millis());
             if !self.creative
                 && !spectator
                 && let Some(p) = &mut self.player
@@ -8849,8 +8912,8 @@ impl Game<'_> {
                 // the surface, not merely in the water block.
                 let under_water = p.is_eye_in_fluid(horizon_client::motion::WATER);
                 let inputs = hud_layout::HealthInputs {
-                    tick: self.ticks as i32,
-                    millis: self.started.elapsed().as_millis() as i64,
+                    tick: visual_ticks as i32,
+                    millis: visual_millis,
                     health: p.health.health(),
                     max_health: p.attribute("minecraft:max_health").unwrap_or(20.0) as f32,
                     absorption: p.health.absorption(),
@@ -9376,8 +9439,8 @@ impl Game<'_> {
         let n = self.craft_size;
         let grid: Vec<Option<ItemStack>> = (0..n * n).map(|i| self.craft_grid[i].clone()).collect();
         let scale = |id: i32| self.maps.data.get(&id).map(|m| m.scale);
-        self.res
-            .recipes()
+        // The world's table, the one taking the result (`menu_click`) crafts from.
+        self.recipes()
             .find_with(&grid, n, &scale)
             .map(|(name, result)| (name.to_owned(), result))
     }
@@ -11045,7 +11108,8 @@ impl Game<'_> {
         self.entity_motion.borrow_mut().clear();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
-        self.prepare_entity_culling(camera);
+        self.prepare_entity_culling();
+        self.prepare_occlusion_culling(camera);
         self.prepare_trims();
         self.begin_skinning();
         self.mark_entity(out.len(), "minecraft:entity_flame");
@@ -11260,32 +11324,6 @@ impl Game<'_> {
         laps.lap("eg_shadows");
         // Block entities (BlockEntityRenderers): chests, shulker boxes, banners, skulls...
         if let Some(r) = &self.renderer {
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
-            let scene = BlockEntityScene {
-                camera,
-                orientation: self.camera_orientation(),
-                anim: &anim,
-                texts: None,
-                partial: alpha as f32,
-                game_time: self.world.game_time,
-                max_y: self.world.shape.max_y() - 1,
-                world: &self.world,
-                sprites: &self.gui.atlas.sprites,
-                emissive: &self.gui.atlas.emissive,
-                translucent_sprites: &self.gui.atlas.translucent,
-                atlas_revision: self.gui.atlas.revision,
-                nether: self.dim == Dim::Nether,
-                lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
-                },
-                banner: &|p| self.banner_layers_at(p),
-                skull: &|p| self.skull_skin_at(p),
-                glyph: &|c| self.gui.atlas.glyph_cell(c),
-                glyphs: self.gui.atlas.font.epoch(),
-            };
             // Block entities outside the view frustum are skipped (with a
             // block of margin for models larger than their block).
             let view = self.view_frustum;
@@ -11311,6 +11349,62 @@ impl Game<'_> {
                         .as_vec3();
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
+            };
+            let dynamic_visible = |_: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
+                if off_screen(state) {
+                    return true;
+                }
+                if let Some(view) = view
+                    && !view.intersects(
+                        (lo - camera - glam::DVec3::splat(0.5)).as_vec3(),
+                        (hi - camera + glam::DVec3::splat(0.5)).as_vec3(),
+                    )
+                {
+                    return false;
+                }
+                let name = &*self.res.facts().get(BlockStateId(state)).name;
+                if self.settings.horizon.entity_culling == EntityCullingMode::Off
+                    || self.pack_shadow_casters.0
+                    || name == "minecraft:end_portal"
+                    || name == "minecraft:end_gateway"
+                    || hi.y - lo.y > 2.0
+                {
+                    return true;
+                }
+                // Culler::aabb_bounds adds 0.05 on each side. Keep its final
+                // query just inside the conservative rendered-model envelope.
+                let bounds = Aabb::new(
+                    Vec3::new(lo.x + 0.06, lo.y + 0.06, lo.z + 0.06),
+                    Vec3::new(hi.x - 0.06, hi.y - 0.06, hi.z - 0.06),
+                );
+                !self.block_entity_occluded(bounds)
+            };
+            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
+            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
+            let scene = BlockEntityScene {
+                camera,
+                orientation: self.camera_orientation(),
+                anim: &anim,
+                texts: None,
+                partial: alpha as f32,
+                game_time: self.world.game_time,
+                max_y: self.world.shape.max_y() - 1,
+                world: &self.world,
+                sprites: &self.gui.atlas.sprites,
+                emissive: &self.gui.atlas.emissive,
+                translucent_sprites: &self.gui.atlas.translucent,
+                atlas_revision: self.gui.atlas.revision,
+                nether: self.dim == Dim::Nether,
+                lid: &lid,
+                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                    Some(BlockEntity::Sign(sign)) => Some(sign),
+                    _ => None,
+                },
+                banner: &|p| self.banner_layers_at(p),
+                skull: &|p| self.skull_skin_at(p),
+                glyph: &|c| self.gui.atlas.glyph_cell(c),
+                glyphs: self.gui.atlas.font.epoch(),
+                dynamic_visible: Some(&dynamic_visible),
             };
             let visible = r
                 .visible_block_entities_in_frustum(
@@ -11355,20 +11449,6 @@ impl Game<'_> {
                         |_, state, start| self.mark_block_entity(start, state),
                         |_, _, _, _| {},
                     );
-            } else if (self.entity_culler.is_some() || self.async_entity_culler.is_some())
-                && !block_entity_cache.any_model_cache()
-            {
-                // Entity Culling on and no model cache: a block entity hidden
-                // behind a wall stays culled, as it was before the caches.
-                for block in visible {
-                    let start = out.len();
-                    self.res
-                        .block_entity_render()
-                        .render(&scene, std::iter::once(block), &mut out);
-                    if !off_screen(block.1) {
-                        self.cull_entity_vertices(&mut out, start);
-                    }
-                }
             } else {
                 let cache_candidates = r
                     .visible_block_entities_in_frustum(
@@ -11639,8 +11719,9 @@ impl Game<'_> {
             }
         }
         laps.lap("eg_cracks");
-        self.finish_async_entity_culling();
+        self.finish_async_occlusion_culling();
         laps.lap("eg_culling_finish");
+        self.native_world_geometry(camera, alpha as f32, &mut out);
         (
             out,
             static_block_entities,
@@ -14534,6 +14615,14 @@ impl Game<'_> {
             .renderer
             .take()
             .ok_or("no renderer for graphics recovery")?;
+        // A GPU-culled frame may be what lost it: the renderers after this one don't
+        // offer GPU culling, until Horizon restarts (`graphics::lose_gpu_culling`).
+        if old.gpu_frame() {
+            log::warn!(
+                "Horizon: GPU culling off until the next start: the graphics device was lost in one of its frames"
+            );
+            horizon_client::graphics::lose_gpu_culling();
+        }
         let screenshot = old.screenshot.take();
         let screenshot_result = old.screenshot_result.take();
         drop(old);
@@ -15809,6 +15898,10 @@ impl Game<'_> {
         }
         // Before any text of this frame: a full glyph region starts over.
         self.gui.atlas.font.begin_frame();
+        if self.clock.still() {
+            // Obfuscated text picks the same glyphs in a frame of the same world tick.
+            self.gui.atlas.font.reseed(self.visual_ticks() as i64);
+        }
         self.glint_frame = self.capture_glint_frame();
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
@@ -15930,8 +16023,11 @@ impl Game<'_> {
             }
         });
         // What faces the camera (particles, item sprites, block entity text) faces a mod's.
+        // A spectated entity's view is not the local player's yaw and pitch
+        // (`Camera.setup` reads the camera entity), so it is kept too.
+        let spectating = self.camera_mob().is_some();
         self.posed_rotation = view
-            .filter(|posed| Some(*posed) != vanilla)
+            .filter(|posed| spectating || Some(*posed) != vanilla)
             .map(|(_, yaw, pitch)| (yaw, pitch));
         let eye = view.map(|_| {
             (
@@ -16434,7 +16530,7 @@ impl Game<'_> {
                     .get(n)
                     .map_or([0.0; 4], |r| [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0])
             }),
-            ticks: self.ticks,
+            ticks: self.visual_ticks(),
             darkness: self.darkness_lighting(alpha as f32),
             night_vision: self.night_vision_intensity(alpha as f32),
             block_flicker: self.fog.block_light_flicker,
@@ -16604,7 +16700,7 @@ impl Game<'_> {
         {
             return None;
         }
-        let millis = self.started.elapsed().as_millis() as i64;
+        let millis = self.visual_millis();
         Some(horizon_client::gfx::BorderDraw {
             vertices: self.border_renderer.vertices,
             rebuilt: self.border_renderer.take_rebuilt(),
@@ -17195,7 +17291,7 @@ impl Game<'_> {
                 unloaded.iter().map(|c| (c.x, c.z)).collect();
             self.world
                 .block_entities
-                .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
+                .unload(|p| gone.contains(&(p.0 >> 4, p.2 >> 4)));
             self.world
                 .block_names
                 .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
@@ -18744,7 +18840,15 @@ impl Game<'_> {
                         let started = Instant::now();
                         if self.title.is_none() && !self.pause {
                             horizon_client::spans::time("tick", || self.tick())?;
-                            self.tick_ambience();
+                            // Cave mood (a shader pack's playerMood) samples on a random
+                            // seeded from the clock: under `HORIZON_STILL` it waits for the
+                            // world and draws from its tick.
+                            if !self.clock.still() {
+                                self.tick_ambience();
+                            } else if self.clock.runs_normally() {
+                                self.ambience.reseed(self.visual_ticks() as i64);
+                                self.tick_ambience();
+                            }
                             self.tick_fov();
                         }
                         self.tick_win_screen()?;
@@ -19498,9 +19602,11 @@ impl<'a> Game<'a> {
             repro: Default::default(),
             agent: agent::Agent::default(),
             view_frustum: None,
-            entity_culler: None,
-            async_entity_culler: None,
-            async_entity_culling_failed: false,
+            entity_section_visibility_valid: false,
+            entity_section_camera: None,
+            sync_occlusion_culler: None,
+            async_occlusion_culler: None,
+            async_occlusion_culling_failed: false,
             async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
@@ -19947,6 +20053,14 @@ impl Game<'_> {
             None => self.res.stations(),
         }
     }
+    /// The enchantments item names and tooltips read: a server's, with the
+    /// entries its data packs add, else the world's.
+    fn enchantments(&self) -> &horizon_client::enchant::Enchantments {
+        match self.remote.as_ref().and_then(|r| r.enchantments.as_ref()) {
+            Some(e) => e,
+            None => &self.stations().enchantments,
+        }
+    }
     /// The world's packs' content files, none without packs.
     /// The biome table the world plays with, `None` before a world opens.
     fn packed_biomes(&self) -> Option<Arc<Biomes>> {
@@ -20026,6 +20140,20 @@ impl Game<'_> {
             self.res.core.collision.clone(),
             &causes_suffocation,
         )?;
+        // A registry whose pack tags don't load keeps the game's own tags
+        // (`in_tag` falls back to them), rather than matching no tag at all.
+        let pack_tags = WorldTables::PACK_TAG_REGISTRIES
+            .into_iter()
+            .filter_map(|registry| {
+                match horizon_client::items::load_tags(root, registry, &overlay) {
+                    Ok(tags) => Some((registry, tags)),
+                    Err(e) => {
+                        log::warn!("Horizon: the world's {registry} tags are not applied: {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
         Ok((
             Some(WorldTables {
                 suffocation,
@@ -20034,6 +20162,7 @@ impl Game<'_> {
                 recipes,
                 stations,
                 data_maps,
+                pack_tags,
             }),
             health,
         ))
@@ -22353,6 +22482,19 @@ fn debug_crosshair_drawn(
     panorama: bool,
 ) -> bool {
     enabled && first_person && !hide_gui && !panorama
+}
+
+/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
+/// block, jigsaw and the test blocks.
+fn is_game_master_block(name: &str) -> bool {
+    horizon_client::command_block::Mode::of_block(name).is_some()
+        || matches!(
+            name,
+            "minecraft:structure_block"
+                | "minecraft:jigsaw"
+                | "minecraft:test_block"
+                | "minecraft:test_instance_block"
+        )
 }
 
 #[cfg(test)]

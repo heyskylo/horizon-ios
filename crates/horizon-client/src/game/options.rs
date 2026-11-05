@@ -424,6 +424,11 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioFolder => {
+                    let dir = std::path::PathBuf::from("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::packs::open_folder(&dir);
+                }
             }
         }
         Ok(())
@@ -501,6 +506,8 @@ impl Game<'_> {
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr_lighting(s.horizon.hdr_lighting);
+            // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
+            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,

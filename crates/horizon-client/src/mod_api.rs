@@ -26,14 +26,14 @@ pub use crate::game::{
     NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
     NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
     NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
-    NativeShake,
+    NativeShake, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
 };
 pub use crate::hud::HudBatch;
-pub use crate::hud_layout::{GuiDraw, HealthInputs};
+pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
 pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;

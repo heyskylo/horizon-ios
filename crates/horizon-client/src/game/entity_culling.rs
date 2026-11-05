@@ -1,384 +1,69 @@
-//! Entity occlusion affects mesh submission, never entity ticking or interaction.
-use super::{Game, Vertex};
-use horizon_client::{
-    blocks::{BlockFacts, RenderShape, StateFacts},
-    chunk::Chunk,
-    entity_culling::Culler,
-    mobs::Species,
-    world::World,
+//! Entity mesh occlusion and view-distance checks.
+use super::{
+    Game, Vertex,
+    entity::RenderEntityBounds,
+    occlusion_culling::{QuerySource, SyncOccluder},
 };
-use std::{
-    cell::RefCell,
-    sync::{
-        Arc, Weak,
-        mpsc::{self, Receiver, SyncSender, TrySendError},
-    },
-    thread::JoinHandle,
-};
+use horizon_client::graphics::EntityCullingMode;
+use horizon_client::mobs::Species;
+use horizon_core::geometry::{Aabb, Vec3};
 
-type ChunkKey = (i32, i32);
-type SectionKey = (i32, i32, i32);
-const MAX_SNAPSHOT_CHUNKS: i64 = 4_096;
+const MAX_ENTITY_SECTION_COVERAGE: i64 = 50;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct CullKey {
-    camera: [u64; 3],
-    min: [u64; 3],
-    max: [u64; 3],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SnapshotKey {
-    world_revision: u64,
-    chunks_revision: u64,
-    bottom_y: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ChunkBounds {
-    min_x: i32,
-    max_x: i32,
-    min_z: i32,
-    max_z: i32,
-}
-
-/// Sorted weak chunk references avoid holding gameplay chunks or forcing
-/// copy-on-write. A worker keeps only its current chunk strongly referenced.
-#[derive(Clone)]
-struct OcclusionSnapshot {
-    chunks: Vec<(ChunkKey, Weak<Chunk>)>,
-    opaque_states: Arc<[bool]>,
-}
-
-impl OcclusionSnapshot {
-    fn chunk(&self, key: ChunkKey) -> Option<&Weak<Chunk>> {
-        self.chunks
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .ok()
-            .map(|index| &self.chunks[index].1)
-    }
-
-    fn refresh_chunks(&mut self, world: &World, bounds: ChunkBounds) {
-        self.chunks.clear();
-        for x in bounds.min_x..=bounds.max_x {
-            for z in bounds.min_z..=bounds.max_z {
-                if let Some(chunk) = world.chunks.get(&(x, z)) {
-                    self.chunks.push(((x, z), Arc::downgrade(chunk)));
-                }
-            }
-        }
-    }
-
-    fn chunks_match(&self, world: &World) -> bool {
-        self.chunks.iter().all(|(key, expected)| {
-            world
-                .chunks
-                .get(key)
-                .is_some_and(|current| std::ptr::eq(expected.as_ptr(), Arc::as_ptr(current)))
-        })
-    }
-
-    fn opaque(&self, pos: [i32; 3], last_chunk: &mut LastChunk) -> bool {
-        let key = (pos[0] >> 4, pos[2] >> 4);
-        let Some(chunk) = last_chunk.get(self, key) else {
-            return false;
-        };
-        let state = chunk.block(pos[0] & 15, pos[1], pos[2] & 15);
-        self.opaque_states
-            .get(state.0 as usize)
-            .copied()
-            .unwrap_or(false)
-    }
-}
-
-#[derive(Default)]
-struct LastChunk {
-    key: Option<ChunkKey>,
-    value: Option<Arc<Chunk>>,
-}
-
-impl LastChunk {
-    fn get(&mut self, snapshot: &OcclusionSnapshot, key: ChunkKey) -> Option<&Arc<Chunk>> {
-        if self.key != Some(key) {
-            self.key = Some(key);
-            self.value = snapshot.chunk(key).and_then(Weak::upgrade);
-        }
-        self.value.as_ref()
-    }
-}
-
-struct OcclusionProof {
-    sections: Vec<SectionKey>,
-    chunks: Vec<(ChunkKey, Weak<Chunk>)>,
-}
-
-struct CullResults {
-    stamp: SnapshotKey,
-    hidden: Vec<(CullKey, OcclusionProof)>,
-    scratch_queries: Vec<CullKey>,
-}
-
-struct CullJob {
-    stamp: SnapshotKey,
-    snapshot: Arc<OcclusionSnapshot>,
-    queries: Vec<CullKey>,
-}
-
-/// Non-blocking entity occlusion. Results are reused only for byte-identical
-/// camera and mesh bounds, with the block chunks and rendered sections that
-/// proved occlusion revalidated before hiding anything.
-pub(super) struct AsyncCuller {
-    jobs: SyncSender<CullJob>,
-    results_rx: Receiver<CullResults>,
-    _thread: JoinHandle<()>,
-    snapshot: Option<(SnapshotKey, ChunkBounds, Arc<OcclusionSnapshot>)>,
-    opaque_states: Option<Arc<[bool]>>,
-    results: Option<CullResults>,
-    queries: RefCell<Vec<CullKey>>,
-    camera: [f64; 3],
-    stamp: SnapshotKey,
-    pending: bool,
-}
-
-impl AsyncCuller {
-    pub(super) fn new() -> std::io::Result<Self> {
-        let (job_tx, job_rx) = mpsc::sync_channel::<CullJob>(1);
-        let (result_tx, result_rx) = mpsc::channel::<CullResults>();
-        let thread = std::thread::Builder::new()
-            .name("entity-culling".into())
-            .spawn(move || {
-                while let Ok(job) = job_rx.recv() {
-                    if result_tx.send(cull_job(job)).is_err() {
-                        break;
-                    }
-                }
-            })?;
-        Ok(Self {
-            jobs: job_tx,
-            results_rx: result_rx,
-            _thread: thread,
-            snapshot: None,
-            opaque_states: None,
-            results: None,
-            queries: RefCell::new(Vec::new()),
-            camera: [0.0; 3],
-            stamp: SnapshotKey {
-                world_revision: 0,
-                chunks_revision: 0,
-                bottom_y: 0,
-            },
-            pending: false,
-        })
-    }
-
-    fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
-        while let Ok(mut results) = self.results_rx.try_recv() {
-            self.pending = false;
-            let scratch = std::mem::take(&mut results.scratch_queries);
-            if scratch.capacity() > self.queries.get_mut().capacity() {
-                *self.queries.get_mut() = scratch;
-            }
-            self.results = Some(results);
-        }
-        self.camera = camera.to_array();
-        self.stamp = SnapshotKey {
-            world_revision: world.revision,
-            chunks_revision: world.chunks.membership_revision(),
-            bottom_y: world.bottom_y(),
-        };
-        if self
-            .results
-            .as_ref()
-            .is_some_and(|result| result.stamp != self.stamp)
-        {
-            self.results = None;
-        }
-        self.queries.get_mut().clear();
-    }
-
-    fn query(&self, vertices: &[Vertex], start: usize) -> Option<CullKey> {
-        let (min, max) = Culler::bounds(self.camera, vertices, start)?;
-        Some(CullKey {
-            camera: self.camera.map(f64::to_bits),
-            min: min.map(f64::to_bits),
-            max: max.map(f64::to_bits),
-        })
-    }
-
-    fn proof(&self, key: &CullKey) -> Option<&OcclusionProof> {
-        let hidden = &self.results.as_ref()?.hidden;
-        let index = hidden.binary_search_by_key(key, |(key, _)| *key).ok()?;
-        Some(&hidden[index].1)
-    }
-
-    fn queue(&self, key: CullKey) {
-        self.queries.borrow_mut().push(key);
-    }
-
-    fn finish_frame(&mut self, world: &World, facts: &BlockFacts) {
-        let queries = self.queries.get_mut();
-        if self.pending {
-            queries.clear();
-            return;
-        }
-        if queries.is_empty() {
-            return;
-        }
-        queries.sort_unstable();
-        queries.dedup();
-        let Some(bounds) = snapshot_bounds(self.camera, queries) else {
-            queries.clear();
-            return;
-        };
-        let opaque_states = Arc::clone(
-            self.opaque_states
-                .get_or_insert_with(|| facts.states.iter().map(opaque).collect::<Vec<_>>().into()),
-        );
-        let snapshot = match &mut self.snapshot {
-            Some((stamp, cached_bounds, snapshot)) => {
-                if stamp != &self.stamp || *cached_bounds != bounds || !snapshot.chunks_match(world)
-                {
-                    let snapshot = Arc::make_mut(snapshot);
-                    snapshot.opaque_states = Arc::clone(&opaque_states);
-                    snapshot.refresh_chunks(world, bounds);
-                    *stamp = self.stamp;
-                    *cached_bounds = bounds;
-                }
-                Arc::clone(snapshot)
-            }
-            None => {
-                let mut snapshot = OcclusionSnapshot {
-                    chunks: Vec::new(),
-                    opaque_states,
-                };
-                snapshot.refresh_chunks(world, bounds);
-                let snapshot = Arc::new(snapshot);
-                self.snapshot = Some((self.stamp, bounds, Arc::clone(&snapshot)));
-                snapshot
-            }
-        };
-        let queries = std::mem::take(queries);
-        let job = CullJob {
-            stamp: self.stamp,
-            snapshot,
-            queries,
-        };
-        match self.jobs.try_send(job) {
-            Ok(()) => self.pending = true,
-            Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) => {
-                *self.queries.get_mut() = job.queries;
-            }
-        }
-    }
-}
-
-fn cull_job(mut job: CullJob) -> CullResults {
-    let camera = job.queries[0].camera.map(f64::from_bits);
-    let culler = Culler::new(camera, 8_192);
-    let mut last_chunk = LastChunk::default();
-    let mut hidden = Vec::with_capacity(job.queries.len());
-    let mut covered = Vec::new();
-    for &key in &job.queries {
-        covered.clear();
-        let min = key.min.map(f64::from_bits);
-        let max = key.max.map(f64::from_bits);
-        if culler.occluded(min, max, |pos| {
-            let opaque = job.snapshot.opaque(pos, &mut last_chunk);
-            if opaque {
-                covered.push(pos);
-            }
-            opaque
-        }) {
-            let mut sections = Vec::with_capacity(covered.len());
-            let mut proof_chunks: Vec<(ChunkKey, Weak<Chunk>)> = Vec::new();
-            let mut valid = true;
-            for &pos in &covered {
-                let chunk_key = (pos[0] >> 4, pos[2] >> 4);
-                let Some(y) = pos[1].checked_sub(job.stamp.bottom_y) else {
-                    valid = false;
-                    break;
-                };
-                sections.push((chunk_key.0, y.div_euclid(16), chunk_key.1));
-                if let Err(index) = proof_chunks.binary_search_by_key(&chunk_key, |(key, _)| *key) {
-                    let Some(chunk) = job.snapshot.chunk(chunk_key) else {
-                        valid = false;
-                        break;
-                    };
-                    if chunk.strong_count() == 0 {
-                        valid = false;
-                        break;
-                    }
-                    proof_chunks.insert(index, (chunk_key, chunk.clone()));
-                }
-            }
-            if valid {
-                sections.sort_unstable();
-                sections.dedup();
-                hidden.push((
-                    key,
-                    OcclusionProof {
-                        sections,
-                        chunks: proof_chunks,
-                    },
-                ));
-            }
-        }
-    }
-    job.queries.clear();
-    CullResults {
-        stamp: job.stamp,
-        hidden,
-        scratch_queries: job.queries,
-    }
-}
-
-fn opaque(facts: &StateFacts) -> bool {
-    facts.render_shape == RenderShape::Model
-        && facts.can_occlude
-        && facts.solid_render
-        && facts.full_collision
-}
-
-fn snapshot_bounds(camera: [f64; 3], queries: &[CullKey]) -> Option<ChunkBounds> {
-    let mut min_x = camera[0];
-    let mut max_x = camera[0];
-    let mut min_z = camera[2];
-    let mut max_z = camera[2];
-    for query in queries {
-        let min = query.min.map(f64::from_bits);
-        let max = query.max.map(f64::from_bits);
-        min_x = min_x.min(min[0]);
-        max_x = max_x.max(max[0]);
-        min_z = min_z.min(min[2]);
-        max_z = max_z.max(max[2]);
-    }
-    // Culler::occluded expands projected cells by EPSILON. One block of slack
-    // also covers the camera's first cell when it lies exactly on a boundary.
-    let min_x = snapshot_cell(min_x - 1.0)? >> 4;
-    let max_x = snapshot_cell(max_x + 1.0)? >> 4;
-    let min_z = snapshot_cell(min_z - 1.0)? >> 4;
-    let max_z = snapshot_cell(max_z + 1.0)? >> 4;
-    let width = i64::from(max_x) - i64::from(min_x) + 1;
-    let depth = i64::from(max_z) - i64::from(min_z) + 1;
-    if width <= 0 || depth <= 0 || width.checked_mul(depth)? > MAX_SNAPSHOT_CHUNKS {
+/// The inclusive range of sections an entity's padded render bounds can touch,
+/// in the layout whose section 0 starts at `bottom_y`. `None` when the bounds
+/// are not finite, hold block coordinates outside `i32`, or span more sections
+/// than `MAX_ENTITY_SECTION_COVERAGE`: those go to the per-entity path.
+fn entity_section_span(bounds: Aabb, bottom_y: i32) -> Option<([i32; 3], [i32; 3])> {
+    // A half-block border keeps models near section edges checked against
+    // every section their geometry could touch.
+    let lo = bounds.min_position();
+    let hi = bounds.max_position();
+    let min_block = [lo.x - 0.5, lo.y - 0.5, lo.z - 0.5];
+    let max_block = [hi.x + 0.5, hi.y + 0.5, hi.z + 0.5];
+    if min_block
+        .into_iter()
+        .chain(max_block)
+        .any(|v| !v.is_finite() || v < f64::from(i32::MIN) || v > f64::from(i32::MAX))
+    {
         return None;
     }
-    Some(ChunkBounds {
-        min_x,
-        max_x,
-        min_z,
-        max_z,
-    })
+    let min_block = min_block.map(|v| v.floor() as i32);
+    let max_block = max_block.map(|v| v.floor() as i32);
+    let min_y = min_block[1].checked_sub(bottom_y)?;
+    let max_y = max_block[1].checked_sub(bottom_y)?;
+    let min = [min_block[0] >> 4, min_y >> 4, min_block[2] >> 4];
+    let max = [max_block[0] >> 4, max_y >> 4, max_block[2] >> 4];
+    let sections = (0..3).try_fold(1_i64, |count, axis| {
+        count.checked_mul(i64::from(max[axis]) - i64::from(min[axis]) + 1)
+    });
+    // Very large render envelopes (for example, beams) are cheaper and safer to
+    // leave to the existing per-entity path.
+    sections
+        .is_some_and(|count| count <= MAX_ENTITY_SECTION_COVERAGE)
+        .then_some((min, max))
 }
 
-fn snapshot_cell(value: f64) -> Option<i32> {
-    let cell = value.floor();
-    (cell.is_finite() && cell >= f64::from(i32::MIN) && cell <= f64::from(i32::MAX))
-        .then_some(cell as i32)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EntityCullDecision {
+    Bypass,
+    Hidden,
+    CheckVertices,
+    Pending,
+}
+
+impl EntityCullDecision {
+    pub(super) const fn hides_entity(self) -> bool {
+        matches!(self, Self::Hidden)
+    }
+
+    pub(super) const fn checks_vertices(self) -> bool {
+        matches!(self, Self::CheckVertices)
+    }
 }
 
 impl Game<'_> {
-    pub(super) fn prepare_entity_culling(&mut self, camera: glam::DVec3) {
+    pub(super) fn prepare_entity_culling(&mut self) {
         // Spans tell the pack's passes which entities are hidden; without them, nothing changes.
         self.pack_shadow_casters = match (&self.renderer, &self.pack_ids) {
             (Some(r), Some(_)) => r.pack_shadow_casters(),
@@ -387,128 +72,283 @@ impl Game<'_> {
             (Some(r), None) => (false, r.native_shadow()),
             _ => (false, false),
         };
-        let at = camera.to_array().map(|v| v.floor() as i32);
-        let eligible = self.settings.horizon.entity_culling
-            != horizon_client::graphics::EntityCullingMode::Off
-            // Packs can replace an opaque block's model or texture.
-            && self.model_packs_are_vanilla()
-            && self.player.is_some()
-            && !self.spectator()
-            && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));
-        if !eligible {
-            self.entity_culler = None;
-            self.async_entity_culler = None;
-            self.async_entity_culling_failed = false;
-            return;
-        }
-
-        match self.settings.horizon.entity_culling {
-            horizon_client::graphics::EntityCullingMode::Off => {
-                self.entity_culler = None;
-                self.async_entity_culler = None;
-                self.async_entity_culling_failed = false;
-            }
-            horizon_client::graphics::EntityCullingMode::Synchronous => {
-                self.entity_culler = Some(Culler::new(camera.to_array(), 8_192));
-                self.async_entity_culler = None;
-                self.async_entity_culling_failed = false;
-            }
-            horizon_client::graphics::EntityCullingMode::Asynchronous => {
-                self.entity_culler = None;
-                if self.async_entity_culler.is_none() && !self.async_entity_culling_failed {
-                    match AsyncCuller::new() {
-                        Ok(culler) => self.async_entity_culler = Some(culler),
-                        Err(error) => {
-                            log::warn!("Horizon: cannot start entity-culling worker: {error}");
-                            self.async_entity_culling_failed = true;
-                        }
-                    }
-                }
-                if let Some(culler) = &mut self.async_entity_culler {
-                    culler.begin_frame(camera, &self.world);
-                } else {
-                    // If the worker cannot start, use the existing same-frame path.
-                    self.entity_culler = Some(Culler::new(camera.to_array(), 8_192));
-                }
-            }
-        }
     }
 
-    /// Use complete generated geometry so equipment, animation and custom
-    /// models cannot stick out of an assumed collision-sized culling box.
-    /// Returns this entity's occlusion result, including retained shadow casters.
     pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) -> bool {
-        if let Some(culler) = &self.entity_culler {
-            let hidden = culler.hidden(vertices, start, |pos| self.occluder_ready(pos));
-            // A shader pack's shadow pass still draws what the camera cannot see.
-            if hidden
-                && !(self.pack_shadow_casters.0 && self.hide_spans_from(start, vertices.len()))
-            {
-                vertices.truncate(start);
-            }
-            return hidden;
-        }
-
-        let Some(culler) = &self.async_entity_culler else {
-            return false;
-        };
-        let Some(query) = culler.query(vertices, start) else {
-            return false;
-        };
-        let hidden = self
-            .async_entity_culler
-            .as_ref()
-            .and_then(|culler| culler.proof(&query))
-            .is_some_and(|proof| self.async_proof_is_current(proof));
+        let hidden = self.occlusion_hidden(Some(vertices), start, None);
         if hidden && !(self.pack_shadow_casters.0 && self.hide_spans_from(start, vertices.len())) {
+            if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
+                && let Some(culler) = &self.async_occlusion_culler
+            {
+                culler.record_entity_vertices_culled(vertices.len().saturating_sub(start));
+            }
             vertices.truncate(start);
-        }
-        if let Some(culler) = &self.async_entity_culler {
-            culler.queue(query);
         }
         hidden
     }
 
-    fn async_proof_is_current(&self, proof: &OcclusionProof) -> bool {
-        for (key, expected) in &proof.chunks {
-            let Some(current) = self.world.chunks.get(key) else {
-                return false;
-            };
-            if !std::ptr::eq(Arc::as_ptr(current), expected.as_ptr()) {
-                return false;
+    pub(super) fn cull_entity_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        if self.occlusion_hidden_camera_bounds(lo, hi) {
+            if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
+                && let Some(culler) = &self.async_occlusion_culler
+            {
+                culler.record_entity_vertices_culled(2);
             }
+            return true;
         }
-        proof.sections.iter().all(|&section| {
-            self.renderer
-                .as_ref()
-                .is_some_and(|r| r.has_section(section))
-                && !self.world.dirty_sections.contains(&section)
-                && !self.streaming.is_meshing(section)
-                && !self.pending_uploads.iter().any(|(key, _)| *key == section)
+        false
+    }
+
+    fn occlusion_hidden_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        match self.settings.horizon.entity_culling {
+            EntityCullingMode::Off => false,
+            EntityCullingMode::Asynchronous => {
+                if let Some(culler) = &self.async_occlusion_culler {
+                    if !culler.camera_is_stationary() {
+                        return false;
+                    }
+                    let Some(query) = culler.query_camera_bounds(lo, hi) else {
+                        return false;
+                    };
+                    match culler.query_result(&query, QuerySource::EntityMesh) {
+                        Some((false, _)) => false,
+                        Some((true, Some(proof)))
+                            if culler.proof_is_current(
+                                &self.world,
+                                self.renderer.as_ref(),
+                                &self.streaming,
+                                &self.pending_uploads,
+                                proof,
+                            ) =>
+                        {
+                            true
+                        }
+                        Some(_) | None => {
+                            culler.queue(query);
+                            false
+                        }
+                    }
+                } else {
+                    self.entity_hidden_sync_camera_bounds(lo, hi)
+                }
+            }
+            EntityCullingMode::Synchronous => self.entity_hidden_sync_camera_bounds(lo, hi),
+        }
+    }
+
+    fn entity_hidden_sync_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
+            let mut occluder = SyncOccluder::new(
+                &self.world,
+                self.res.facts(),
+                self.renderer.as_ref(),
+                &self.streaming,
+                &self.pending_uploads,
+            );
+            culler.hidden_camera_bounds(lo.to_array(), hi.to_array(), |pos| occluder.ready(pos))
         })
     }
 
-    fn occluder_ready(&self, pos: [i32; 3]) -> bool {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        if !opaque(self.res.facts().get(state)) {
-            return false;
-        }
-        let Some(y) = pos[1].checked_sub(self.world.bottom_y()) else {
-            return false;
-        };
-        let section = (pos[0] >> 4, y.div_euclid(16), pos[2] >> 4);
-        self.renderer
-            .as_ref()
-            .is_some_and(|r| r.has_section(section))
-            && !self.world.dirty_sections.contains(&section)
-            && !self.streaming.is_meshing(section)
-            && !self.pending_uploads.iter().any(|(key, _)| *key == section)
+    /// Pre-model visibility hook for dynamic block-entity geometry.
+    pub(super) fn block_entity_occluded(&self, bounds: Aabb) -> bool {
+        self.occlusion_hidden(None, 0, Some(bounds))
     }
 
-    pub(super) fn finish_async_entity_culling(&mut self) {
-        if let Some(culler) = &mut self.async_entity_culler {
-            culler.finish_frame(&self.world, self.res.facts());
+    /// Cull from the shared entity AABB before generating its model vertices.
+    pub(super) fn entity_cull_decision<T: RenderEntityBounds>(
+        &self,
+        entity: &T,
+        alpha: f64,
+    ) -> EntityCullDecision {
+        self.entity_cull_decision_in_bounds(entity, entity.render_bounds(alpha))
+    }
+
+    /// Cull from a renderer-computed envelope when the rendered transform has
+    /// extra offsets or model geometry that the entity type alone cannot see.
+    pub(super) fn entity_cull_decision_in_bounds<T: RenderEntityBounds>(
+        &self,
+        entity: &T,
+        render_bounds: Aabb,
+    ) -> EntityCullDecision {
+        if self.settings.horizon.entity_culling == EntityCullingMode::Off
+            || self.pack_shadow_casters.0
+            || entity.render_glowing(self)
+        {
+            return EntityCullDecision::Bypass;
         }
+        // `render_bounds` is already the conservative model and animation
+        // envelope. Only cover f32 vertex rounding here; another half-block
+        // would make coarse walls falsely visible and force mesh generation.
+        let margin = Vec3::new(1.0e-4, 1.0e-4, 1.0e-4);
+        let bounds = render_bounds.inflate(margin);
+        if self.terrain_sections_occlude(bounds) {
+            if let Some(culler) = &self.async_occlusion_culler {
+                culler.record_entity_culled();
+            }
+            return EntityCullDecision::Hidden;
+        }
+        match self.settings.horizon.entity_culling {
+            EntityCullingMode::Off => EntityCullDecision::Bypass,
+            EntityCullingMode::Synchronous => {
+                if self.entity_hidden_sync(None, 0, Some(bounds)) {
+                    EntityCullDecision::Hidden
+                } else {
+                    EntityCullDecision::CheckVertices
+                }
+            }
+            EntityCullingMode::Asynchronous => {
+                let Some(culler) = &self.async_occlusion_culler else {
+                    return if self.entity_hidden_sync(None, 0, Some(bounds)) {
+                        EntityCullDecision::Hidden
+                    } else {
+                        EntityCullDecision::CheckVertices
+                    };
+                };
+                if !culler.camera_is_stationary() {
+                    return EntityCullDecision::CheckVertices;
+                }
+                let Some(query) = culler.query_entity_bounds(bounds) else {
+                    return EntityCullDecision::CheckVertices;
+                };
+                culler.sample_entity_aabb(entity.render_id(), &query);
+                match culler.query_result(&query, QuerySource::EntityAabb) {
+                    Some((false, _)) => EntityCullDecision::CheckVertices,
+                    Some((true, Some(proof)))
+                        if culler.proof_is_current(
+                            &self.world,
+                            self.renderer.as_ref(),
+                            &self.streaming,
+                            &self.pending_uploads,
+                            proof,
+                        ) =>
+                    {
+                        culler.record_entity_culled();
+                        EntityCullDecision::Hidden
+                    }
+                    Some(_) | None => {
+                        culler.queue(query);
+                        EntityCullDecision::Pending
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reject entities whose padded render bounds lie entirely in sections the
+    /// terrain visibility graph cannot reach. Unknown graph cells fail open.
+    fn terrain_sections_occlude(&self, bounds: Aabb) -> bool {
+        if !self.entity_section_visibility_valid
+            || (self.sync_occlusion_culler.is_none() && self.async_occlusion_culler.is_none())
+        {
+            return false;
+        }
+        let Some(renderer) = &self.renderer else {
+            return false;
+        };
+        let Some(camera_section) = self.entity_section_camera else {
+            return false;
+        };
+        let Some((min, max)) = entity_section_span(bounds, self.world.bottom_y()) else {
+            return false;
+        };
+
+        for x in min[0]..=max[0] {
+            for y in min[1]..=max[1] {
+                for z in min[2]..=max[2] {
+                    let Some(visible) =
+                        renderer.section_occlusion_visible((x, y, z), camera_section)
+                    else {
+                        return false;
+                    };
+                    if visible {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Refine an AABB-visible result with the exact bounds of the rendered mesh.
+    pub(super) fn finish_entity_occlusion<T: RenderEntityBounds>(
+        &self,
+        decision: EntityCullDecision,
+        entity: &T,
+        vertices: &mut Vec<Vertex>,
+        start: usize,
+    ) {
+        if decision.checks_vertices() && !self.pack_shadow_casters.0 && !entity.render_glowing(self)
+        {
+            self.cull_entity_vertices(vertices, start);
+        }
+    }
+
+    fn occlusion_hidden(
+        &self,
+        vertices: Option<&[Vertex]>,
+        start: usize,
+        bounds: Option<Aabb>,
+    ) -> bool {
+        match self.settings.horizon.entity_culling {
+            EntityCullingMode::Off => false,
+            EntityCullingMode::Synchronous => self.entity_hidden_sync(vertices, start, bounds),
+            EntityCullingMode::Asynchronous => {
+                if let Some(culler) = &self.async_occlusion_culler {
+                    if !culler.camera_is_stationary() {
+                        return false;
+                    }
+                    let Some(query) = (match bounds {
+                        Some(bounds) => culler.query_entity_bounds(bounds),
+                        None => vertices.and_then(|vertices| culler.query(vertices, start)),
+                    }) else {
+                        return false;
+                    };
+                    match culler.query_result(&query, QuerySource::EntityMesh) {
+                        Some((false, _)) => false,
+                        Some((true, Some(proof)))
+                            if culler.proof_is_current(
+                                &self.world,
+                                self.renderer.as_ref(),
+                                &self.streaming,
+                                &self.pending_uploads,
+                                proof,
+                            ) =>
+                        {
+                            true
+                        }
+                        Some(_) | None => {
+                            culler.queue(query);
+                            false
+                        }
+                    }
+                } else {
+                    self.entity_hidden_sync(vertices, start, bounds)
+                }
+            }
+        }
+    }
+
+    fn entity_hidden_sync(
+        &self,
+        vertices: Option<&[Vertex]>,
+        start: usize,
+        bounds: Option<Aabb>,
+    ) -> bool {
+        self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
+            let mut occluder = SyncOccluder::new(
+                &self.world,
+                self.res.facts(),
+                self.renderer.as_ref(),
+                &self.streaming,
+                &self.pending_uploads,
+            );
+            match bounds {
+                Some(bounds) => culler.hidden_bounds(bounds, |pos| occluder.ready(pos)),
+                None => vertices.is_some_and(|vertices| {
+                    culler.hidden(vertices, start, |pos| occluder.ready(pos))
+                }),
+            }
+        })
     }
 }
 
@@ -543,6 +383,59 @@ pub(super) fn default_range(size: glam::DVec3, view_scale: f64) -> f64 {
     edge * 64.0 * view_scale
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CullGrow {
+    side: f64,
+    all: f64,
+    down: f64,
+}
+
+impl CullGrow {
+    fn of(species: Species, height: f64, dragon_head: bool) -> Self {
+        let mut grow = Self::default();
+        if dragon_head {
+            grow.all += 0.5;
+        }
+        match species {
+            Species::Illusioner => grow.side += 3.0,
+            Species::Sniffer => grow.all += 0.6,
+            Species::HappyGhast => grow.down += height / 2.0,
+            _ => {}
+        }
+        grow
+    }
+}
+
+fn grown_box(
+    pos: glam::DVec3,
+    width: f64,
+    height: f64,
+    grow: CullGrow,
+) -> (glam::DVec3, glam::DVec3) {
+    let side = width / 2.0 + grow.side + grow.all;
+    (
+        pos - glam::DVec3::new(side, grow.all + grow.down, side),
+        pos + glam::DVec3::new(side, height + grow.all, side),
+    )
+}
+
+/// `LivingEntityRenderer.getBoundingBoxForCulling` for the mob's interpolated
+/// position, including renderer-specific growth for mirrors, riders and heads.
+pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
+    let (width, height, _) = mob.dims();
+    let grow = CullGrow::of(
+        mob.species(),
+        height,
+        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
+    );
+    let pos = glam::DVec3::new(
+        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
+        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
+        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
+    );
+    grown_box(pos, width, height, grow)
+}
+
 impl Game<'_> {
     /// EntityRenderer.shouldRender: the entity within `range` blocks of the
     /// camera, measured from its current `position`, and its culling box
@@ -565,167 +458,6 @@ impl Game<'_> {
             )
         })
     }
-}
-
-#[cfg(test)]
-mod async_tests {
-    use super::*;
-    use horizon_client::chunk::ColumnLayout;
-
-    fn wall(hole: Option<[i32; 3]>) -> (Arc<OcclusionSnapshot>, Vec<Arc<Chunk>>) {
-        let mut live = Vec::new();
-        let mut chunks = Vec::new();
-        for chunk_z in [-1, 0] {
-            let mut chunk = Chunk::with_layout(0, chunk_z, ColumnLayout::VANILLA);
-            for y in -1..=0 {
-                for z in -1..=0 {
-                    let pos = [4, y, z];
-                    if hole != Some(pos) {
-                        chunk.set(pos[0] & 15, pos[1], pos[2] & 15, 1);
-                    }
-                }
-            }
-            let chunk = Arc::new(chunk);
-            chunks.push(((0, chunk_z), Arc::downgrade(&chunk)));
-            live.push(chunk);
-        }
-        chunks.sort_unstable_by_key(|(key, _)| *key);
-        (
-            Arc::new(OcclusionSnapshot {
-                chunks,
-                opaque_states: Arc::from([false, true]),
-            }),
-            live,
-        )
-    }
-
-    fn job(snapshot: Arc<OcclusionSnapshot>) -> CullJob {
-        let camera = [0.0; 3];
-        let min = [7.95, -0.55, -0.55];
-        let max = [10.05, 0.55, 0.55];
-        CullJob {
-            stamp: SnapshotKey {
-                world_revision: 1,
-                chunks_revision: 1,
-                bottom_y: ColumnLayout::VANILLA.min_y(),
-            },
-            snapshot,
-            queries: vec![CullKey {
-                camera: camera.map(f64::to_bits),
-                min: min.map(f64::to_bits),
-                max: max.map(f64::to_bits),
-            }],
-        }
-    }
-
-    #[test]
-    fn async_snapshot_is_bounded_and_handles_negative_chunk_edges() {
-        let camera = [-16.0, 0.0, -16.0];
-        let key = CullKey {
-            camera: camera.map(f64::to_bits),
-            min: [-8.0, -1.0, -8.0].map(f64::to_bits),
-            max: [8.0, 1.0, 8.0].map(f64::to_bits),
-        };
-        assert_eq!(
-            snapshot_bounds(camera, &[key]),
-            Some(ChunkBounds {
-                min_x: -2,
-                max_x: 0,
-                min_z: -2,
-                max_z: 0,
-            })
-        );
-
-        let huge = CullKey {
-            camera: [0.0; 3].map(f64::to_bits),
-            min: [5_000.0, 0.0, 5_000.0].map(f64::to_bits),
-            max: [5_001.0, 1.0, 5_001.0].map(f64::to_bits),
-        };
-        assert_eq!(snapshot_bounds([0.0; 3], &[huge]), None);
-    }
-
-    #[test]
-    fn async_worker_only_hides_bounds_behind_a_complete_opaque_plane() {
-        let (snapshot, live) = wall(None);
-        let results = cull_job(job(snapshot));
-        assert_eq!(results.hidden.len(), 1);
-        assert_eq!(results.hidden[0].1.sections.len(), 4);
-        assert_eq!(results.hidden[0].1.chunks.len(), 2);
-        drop(live);
-
-        let (snapshot, live) = wall(Some([4, 0, 0]));
-        let results = cull_job(job(snapshot));
-        assert!(results.hidden.is_empty());
-        drop(live);
-    }
-}
-
-/// How far a renderer's `getBoundingBoxForCulling` grows the entity's own box.
-/// `EntityRenderer.shouldRender` culls with that box and inflates it by 0.5
-/// more; the growth here is what the renderer asks for on top.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct CullGrow {
-    /// Added to all three axes (`AABB.inflate(d)`).
-    all: f64,
-    /// Added to x and z only (`AABB.inflate(x, 0, z)`).
-    side: f64,
-    /// Taken off the bottom (`AABB.setMinY`).
-    down: f64,
-}
-
-impl CullGrow {
-    /// The growth a living entity's renderer asks for: none at all unless it
-    /// is an illusioner, a sniffer, a happy ghast or wearing a dragon head.
-    pub(super) fn of(species: Species, height: f64, dragon_head: bool) -> Self {
-        let mut grow = Self::default();
-        // LivingEntityRenderer.getBoundingBoxForCulling: `inflate(0.5)` while
-        // the head slot holds a dragon head, so the head does not pop out at
-        // the edge of the view.
-        if dragon_head {
-            grow.all += 0.5;
-        }
-        match species {
-            // IllusionerRenderer: `inflate(3, 0, 3)`, room for its mirrors.
-            Species::Illusioner => grow.side += 3.0,
-            // SnifferRenderer: `inflate(0.6)`.
-            Species::Sniffer => grow.all += f64::from(0.6_f32),
-            // HappyGhastRenderer: `setMinY(minY - getBbHeight() / 2)`.
-            Species::HappyGhast => grow.down += height / 2.0,
-            _ => {}
-        }
-        grow
-    }
-}
-
-/// `getBoundingBoxForCulling` for a mob at the frame's partial tick `alpha`,
-/// grown by what its renderer asks for.
-pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
-    let (width, height, _) = mob.dims();
-    let grow = CullGrow::of(
-        mob.species(),
-        height,
-        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
-    );
-    let pos = glam::DVec3::new(
-        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
-        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
-        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
-    );
-    grown_box(pos, width, height, grow)
-}
-
-/// The entity's box standing on `pos`, grown by `grow`.
-pub(super) fn grown_box(
-    pos: glam::DVec3,
-    width: f64,
-    height: f64,
-    grow: CullGrow,
-) -> (glam::DVec3, glam::DVec3) {
-    let side = width / 2.0 + grow.side + grow.all;
-    (
-        pos - glam::DVec3::new(side, grow.all + grow.down, side),
-        pos + glam::DVec3::new(side, height + grow.all, side),
-    )
 }
 
 /// An entity's position as a `DVec3`.
@@ -758,7 +490,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+mod vanilla_entity_tests {
     use super::*;
 
     /// `Entity.setViewScale`: the entity distance option times the render
@@ -855,4 +587,54 @@ mod tests {
         );
         assert_eq!(range, 96.0);
     }
+
+    /// The sections an entity's padded bounds can touch: the half-block border
+    /// a model near a section edge reaches into, the layout `bottom_y` sets,
+    /// and the boxes that get no answer and stay on the per-entity path.
+    #[test]
+    fn entity_section_spans_cover_the_border_and_fail_open() {
+        let span = |lo: [f64; 3], hi: [f64; 3], bottom_y: i32| {
+            entity_section_span(
+                Aabb::new(
+                    Vec3::new(lo[0], lo[1], lo[2]),
+                    Vec3::new(hi[0], hi[1], hi[2]),
+                ),
+                bottom_y,
+            )
+        };
+
+        // A chicken well inside one section stays in it.
+        assert_eq!(
+            span([100.2, -63.4, 7.1], [100.6, -62.9, 7.5], -64),
+            Some(([6, 0, 0], [6, 0, 0]))
+        );
+        // A box 0.8 wide inside the next section does not spill out of it.
+        assert_eq!(
+            span([16.6, -60.0, 100.6], [17.4, -59.4, 101.4], -64),
+            Some(([1, 0, 6], [1, 0, 6]))
+        );
+        // On a section border the model reaches the section either side.
+        assert_eq!(
+            span([16.0, -60.0, 100.0], [16.0, -59.0, 100.0], -64),
+            Some(([0, 0, 6], [1, 0, 6]))
+        );
+        // `bottom_y` places section 0: the same box in the Nether.
+        assert_eq!(
+            span([100.2, -63.4, 7.1], [100.6, -62.9, 7.5], 0),
+            Some(([6, -4, 0], [6, -4, 0]))
+        );
+        // Not finite, beyond `i32`, or more sections than the coverage cap:
+        // no answer.
+        assert_eq!(span([f64::NAN, 0.0, 0.0], [f64::NAN, 1.0, 1.0], -64), None);
+        assert_eq!(span([0.0; 3], [f64::INFINITY; 3], -64), None);
+        assert_eq!(
+            span([0.0; 3], [f64::from(i32::MAX) + 1.0, 1.0, 1.0], -64),
+            None
+        );
+        // A beam across the world spans far more than the cap.
+        assert_eq!(span([0.0, -63.0, 0.0], [1.0e6, -62.0, 1.0], -64), None);
+    }
 }
+#[cfg(test)]
+#[path = "entity_culling_tests.rs"]
+mod tests;

@@ -178,7 +178,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles are already data in 0.2 ([mods.md](mods.md)) |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles, and mobs of a zombie's or a villager's class with their own attributes, are already data in 0.2 ([mods.md](mods.md)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -879,6 +879,15 @@ their extra code); **partial** with the failing checks, the blocks left out and 
 templates miss; **not yet** with the API tier it waits for, or the dependency; **not needed**
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
 (the 20 CurseForge-only rows the reviewed table only guesses) count as not yet.
+
+Both files open with a plain headline for players, counted from the rows' own status, class and
+tier: how many of the mods that need porting came over (ported or partial, as content: blocks,
+items and structures, never the mod's own code), how many of the rest `port` can still carry
+over, how many need mod API the game doesn't have yet, and how many aren't sorted yet. Resource
+packs and shader packs aren't counted as mods. Each row also has its reason in plain words
+(`plain` in `coverage.json`, the last column of `coverage.md`, above the technical line on the
+Modpacks page), next to the unchanged technical `reason` for modders. The launcher words the
+headline through its translations; the sentences per row are English, like the reasons.
 
 **ATM10, measured** (`import` of ATM10's `modlist.json` from its repository on 2026-10-16, 496
 files; `inventory`; `carry` and the harness on the eight mods we downloaded; `report`):

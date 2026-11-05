@@ -501,7 +501,7 @@ def command() -> None:
         results: list[Result] = []
 
         def change(state: dict, builds: str):
-            result = apply(state, cmd, login, now, lookup(repo), patterns, read_reviewers(reviewers).logins)
+            result = apply(state, cmd, login, now, lookup(repo), patterns)
             results.append(result)
             if result.state is state:  # status, dry run: nothing to save
                 return None

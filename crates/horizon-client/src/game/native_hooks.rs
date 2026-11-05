@@ -988,6 +988,7 @@ use super::{
     native_mob_draw::{NativeMobRender, NativePlayerRender},
     native_panel_recipes::RecipePage,
     native_reload_listeners::NativeReloadListener,
+    native_world_draw::NativeWorldDraw,
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
@@ -1015,6 +1016,7 @@ use horizon_client::{
     first_person::Hand,
     health::{HurtSource, Hurting, Knock},
     hud::{HudBatch, rgba},
+    hud_layout::HealthHud,
     items::ItemStack,
     keybinds,
     lan::menu::Slots,
@@ -3303,6 +3305,14 @@ impl Game<'_> {
             entity,
             bounds,
         );
+    }
+    /// Submit depth-tested world text and textured quads, after particles and
+    /// before the hand/HUD. The pose starts camera-relative; use
+    /// `draw.translate_world` for a world position. Called independently of
+    /// block entities and chunks, so transient overlays may outlive their
+    /// source block. API @API:world_canvas@.
+    pub(super) fn native_world_submit(&self, draw: &mut NativeWorldDraw) {
+        mod_api::dispatch_world_submit(self, mod_api::mods(), draw);
     }
     /// Draw the mob `mob` (its id, kind, custom name and the frame's body
     /// and head turns and walk cycle, `LivingEntityRenderState`) on this
@@ -9100,6 +9110,24 @@ impl Game<'_> {
         let screen = self.shown_native_screen()?;
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
     }
+    /// Horizon's own health HUD state, for a mod answering
+    /// `native_health_hud`. `left_height`/`right_height` as they stand when
+    /// the hook returns place the selected item's name and the action bar
+    /// (vanilla's `Hud.leftHeight`/`rightHeight`): set them when you draw
+    /// more or fewer rows. `layout` draws Horizon's rows and advances their
+    /// frame state (the hearts' blink, the bubble pop sound), so call it at
+    /// most once a frame, and only when you keep some of its rows.
+    /// API @API:health_hud_state@.
+    pub(super) fn native_health_hud_state(&mut self) -> &mut HealthHud {
+        &mut self.health_hud
+    }
+    /// The current value, base plus modifiers, of this client's player's
+    /// attribute `name` (`minecraft:armor_toughness`), as vanilla's
+    /// `LivingEntity.getAttributeValue`. None with no player, or for an id
+    /// the player has no attribute for. API @API:health_hud_state@.
+    pub(super) fn native_local_attribute(&mut self, name: &str) -> Option<f64> {
+        self.player.as_mut()?.attribute(name).ok()
+    }
     /// A data file of the game's resources, content mods' included
     /// (`data/mymod/machines.json`), when there is one: what a mod's content
     /// says, read at runtime. Only relative paths of plain names. API 20.
@@ -9244,10 +9272,11 @@ impl Game<'_> {
     pub(super) fn native_chat(&mut self, text: &str) {
         let focused = self.screen == Screen::Chat;
         let line = Text::literal(text);
+        let ticks = self.visual_ticks();
         let atlas = &self.gui.atlas;
         self.ui
             .chat
-            .add(atlas, line, None, ChatSource::Client, self.ticks, focused);
+            .add(atlas, line, None, ChatSource::Client, ticks, focused);
     }
     /// The instance (game) folder, which its players share: `saves/`,
     /// `resourcepacks/`, `shaderpacks/` and `horizon-mods/` are in it, and the

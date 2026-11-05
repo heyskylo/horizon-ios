@@ -15,6 +15,7 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
 };
+use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -78,6 +79,12 @@ impl ItemEnv for Env<'_, '_> {
         local_time(pattern)
     }
     fn random_float(&self) -> f32 {
+        if self.game.clock.still() {
+            // The same draw for a frame of the same world tick.
+            let mixed =
+                (self.game.visual_ticks() ^ 0x9e37_79b9).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            return (mixed >> 40) as f32 / (1u64 << 24) as f32;
+        }
         let nanos = self.game.started.elapsed().subsec_nanos();
         (nanos % 1_000_000) as f32 / 1_000_000.0
     }
@@ -395,7 +402,11 @@ impl Game<'_> {
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
         item_render::GlintFrame {
-            millis: self.started.elapsed().as_secs_f32() * 1000.0,
+            millis: if self.clock.still() {
+                self.visual_millis() as f32
+            } else {
+                self.started.elapsed().as_secs_f32() * 1000.0
+            },
             speed: self.settings.file.double("glintSpeed") as f32,
             alpha: self.settings.file.double("glintStrength") as f32,
             sprite: self
@@ -622,6 +633,34 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
+            // Use the same animated, spun, clustered transforms as the draw.
+            // ItemEntity's collision box is only 0.25 blocks and cannot prove
+            // that this larger rendered model stays behind an occluder.
+            let culling = entity.then(|| {
+                state
+                    .posed_bounds(&copies)
+                    .map(|(lo, hi)| {
+                        self.entity_cull_decision_in_bounds(
+                            item,
+                            Aabb::new(
+                                Vec3::new(
+                                    camera.x + f64::from(lo.x),
+                                    camera.y + f64::from(lo.y),
+                                    camera.z + f64::from(lo.z),
+                                ),
+                                Vec3::new(
+                                    camera.x + f64::from(hi.x),
+                                    camera.y + f64::from(hi.y),
+                                    camera.z + f64::from(hi.z),
+                                ),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| self.entity_cull_decision(item, f64::from(partial)))
+            });
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
+            }
             let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
@@ -638,6 +677,8 @@ impl Game<'_> {
                     let color = horizon_client::mobs::render::abgr(rgb);
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
                 self.cull_skinned(out, entity_start, skinned);
             }

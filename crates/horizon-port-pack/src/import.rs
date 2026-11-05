@@ -356,7 +356,7 @@ fn instance(dir: &Path) -> Result<Pack, String> {
 /// which goes stale when the player changes the game version or loader in the
 /// app (and which a custom profile never has). The triple comes from one
 /// file, never mixed.
-fn curseforge_instance_target(dir: &Path) -> Option<(String, String, String)> {
+pub fn curseforge_instance_target(dir: &Path) -> Option<(String, String, String)> {
     let read = |name: &str| -> Option<Value> {
         let text = fs::read_to_string(dir.join(name)).ok()?;
         serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
