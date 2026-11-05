@@ -17,6 +17,19 @@ use horizon_core::{
     random::RandomSource,
 };
 
+/// `ItemStack.hurtAndConvertOnBreak`: the stack after `wear` more damage, or -
+/// when that wear breaks it - the copy it leaves behind
+/// (`transmuteCopyIgnoreEmpty`: the components carry over, and a damageable
+/// copy starts whole). None while it still holds, so the caller adds the wear.
+fn stick_on_break(stack: &ItemStack, wear: u32, max: u32) -> Option<ItemStack> {
+    if max == 0 || stack.damage + wear < max {
+        return None;
+    }
+    let mut rod = stack.transmute("minecraft:fishing_rod", 1);
+    rod.damage = 0;
+    Some(rod)
+}
+
 fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
     let item = match species {
         Species::Pig => "minecraft:carrot_on_a_stick",
@@ -211,23 +224,30 @@ impl Game<'_> {
         if !self.creative
             && let Some(stack) = self.inventory[self.selected].clone()
         {
-            self.trigger_item_durability(&stack, stack.damage + wear);
-            if let Some(stack) = self.inventory[self.selected].as_mut() {
-                stack.damage += wear;
-                let max = self
-                    .res
-                    .items()
-                    .get(&stack.item)
-                    .map_or(25, |i| i.max_damage);
-                if stack.damage >= max {
-                    let broken = stack.clone();
-                    self.inventory[self.selected] =
-                        Some(ItemStack::new("minecraft:fishing_rod", 1));
-                    // ItemStack.hurtAndBreak: onEquippedItemBroken, then the replacement.
+            // `ItemStack.hurtAndBreak`: Unbreaking has its say first, and the
+            // durability trigger only hears the wear it leaves.
+            let wear = self.wear(&stack, wear);
+            let max = self
+                .res
+                .items()
+                .get(&stack.item)
+                .map_or(25, |i| i.max_damage);
+            match stick_on_break(&stack, wear, max) {
+                Some(rod) => {
+                    // `hurtAndConvertOnBreak`: the stick breaks (the broken
+                    // statistic and `onEquippedItemBroken`), then what is
+                    // left is the rod, not a fresh plain one.
+                    self.award_stat("broken", &stack.item, 1);
                     self.player_equipment_broke(
                         horizon_world::player_inventory::EquipmentSlot::MainHand,
-                        &broken,
+                        &stack,
                     );
+                    self.inventory[self.selected] = Some(rod);
+                }
+                None => {
+                    if let Some(stack) = self.inventory[self.selected].as_mut() {
+                        stack.damage += wear;
+                    }
                 }
             }
         }
@@ -750,17 +770,18 @@ impl Game<'_> {
             }
             self.lan = Some(host);
         }
-        let rider = self
+        let riders: Vec<u32> = self
             .mobs
             .iter()
-            .find(|m| m.id == mob)
-            .and_then(|m| m.extra.rider);
-        if let Some(rider) = rider
-            && let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider)
-        {
-            let mut events = Vec::new();
-            r.cause_fall_damage_from(distance, modifier, &mut events);
-            let _ = self.handle_mob_events(events);
+            .filter(|m| m.extra.mount == Some(mob))
+            .map(|m| m.id)
+            .collect();
+        for rider in riders {
+            if let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider) {
+                let mut events = Vec::new();
+                r.cause_fall_damage_from(distance, modifier, &mut events);
+                let _ = self.handle_mob_events(events);
+            }
         }
     }
     /// The player this game runs (the local one, or the server player it acts
@@ -1130,6 +1151,33 @@ mod tests {
             horizon_core::geometry::Vec3::new(1.5, 64.0, -2.5),
             0.0,
         ))
+    }
+
+    /// `ItemStack.hurtAndConvertOnBreak`: the seven points a pig's boost
+    /// wears break a carrot on a stick at 25, and what it leaves is a fishing
+    /// rod that kept the stick's components - not a fresh plain rod.
+    #[test]
+    fn a_steering_stick_that_breaks_leaves_a_fishing_rod() {
+        let mut stick = ItemStack::new("minecraft:carrot_on_a_stick", 1);
+        stick.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Old Nag".into()));
+        // One point short of the break: the caller wears it and it holds.
+        stick.damage = 17;
+        assert!(stick_on_break(&stick, 7, 25).is_none());
+        // 18 + 7 is the break: the rod it leaves is whole and keeps the name.
+        stick.damage = 18;
+        let rod = stick_on_break(&stick, 7, 25).expect("the wear breaks it");
+        assert_eq!(&*rod.item, "minecraft:fishing_rod");
+        assert_eq!(rod.count, 1);
+        assert_eq!(rod.damage, 0, "the rod starts whole");
+        assert_eq!(
+            rod.custom_name().as_deref(),
+            Some("Old Nag"),
+            "the components carry over"
+        );
+        // Wear Unbreaking took away breaks nothing, and a stack with no
+        // durability at all never breaks.
+        assert!(stick_on_break(&stick, 0, 25).is_none());
+        assert!(stick_on_break(&stick, 25, 0).is_none());
     }
 
     /// `handlePlayerCommand` START_RIDING_JUMP reaches the ridden vehicle's

@@ -448,8 +448,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Жашырылган: ар бир Horizon оюнчу сизди косметикасыз көрөт. Ишке киргизгичтин гардеробу сыяктуу эле которгуч.",
   "horizon.extras.cosmetics_others": "Башка оюнчулардын косметикасы",
   "horizon.extras.cosmetics_others.tooltip": "Башка Horizon оюнчулары кандай кийимдерди кийишет: бардыгы, алардын аты тегинин стили гана же эч нерсе. Жашыруун, оюн эч качан алар эмне кийип жүргөнүн сурабайт.",
-  "horizon.extras.cosmetics_auras": "Башкалардын ауралары жана жолдору",
-  "horizon.extras.cosmetics_auras.tooltip": "Ауралар жана башка оюнчулар кийген жолдор. Демейки боюнча өчүк.",
+  "horizon.extras.cosmetics_hide_fx": "Башка оюнчулардын издерин жана ауралары жашыруу",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Башка оюнчулардын издери жана ауралары жашыруун калат; алардын башка косметикасы көрүнөт. Демейки боюнча өчүк.",
   "horizon.extras.cosmetics.shown": "Көрсөтүлдү",
   "horizon.extras.cosmetics.hidden": "Жашырылган",
   "horizon.extras.cosmetics.name_tags": "Аталышы гана"

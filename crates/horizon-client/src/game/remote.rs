@@ -6394,6 +6394,7 @@ impl Game<'_> {
         }
         // The player's own model (third person, the inventory's preview).
         self.tick_player_model();
+        self.tick_emotes();
         if !dead {
             self.remote_tick_using();
         }
@@ -7629,7 +7630,7 @@ impl Game<'_> {
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
         if let Some(hit) = self.remote_object_hit(false)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // Interaction.interact answers SUCCESS when it responds and
@@ -7713,14 +7714,14 @@ impl Game<'_> {
             }
             return true;
         }
-        if let Some((i, distance)) = self.mob_hit()
+        if let Some((i, distance, location)) = self.mob_hit()
             && self.before_block(distance)
         {
             let id = self.mobs[i].id as i32;
             self.send(S::Interact(play::Interact {
                 id,
                 hand: hand_id(hand),
-                location: [0.0, 1.0, 0.0],
+                location,
                 secondary: sneaking,
             }));
             // Player.interactOn: another player passes, and so does a mob
@@ -8955,7 +8956,10 @@ impl Game<'_> {
                     let all = self.has_control_down();
                     self.remote_drop(all);
                 }
-                KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
+                KeyCode::KeyE
+                    if !self.in_portal_transition()
+                        && (self.riding_mount_with_menu() || self.riding_chest_boat()) =>
+                {
                     let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
                     self.send(S::PlayerCommand(play::PlayerCommand {
                         id,
@@ -9018,7 +9022,7 @@ impl Game<'_> {
         // A ghast's fireball or a wind charge nearer than any mob: the
         // server turns it (game/deflect.rs).
         if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d)| distance <= d)
+            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
             && self.before_block(distance)
             && self.creatures.projectiles[i].id != 0
         {
@@ -9027,14 +9031,14 @@ impl Game<'_> {
             }));
             self.reset_attack_strength();
         } else if let Some(hit) = self.remote_object_hit(true)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer,
             // a painting broken or an EndCrystal hurtServer: the server decides.
             self.send(S::Attack(play::Attack { id: hit.id }));
             self.reset_attack_strength();
-        } else if let Some((i, distance)) = self.mob_hit()
+        } else if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
         {
             // Minecraft.startAttack: an item's attack_range must hold the hit.
@@ -9042,7 +9046,7 @@ impl Game<'_> {
                 self.send(S::Attack(play::Attack {
                     id: self.mobs[i].id as i32,
                 }));
-                self.pvp_attacked(self.mobs[i].id as i32);
+                self.pvp_attacked(self.mobs[i].id as i32, distance);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
@@ -9222,12 +9226,18 @@ impl Game<'_> {
             // chest boat, the inventory key sends
             // ServerboundPlayerCommandPacket OPEN_INVENTORY.
             KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
+                if self.in_portal_transition() {
+                    return Ok(true);
+                }
                 if let Some(r) = self.remote.as_mut() {
                     r.pending_keys.push(key);
                 }
                 Ok(true)
             }
             KeyCode::KeyE => {
+                if self.in_portal_transition() {
+                    return Ok(true);
+                }
                 // The inventory opens without telling the server.
                 if self.tutorial.open_inventory() {
                     self.persist_tutorial_step();

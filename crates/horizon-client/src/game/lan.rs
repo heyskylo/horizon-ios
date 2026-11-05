@@ -2460,7 +2460,7 @@ impl Game<'_> {
         // this tick to their clients. Otherwise a newly broken block and its
         // drops remain absent from the snapshot until the following tick.
         if !paused {
-            self.tick_guests(&mut host);
+            horizon_client::spans::time("lan_guests", || self.tick_guests(&mut host));
             // The vehicles the guests just moved enter their portals now.
             let ridden: Vec<u32> = host.hub.guests.iter().filter_map(|g| g.vehicle).collect();
             self.find_ridden_vehicle_portals(&ridden);
@@ -2485,9 +2485,11 @@ impl Game<'_> {
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(&guests, &mut host.hub.riding);
-                self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
-                self.lan_hook_states(&host.play, &host.hub, &mut states);
-                self.lan_entity_uuids(&mut states);
+                horizon_client::spans::time("lan_entity_states", || {
+                    self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
+                    self.lan_hook_states(&host.play, &host.hub, &mut states);
+                    self.lan_entity_uuids(&mut states);
+                });
                 host.states_next_entity = Some(self.next_entity);
             } else {
                 host.states_next_entity = None;
@@ -2585,14 +2587,19 @@ impl Game<'_> {
                 if !pass.packets_drained {
                     events.extend(host.hub.drain_packets(&mut ctx));
                 }
-                events.extend(host.hub.tick_level(&mut ctx));
+                events.extend(horizon_client::spans::time("lan_tick_level", || {
+                    host.hub.tick_level(&mut ctx)
+                }));
                 if pass.last {
-                    host.hub.end_tick();
+                    horizon_client::spans::time("lan_end_tick", || host.hub.end_tick());
                 }
                 events
             };
             self.wake_woken_guests(&mut host);
-            let Some(back) = self.lan_process_events(host, events, entities, spawn) else {
+            let processed = horizon_client::spans::time("lan_process_events", || {
+                self.lan_process_events(host, events, entities, spawn)
+            });
+            let Some(back) = processed else {
                 return;
             };
             host = back;

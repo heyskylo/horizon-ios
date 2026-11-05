@@ -488,8 +488,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Скривено: сваки Horizon играч вас види без козметике, укључујући и вас. Исти прекидач као Гардероба у покретачу.",
   "horizon.extras.cosmetics_others": "Козметика других играча",
   "horizon.extras.cosmetics_others.tooltip": "Шта носе други Horizon играчи: све, само стилове ознака имена или ништа. Када је скривено, игра никада не пита шта носе.",
-  "horizon.extras.cosmetics_auras": "Ауре и трагови других",
-  "horizon.extras.cosmetics_auras.tooltip": "Ауре и стазе које други играчи носе. Подразумевано искључено.",
+  "horizon.extras.cosmetics_hide_fx": "Сакриј трагове и ауре других играча",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Трагови и ауре других играча остају сакривени; њихова остала козметика се и даље види. Подразумевано искључено.",
   "horizon.extras.cosmetics.shown": "Показано",
   "horizon.extras.cosmetics.hidden": "Скривено",
   "horizon.extras.cosmetics.name_tags": "Само ознаке са именом"

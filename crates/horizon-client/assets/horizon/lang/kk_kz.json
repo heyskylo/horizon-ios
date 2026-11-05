@@ -474,8 +474,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Жасырын: әрбір Horizon ойыншы сізді косметикасыз көреді, сіз қосасыз. Іске қосу құрылғысының гардеробымен бірдей қосқыш.",
   "horizon.extras.cosmetics_others": "Басқа ойыншылардың косметикасы",
   "horizon.extras.cosmetics_others.tooltip": "Басқа Horizon ойыншылары не киеді: барлығы, тек олардың атау тегінің стильдері немесе ештеңе жоқ. Жасырын, ойын ешқашан не киетінін сұрамайды.",
-  "horizon.extras.cosmetics_auras": "Басқалардың ауралары мен жолдары",
-  "horizon.extras.cosmetics_auras.tooltip": "Басқа ойыншылар киетін ауралар мен жолдар. Әдепкі бойынша өшірулі.",
+  "horizon.extras.cosmetics_hide_fx": "Басқа ойыншылардың іздері мен аураларын жасыру",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Басқа ойыншылардың іздері мен ауралары жасырын қалады; олардың басқа косметикасы көрінеді. Әдепкі бойынша өшірулі.",
   "horizon.extras.cosmetics.shown": "Көрсетілген",
   "horizon.extras.cosmetics.hidden": "Жасырын",
   "horizon.extras.cosmetics.name_tags": "Тек атау тегтері"

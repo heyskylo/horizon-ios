@@ -474,8 +474,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "پنهان: هر بازیکن Horizon شما را بدون لوازم آرایشی شما، از جمله شما، می بیند. همان سوئیچ کمد لانچر.",
   "horizon.extras.cosmetics_others": "لوازم آرایشی دیگر بازیکنان",
   "horizon.extras.cosmetics_others.tooltip": "سایر بازیکنان Horizon چه می پوشند: همه چیز، فقط سبک برچسب نام آنها یا هیچ چیز. پنهان، بازی هرگز نمی پرسد آنها چه می پوشند.",
-  "horizon.extras.cosmetics_auras": "هاله ها و مسیرهای دیگران",
-  "horizon.extras.cosmetics_auras.tooltip": "هاله ها و دنباله های دیگر بازیکنان می پوشند. به طور پیش فرض خاموش است.",
+  "horizon.extras.cosmetics_hide_fx": "پنهان کردن ردها و هاله‌های بازیکنان دیگر",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "ردها و هاله‌های بازیکنان دیگر پنهان می‌مانند؛ دیگر آرایه‌هایشان همچنان دیده می‌شوند. به‌طور پیش‌فرض خاموش.",
   "horizon.extras.cosmetics.shown": "نشان داده شده است",
   "horizon.extras.cosmetics.hidden": "پنهان شده است",
   "horizon.extras.cosmetics.name_tags": "فقط برچسب های نام"

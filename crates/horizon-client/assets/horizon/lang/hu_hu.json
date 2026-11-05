@@ -458,8 +458,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Rejtett: minden Horizon játékos lát téged a kozmetikumai nélkül, beleértve Önt is. Ugyanaz a kapcsoló, mint az indító gardróbjában.",
   "horizon.extras.cosmetics_others": "Más játékosok kozmetikumai",
   "horizon.extras.cosmetics_others.tooltip": "Amit a többi Horizon játékos visel: mindent, csak a névcímkék stílusát, vagy semmit. Rejtett, a játék soha nem kérdezi, mit viselnek.",
-  "horizon.extras.cosmetics_auras": "Mások aurái és nyomai",
-  "horizon.extras.cosmetics_auras.tooltip": "Más játékosok által viselt aurák és nyomvonalak. Alapértelmezés szerint ki.",
+  "horizon.extras.cosmetics_hide_fx": "Más játékosok nyomainak és auráinak elrejtése",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Más játékosok nyomai és aurái rejtve maradnak; a többi kozmetikumuk továbbra is látszik. Alapértelmezetten ki.",
   "horizon.extras.cosmetics.shown": "Megjelenítve",
   "horizon.extras.cosmetics.hidden": "Rejtett",
   "horizon.extras.cosmetics.name_tags": "Csak névcímkék"

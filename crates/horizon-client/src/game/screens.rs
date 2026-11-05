@@ -30,6 +30,7 @@ impl Screen {
             | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
+            | Self::EmoteWheel
             | Self::Chat
             | Self::Creative
             | Self::Inventory

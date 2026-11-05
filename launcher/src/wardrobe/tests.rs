@@ -390,7 +390,7 @@ fn entry(id: &str, hash: &str) -> Entry {
         hash: hash.into(),
         slot: "head".into(),
         names: BTreeMap::new(),
-        theme: None,
+        ..Default::default()
     }
 }
 

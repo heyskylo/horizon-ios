@@ -471,8 +471,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Dult: hvør Horizon spælari sær teg uttan títt kosmetikk, tú eisini. Sama rotari sum Klædnaskápið hjá sjósetaranum.",
   "horizon.extras.cosmetics_others": "Kosmetikkur hjá øðrum spælarum",
   "horizon.extras.cosmetics_others.tooltip": "Hvat aðrir Horizon spælarar eru í: alt, bara teirra navnamerkjastílar, ella einki. Dult spyr spælið ongantíð, hvat tey eru í.",
-  "horizon.extras.cosmetics_auras": "Aura og slóðir hjá øðrum",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras og slóðir aðrir spælarar bera. Sløkt sum standard.",
+  "horizon.extras.cosmetics_hide_fx": "Fjal spor og aurur hjá øðrum leikarum",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spor og aurur hjá øðrum leikarum verða fjald; teirra aðrir prýðislutir síggjast framvegis. Sløkt sum standard.",
   "horizon.extras.cosmetics.shown": "Víst",
   "horizon.extras.cosmetics.hidden": "Dult",
   "horizon.extras.cosmetics.name_tags": "Einans navnamerki"

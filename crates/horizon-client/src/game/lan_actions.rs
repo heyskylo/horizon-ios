@@ -1434,9 +1434,6 @@ impl Game<'_> {
         }
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
-        // A block's or a double chest's menu counts among the openers of its
-        // lid (a vehicle keeps its own `Container`, an ender chest has none).
-        let counts_openers = matches!(slots, Slots::Block(_) | Slots::Double(_, _));
         let hidden = self.native_hidden_slots(pos, items.len());
         // A mod menu type's block tells the client where it is, with what its
         // mod writes (`openMenu` with an extra-data writer); a stock menu
@@ -1463,19 +1460,11 @@ impl Game<'_> {
         if !hidden.is_empty() {
             host.hub.hide_menu_slots(conn, hidden);
         }
-        // `ContainerOpenersCounter.incrementOpeners` (`ChestBlockEntity.startOpen`,
-        // `ShulkerBoxBlockEntity.startOpen`): the lid opens for the guest, and
-        // when this is the first opener the open sound plays for everyone
-        // around, the opener included (`playSound(null, …)`, which the capture
-        // relay sends on to the guests). Without it the host's copy never
-        // learned of the open, so a guest's box opened silently.
-        // A spectator never joins the openers (`startOpen` returns on
-        // `player.isSpectator()`): its menu opens but the lid stays shut, no
-        // sound plays, and `stopOpen` has nothing to decrement, which is why
-        // the count must not be raised here either (#8517).
-        if counts_openers && !spectator && self.container_openers_changed(pos, true) {
-            self.container_edge_sound(pos, true);
-        }
+        // The opener count was already raised by the guest's use of the block
+        // (`open_menu`, through `BlockEntity.triggerEvent`/`startOpen`); raising
+        // it again here counted one player twice. Only the last closer would
+        // then reach zero and `stopOpen`, so a shulker box stayed open forever
+        // (#9500).
         true
     }
 

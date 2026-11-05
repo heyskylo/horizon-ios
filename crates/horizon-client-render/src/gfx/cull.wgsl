@@ -114,8 +114,10 @@ fn see(t: u32) {
     }
 }
 
-// Phase 1's depth, where the test runs in the shader (gfx/cull.rs).
-@group(1) @binding(0) var depth: texture_depth_2d;
+// Phase 1's depth, where the test runs in the shader (gfx/cull.rs). A depth
+// view bound as an unfilterable float: naga's GLSL backend cannot `textureLoad`
+// a depth texture, and the texel is the same value.
+@group(1) @binding(0) var depth: texture_2d<f32>;
 
 // The world pass's reversed depth test, greater or equal passing, made here:
 // where it cannot be forced before a shader that writes storage, a fragment
@@ -123,7 +125,7 @@ fn see(t: u32) {
 // runs only for the fragments that pass it.
 @fragment
 fn fs_box(in: Box) {
-    if in.position.z >= textureLoad(depth, vec2<u32>(in.position.xy), 0) {
+    if in.position.z >= textureLoad(depth, vec2<u32>(in.position.xy), 0).r {
         see(in.test);
     }
 }

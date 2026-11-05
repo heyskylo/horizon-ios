@@ -475,8 +475,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Далд: Horizon тоглогч бүр таныг гоо сайхны бүтээгдэхүүнгүйгээр хардаг. Эхлүүлэгчийн хувцасны шүүгээтэй ижил унтраалга.",
   "horizon.extras.cosmetics_others": "Бусад тоглогчдын гоо сайхны бүтээгдэхүүн",
   "horizon.extras.cosmetics_others.tooltip": "Бусад Horizon тоглогчид юу өмсдөг вэ: бүх зүйл, зөвхөн нэрийн шошго, эсвэл юу ч биш. Нуугдсан, тоглоом хэзээ ч юу өмсдөгийг асуудаггүй.",
-  "horizon.extras.cosmetics_auras": "Бусдын аура, замууд",
-  "horizon.extras.cosmetics_auras.tooltip": "Аура болон бусад тоглогчдын өмсдөг замууд. Өгөгдмөлөөр унтраа.",
+  "horizon.extras.cosmetics_hide_fx": "Бусад тоглогчийн мөр ба аурыг нуух",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Бусад тоглогчийн мөр ба аур нуугдсан хэвээр байна; тэдний бусад гоёл харагдсаар байна. Анхдагчаар унтраалттай.",
   "horizon.extras.cosmetics.shown": "Үзүүлсэн",
   "horizon.extras.cosmetics.hidden": "Нуугдсан",
   "horizon.extras.cosmetics.name_tags": "Зөвхөн нэрийн шошго"

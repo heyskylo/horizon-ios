@@ -4,7 +4,7 @@
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
 use super::{
-    details::{Details, Link},
+    details::{Details, GitHub, Link},
     download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
 };
 use horizon_mods::index::{self, Index, Trust};
@@ -239,6 +239,44 @@ fn categories_of(kind: Kind) -> &'static [&'static str] {
     })
 }
 
+/// The most tags the Filters panel offers for a kind.
+const MAX_TAGS_SHOWN: usize = 30;
+
+/// The tags the registry's projects of `kind` carry, plain ones only (as the site keeps them):
+/// the most used first, then by name.
+fn tags_of(index: &Index, kind: Kind) -> Vec<String> {
+    let plain = |t: &str| {
+        t.len() <= index::page::MAX_TAG
+            && t.bytes().next().is_some_and(|b| b != b'-')
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    for p in index
+        .projects
+        .iter()
+        .filter(|p| kind_of(&p.kind) == Some(kind))
+    {
+        let mut own: Vec<&str> = p
+            .tags
+            .iter()
+            .map(String::as_str)
+            .filter(|t| plain(t))
+            .collect();
+        own.sort_unstable();
+        own.dedup();
+        for t in own {
+            *uses.entry(t).or_default() += 1;
+        }
+    }
+    let mut tags: Vec<(&str, usize)> = uses.into_iter().collect();
+    tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    tags.into_iter()
+        .take(MAX_TAGS_SHOWN)
+        .map(|(t, _)| t.to_owned())
+        .collect()
+}
+
 /// Where the registry's mod policy is: who owns and answers for a project, takedowns.
 pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
 
@@ -246,6 +284,16 @@ pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
 /// the horizon-rust organisation).
 pub fn official(p: &index::Project) -> bool {
     p.authors == ["Horizon"] && p.source.starts_with("https://github.com/horizon-rust/")
+}
+
+/// Whether the registry's project `id` is Horizon's own ([`official`]), by the index already read
+/// (never the network); false when none was read.
+pub fn is_official(id: &str) -> bool {
+    official_in(known_index().as_deref(), id)
+}
+
+fn official_in(index: Option<&Index>, id: &str) -> bool {
+    index.and_then(|i| i.project(id)).is_some_and(official)
 }
 
 /// What the player reads about a registry project before installing it: who made it, whether its
@@ -368,6 +416,22 @@ fn github_login(login: &str) -> bool {
         && !login.contains("--")
 }
 
+/// The GitHub repository a project's `source` is in, `https://github.com/<owner>/<repo>`: a
+/// deeper path (a folder of a monorepo) or a trailing `.git` names the same repository. None
+/// when the source isn't on GitHub, or its owner or name isn't one GitHub allows.
+pub fn github_repo(source: &str) -> Option<String> {
+    let path = source.strip_prefix("https://github.com/")?;
+    let mut parts = path.split(['/', '?', '#']);
+    let owner = parts.next().filter(|o| github_login(o))?;
+    let repo = parts.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    if repo.is_empty() || repo.len() > 100 || repo.starts_with('.') || !repo.bytes().all(allowed) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
 /// The words of a query found in a project's id, name, summary, authors or tags.
 fn matches(p: &index::Project, text: &str) -> bool {
     let hay = format!(
@@ -391,8 +455,8 @@ pub const SORTS: [super::details::Sort; 3] = [
     super::details::Sort::Updated,
 ];
 
-/// The projects of the query's kind whose words match and that have every category the filters
-/// ask for, for this game unless `everything`: the
+/// The projects of the query's kind whose words match and that have every category and tag the
+/// filters ask for, for this game unless `everything`: the
 /// most downloaded first, or the newest (first published) or most recently updated (latest
 /// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
@@ -407,6 +471,7 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
                 .categories
                 .iter()
                 .all(|c| p.categories.contains(c))
+                && query.filters.tags.iter().all(|t| p.tags.contains(t))
         })
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
         // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
@@ -496,9 +561,11 @@ impl Source for Registry {
             .collect())
     }
 
-    /// Only categories: every registry file is for Horizon on the version it plays.
+    /// Only categories and tags: every registry file is for Horizon on the version it plays. The
+    /// tags come from the index the search already read (never the network).
     fn tags(&self, kind: Kind) -> Result<super::details::Tags, String> {
         Ok(super::details::Tags {
+            tags: known_index().map(|i| tags_of(&i, kind)).unwrap_or_default(),
             categories: categories_of(kind)
                 .iter()
                 .map(|name| super::details::Tag {
@@ -574,6 +641,10 @@ impl Source for Registry {
             updated: newest.map(|v| v.published.clone()).unwrap_or_default(),
             categories: p.categories.clone(),
             gallery: gallery_of(p),
+            github: github_repo(&p.source).map(|url| GitHub {
+                url,
+                stars: p.stars,
+            }),
             ..Details::default()
         })
     }
@@ -761,6 +832,7 @@ fn install_version_guarded(
     guard: &dyn Fn(&Path) -> Result<(), String>,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
+    let _lock = crate::browser::lock_home(home);
     let project = project_of(p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
@@ -874,6 +946,7 @@ pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
 /// Turns the registry's files that were taken down off in the game folder `home`, and says
 /// which. Their files stay, so the player sees them and can remove them.
 pub fn turn_off_revoked(index: &Index, home: &Path) -> Vec<String> {
+    let _lock = crate::browser::lock_home(home);
     let mut out = Vec::new();
     for e in installed::Installed::load(home).entries {
         let hash = e.checksum.strip_prefix("SHA-256:").unwrap_or_default();

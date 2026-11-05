@@ -349,6 +349,7 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
                     self.switch_mods();
+                    self.sync_native_switches();
                     self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();

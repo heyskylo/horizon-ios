@@ -314,6 +314,8 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.screenshot", None),
     ("key.toggleGui", None),
     ("key.smoothCamera", None),
+    // Horizon's emote wheel: no button is free by default; the stick's cursor picks.
+    ("key.emote", None),
 ];
 
 /// How a bindable action reaches the game: one of its own handlers, shared
