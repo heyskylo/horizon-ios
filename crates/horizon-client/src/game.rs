@@ -196,6 +196,7 @@ mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
+mod mod_browser;
 mod mods;
 mod mount_menu;
 mod mounts;
