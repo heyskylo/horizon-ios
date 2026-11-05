@@ -366,6 +366,18 @@ impl crate::entity_rules::EntityRules for Projectile {
         }
     }
 }
+/// `AbstractHurtingProjectile.applyInertia` / `ThrowableProjectile.applyInertia`:
+/// four bubble particles at `position - movement * 0.25`, moving with `movement`.
+pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    (
+        [
+            position[0] - movement[0] * 0.25,
+            position[1] - movement[1] * 0.25,
+            position[2] - movement[2] * 0.25,
+        ],
+        movement,
+    )
+}
 impl Projectile {
     /// `Entity.getBoundingBox`: its type's square box standing on its position.
     pub fn bounds(&self) -> Aabb {
@@ -627,6 +639,21 @@ impl Projectile {
         self.position.y + self.kind.eye_height()
     }
     pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
+        if !self.touching_water {
+            return None;
+        }
+        // ThrowableProjectile.tick applies gravity, then applyInertia reads
+        // that movement. AbstractHurtingProjectile.applyInertia reads the
+        // movement it already has: fireballs, wither skulls and wind charges
+        // have no gravity step before the bubbles.
+        let hurting = matches!(
+            self.kind,
+            ProjectileKind::SmallFireball
+                | ProjectileKind::LargeFireball { .. }
+                | ProjectileKind::WitherSkull { .. }
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        );
         let throwable = matches!(
             self.kind,
             ProjectileKind::Snowball
@@ -636,22 +663,19 @@ impl Projectile {
                 | ProjectileKind::ExperienceBottle
                 | ProjectileKind::Thrown(_)
         );
-        if !throwable || !self.touching_water {
-            return None;
-        }
-        let v = Vec3::new(
-            self.velocity.x,
-            self.velocity.y - self.get_gravity(),
-            self.velocity.z,
-        );
-        Some((
+        let movement = if hurting {
+            [self.velocity.x, self.velocity.y, self.velocity.z]
+        } else if throwable {
             [
-                self.position.x - v.x * 0.25,
-                self.position.y - v.y * 0.25,
-                self.position.z - v.z * 0.25,
-            ],
-            [v.x, v.y, v.z],
-        ))
+                self.velocity.x,
+                self.velocity.y - self.get_gravity(),
+                self.velocity.z,
+            ]
+        } else {
+            return None;
+        };
+        let at = [self.position.x, self.position.y, self.position.z];
+        Some(water_bubble_at(at, movement))
     }
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.
     pub fn shoot(
@@ -1418,12 +1442,39 @@ mod tests {
                 critical: false,
                 effect: None,
             },
-            ProjectileKind::SmallFireball,
             ProjectileKind::LlamaSpit,
         ] {
             let mut other = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
             other.touching_water = true;
             assert_eq!(other.water_bubbles(), None);
+        }
+    }
+    /// `AbstractHurtingProjectile.applyInertia`: four bubbles on the motion
+    /// the projectile already has, with no gravity taken off first.
+    #[test]
+    fn hurting_projectiles_in_water_bubble_along_their_motion() {
+        let expected_at = [0.25, 59.875, 1.0];
+        let expected_speed = [1.0, 0.5, -2.0];
+        for kind in [
+            ProjectileKind::SmallFireball,
+            ProjectileKind::LargeFireball { power: 1 },
+            ProjectileKind::WitherSkull { dangerous: true },
+            ProjectileKind::WindCharge,
+            ProjectileKind::BreezeWindCharge,
+        ] {
+            let label = format!("{kind:?}");
+            let mut p = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
+            p.velocity = Vec3::new(1.0, 0.5, -2.0);
+            assert_eq!(p.water_bubbles(), None, "{label} in air leaves no trail");
+            p.touching_water = true;
+            let (at, speed) = p.water_bubbles().expect("bubbles in water");
+            for i in 0..3 {
+                assert!((at[i] - expected_at[i]).abs() < 1e-12, "{label} {at:?}");
+                assert!(
+                    (speed[i] - expected_speed[i]).abs() < 1e-12,
+                    "{label} {speed:?}"
+                );
+            }
         }
     }
     /// A wall of blocks across x = 1.

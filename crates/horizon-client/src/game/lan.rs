@@ -489,7 +489,7 @@ fn mob_variant_meta(
 /// from the defaults the client constructs), with vanilla's entry indices:
 /// Entity 0..=7, LivingEntity 8..=14, Mob 15, then the subclasses.
 /// `defaults` gets the defaults of the entries that can go back to theirs.
-fn mob_meta(
+pub(super) fn mob_meta(
     m: &Mob,
     hub: &Hub,
     player_entity: Option<i32>,
@@ -1536,7 +1536,9 @@ impl Game<'_> {
         guest: &mut horizon_client::lan::guest::Guest,
     ) {
         self.guest_attachments_into(guest);
-        if guest.placed {
+        // A player a proxy moved to another server (`player-release moved`) is saved
+        // there now, not here.
+        if guest.placed && !guest.released {
             let _ = self.finish_player_autosaves(true);
             if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
                 playerdata::save_owner(guest, &mut self.level, &self.world_root);
@@ -1686,7 +1688,7 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
@@ -2083,7 +2085,7 @@ impl Game<'_> {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
                             host.hub.guests.push(*guest);
-                            self.guest_close_all(&mut host, conn);
+                            self.guest_disconnected(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
                         }
                         if let Err(e) = self.enter_level(Some(&mut host), back) {
@@ -2111,11 +2113,15 @@ impl Game<'_> {
                             "INFO",
                             &format!("{} lost connection: {}", guest.name, guest.left_reason),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {} left the game", guest.name),
-                        );
-                    } else if self.player.is_some() && guest.placed {
+                        // A player moved to another server without `announce` was not
+                        // announced as leaving, so the line is not logged either.
+                        if !guest.quiet_leave {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {} left the game", guest.name),
+                            );
+                        }
+                    } else if self.player.is_some() && guest.placed && !guest.quiet_leave {
                         // ServerGamePacketListenerImpl.removePlayerFromWorld.
                         let who = self.player_text(&guest.name, guest.uuid);
                         self.system_message(
@@ -3687,6 +3693,7 @@ mod tests {
         for (template, id) in [
             ("minecraft:zombie", "ruby:ghoul"),
             ("minecraft:villager", "ruby:settler"),
+            ("minecraft:wandering_trader", "ruby:merchant"),
         ] {
             assert_eq!(
                 meta_of(id),
@@ -3702,7 +3709,7 @@ mod tests {
         let sync = std::sync::Arc::new(data::SyncData::empty());
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, name.into(), 2)
+            ..NetConfig::loopback(0, name.into(), 2)
         };
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(

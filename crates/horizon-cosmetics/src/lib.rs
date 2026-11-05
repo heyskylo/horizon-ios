@@ -11,6 +11,7 @@
 pub mod account;
 mod fetch;
 mod item;
+pub mod mark;
 mod pose;
 pub mod prefs;
 pub mod preview;

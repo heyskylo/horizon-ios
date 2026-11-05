@@ -1,6 +1,7 @@
 //! Players that are about to arrive from another server, and a connected
-//! player read out of this one: the control endpoint's `player-expect` and
-//! `player-export` (`game/dedicated/transfer.rs` runs them).
+//! player read out of this one and sent away: the control endpoint's
+//! `player-expect`, `player-export` and `player-release`
+//! (`game/dedicated/transfer.rs` runs them).
 //!
 //! A proxy that moves a player between two servers first tells the target
 //! server who is coming (`player-expect <uuid>`), and reads the player out of
@@ -408,6 +409,54 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
     }
 }
 
+/// `player-release <uuid> <hand-over> moved [announce]` or `player-release <uuid> <hand-over>
+/// abort`: ends the hand-over the export with `freeze` started. `moved` takes the player out of
+/// the world, saving nothing and, unless `announce`, without the "left the game" line; `abort`
+/// lets it go on as it was. Both name the hand-over, so a late or repeated request for one that
+/// is over touches nothing.
+pub fn release_request(hub: &mut Hub, args: &str) -> serde_json::Value {
+    let mut parts = args.split_whitespace();
+    let Some(uuid) = parts.next().and_then(parse_uuid) else {
+        return error("player-release needs the player's unique id");
+    };
+    let Some(id) = parts.next().and_then(parse_handover) else {
+        return error("player-release needs the hand-over id the export gave");
+    };
+    let how = parts.next();
+    let announce = match (how, parts.next()) {
+        (Some("moved"), None) => false,
+        (Some("moved"), Some("announce")) => true,
+        (Some("abort"), None) => false,
+        _ => {
+            return error(
+                "player-release <uuid> <hand-over> is followed by moved [announce] or abort",
+            );
+        }
+    };
+    if parts.next().is_some() {
+        return error(
+            "player-release takes a unique id, a hand-over id, moved or abort, and at most announce",
+        );
+    }
+    if how == Some("moved") {
+        return match hub.release_moved(uuid, id, announce) {
+            Ok(()) => serde_json::json!({
+                "ok": true,
+                "released": "moved",
+                "announced": announce,
+            }),
+            Err(why) => error(why),
+        };
+    }
+    match hub.handover_of(uuid, id) {
+        Ok(i) => {
+            hub.guests[i].handover = None;
+            serde_json::json!({ "ok": true, "released": "abort" })
+        }
+        Err(why) => error(why),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,13 +621,14 @@ mod hub_tests {
         guest::Guest,
         hub::{Hub, HubConfig, TickCtx},
     };
+    use horizon_protocol::ids::play::clientbound as id;
     use std::sync::mpsc::{Receiver, channel};
     use std::time::{Duration, Instant};
 
     fn hub() -> Hub {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "ArrivalsTest".into(), 4)
+            ..NetConfig::loopback(0, "ArrivalsTest".into(), 4)
         };
         let mut sync = data::SyncData::empty();
         // The entity types the tracker names: the player, as id 0.
@@ -640,6 +690,29 @@ mod hub_tests {
         );
         g.dimension = "minecraft:overworld".into();
         (g, rx)
+    }
+
+    /// The packets waiting in a channel, in order, each as its id and payload.
+    fn packets(rx: &Receiver<Out>) -> Vec<(i32, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut one = |body: &[u8]| {
+            let mut r = horizon_protocol::buf::Reader::new(body);
+            let id = r.varint().unwrap();
+            out.push((id, r.rest().to_vec()));
+        };
+        while let Ok(o) = rx.try_recv() {
+            match o {
+                Out::Packet(b) => one(&b),
+                Out::Packets(bs) => bs.iter().for_each(|b| one(b)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The ids of the packets waiting in a channel, in order.
+    fn ids(rx: &Receiver<Out>) -> Vec<i32> {
+        packets(rx).into_iter().map(|(id, _)| id).collect()
     }
 
     fn place(hub: &mut Hub, conn: u32) {
@@ -1120,5 +1193,193 @@ mod hub_tests {
         assert_eq!(hub.guests[i].inbox_bytes, 0);
         assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
         assert_eq!(hub.guests[i].last_seen.tracked_count(), 20);
+    }
+
+    // ---- player-release ------------------------------------------------------
+
+    /// A watcher and a placed player frozen for a hand-over, and the hand-over's id.
+    fn frozen_with_a_watcher() -> (Hub, Receiver<Out>, Receiver<Out>, String) {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (mut mover, mine) = guest(2, UUID_N, "Mover");
+        mover.placed = true;
+        hub.guests.push(mover);
+        hub.ticks = 50;
+        let record = super::export_record(&mut hub, 1, true, Default::default()).unwrap();
+        let handover = record["handover"].as_str().unwrap().to_owned();
+        let _ = (ids(&seen), ids(&mine));
+        (hub, seen, mine, handover)
+    }
+
+    fn poll(hub: &mut Hub) -> Vec<crate::lan::hub::HostEvent> {
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.poll(&mut ctx)
+    }
+
+    fn left_events(hub: &mut Hub) -> Vec<Guest> {
+        poll(hub)
+            .into_iter()
+            .filter_map(|e| match e {
+                crate::lan::hub::HostEvent::Left(g) => Some(*g),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Moved to another server: the others see it go, but nothing is said and nothing saved.
+    #[test]
+    fn a_moved_player_leaves_the_world_without_the_leave_line_and_is_not_saved() {
+        let (mut hub, seen, mine, h) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert_eq!(
+            reply,
+            serde_json::json!({"ok": true, "released": "moved", "announced": false})
+        );
+        assert_eq!(hub.guests.len(), 1, "the mover is out of the hub");
+        let told = ids(&seen);
+        assert!(told.contains(&id::PLAYER_INFO_REMOVE), "{told:?}");
+        assert!(told.contains(&id::REMOVE_ENTITIES), "{told:?}");
+        assert!(!told.contains(&id::SYSTEM_CHAT), "no leave line: {told:?}");
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The game is told it left, released: it saves no file and no record.
+        let left = left_events(&mut hub);
+        assert_eq!(left.len(), 1);
+        assert!(left[0].released && left[0].placed && left[0].handover.is_none());
+        assert_eq!(left[0].left_reason, "moved to another server");
+    }
+
+    #[test]
+    fn a_moved_player_can_be_announced_as_leaving() {
+        let (mut hub, seen, _mine, h) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved announce"));
+        assert_eq!(reply["announced"], true);
+        assert!(ids(&seen).contains(&id::SYSTEM_CHAT));
+    }
+
+    #[test]
+    fn an_aborted_hand_over_lets_the_player_go_on_as_it_was() {
+        let (mut hub, seen, mine, h) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} abort"));
+        assert_eq!(reply, serde_json::json!({"ok": true, "released": "abort"}));
+        assert_eq!(hub.guests.len(), 2);
+        assert!(hub.guests[1].handover.is_none() && hub.guests[1].placed);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+        assert_eq!(ids(&mine), Vec::<i32>::new());
+        assert!(left_events(&mut hub).is_empty());
+        // The hand-over is over: a late `moved` for it is refused.
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert!(reply["error"].is_string(), "{reply}");
+        assert_eq!(hub.guests.len(), 2);
+    }
+
+    /// A release names the hand-over: one for another (an older one, or one the proxy
+    /// mixed up) changes nothing.
+    #[test]
+    fn a_release_for_another_hand_over_is_refused_and_changes_nothing() {
+        let (mut hub, seen, _mine, h) = frozen_with_a_watcher();
+        let rest: String = h.chars().skip(1).collect();
+        let other = format!("{}{rest}", if h.starts_with('0') { '1' } else { '0' });
+        for how in ["moved", "abort"] {
+            let reply = super::release_request(&mut hub, &format!("{UUID} {other} {how}"));
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not the player's current hand-over"),
+                "{reply}"
+            );
+        }
+        assert_eq!(hub.guests.len(), 2);
+        assert!(hub.guests[1].handover.is_some(), "still frozen");
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_release_is_refused_for_a_player_who_is_not_frozen_and_changes_nothing() {
+        let (mut hub, seen, _mine, h) = frozen_with_a_watcher();
+        hub.guests[1].handover = None;
+        for how in ["moved", "abort"] {
+            let reply = super::release_request(&mut hub, &format!("{UUID} {h} {how}"));
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not in a hand-over"),
+                "{reply}"
+            );
+        }
+        // Not connected at all.
+        let reply = super::release_request(
+            &mut hub,
+            &format!("00000000000000000000000000000001 {h} moved"),
+        );
+        assert!(reply["error"].is_string());
+        assert_eq!(hub.guests.len(), 2);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_release_must_say_which_hand_over_how_and_nothing_more() {
+        let (mut hub, _seen, _mine, h) = frozen_with_a_watcher();
+        for args in [
+            String::new(),
+            "nonsense moved".to_owned(),
+            UUID.to_owned(),
+            format!("{UUID} moved"),
+            format!("{UUID} {h}"),
+            format!("{UUID} not-an-id moved"),
+            format!("{UUID} {h} later"),
+            format!("{UUID} {h} moved quietly"),
+            format!("{UUID} {h} abort announce"),
+            format!("{UUID} {h} moved announce now"),
+        ] {
+            let reply = super::release_request(&mut hub, &args);
+            assert!(reply["error"].is_string(), "{args:?} gave {reply}");
+        }
+        assert!(
+            hub.guests[1].handover.is_some(),
+            "no refusal touched the player"
+        );
+    }
+
+    /// Once the freeze ran out the player played on, and the record the other server has is
+    /// older than it: a late `moved` is refused, and the proxy fails the hand-over.
+    #[test]
+    fn a_release_that_comes_after_the_freeze_ran_out_is_refused() {
+        let (mut hub, seen, mine, h) = frozen_with_a_watcher();
+        let since = hub.guests[1].handover.as_ref().unwrap().since;
+        hub.ticks = since + super::Settings::default().max_freeze_ticks;
+        assert!(poll(&mut hub).iter().any(|e| is_warn(e, "frozen")));
+        assert!(hub.guests[1].handover.is_none());
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert!(
+            reply["error"].as_str().unwrap().contains("freeze ran out"),
+            "{reply}"
+        );
+        assert_eq!(hub.guests.len(), 2, "the player stays");
+        assert!(!ids(&seen).contains(&id::PLAYER_INFO_REMOVE));
+        assert!(!matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+    }
+
+    /// A frozen player takes no damage, but the void and `/kill` still kill it: its record is
+    /// then not what is left, so `moved` is refused and the next tick ends the hand-over.
+    #[test]
+    fn a_player_who_died_while_frozen_cannot_be_released_as_moved() {
+        let (mut hub, _seen, _mine, h) = frozen_with_a_watcher();
+        hub.guests[1].dead = true;
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert!(reply["error"].as_str().unwrap().contains("died"), "{reply}");
+        assert_eq!(hub.guests.len(), 2);
+        assert!(
+            poll(&mut hub)
+                .iter()
+                .any(|e| is_warn(e, "died while frozen"))
+        );
+        assert!(hub.guests[1].handover.is_none());
     }
 }

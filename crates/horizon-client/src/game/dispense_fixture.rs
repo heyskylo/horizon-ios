@@ -334,6 +334,8 @@ impl Game<'_> {
                 ),
                 None => "respawn none".to_owned(),
             });
+        } else if let Some(op) = case.get("wake") {
+            used.push(self.fixture_wake(origin, op)?);
         } else if let Some(op) = case.get("attack") {
             used = self.fixture_attack(op, &targets)?;
         } else if case.get("hopper").is_some() {
@@ -551,6 +553,8 @@ impl Game<'_> {
             self.keys.insert(KeyCode::ShiftLeft);
         }
         self.using = None;
+        // The oracle's player wears nothing: no armor left on from an earlier case.
+        self.armor = Default::default();
         self.inventory[self.selected] = stack.clone();
         self.offhand = parse_stack(op["offhand"].as_str().unwrap_or("-"))?;
         // The used statistic of each item held, once.
@@ -918,6 +922,37 @@ impl Game<'_> {
             canon_stack(self.inventory[self.selected].as_ref())
         ));
         Ok(out)
+    }
+
+    /// A villager lying in the bed at `origin` with `yaw` wakes up
+    /// (`Villager.stopSleeping`): where it stands and the yaw it turns to.
+    fn fixture_wake(&mut self, origin: BlockPos, op: &Value) -> Result<String> {
+        let kind = self
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .cloned()
+            .ok_or("no mob type minecraft:villager")?;
+        let bed = [origin.x, origin.y, origin.z];
+        let lying = horizon_core::geometry::Vec3::new(
+            f64::from(bed[0]) + 0.5,
+            f64::from(bed[1]) + 0.6875,
+            f64::from(bed[2]) + 0.5,
+        );
+        let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+        let mut villager = Mob::new(1, kind, lying, yaw);
+        horizon_client::mobs::villager::ext_mut(&mut villager).sleeping_pos = Some(bed);
+        let mut events = Vec::new();
+        let w = self.mob_world_base(&[]);
+        horizon_client::mobs::villager::stop_sleeping(&mut villager, &w, &mut events);
+        let p = villager.position;
+        Ok(format!(
+            "wake {} {} {} {}",
+            num(p.x),
+            num(p.y),
+            num(p.z),
+            villager.yaw.to_bits() as i32
+        ))
     }
 
     /// `EntityType.create` and `snapTo` for one target: no spawn finalization.

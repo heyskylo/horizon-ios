@@ -3,8 +3,8 @@
 //! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
 //! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
-//! `player-expect <uuid> [seconds]` and `player-export <uuid> [freeze]` are a proxy's, for a player it moves
-//! between two servers (transfer.rs).
+//! `player-expect <uuid> [seconds]`, `player-export <uuid> [freeze]` and `player-release <uuid> ...` are a
+//! proxy's, for a player it moves between two servers (transfer.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};

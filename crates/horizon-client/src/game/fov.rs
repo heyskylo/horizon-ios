@@ -231,8 +231,13 @@ impl Game<'_> {
     /// `SpyglassItem.use`: the sound, then start scoping (a mod's `Start`
     /// may refuse that, not the sound).
     pub(super) fn use_spyglass(&mut self) {
-        let at = self.eye_position();
+        // Player.playSound: at the feet (getY), not the eyes.
+        let at = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
         self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
+        self.award_stat("used", "minecraft:spyglass", 1);
         self.start_using_item();
     }
     /// `SpyglassItem.releaseUsing` / `finishUsingItem` (after 1200 ticks).

@@ -403,6 +403,8 @@ public final class VanillaDispenserOracle {
             used = useItem(w, origin, f.getAsJsonObject("use_item"));
         } else if (f.has("respawn_at")) {
             used = respawnAt(w, origin, f.getAsJsonObject("respawn_at"));
+        } else if (f.has("wake")) {
+            used = wake(w, origin, f.getAsJsonObject("wake"));
         } else if (f.has("attack")) {
             used = attack(w, f.getAsJsonObject("attack"), targets);
         } else if (f.has("hopper")) {
@@ -568,6 +570,16 @@ public final class VanillaDispenserOracle {
         @Override public void setItemInHand(net.minecraft.world.InteractionHand h, ItemStack stack) {
             if (h == net.minecraft.world.InteractionHand.MAIN_HAND) hand = stack; else offhand = stack;
         }
+        // Equippable.swapWithEquipmentSlot: the hands change, and a worn slot plays the equip
+        // sound and game event (LivingEntity.onEquipItem, from nothing worn); it is not printed.
+        @Override public void setItemSlot(EquipmentSlot slot, ItemStack stack) {
+            if (slot == EquipmentSlot.MAINHAND) hand = stack;
+            else if (slot == EquipmentSlot.OFFHAND) offhand = stack;
+            else onEquipItem(slot, ItemStack.EMPTY, stack);
+        }
+        @Override public boolean isSilent() { return false; }
+        // A book's screen needs a connection; nothing of it is printed.
+        @Override public void openItemGui(ItemStack stack, net.minecraft.world.InteractionHand h) { }
         @Override public void startUsingItem(net.minecraft.world.InteractionHand h) {
             using = BuiltInRegistries.ITEM.getKey(getItemInHand(h).getItem()).toString();
         }
@@ -579,6 +591,14 @@ public final class VanillaDispenserOracle {
         @Override public void sendSystemMessage(net.minecraft.network.chat.Component message) {
             stats.add("msg " + (message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents t ? t.getKey() : message.getString()));
         }
+    }
+
+    /** The inventory menu of a `Clicker`: a changed stack has no client to be sent to. */
+    static final class QuietMenu extends net.minecraft.world.inventory.InventoryMenu {
+        QuietMenu() {
+            super(null, false, null);
+        }
+        @Override public void sendAllDataToRemote() { }
     }
 
     /** The single player's list: the player is an operator (cheats are on). */
@@ -633,6 +653,17 @@ public final class VanillaDispenserOracle {
         var gameMode = new net.minecraft.server.level.ServerPlayerGameMode(player);
         VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayerGameMode.class, gameMode, "gameModeForPlayer",
             player.creative ? net.minecraft.world.level.GameType.CREATIVE : net.minecraft.world.level.GameType.SURVIVAL);
+        // What an item's `use` reads: the game mode (TntBlock.prime), the attributes (a fishing hook's
+        // luck) and the inventory menu a changed stack is sent through (nothing to send to).
+        VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayer.class, player, "gameMode", gameMode);
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.LivingEntity.class, player, "attributes",
+            new net.minecraft.world.entity.ai.attributes.AttributeMap(
+                net.minecraft.world.entity.ai.attributes.DefaultAttributes.getSupplier(EntityTypes.PLAYER)));
+        VanillaBlockUpdateOracle.set(Entity.class, player, "random", net.minecraft.util.RandomSource.create(0L));
+        // BoatItem.use looks for entities around the player's box.
+        VanillaBlockUpdateOracle.set(Entity.class, player, "bb", EntityTypes.PLAYER.getDimensions().makeBoundingBox(at));
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "inventoryMenu",
+            VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, QuietMenu.class));
         // The top face, or the case's `face`, clicked at its centre.
         var face = use.has("face") ? net.minecraft.core.Direction.byName(use.get("face").getAsString()) : net.minecraft.core.Direction.UP;
         var hit = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos)
@@ -675,6 +706,19 @@ public final class VanillaDispenserOracle {
         yaw.setAccessible(true);
         var p = (net.minecraft.world.phys.Vec3) position.invoke(angle);
         return List.of("respawn " + num(p.x) + " " + num(p.y) + " " + num(p.z) + " " + Float.floatToRawIntBits((float) yaw.invoke(angle)));
+    }
+
+    /**
+     * A villager lying in the bed at `pos` with some yaw wakes up
+     * (`Villager.stopSleeping`): where it stands and the yaw it turns to.
+     */
+    static List<String> wake(VanillaBlockUpdateOracle.World w, BlockPos pos, JsonObject op) {
+        var villager = EntityTypes.VILLAGER.create(w, EntitySpawnReason.COMMAND);
+        villager.snapTo(pos.getX() + 0.5, pos.getY() + 0.6875, pos.getZ() + 0.5, op.get("yaw").getAsFloat(), 0.0F);
+        villager.setSleepingPos(pos);
+        villager.stopSleeping();
+        return List.of("wake " + num(villager.getX()) + " " + num(villager.getY()) + " " + num(villager.getZ()) + " "
+            + Float.floatToRawIntBits(villager.getYRot()));
     }
 
     /**

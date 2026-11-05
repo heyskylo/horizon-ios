@@ -549,7 +549,7 @@ impl MapData {
         })
     }
     /// `MapItemSavedData.<clinit>`: the CODEC save arm omits optional defaults.
-    fn to_nbt(&self) -> Tag {
+    pub(super) fn to_nbt(&self) -> Tag {
         let mut data = vec![
             ("dimension", Tag::String(self.dimension.as_str().into())),
             ("xCenter", Tag::Int(self.center[0])),
@@ -1140,6 +1140,8 @@ impl Game<'_> {
             self.consume_held();
             self.give_or_drop_stack(filled);
         }
+        // EmptyMapItem.use: consumed, then counted.
+        self.award_stat("used", "minecraft:map", 1);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_map_filled(player, &name, id);
         }
@@ -1896,6 +1898,8 @@ impl Game<'_> {
     }
 }
 
+#[cfg(test)]
+mod live_frame_tests;
 #[cfg(test)]
 mod save_tests;
 

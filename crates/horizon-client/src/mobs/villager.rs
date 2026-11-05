@@ -116,9 +116,9 @@ pub fn start_sleeping(m: &mut Mob, p: [i32; 3], w: &MobWorld, events: &mut Vec<M
     );
     true
 }
-/// `LivingEntity.stopSleeping` with `BedBlock.findStandUpPosition`: the bed
-/// is no longer `occupied`, and the sleeper stands beside it where there is
-/// room, else on top of it.
+/// `LivingEntity.stopSleeping`: the bed is no longer `occupied`, and the
+/// sleeper stands at `AbstractBedBlock.findStandUpPosition` for its yaw,
+/// else 0.1 above the block over the bed.
 pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     m.extra.ints[1] = 0;
     let bed = m
@@ -134,30 +134,18 @@ pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         pos: p,
         occupied: false,
     });
-    // Keep the existing stand-up search and fallback position.
-    let mut stand = m.position;
-    stand.y = f64::from(p[1]) + 0.5625 + 0.125;
-    for (dx, dz) in [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, 1),
-        (-1, -1),
-        (1, -1),
-        (-1, 1),
-    ] {
-        let (x, y, z) = (p[0] + dx, p[1], p[2] + dz);
-        let free = |y| w.data.state(w.world.block(x, y, z)).top <= 0.0;
-        if free(y) && free(y + 1) && w.solid(x, y - 1, z) {
-            stand = horizon_core::geometry::Vec3::new(
-                f64::from(x) + 0.5,
-                f64::from(y),
-                f64::from(z) + 0.5,
-            );
-            break;
-        }
-    }
+    let level = crate::stand_up::StandUpLevel {
+        world: w.world,
+        registry: w.registry,
+        facts: w.facts,
+        collision: w.collision,
+        block_tags: w.block_tags,
+        border: w.border,
+    };
+    let forward = crate::stand_up::bed_forward(w.prop(p[0], p[1], p[2], "facing"));
+    let stand = level
+        .bed_stand_up(crate::stand_up::StandUpType::VILLAGER, p, forward, m.yaw)
+        .unwrap_or_else(|| crate::stand_up::stand_up_fallback(p));
     set_wake_pose(m, p, stand);
 }
 /// Rotation part of `LivingEntity.stopSleeping`, after choosing where to stand.

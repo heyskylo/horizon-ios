@@ -171,13 +171,98 @@ fn flat_draws_map_uvs_onto_a_stitched_sprite() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Read back with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` (camera on the block
+/// grid) puts a water top, 8/9 - 0.001 of a block up, at 29094/32768, and plants offset by 13/15
+/// and 0.1 of a block at 28398/32768 and 3276/32768 (#8464): each 32768th below the position.
+/// Whole blocks and sixteenths stay where they are.
+#[test]
+fn terrain_vertices_go_down_to_the_32768th_below_them() {
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1, 1, 16).unwrap();
+    queue.submit([encoder.finish()]);
+    let water = 8.0f32 / 9.0 - 0.001;
+    let cases = [
+        ([0.1, water, 13.0 / 15.0], [3276.0, 29094.0, 28398.0]),
+        ([13.0 / 15.0, 0.1, water], [28398.0, 3276.0, 29094.0]),
+        ([1.0, 0.5, 15.9375], [32768.0, 16384.0, 522240.0]),
+    ];
+    let vertices: Vec<_> = cases
+        .iter()
+        .map(|&(pos, _)| TerrainVertex::new(pos, [0.0, 0.0], 0x8000, u32::MAX, 0))
+        .collect();
+    let origin = f32::from_bits((1. / UV_STEPS).to_bits());
+    let mut failures = Vec::new();
+    for flat in [true, false] {
+        for shadow in [false, true] {
+            let read = sample_probe(
+                &device,
+                &queue,
+                &atlas,
+                &vertices,
+                origin,
+                [flat, shadow],
+                "gl_Vertex",
+            );
+            for ((pos, expected), got) in cases.iter().zip(&read) {
+                let got = [got[0], got[1], got[2]].map(|v| v * 32768.0);
+                if got != *expected {
+                    failures.push(format!(
+                        "{pos:?}, flat={flat} shadow={shadow}: {got:?} != {expected:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn sample(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &PackAtlas,
     vertices: &[TerrainVertex],
     scale: f32,
+    flags: [bool; 2],
+) -> Vec<[f32; 4]> {
+    sample_probe(
+        device,
+        queue,
+        atlas,
+        vertices,
+        scale,
+        flags,
+        "vec4(mc_midTexCoord, gl_MultiTexCoord0.xy)",
+    )
+}
+
+/// What the pack's vertex stage sets `probe` to (`expression`), for each of `vertices`.
+fn sample_probe(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &PackAtlas,
+    vertices: &[TerrainVertex],
+    scale: f32,
     [flat, shadow]: [bool; 2],
+    expression: &str,
 ) -> Vec<[f32; 4]> {
     let pp = |code| horizon_shaders::Preprocessed {
         code,
@@ -185,7 +270,7 @@ fn sample(
     };
     let vertex = pp(format!(
         "attribute vec2 mc_midTexCoord;\nvarying vec4 probe;\nvoid main() {{\n\
-         probe = vec4(mc_midTexCoord, gl_MultiTexCoord0.xy);\n\
+         probe = {expression};\n\
          gl_Position = vec4((float(gl_VertexID) + 0.5) * {} - 1.0, 0.0, 0.0, 1.0);\n}}",
         2. / vertices.len() as f32,
     ));

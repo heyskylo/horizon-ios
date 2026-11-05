@@ -371,6 +371,10 @@ impl Game<'_> {
         if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1) {
             return;
         }
+        // Counted (on the server) before the throw or the spin.
+        if self.remote.is_none() {
+            self.award_stat("used", "minecraft:trident", 1);
+        }
         if riptide > 0 {
             // `hurtWithoutBreaking` and the sound belong to the server; a server's
             // client only launches.
@@ -620,6 +624,17 @@ impl Game<'_> {
             }
             // ThrownTrident.tick: Loyalty needs its owner, who is in this level.
             let owner_eye = catchers.iter().find(|c| c.guest == t.guest).map(|c| c.eye);
+            // `isAcceptibleReturnOwner` fails for a dead or spectating owner: the
+            // trident drops as an item when it can be picked up, then goes.
+            if t.loyalty > 0
+                && (t.dealt_damage || t.no_physics)
+                && catchers.iter().any(|c| c.guest == t.guest && !c.touches)
+            {
+                if !t.creative_only {
+                    self.spawn_at_location(t.position, f64::from(0.1f32), t.stack.clone());
+                }
+                continue;
+            }
             if t.loyalty > 0
                 && (t.dealt_damage || t.no_physics)
                 && let Some(owner_eye) = owner_eye

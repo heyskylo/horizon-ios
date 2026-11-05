@@ -55,9 +55,10 @@ The opening, then Play ([clip](docs/opening.webm)):
   starts the game. With no install on the computer the Play page offers the download alone and the
   Minecraft folder row says none is needed. Without an owner,
   the Play page asks to sign in first. `horizon-launcher prepare --download`.
-- **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks
-  and Resource packs search Horizon's own registry or Modrinth (CurseForge support is coming soon);
-  Shader packs search the registry, Data packs Modrinth (into the world picked there). A Java
+- **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks,
+  Resource packs and Data packs (into the world picked there) search Horizon's own registry, with
+  its categories as filters, or Modrinth (CurseForge support is coming soon); Shader packs search
+  the registry. A Java
   instance's files come from Modrinth for its version and loader; on a Horizon instance, Modrinth's
   Java mods are listed too, each marked Works, Partly or Doesn't run in Horizon. Install puts a file in
   the game folder only after its SHA-512 matches, and a

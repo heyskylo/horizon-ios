@@ -4,6 +4,7 @@
 use super::hud::tr;
 use super::*;
 use crate::game::pad::{PadEvent, PadId};
+use horizon_client::controller_notice::{Notice, NoticeId, Priority};
 use horizon_client::gamepad::{Button, PadState};
 
 /// How long a controller's offer to join stays up.
@@ -256,10 +257,12 @@ impl Split<'_> {
         if let Some(id) = self.p1_pad.owner {
             self.host.pad.style = self.pads.style(id);
         }
+        self.host.pad.device = self.p1_pad.owner.and_then(|id| self.pads.device(id));
         for g in &mut self.guests {
             if let Some(id) = g.pad {
                 g.game.pad.style = self.pads.style(id);
             }
+            g.game.pad.device = g.pad.and_then(|id| self.pads.device(id));
         }
         // P1 alone keeps its controller's output (rumble, the DualSense's triggers): the router
         // lends it its reader for P1's turn (`lend_output`), so no second reader opens. Only
@@ -315,7 +318,9 @@ impl Split<'_> {
         if owned {
             if self.in_world() {
                 self.lost.push(Lost { seat: 1, id, uuid });
-                self.host.split_hud.notice = Some(Notice::new(
+                self.host.split_hud.notice.raise(Notice::new(
+                    NoticeId::Connection,
+                    Priority::Attention,
                     tr("controller_disconnected", &[]),
                     tr("controller_disconnected.hint", &[]),
                 ));
@@ -355,7 +360,12 @@ impl Split<'_> {
         if hud.prompt.as_ref().is_some_and(|p| p.ask == Ask::Lost) {
             hud.prompt = None;
         }
-        hud.notice = Some(Notice::new(tr("controller_connected", &[]), ""));
+        hud.notice.raise(Notice::new(
+            NoticeId::Connection,
+            Priority::Info,
+            tr("controller_connected", &[]),
+            "",
+        ));
     }
 
     /// A button on a controller nobody has while players wait for one: true when it answered

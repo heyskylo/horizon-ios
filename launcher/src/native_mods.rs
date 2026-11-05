@@ -22,7 +22,7 @@ use crate::rust_toolchain::{self, Toolchain};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -152,6 +152,103 @@ impl Target {
     }
 }
 
+/// The platform the game's source will be compiled for. On Windows this follows the installed
+/// game's executable, not the PC's native architecture; the launcher must have a matching managed
+/// host toolchain before any compilation starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BuildPlatform {
+    target: Option<&'static str>,
+    machine: Option<u16>,
+    /// Non-default target builds get their own Cargo cache and record namespace.
+    cache_dir: Option<&'static str>,
+}
+
+impl BuildPlatform {
+    fn cache_key(self) -> Option<&'static str> {
+        self.cache_dir
+    }
+}
+
+fn platform_for_game(base: &str) -> Result<BuildPlatform, String> {
+    if std::env::consts::OS != "windows" {
+        return Ok(BuildPlatform::default());
+    }
+    let executable = backend::version_dir(base).join(backend::CLIENT);
+    let machine = pe_machine(&executable).map_err(|error| {
+        trf(
+            "Could not read {name}: {error}",
+            &[
+                ("name", &executable.display().to_string()),
+                ("error", &error),
+            ],
+        )
+    })?;
+    let selected_target = rust_toolchain::windows_target_for_machine(machine).ok_or_else(|| {
+        architecture_mismatch(&format!("PE machine 0x{machine:04x}"), "x64 or ARM64")
+    })?;
+    let Some(host) = rust_toolchain::host() else {
+        return Err(architecture_mismatch(
+            windows_architecture(selected_target),
+            std::env::consts::ARCH,
+        ));
+    };
+    windows_build_platform(machine, host.target)
+}
+
+fn windows_build_platform(machine: u16, host_target: &str) -> Result<BuildPlatform, String> {
+    let target = rust_toolchain::windows_target_for_machine(machine).ok_or_else(|| {
+        architecture_mismatch(&format!("PE machine 0x{machine:04x}"), "x64 or ARM64")
+    })?;
+    if rust_toolchain::windows_target_for_host(host_target, machine).is_none() {
+        return Err(architecture_mismatch(
+            windows_architecture(target),
+            windows_architecture(host_target),
+        ));
+    }
+    let cache_dir = (target == rust_toolchain::WINDOWS_ARM64_TARGET).then_some(target);
+    Ok(BuildPlatform {
+        target: Some(target),
+        machine: Some(machine),
+        cache_dir,
+    })
+}
+
+fn architecture_mismatch(game: &str, toolchain: &str) -> String {
+    trf(
+        "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.",
+        &[("game_arch", game), ("toolchain_arch", toolchain)],
+    )
+}
+
+fn windows_architecture(target: &str) -> &'static str {
+    match target {
+        rust_toolchain::WINDOWS_X64_TARGET => "x64",
+        rust_toolchain::WINDOWS_ARM64_TARGET => "ARM64",
+        _ => unreachable!(),
+    }
+}
+
+/// Reads the COFF machine from a Windows PE executable after validating its two signatures.
+pub(crate) fn pe_machine(path: &Path) -> Result<u16, String> {
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut dos = [0; 64];
+    file.read_exact(&mut dos)
+        .map_err(|error| error.to_string())?;
+    if &dos[..2] != b"MZ" {
+        return Err("missing DOS MZ signature".into());
+    }
+    let pe_offset = u32::from_le_bytes(dos[0x3c..0x40].try_into().unwrap()) as u64;
+    file.seek(SeekFrom::Start(pe_offset))
+        .map_err(|error| error.to_string())?;
+    let mut header = [0; 6];
+    file.read_exact(&mut header)
+        .map_err(|error| error.to_string())?;
+    if &header[..4] != b"PE\0\0" {
+        return Err("missing PE signature".into());
+    }
+    Ok(u16::from_le_bytes([header[4], header[5]]))
+}
+
 /// What a native build was made from, kept per profile in `native/built.json` after it compiled:
 /// what the next build is compared with to say what changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -253,26 +350,34 @@ fn read_records(path: &Path) -> std::collections::BTreeMap<String, Record> {
 /// A build record's key in `built.json`: the profile's folder in `native/target/` for a game
 /// build (as it always was), the target's own name before it for a server one, so the two never
 /// read each other's record. `Performance` and `Dev` share one: their last build in that folder.
-fn record_key(target: Target, profile: Profile) -> String {
+fn record_key(target: Target, profile: Profile, platform: Option<&str>) -> String {
     let folder = profile.cargo().0;
-    match target {
+    let key = match target {
         Target::Client => folder.into(),
         Target::Server => format!("{}-{folder}", target.name()),
+    };
+    match platform {
+        Some(platform) => format!("{platform}-{key}"),
+        None => key,
     }
 }
 
 /// The last build of `target` in `profile`'s folder in `native/target/`, if that folder (the
 /// compiled crates both build from) is still there.
-fn last_record(target: Target, profile: Profile) -> Option<Record> {
-    if !root().join("target").join(profile.cargo().0).is_dir() {
+fn last_record(target: Target, profile: Profile, platform: Option<&str>) -> Option<Record> {
+    let mut target_dir = root().join("target");
+    if let Some(platform) = platform {
+        target_dir.push(platform);
+    }
+    if !target_dir.join(profile.cargo().0).is_dir() {
         return None;
     }
-    read_records(&records_path()).remove(&record_key(target, profile))
+    read_records(&records_path()).remove(&record_key(target, profile, platform))
 }
 
-fn save_record(target: Target, profile: Profile, record: &Record) {
+fn save_record(target: Target, profile: Profile, platform: Option<&str>, record: &Record) {
     let mut all = read_records(&records_path());
-    all.insert(record_key(target, profile), record.clone());
+    all.insert(record_key(target, profile, platform), record.clone());
     if let Ok(text) = serde_json::to_vec_pretty(&all) {
         let _ = fs::write(records_path(), text);
     }
@@ -566,6 +671,9 @@ pub struct Injection {
     pub id: String,
     /// Where it injects: a native hook point by name, or a raw function path.
     pub site: InjectionSite,
+    /// A named hook point's `hook_version`: with the name, what the revision's
+    /// `native-hooks.json` must list for horizon-mixins to find it.
+    pub hook_version: Option<u32>,
     /// Its `kind` (`HEAD`, `RETURN`, …) as written.
     pub kind: Option<String>,
     /// Its `selector` and `ordinal`, which with the kind tell two interior
@@ -595,6 +703,19 @@ impl InjectionSite {
             Self::Hook(name) => format!("hook `{name}`"),
             Self::Target(path) => format!("`{path}`"),
         }
+    }
+}
+
+impl Bundle {
+    /// The named hook points it injects at, with their versions: each must be in the
+    /// `native-hooks.json` of the revision it builds on.
+    fn named_hooks(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.injections
+            .iter()
+            .filter_map(|i| match (&i.site, i.hook_version) {
+                (InjectionSite::Hook(name), Some(version)) => Some((name.as_str(), version)),
+                _ => None,
+            })
     }
 }
 
@@ -729,6 +850,10 @@ fn bundle(dir: &Path, mixins: Option<String>) -> Result<Bundle, String> {
             Some(Injection {
                 id,
                 site,
+                hook_version: entry
+                    .get("hook_version")
+                    .and_then(|v| v.as_integer())
+                    .and_then(|v| u32::try_from(v).ok()),
                 kind: text("kind"),
                 selector: text("selector"),
                 ordinal: entry.get("ordinal").and_then(|v| v.as_integer()),
@@ -1043,9 +1168,39 @@ fn hooks_at(revision: &str) -> Option<u32> {
     hooks_in(&text)
 }
 
+/// The named hook points (name, version) a `native-hooks.json` lists; None when it isn't one.
+fn catalog_in(text: &str) -> Option<HookCatalog> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value["hooks"]
+        .as_array()?
+        .iter()
+        .map(|h| {
+            let version = u32::try_from(h["version"].as_u64()?).ok()?;
+            Some((h["name"].as_str()?.to_owned(), version))
+        })
+        .collect()
+}
+
+/// The named hook points of Horizon at `revision`, from GitHub (None: it has no catalog, as
+/// revisions from before d3e0774 that already had hook points v2).
+fn catalog_at(revision: &str) -> Option<HookCatalog> {
+    let url = format!(
+        "https://raw.githubusercontent.com/{}/{revision}/{CATALOG}",
+        backend::REPO
+    );
+    let text = backend::get(&url).ok()?.into_string().ok()?;
+    catalog_in(&text)
+}
+
+/// Where Horizon lists its named hook points, at the workspace root (horizon-mixins reads it there).
+const CATALOG: &str = "native-hooks.json";
+type HookCatalog = std::collections::BTreeSet<(String, u32)>;
+
 /// The revision to build `mods` on: `pinned` (the pins' agreement, else the installed version's)
 /// when every mod naming a hook points' version finds it or a later one there (`at` reads a
-/// revision's). Else, when nothing pins it, the revision those mods were tested on. Else the
+/// revision's), and finds each named hook point it injects at in that revision's catalog
+/// (`catalog`): hook points v2 came before `native-hooks.json`, so a pin on such a revision
+/// would fail in horizon-mixins (E_HOOK_CATALOG). Else, when nothing pins it, the revision those mods were tested on. Else the
 /// revision of the release or Nightly the build starts from (`game`), when they find theirs
 /// there: a rebuild that stayed on an older Horizon, or mods pinning one, then move to the game
 /// the player installed, and pinned mods wait for the player's Build anyway ([`mismatch`]).
@@ -1055,11 +1210,24 @@ fn with_hooks(
     free: bool,
     game: impl FnOnce() -> Option<String>,
     at: impl Fn(&str) -> Option<u32>,
+    catalog: impl Fn(&str) -> Option<HookCatalog>,
 ) -> Result<String, String> {
     let hooked: Vec<&Bundle> = mods.iter().filter(|b| b.hooks.is_some()).collect();
+    let named = hooked.iter().any(|b| b.named_hooks().next().is_some());
+    // The revision's hook points' version, and its catalog when a mod names hook points.
+    let points = |revision: &str| (at(revision), named.then(|| catalog(revision)).flatten());
+    let fits_one = |b: &Bundle, (found, listed): &(Option<u32>, Option<HookCatalog>)| {
+        found.is_some()
+            && b.hooks <= *found
+            && b.named_hooks().all(|(name, version)| {
+                listed
+                    .as_ref()
+                    .is_some_and(|l| l.contains(&(name.to_owned(), version)))
+            })
+    };
     let fits = |revision: &str| {
-        let found = at(revision);
-        hooked.iter().all(|b| found.is_some() && b.hooks <= found)
+        let found = points(revision);
+        hooked.iter().all(|b| fits_one(b, &found))
     };
     if hooked.is_empty() || fits(&pinned) {
         return Ok(pinned);
@@ -1080,10 +1248,10 @@ fn with_hooks(
         return Ok(revision);
     }
     // Only the mods that need more than `pinned` has: the others would build there.
-    let found = at(&pinned);
+    let found = points(&pinned);
     let list: Vec<String> = hooked
         .iter()
-        .filter(|b| found.is_none() || b.hooks > found)
+        .filter(|b| !fits_one(b, &found))
         .map(|b| format!("{} (hook points v{})", b.id, b.hooks.unwrap_or_default()))
         .collect();
     Err(format!(
@@ -1328,6 +1496,7 @@ pub fn version_for(
     mixins: &str,
     profile: Profile,
     target: Target,
+    platform: Option<&str>,
     bundles: &[Bundle],
 ) -> Result<String, String> {
     let mut hash = Sha256::new();
@@ -1336,6 +1505,7 @@ pub fn version_for(
         .into_iter()
         .chain(configs.iter().copied())
         .chain([target.features(), rust_toolchain::VERSION, revision])
+        .chain(platform)
     {
         hash.update(part.as_bytes());
         hash.update([0]);
@@ -1639,6 +1809,7 @@ fn tool(rust: &Toolchain, rev: &str, progress: &impl Fn(Step)) -> Result<PathBuf
         progress(Step::Tool);
         let mut cmd = rust.command(&rust.cargo());
         rust_toolchain::low_priority(&mut cmd);
+        rust.configure_cargo(&mut cmd);
         cmd.args([
             "install", "--locked", "--git", MIXINS_GIT, "--rev", rev, "--root",
         ])
@@ -1703,6 +1874,7 @@ fn compile(
 fn cargo(rust: &Toolchain, dir: &Path, subcommand: &str) -> Command {
     let mut cmd = rust.command(&rust.cargo());
     rust_toolchain::low_priority(&mut cmd);
+    rust.configure_cargo(&mut cmd);
     cmd.arg(subcommand);
     let config = dir.join(".cargo").join("config.toml");
     if config.is_file() {
@@ -1939,6 +2111,7 @@ fn pipeline(
 ) -> Result<Built, String> {
     let started = std::time::Instant::now();
     backend::need_prepared(base)?;
+    let platform = platform_for_game(base)?;
     fs::create_dir_all(root()).map_err(|e| e.to_string())?;
     // The mods are copied first: the build and its key use the copy, whatever happens to the
     // folder meanwhile.
@@ -2018,7 +2191,7 @@ fn pipeline(
         false => base_revision().ok(),
     };
     let game = || revision_of(origin).ok();
-    let revision = with_hooks(&mods, pinned.clone(), free, game, hooks_at)?;
+    let revision = with_hooks(&mods, pinned.clone(), free, game, hooks_at, catalog_at)?;
     // Nothing to say when the pin is the base's own commit, or the hook points moved the build.
     if base_horizon.as_ref() == Some(&revision) || revision != pinned {
         pinned_by.clear();
@@ -2061,7 +2234,14 @@ fn pipeline(
         Some(MIXINS_REV),
         |r| committed("horizon-rust/horizon-mixins", r),
     )?;
-    let version = version_for(&revision, &mixins, profile, target, &mods)?;
+    let version = version_for(
+        &revision,
+        &mixins,
+        profile,
+        target,
+        platform.cache_key(),
+        &mods,
+    )?;
     let now = Record {
         horizon: revision.clone(),
         mixins: mixins.clone(),
@@ -2071,7 +2251,11 @@ fn pipeline(
             .collect::<Result<_, String>>()?,
     };
     let exists = target.directory(&version).join(".installed").is_file();
-    let plan = classify(exists, last_record(target, profile).as_ref(), &now);
+    let plan = classify(
+        exists,
+        last_record(target, profile, platform.cache_key()).as_ref(),
+        &now,
+    );
     progress(Step::Plan(plan.clone(), profile));
     let mut built = Built {
         version: version.clone(),
@@ -2148,7 +2332,10 @@ fn pipeline(
             progress(Step::Crates);
             lock_crates(&rust, &source, &stage, &mods)?;
         }
-        let target_dir = real.join("target");
+        let mut target_dir = real.join("target");
+        if let Some(cache_dir) = platform.cache_dir {
+            target_dir.push(cache_dir);
+        }
         // A revision without `[profile.fast]` builds with `release`: the build says so.
         let compiled = profile_of(&stage, profile);
         built.profile = compiled;
@@ -2200,7 +2387,25 @@ fn pipeline(
             }),
         )
         .map_err(|e| blame(crates::locked(e)))?;
-        save_record(target, profile, &now);
+        if let Some(expected) = platform.machine {
+            let executable = target_dir.join(compiled.cargo().0).join(backend::CLIENT);
+            let actual = pe_machine(&executable).map_err(|error| {
+                trf(
+                    "Could not read {name}: {error}",
+                    &[
+                        ("name", &executable.display().to_string()),
+                        ("error", &error),
+                    ],
+                )
+            })?;
+            if actual != expected {
+                return Err(architecture_mismatch(
+                    &format!("PE machine 0x{expected:04x}"),
+                    &format!("PE machine 0x{actual:04x}"),
+                ));
+            }
+        }
+        save_record(target, profile, platform.cache_key(), &now);
         // Out of `target_dir` before any post-build bin is built there (`post_build_programs`).
         let binary = real.join("programs").join(target.binary());
         copy_out(
@@ -2227,6 +2432,7 @@ fn pipeline(
             "rust": rust_toolchain::VERSION,
             "profile": compiled.name(),
             "target": target.name(),
+            "rust_target": platform.target,
             "mods": mods.iter().map(|m| serde_json::json!({
                 "id": m.id,
                 "version": m.version,
@@ -2542,6 +2748,9 @@ pub fn prune(keep: &str) {
         })
         .collect();
     for old in stale(builds, keep, &played) {
+        if backend::in_use(&old) {
+            continue;
+        }
         let _ = backend::remove(&old);
     }
 }
@@ -2567,6 +2776,62 @@ mod tests {
     pub(super) static LOG_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     use super::*;
+
+    #[test]
+    fn pe_machine_reads_the_architecture_after_validating_both_headers() {
+        let dir = dir("pe-machine");
+        let executable = dir.join("game.exe");
+        let mut image = vec![0; 70];
+        image[..2].copy_from_slice(b"MZ");
+        image[0x3c..0x40].copy_from_slice(&64_u32.to_le_bytes());
+        image[64..68].copy_from_slice(b"PE\0\0");
+        image[68..70].copy_from_slice(&rust_toolchain::WINDOWS_ARM64_MACHINE.to_le_bytes());
+        fs::write(&executable, &image).unwrap();
+        assert_eq!(pe_machine(&executable).unwrap(), 0xaa64);
+
+        image[64] = b'X';
+        fs::write(&executable, image).unwrap();
+        assert!(pe_machine(&executable)
+            .unwrap_err()
+            .contains("missing PE signature"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn windows_build_platform_follows_the_selected_games_pe_machine() {
+        let x64 = windows_build_platform(
+            rust_toolchain::WINDOWS_X64_MACHINE,
+            rust_toolchain::WINDOWS_X64_TARGET,
+        )
+        .unwrap();
+        assert_eq!(x64.target, Some(rust_toolchain::WINDOWS_X64_TARGET));
+        assert_eq!(x64.machine, Some(rust_toolchain::WINDOWS_X64_MACHINE));
+        assert_eq!(x64.cache_key(), None, "preserve the x64 cache layout");
+
+        let arm64 = windows_build_platform(
+            rust_toolchain::WINDOWS_ARM64_MACHINE,
+            rust_toolchain::WINDOWS_ARM64_TARGET,
+        )
+        .unwrap();
+        assert_eq!(arm64.target, Some(rust_toolchain::WINDOWS_ARM64_TARGET));
+        assert_eq!(arm64.machine, Some(rust_toolchain::WINDOWS_ARM64_MACHINE));
+        assert_eq!(
+            arm64.cache_key(),
+            Some(rust_toolchain::WINDOWS_ARM64_TARGET)
+        );
+
+        assert!(windows_build_platform(
+            rust_toolchain::WINDOWS_X64_MACHINE,
+            rust_toolchain::WINDOWS_ARM64_TARGET,
+        )
+        .is_err());
+        assert!(windows_build_platform(
+            rust_toolchain::WINDOWS_ARM64_MACHINE,
+            rust_toolchain::WINDOWS_X64_TARGET,
+        )
+        .is_err());
+        assert!(windows_build_platform(0xa641, rust_toolchain::WINDOWS_ARM64_TARGET).is_err());
+    }
 
     #[test]
     fn a_rebuild_leaves_the_old_builds_mod_data_behind() {
@@ -2611,6 +2876,7 @@ mod tests {
     fn horizon_mixins_finds_the_launchers_cargo() {
         let rust = Toolchain {
             dir: PathBuf::from("/rust/1.99.1-x"),
+            host: rust_toolchain::host().unwrap(),
         };
         let cmd = apply(
             &rust,
@@ -3048,6 +3314,7 @@ mod tests {
             B,
             Profile::Performance,
             Target::Client,
+            None,
             &bundles(&out).unwrap(),
         )
         .unwrap();
@@ -3059,6 +3326,7 @@ mod tests {
                 B,
                 Profile::Performance,
                 Target::Client,
+                None,
                 &bundles(&out).unwrap()
             )
             .unwrap()
@@ -3269,37 +3537,38 @@ mod tests {
             _ => None,
         };
         let none = || None;
+        let listed = |_: &str| None;
         let zoom = [mod_("zoom", B, Some(1)), mod_("minimap", &c, Some(1))];
         assert_eq!(
-            with_hooks(&zoom, A.into(), true, none, at).unwrap(),
+            with_hooks(&zoom, A.into(), true, none, at, listed).unwrap(),
             A,
             "the game's own"
         );
         let tested = [mod_("zoom", A, Some(1))];
         assert_eq!(
-            with_hooks(&tested, c.clone(), true, none, at).unwrap(),
+            with_hooks(&tested, c.clone(), true, none, at, listed).unwrap(),
             A,
             "an older game"
         );
         assert_eq!(
-            with_hooks(&tested, B.into(), false, none, at).unwrap(),
+            with_hooks(&tested, B.into(), false, none, at, listed).unwrap(),
             B,
             "v1 mods on v2"
         );
         let newer = [mod_("recipes", B, Some(2))];
-        let err = with_hooks(&newer, A.into(), false, none, at).unwrap_err();
+        let err = with_hooks(&newer, A.into(), false, none, at, listed).unwrap_err();
         assert!(
             err.contains("aaaaaaa") && err.contains("recipes (hook points v2)"),
             "{err}"
         );
         assert_eq!(
-            with_hooks(&newer, A.into(), true, none, at).unwrap(),
+            with_hooks(&newer, A.into(), true, none, at, listed).unwrap(),
             B,
             "its tested commit"
         );
         let pinned_only = [mod_("veinminer", B, None)];
         assert_eq!(
-            with_hooks(&pinned_only, B.into(), false, none, at).unwrap(),
+            with_hooks(&pinned_only, B.into(), false, none, at, listed).unwrap(),
             B
         );
     }
@@ -3328,18 +3597,19 @@ mod tests {
             _ => None,
         };
         let game = || Some(B.to_owned());
+        let listed = |_: &str| None;
         let hooked = [
             mod_("zoom", &c, Some(1)),
             mod_("recipes", &d, Some(2)),
             mod_("xtoxray", B, Some(7)),
         ];
         assert_eq!(
-            with_hooks(&hooked, A.into(), true, game, at).unwrap(),
+            with_hooks(&hooked, A.into(), true, game, at, listed).unwrap(),
             B,
             "a rebuild that stayed on an older Horizon moves to the game"
         );
         let with_pin = [mod_("carryblock", A, None), mod_("recipes", &d, Some(2))];
-        let revision = with_hooks(&with_pin, A.into(), false, game, at).unwrap();
+        let revision = with_hooks(&with_pin, A.into(), false, game, at, listed).unwrap();
         assert_eq!(revision, B, "a pinned mod no longer blocks the build");
         let asked = mismatch(&with_pin, &revision).expect("the pinned mod waits for Build anyway");
         assert!(
@@ -3347,10 +3617,82 @@ mod tests {
             "{asked}"
         );
         // A game without them still refuses, naming only the mods that don't fit.
-        let err = with_hooks(&hooked, A.into(), true, || Some(c.clone()), at).unwrap_err();
+        let err = with_hooks(&hooked, A.into(), true, || Some(c.clone()), at, listed).unwrap_err();
         assert!(err.contains("recipes (hook points v2)"), "{err}");
         assert!(err.contains("xtoxray (hook points v7)"), "{err}");
         assert!(!err.contains("zoom"), "zoom builds on A: {err}");
+    }
+
+    /// likeluca_ on Discord (11-04, Windows, launchers 0.2.38 to 0.2.40): blockscope (hook points
+    /// v2, all named) beside shulker_peek, which pins 5e391eb, a commit that had hook points v2 but
+    /// no `native-hooks.json` yet (it came in d3e0774, still v2). The build stayed on the pin and
+    /// horizon-mixins stopped: "E_HOOK_CATALOG: a named hook needs native-hooks.json at the
+    /// workspace root". The build now moves to the game, whose catalog lists them.
+    #[test]
+    fn named_hook_points_need_the_revisions_catalog() {
+        let d = dir("named-hooks");
+        fs::write(
+            d.join(MANIFEST),
+            "[mod]\nid = \"blockscope\"\nversion = \"0.3.1\"\n\
+             [[injection]]\nid = \"hud\"\nkind = \"HEAD\"\nhook = \"hud\"\nhook_version = 1\n\
+             [[injection]]\nid = \"raw\"\nkind = \"HEAD\"\ntarget = \"horizon_client::game::tick\"\n",
+        )
+        .unwrap();
+        let c = "c".repeat(40);
+        let blockscope = Bundle {
+            horizon: Some(c.clone()),
+            hooks: Some(2),
+            ..bundle(&d, None).unwrap()
+        };
+        let shulker_peek = Bundle {
+            id: "shulker_peek".into(),
+            version: "0.1.0".into(),
+            dir: PathBuf::new(),
+            horizon: Some(A.into()),
+            mixins: None,
+            hooks: None,
+            injections: Vec::new(),
+            api: None,
+            mixins_content: true,
+        };
+        // A (the pin) has hook points v2 and no catalog; B (the game) v359 and one.
+        let at = |r: &str| match r.as_bytes()[0] {
+            b'a' => Some(2),
+            b'b' => Some(359),
+            _ => None,
+        };
+        let catalog = |text: &str| catalog_in(text);
+        let game_catalog = r#"{"hooks": [{"name": "hud", "version": 1, "target": "x"}]}"#;
+        let listed = |r: &str| match r.as_bytes()[0] {
+            b'b' => catalog(game_catalog),
+            _ => None,
+        };
+        let mods = [shulker_peek.clone(), blockscope.clone()];
+        let revision = with_hooks(&mods, A.into(), false, || Some(B.into()), at, listed).unwrap();
+        assert_eq!(
+            revision, B,
+            "the pin has no catalog: the game's revision has one"
+        );
+        let asked = mismatch(&mods, &revision).expect("the pinned mod waits for Build anyway");
+        assert!(asked.contains("shulker_peek"), "{asked}");
+        // A game without the catalog either refuses, naming the mod that needs it.
+        let err = with_hooks(&mods, A.into(), false, || Some(c.clone()), at, listed).unwrap_err();
+        assert!(err.contains("blockscope (hook points v2)"), "{err}");
+        // A catalog with only another version of the hook point doesn't do either.
+        let other =
+            |_: &str| catalog(r#"{"hooks": [{"name": "hud", "version": 2, "target": "x"}]}"#);
+        assert!(with_hooks(&mods, A.into(), false, || Some(B.into()), at, other).is_err());
+        // A mod with only raw targets still builds on the pin, without asking for a catalog.
+        let raw = Bundle {
+            injections: blockscope.injections[1..].to_vec(),
+            ..blockscope
+        };
+        let asks = |_: &str| -> Option<HookCatalog> { panic!("no named hook point to look up") };
+        assert_eq!(
+            with_hooks(&[shulker_peek, raw], A.into(), false, || None, at, asks).unwrap(),
+            A
+        );
+        assert_eq!(catalog_in("not json"), None);
     }
 
     #[test]
@@ -3383,6 +3725,7 @@ mod tests {
                 MIXINS_REV,
                 Profile::Performance,
                 Target::Client,
+                None,
                 &bundles(&d).unwrap(),
             )
             .unwrap()
@@ -3393,6 +3736,19 @@ mod tests {
         );
         assert!(is_native(&first) && !backend::is_game_tag(&first));
         assert_eq!(first, key(A));
+        assert_ne!(
+            first,
+            version_for(
+                A,
+                MIXINS_REV,
+                Profile::Performance,
+                Target::Client,
+                Some(rust_toolchain::WINDOWS_ARM64_TARGET),
+                &bundles(&d).unwrap(),
+            )
+            .unwrap(),
+            "the ARM64 toolchain has a separate installed build"
+        );
         assert_ne!(first, key(B));
         assert_ne!(
             first,
@@ -3401,6 +3757,7 @@ mod tests {
                 B,
                 Profile::Performance,
                 Target::Client,
+                None,
                 &bundles(&d).unwrap()
             )
             .unwrap()
@@ -3434,6 +3791,7 @@ mod tests {
                 B,
                 Profile::Performance,
                 Target::Client,
+                None,
                 std::slice::from_ref(&bundle),
             )
             .unwrap()
@@ -3470,6 +3828,7 @@ mod tests {
                 B,
                 Profile::Performance,
                 Target::Client,
+                None,
                 &bundles(&d).unwrap(),
             )
             .unwrap()
@@ -3496,15 +3855,26 @@ mod tests {
         write_bundle(&d, "hello", "fn hook() {}");
         let found = bundles(&d).unwrap();
         let keys: std::collections::BTreeSet<_> = (Profile::ALL.into_iter())
-            .map(|p| version_for(A, B, p, Target::Client, &found).unwrap())
+            .map(|p| version_for(A, B, p, Target::Client, None, &found).unwrap())
             .collect();
         assert_eq!(keys.len(), 3);
         // The last build in `native/target/fast/` is either's, as `fast`'s was before `dev`.
-        assert_eq!(record_key(Target::Client, Profile::Performance), "fast");
-        assert_eq!(record_key(Target::Client, Profile::Dev), "fast");
         assert_eq!(
-            record_key(Target::Server, Profile::Release),
+            record_key(Target::Client, Profile::Performance, None),
+            "fast"
+        );
+        assert_eq!(record_key(Target::Client, Profile::Dev, None), "fast");
+        assert_eq!(
+            record_key(Target::Server, Profile::Release, None),
             "server-release"
+        );
+        assert_eq!(
+            record_key(
+                Target::Client,
+                Profile::Performance,
+                Some(rust_toolchain::WINDOWS_ARM64_TARGET)
+            ),
+            "aarch64-pc-windows-gnullvm-fast"
         );
     }
 
@@ -3522,6 +3892,7 @@ mod tests {
         .unwrap();
         let rust = Toolchain {
             dir: d.join("rust"),
+            host: rust_toolchain::host().unwrap(),
         };
         let env = |dir: &Path| {
             cargo(&rust, dir, "build")
@@ -3551,7 +3922,8 @@ mod tests {
         let d = dir("server-key");
         write_bundle(&d, "hello", "fn hook() {}");
         let found = bundles(&d).unwrap();
-        let key = |target: Target| version_for(A, B, Profile::Performance, target, &found).unwrap();
+        let key =
+            |target: Target| version_for(A, B, Profile::Performance, target, None, &found).unwrap();
         assert_ne!(
             key(Target::Client),
             key(Target::Server),
@@ -3560,11 +3932,12 @@ mod tests {
         assert_eq!(key(Target::Server), key(Target::Server));
         assert_ne!(
             key(Target::Server),
-            version_for(A, B, Profile::Release, Target::Server, &found).unwrap(),
+            version_for(A, B, Profile::Release, Target::Server, None, &found).unwrap(),
             "the profile is still in the server key"
         );
         let rust = Toolchain {
             dir: PathBuf::from("/rust/1.99.1-x"),
+            host: rust_toolchain::host().unwrap(),
         };
         let flags = |stage: &Path, target: Target| {
             compile(
@@ -4070,6 +4443,7 @@ mod tests {
     fn the_game_compiles_outside_the_players_cargo_configuration() {
         let rust = Toolchain {
             dir: PathBuf::from("/rust/1.99.1-x"),
+            host: rust_toolchain::host().unwrap(),
         };
         let stage = dir("stage-config");
         let cmd = compile(
@@ -4136,6 +4510,7 @@ mod tests {
         );
         let rust = Toolchain {
             dir: PathBuf::from("/rust/1.99.1-x"),
+            host: rust_toolchain::host().unwrap(),
         };
         let args = |profile| -> Vec<String> {
             compile(

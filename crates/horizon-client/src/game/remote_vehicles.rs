@@ -12,6 +12,7 @@
 //! and tells the server of a riding jump (`START_RIDING_JUMP`). A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
 use super::{Game, Keys, ray_box};
+use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
@@ -243,10 +244,18 @@ impl Game<'_> {
 
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
-    pub(super) fn remote_ride(&mut self, keys: Keys) -> bool {
+    pub(super) fn remote_ride(&mut self, keys: Keys, sprint_window: i32) -> Result<bool> {
         let Some(id) = self.riding else {
-            return false;
+            return Ok(false);
         };
+        // LocalPlayer.aiStep runs its sprint decisions in a vehicle too: `canSprint` and
+        // this client's authority stand in for food (`isSprintingPossible`).
+        let (can_sprint, local) = self
+            .driven_mount()
+            .map_or((false, false), |m| (equine::can_sprint(m.species()), true));
+        if let Some(p) = self.player.as_mut() {
+            p.sprint_input_tick_riding(keys, sprint_window, can_sprint, local)?;
+        }
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             // LocalPlayer.aiStep: the jump bar charges while jump is held.
             let jump = self.charge_mount_jump(i, keys);
@@ -256,7 +265,7 @@ impl Game<'_> {
             // Another animal moves on the server with the rider's input
             // (PlayerInput); the rider sits where `positionRider` puts it.
             self.position_rider();
-            return true;
+            return Ok(true);
         }
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
@@ -297,7 +306,7 @@ impl Game<'_> {
                 // riding it. Nothing with the id is in the level any more (it
                 // died, or the world it rode in was left), so the seat goes.
                 self.riding = None;
-                return false;
+                return Ok(false);
             }
             cart
         };
@@ -317,7 +326,7 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
         }
-        true
+        Ok(true)
     }
 
     /// `LocalPlayer.tick` for a passenger: the boat it controls goes to the
@@ -451,6 +460,10 @@ impl Game<'_> {
         }
         // playerJumpPendingScale waits for the ground.
         let pending = m.rider.map_or(0.0, |r| r.jump);
+        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
+        // `controller.isSprinting()`, which keeps the double-tapped sprint
+        // after the key is let go (`shouldStopRunSprinting` decides the end).
+        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
         m.rider = Some(equine::Rider {
             strafe,
             forward,
@@ -458,7 +471,7 @@ impl Game<'_> {
             pitch: self.pitch,
             jump: if jump > 0.0 { jump } else { pending },
             steer: false,
-            sprint: keys.sprint,
+            sprint: sprinting,
             jumping: keys.jump,
             client: false,
         });

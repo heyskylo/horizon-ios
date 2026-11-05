@@ -236,6 +236,23 @@ byte for byte, and does not restart the freeze: a proxy that lost the reply asks
 Without `freeze` the export is a read: `handover` is null and the player goes on. The request is refused for a
 player who is not connected, has not finished joining, is leaving, is riding, is asleep or is dead.
 
+While frozen, the player takes no damage (as vanilla's `Abilities.invulnerable`: the void and `/kill` still kill)
+and picks nothing up (items, arrows, experience orbs), so its record stays what it is until the release. A player
+who dies while frozen all the same ends the hand-over, with a warning in the log.
+
+`player-release <uuid> <hand-over> moved [announce]` and `player-release <uuid> <hand-over> abort` end the
+hand-over, on the source server. Both name the hand-over the export returned. `moved` takes the player out of the
+world because another server has it now: the others see its entity and its player-list entry go, nothing is written
+to its player file or its records (the other server has the player), the log and the `leave` event record the
+departure with the reason `moved to another server`, and the player's connection is closed with a generic
+disconnect. The "left the game" line is neither sent nor logged unless `announce` is added. Nothing is deleted: the
+player's file here stays as it was. `abort` lifts the freeze, and the player goes on as if nothing had happened.
+`moved` replies `{"ok": true, "released": "moved", "announced": false}` and `abort` replies
+`{"ok": true, "released": "abort"}`. Both are refused for a player who is not in a hand-over, for another hand-over
+than the player's current one, and for a player who died while frozen. Once the freeze has run out the hand-over is
+over, and a late `moved` is refused: the player has played on since, and the record the other server has is older.
+The proxy then fails the hand-over on the target (`player-drop`).
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 
@@ -446,8 +463,9 @@ horizon-server prepare --server-jar PATH
 
 - Every command takes `--dir` (the server folder; default: the current folder).
 - While the server runs, management commands go through the control API, so the engine applies them as
-  vanilla's console would and its lists stay right. While it's stopped, they edit the vanilla files directly
-  with the same code the engine uses (`horizon_server_files::user_lists`).
+  vanilla's console would and its lists stay right. While it's stopped, `op`, `deop`, `whitelist`, `ban`,
+  `pardon`, `ban-ip` and `pardon-ip` edit the vanilla files directly with the same code the engine uses
+  (`horizon_server_files::user_lists`).
 - **The TUI** is `horizon-server console` (built, `console.rs`): the recent log and then the live one (the
   control API's event stream), a one-line header (TPS, MSPT, players, RAM) that updates
   every second, and a command line. It uses plain ANSI with no TUI framework, and falls back to plain lines

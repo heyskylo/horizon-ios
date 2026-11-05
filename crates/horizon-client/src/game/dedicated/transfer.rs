@@ -1,6 +1,8 @@
 //! A proxy's requests on the control endpoint, for a player it moves between two servers:
-//! `player-expect <uuid> [seconds]` (the target is told who is coming) and
-//! `player-export <uuid> [freeze]` (the source answers with the player's record). They run
+//! `player-expect <uuid> [seconds]` (the target is told who is coming),
+//! `player-export <uuid> [freeze]` (the source answers with the player's record) and
+//! `player-release <uuid> <hand-over> moved [announce] | abort` (the source lets the player
+//! go). They run
 //! between two ticks, on the server thread, so the player is never caught half-way through a
 //! tick. The rules are `lan/arrivals.rs`'s. All of them are refused while `server.toml`'s
 //! `[transfer]` is off.
@@ -26,6 +28,10 @@ impl Game<'_> {
                 None => json!({ "error": "the server is not open to players" }),
             },
             "player-export" => self.player_export(args),
+            "player-release" => match self.lan.as_mut() {
+                Some(host) => arrivals::release_request(&mut host.hub, args),
+                None => json!({ "error": "the server is not open to players" }),
+            },
             other => json!({ "error": format!("unknown request {other:?}") }),
         }
     }
