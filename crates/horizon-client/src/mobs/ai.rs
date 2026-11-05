@@ -51,6 +51,7 @@ pub struct Ai {
     pub goals: GoalSelector,
     pub targets: GoalSelector,
     pub nav: Navigation,
+    pub(super) navigation_redirect: Option<Box<super::nav::Redirect>>,
     pub mov: MoveControl,
     pub look: LookControl,
     pub body: BodyRotation,

@@ -1152,7 +1152,9 @@ impl Game<'_> {
                     ..base
                 };
                 w.controlling_player_movement = controlling_player_movement;
-                let kept = m.tick(&w, &mut scratch, &mut events);
+                let kept =
+                    horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
+                let m = &mut mobs[i];
                 if seen_guest.is_none() {
                     base.player = w.player;
                 }
