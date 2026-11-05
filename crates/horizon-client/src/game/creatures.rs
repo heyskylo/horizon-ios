@@ -6993,6 +6993,9 @@ impl Game<'_> {
                 continue;
             }
             let is_player = &*mob.kind.id == "minecraft:player";
+            // ClientMannequin uses AvatarRenderer's equipment layers too. Keep
+            // player-only distance, culling and native identity checks separate.
+            let avatar_equipment = is_player || &*mob.kind.id == "minecraft:mannequin";
             let d = glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z) - camera;
             // Entity.shouldRenderAtSqrDistance: 64 times the bounding box's
             // mean edge, scaled by the view scale. RemotePlayer's box counts
@@ -7023,7 +7026,7 @@ impl Game<'_> {
             // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
             // A player keeps its armour, elytra and held items
             // (`LivingEntityRenderer.submit` skips only the body).
-            let layers_only = mob.invisible && outline.is_none() && is_player;
+            let layers_only = mob.invisible && outline.is_none() && avatar_equipment;
             if mob.invisible && outline.is_none() && !layers_only {
                 continue;
             }
@@ -7052,7 +7055,7 @@ impl Game<'_> {
             }
             let skin_jobs = self.skin_frame.borrow().mark().0;
             self.skin_downloads.borrow_mut().begin_draw();
-            if is_player || &*mob.kind.id == "minecraft:mannequin" {
+            if avatar_equipment {
                 self.request_avatar_skin(mob, false);
             }
             let entity_start = out.len();
@@ -7136,8 +7139,8 @@ impl Game<'_> {
                     out,
                 );
             }
-            // Other players on a server: PlayerRenderer's HumanoidArmorLayer.
-            let armor = if is_player {
+            // AvatarRenderer's HumanoidArmorLayer: players and mannequins.
+            let armor = if avatar_equipment {
                 self.worn_armor_layers(mob)
             } else {
                 Vec::new()
@@ -7163,36 +7166,66 @@ impl Game<'_> {
                 let mut frame = self.skin_frame.borrow_mut();
                 let mark = frame.mark();
                 let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
-                let items = horizon_client::mobs::render::render_skinned(
-                    mob,
-                    alpha as f32,
-                    camera,
-                    &lookup,
-                    packed,
-                    self.res.mob_data(),
-                    out,
-                    &mut skin,
-                );
+                let items = if avatar_equipment {
+                    horizon_client::mobs::render::render_avatar(
+                        mob,
+                        alpha as f32,
+                        camera,
+                        &lookup,
+                        packed,
+                        self.res.mob_data(),
+                        &armor,
+                        true,
+                        Some(&mut skin),
+                        out,
+                    )
+                } else {
+                    horizon_client::mobs::render::render_skinned(
+                        mob,
+                        alpha as f32,
+                        camera,
+                        &lookup,
+                        packed,
+                        self.res.mob_data(),
+                        out,
+                        &mut skin,
+                    )
+                };
                 skinned = Some((mark, skin.bounds));
                 for item in items {
                     self.mark_rendered_item(item.start, item.end, &item.item);
                 }
             } else {
-                let render = if layers_only {
-                    horizon_client::mobs::render::render_layers
+                let items = if avatar_equipment {
+                    horizon_client::mobs::render::render_avatar(
+                        mob,
+                        alpha as f32,
+                        camera,
+                        &lookup,
+                        packed,
+                        self.res.mob_data(),
+                        &armor,
+                        !layers_only,
+                        None,
+                        out,
+                    )
                 } else {
-                    horizon_client::mobs::render::render_with
+                    let render = if layers_only {
+                        horizon_client::mobs::render::render_layers
+                    } else {
+                        horizon_client::mobs::render::render_with
+                    };
+                    render(
+                        mob,
+                        alpha as f32,
+                        camera,
+                        &lookup,
+                        packed,
+                        self.res.mob_data(),
+                        &armor,
+                        out,
+                    )
                 };
-                let items = render(
-                    mob,
-                    alpha as f32,
-                    camera,
-                    &lookup,
-                    packed,
-                    self.res.mob_data(),
-                    &armor,
-                    out,
-                );
                 for item in items {
                     self.mark_rendered_item(item.start, item.end, &item.item);
                 }
@@ -7210,25 +7243,37 @@ impl Game<'_> {
             }
             // AvatarRenderer.shouldRenderLayers: a spectator draws no layers.
             let layers = horizon_client::mobs::render::layers_shown(mob);
-            if is_player && layers {
-                // PlayerRenderer's CapeLayer, WingsLayer, ParrotOnShoulderLayer
-                // and SpinAttackEffectLayer. Only the cape hides with the body;
-                // the others have no `isInvisible` check.
+            if layers {
+                // Avatar equipment survives an invisible body. The cape alone
+                // has its own invisibility check. Other previously player-gated
+                // extras keep their existing identity and order in this change.
                 let chest = mob.extra.chest.as_deref();
-                if !layers_only {
+                if avatar_equipment && !layers_only {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
                 }
-                if let Some((_, name)) = self
-                    .remote_player_names()
-                    .into_iter()
-                    .find(|(id, _)| *id == mob.id)
+                if is_player
+                    && let Some((_, name)) = self
+                        .remote_player_names()
+                        .into_iter()
+                        .find(|(id, _)| *id == mob.id)
                 {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
-                self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
-                self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
-                self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
-                self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
+                if avatar_equipment {
+                    self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
+                }
+                if is_player {
+                    self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
+                    self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
+                    self.stuck_in_body_geometry(
+                        mob,
+                        mob.id as i32,
+                        camera,
+                        alpha as f32,
+                        packed,
+                        out,
+                    );
+                }
             }
             // Cosmetics (game/cosmetics.rs), posed on the GPU with the mob's own jobs: culled
             // with it.

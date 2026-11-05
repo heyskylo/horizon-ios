@@ -238,5 +238,6 @@ mod tests {
             assert_eq!(*read.slice(..).get_mapped_range().unwrap(), expected);
             read.unmap();
         }
+        eprintln!("Submit queue GPU ordering: 3 readbacks completed");
     }
 }

@@ -671,12 +671,7 @@ impl Game<'_> {
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
         // person and dead players skip it.
-        let render = if body || self.spectator() {
-            horizon_client::mobs::render::render_with
-        } else {
-            horizon_client::mobs::render::render_layers
-        };
-        let items = render(
+        let items = horizon_client::mobs::render::render_avatar(
             m,
             alpha as f32,
             camera,
@@ -684,6 +679,8 @@ impl Game<'_> {
             packed,
             self.res.mob_data(),
             &self.player_armor_layers(),
+            body || self.spectator(),
+            None,
             out,
         );
         for item in items {
@@ -796,14 +793,9 @@ impl Game<'_> {
         let mut verts = Vec::new();
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
-        let render = if self.own_body_visible() || self.spectator() {
-            horizon_client::mobs::render::render_with
-        } else {
-            horizon_client::mobs::render::render_layers
-        };
         // A screen preview: custom entity model animations see is_in_gui = 1.
         horizon_client::mobs::cem_anim::in_gui(|| {
-            render(
+            horizon_client::mobs::render::render_avatar(
                 &m,
                 1.0,
                 camera,
@@ -811,6 +803,8 @@ impl Game<'_> {
                 240 | 240 << 8,
                 self.res.mob_data(),
                 &self.player_armor_layers(),
+                self.own_body_visible() || self.spectator(),
+                None,
                 &mut verts,
             );
         });
@@ -1084,6 +1078,9 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
+        if m.extra.hidden_model_parts & 1 != 0 || !horizon_client::mobs::render::layers_shown(m) {
+            return;
+        }
         let Some(rect) = m
             .cape
             .as_deref()

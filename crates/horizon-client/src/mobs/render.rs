@@ -607,11 +607,16 @@ pub fn body_color(m: &Mob, alpha: f32) -> u32 {
 /// Extra render layers drawn over the body with the same pose. `age` is the
 /// render state's `ageInTicks` (`Mob.age` plus the partial tick).
 pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
+    layers_with_cape(m, age, true)
+}
+
+fn layers_with_cape(m: &Mob, age: f32, legacy_avatar_cape: bool) -> Vec<Layer> {
     use Species as S;
     let mut v = Vec::new();
     if avatar(m) {
         // CapeLayer: not over an elytra, which wears the cape's texture itself.
-        if let Some(cape) = &m.cape
+        if legacy_avatar_cape
+            && let Some(cape) = &m.cape
             && m.extra.chest.as_deref() != Some("minecraft:elytra")
         {
             v.push(Layer {
@@ -1545,7 +1550,7 @@ pub fn render_with(
                     camera - glam::DVec3::new(off[0] + w[0], off[1] + w[1], off[2] + w[2]);
                 let base = base_transform(m, alpha, shifted);
                 render_visible(
-                    m, alpha, base, atlas, light, data, extra, true, out, &mut items, None,
+                    m, alpha, base, atlas, light, data, extra, true, out, &mut items, None, true,
                 );
             }
         }
@@ -1563,6 +1568,7 @@ pub fn render_with(
         out,
         &mut items,
         None,
+        true,
     );
     items
 }
@@ -1595,9 +1601,47 @@ pub fn render_skinned(
         out,
         &mut items,
         Some(skin),
+        true,
     );
     items
 }
+/// An avatar body and its supplied armor in Game, whose explicit CapeLayer
+/// owns cape geometry. This shares CPU/GPU poses with the standalone renderer
+/// while avoiding a second, differently posed cape from its legacy layers.
+#[allow(clippy::too_many_arguments)]
+pub fn render_avatar(
+    m: &Mob,
+    alpha: f32,
+    camera: glam::DVec3,
+    atlas: Atlas,
+    light: u32,
+    data: &MobData,
+    extra: &[(&Part, [f32; 4], u32, u32, String, bool)],
+    body_visible: bool,
+    skin: Option<&mut super::skin::Skin>,
+    out: &mut Vec<Vertex>,
+) -> Vec<RenderedItem> {
+    let mut items = Vec::new();
+    if body_visible && super::trader::is_invisible(m) {
+        return items;
+    }
+    render_visible(
+        m,
+        alpha,
+        base_transform(m, alpha, camera),
+        atlas,
+        light,
+        data,
+        extra,
+        body_visible,
+        out,
+        &mut items,
+        skin,
+        false,
+    );
+    items
+}
+
 /// `CapeLayer.submit` with `PlayerCapeModel`: the player model's body posed
 /// as the player's, its cape turned by `ModelPart.rotateBy` with the cape's
 /// flap and leans. `base` is the player's root transform (moved out over a
@@ -1855,7 +1899,7 @@ pub fn render_layers(
     let mut items = Vec::new();
     let base = base_transform(m, alpha, camera);
     render_visible(
-        m, alpha, base, atlas, light, data, extra, false, out, &mut items, None,
+        m, alpha, base, atlas, light, data, extra, false, out, &mut items, None, true,
     );
     items
 }
@@ -1884,6 +1928,7 @@ pub fn render_posed(
         out,
         &mut items,
         None,
+        true,
     );
     items
 }
@@ -2005,6 +2050,7 @@ fn render_visible(
     out: &mut Vec<Vertex>,
     items: &mut Vec<RenderedItem>,
     skin: Option<&mut super::skin::Skin>,
+    legacy_avatar_cape: bool,
 ) {
     // The armour is a layer: none for a spectator.
     let extra = if layers_shown(m) { extra } else { &[] };
@@ -2079,7 +2125,9 @@ fn render_visible(
     if let Some(animation) = body_animation {
         animation.run(m, &s, &mut poses);
     }
-    let mut all_layers = layers(m, s.age);
+    // Game owns the full native CapeLayer. Avoid allocating/cloning the legacy
+    // avatar layer at all when it will be drawn by that owner instead.
+    let mut all_layers = layers_with_cape(m, s.age, legacy_avatar_cape);
     // WardenRenderer: the translucent emissive layers fade with the animations.
     if m.species() == Species::Warden {
         for (model, texture, a) in super::warden::emissive_layers(m, alpha) {

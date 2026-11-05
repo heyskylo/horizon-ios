@@ -58,6 +58,7 @@ mod allays;
 mod armor_stands;
 mod atlas_slots;
 mod attachment_sync;
+mod avatar_equipment_fixture;
 mod banners;
 mod beacon;
 mod beds;
@@ -21237,7 +21238,7 @@ fn load_resources_with_access(
             visibility,
             progress,
             started,
-            !headless,
+            !headless || std::env::var_os("HORIZON_AVATAR_EQUIPMENT_FIXTURE").is_some(),
         )?;
         resources
             .rest
@@ -21779,6 +21780,10 @@ fn start_game<'a>(
     }
     if let Some(directory) = std::env::var_os("HORIZON_BOAT_AUTHORITY_FIXTURE") {
         game.run_boat_authority_fixture(std::path::Path::new(&directory))?;
+        return Ok(None);
+    }
+    if let Some(directory) = std::env::var_os("HORIZON_AVATAR_EQUIPMENT_FIXTURE") {
+        game.run_avatar_equipment_fixture(std::path::Path::new(&directory))?;
         return Ok(None);
     }
     if let Ok(spec) = std::env::var("HORIZON_DISPENSE_FIXTURE") {
