@@ -23,6 +23,11 @@ pub mod interaction;
 // spinning (1).
 pub const HOLD: usize = 0;
 pub const SPIN: usize = 1;
+/// `Allay.isLikedPlayer`: compare the supplied verified player UUID with
+/// the live liked-player memory; identity is supplied by the Game context.
+pub fn is_liked_player(m: &Mob, attacker: Option<super::Who>, uuid: [i32; 4]) -> bool {
+    attacker == Some(super::Who::Player) && m.extra.tame && m.extra.owner == Some(uuid)
+}
 /// `Allay.VibrationUser.VIBRATION_EVENT_LISTENER_RANGE`.
 const LISTENER_RADIUS: i64 = 16;
 
