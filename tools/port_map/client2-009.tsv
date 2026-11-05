@@ -69,6 +69,7 @@ GuiGraphicsExtractor.ScissorStack.containsPoint	missing		minor: hover ignores th
 Hud.extractHotbarAndDecorations	port	crates/horizon-client-render/src/hud_layout.rs::hotbar	items and decorations are drawn by Game::draw_item
 Hud.<init>	skip:java		constructor state setup
 Hud.extractSubtitleOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::SubtitleOverlay::extract	
+Hud.extractDeferredSubtitles	inline	crates/horizon-client/src/game.rs::Game::hud_layers	with a `Screen.isInGameUi` screen open the subtitles draw over it after the screen and its tooltips, under the toasts; F1 keeps them
 Hud.extractChat	port	crates/horizon-client-render/src/chat.rs::Chat::layout	
 Hud.getMobEffectSprite	port	crates/horizon-client/src/game/potions.rs::Game::draw_effect_icons	sprite lookup is inside the effect icon draw
 Hud.extractDemoOverlay	skip:other		Horizon has no demo mode, so there is no demo timer overlay
