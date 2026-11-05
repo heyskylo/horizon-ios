@@ -24,12 +24,13 @@ pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
 };
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
-    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
-    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
-    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
-    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
+    ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
+    NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
+    NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion, NativeDataMapType,
+    NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit,
+    NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
+    NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
+    NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
