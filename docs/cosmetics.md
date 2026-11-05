@@ -152,6 +152,11 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     *My cosmetics*, *Show me as Horizon*) runs at a time (Mojang keeps one joined server id per
     account). `HORIZON_COSMETICS_LOCAL` counts as owning.
   - *Others' auras and trails*, off by default (no item of that kind exists yet).
+  - *Cosmetics in single player*, off by default, the game's only (`cosmeticsSolo`). The
+    window's own server names the player by their offline profile, which the service doesn't
+    know, so in single player (open to LAN too) the game draws and asks nothing for the player's
+    own model. On, it asks by the signed-in account's UUID: their cosmetics, their name tag style
+    (with *Own name tag*) and Horizon's mark show in their own worlds. Offline accounts: nothing.
 - **Name tag styles** (`game/names.rs`): the badge, 8 text pixels square, after the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
   (the badge is in the atlas like the other items' textures). Horizon's mark goes before the name.
