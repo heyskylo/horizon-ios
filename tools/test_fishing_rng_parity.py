@@ -21,17 +21,17 @@ except ImportError:
 
 def main():
     work = Path(tempfile.mkdtemp(prefix="fishing-rng-", dir=lab.LOCAL))
-    env = os.environ.copy()
-    for name, folder in (("HORIZON_HOME", "home"), ("HORIZON_LAUNCHER_HOME", "launcher"),
-                         ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config")):
-        env[name] = str(work / folder)
-    env["HORIZON_NO_AUDIO"] = "1"
-    env["HORIZON_LAUNCHER_NO_SELF_UPDATE"] = "1"
-    java_options = env.get("JAVA_TOOL_OPTIONS", "")
-    env["JAVA_TOOL_OPTIONS"] = java_options + " -Dhorizon.fishingReference=true"
-    env["CARGO_TARGET_DIR"] = str(lab.cargo_target())
-    env["HORIZON_FISHING_TICK_REFERENCE"] = str(work / "rust-fishing-ticks.json")
-    env["HORIZON_FISHING_BOBBING_REFERENCE"] = str(work / "rust-fishing-bobbing.json")
+    java_options = os.environ.get("JAVA_TOOL_OPTIONS", "")
+    env = lab.game_env(
+        JAVA_TOOL_OPTIONS=java_options + " -Dhorizon.fishingReference=true",
+        CARGO_TARGET_DIR=str(lab.cargo_target()),
+        HORIZON_FISHING_TICK_REFERENCE=str(work / "rust-fishing-ticks.json"),
+        HORIZON_FISHING_BOBBING_REFERENCE=str(work / "rust-fishing-bobbing.json"),
+        HORIZON_HOME=str(work / "home"),
+        HORIZON_LAUNCHER_HOME=str(work / "launcher"),
+        XDG_DATA_HOME=str(work / "data"),
+        XDG_CONFIG_HOME=str(work / "config"),
+    )
     subprocess.run(["cargo", "build", "--profile", "fast", "-p", "horizon-client", "--bin", "horizon-client"],
                    cwd=lab.ROOT, env=env, check=True)
     binary = lab.cargo_target() / "fast" / ("horizon-client.exe" if os.name == "nt" else "horizon-client")
