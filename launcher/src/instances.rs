@@ -493,28 +493,15 @@ pub fn create_java(name: &str, minecraft: &str) -> Result<Instance, String> {
 
 /// What creating or renaming an instance says when another already has `name`.
 pub fn name_taken(name: &str) -> String {
-    use crate::i18n::{tr, trf};
-    format!(
-        "{} {}",
-        trf(
-            "There is already an instance called {name}.",
-            &[("name", name)]
-        ),
-        tr("Choose another name.")
+    crate::i18n::trf(
+        "There is already an instance called {name}. Choose another name.",
+        &[("name", name)],
     )
 }
 
 /// `name_taken` for `instance copy-from`, whose flag for another name is `--as`.
 pub fn name_taken_with_flag(name: &str) -> String {
-    use crate::i18n::{tr, trf};
-    format!(
-        "{} {}",
-        trf(
-            "There is already an instance called {name}.",
-            &[("name", name)]
-        ),
-        tr("Choose another name with `--as NAME`.")
-    )
+    format!("{} (`--as NAME`)", name_taken(name))
 }
 
 fn create_in(

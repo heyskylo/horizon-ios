@@ -167,7 +167,7 @@ fn names_stay_unique_and_packs_are_not_copied() {
     );
     assert_eq!(
         name_taken_with_flag("survival"),
-        "There is already an instance called survival. Choose another name with `--as NAME`."
+        "There is already an instance called survival. Choose another name. (`--as NAME`)"
     );
     assert!(create_in(&home, &data, "  ", None, None).is_err());
     // Another name with the same folder name gets the next free folder.
