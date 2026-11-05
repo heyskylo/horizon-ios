@@ -12,7 +12,7 @@ use horizon_port_pack::{
     fetch::{Fetched, How},
     import::Pack,
     pipeline::{self, Log},
-    report::{Row, Status},
+    report::{self, Row, Status},
     resourcepacks::{self, Report as ResourceReport, State},
 };
 use std::fs;
@@ -92,6 +92,44 @@ impl Imported {
             )],
         ));
         parts.join("  ·  ")
+    }
+    /// The plain headline above the numbers, in the launcher's language: how much of the pack
+    /// comes over and what does not. The same lines as `horizon_port_pack::report::Summary::lines`
+    /// (a test keeps the English equal); none for a pack with no mod to port.
+    pub fn headline(&self) -> Vec<String> {
+        use crate::i18n::{tr, trf};
+        let s = report::summary(&self.rows);
+        let n = |count: usize| count.to_string();
+        let mut lines = Vec::new();
+        if s.needing == 0 {
+            return lines;
+        }
+        lines.push(trf(
+            "{carried} of {total} mods that need porting come over as content (blocks, items and \
+             structures); their own code does not run.",
+            &[("carried", &n(s.carried)), ("total", &n(s.needing))],
+        ));
+        if s.ready + s.blocked + s.later > 0 {
+            lines.push(trf(
+                "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support \
+                 Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client \
+                 features), {later} are not sorted yet (not identified, or waiting on other mods or \
+                 other work).",
+                &[
+                    ("ready", &n(s.ready)),
+                    ("blocked", &n(s.blocked)),
+                    ("later", &n(s.later)),
+                ],
+            ));
+        }
+        if s.partial > 0 {
+            lines.push(
+                tr("Partial means part of a mod came over, but something is left out, differs from \
+                    the original or has not been checked yet.")
+                .to_string(),
+            );
+        }
+        lines
     }
     /// What getting the jars did, in one line, or None before it ran.
     pub fn jars(&self) -> Option<String> {

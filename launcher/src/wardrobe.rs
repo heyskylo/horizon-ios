@@ -1,7 +1,9 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
 //! the catalogue, the account's own items and purchase history, what each slot wears and whether
 //! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
-//! claiming happen on the website ([`SHOP_URL`]), never here.
+//! claiming happen on the website ([`SHOP_URL`]), except the founder set's free claim for players
+//! in countries Paddle, the shop's payment provider, doesn't serve (`Claim::here`,
+//! `Service::claim`): the service decides who that is, by country.
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -88,6 +90,18 @@ pub struct Claim {
     /// Open only because the account is on the service's preview list.
     #[serde(default)]
     pub preview: bool,
+    /// The service grants the set to this player from the Wardrobe (`POST /v1/claim`): Paddle
+    /// doesn't sell where they are, so the site's checkout can't (in `me` only).
+    #[serde(default)]
+    pub one_click: bool,
+}
+
+impl Claim {
+    /// Whether the Wardrobe offers "Claim for free": open for this account, not claimed yet, and
+    /// the service says the checkout isn't for this player.
+    pub fn here(&self) -> bool {
+        self.open && self.one_click && self.claimed == Some(false)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -301,6 +315,10 @@ impl Session {
     pub fn live(&self) -> bool {
         Instant::now() < self.until
     }
+    /// Whether this is the account `uuid`'s session and it has not run out.
+    pub fn for_account(&self, uuid: &str) -> bool {
+        self.uuid == uuid && self.live()
+    }
 }
 
 pub struct Service {
@@ -401,6 +419,15 @@ impl Service {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
     }
 
+    /// Claim the founder set here (only where `Claim::here`): the account's answer after it. One
+    /// the service already recorded is no failure.
+    pub fn claim(&self, session: &Session) -> Result<Me, Error> {
+        match self.call("POST", "/v1/claim", Some(session), Some(json!({}))) {
+            Err(Error::Service(409)) => self.me(session),
+            other => parse(other?),
+        }
+    }
+
     /// Wear `item` in `slot`, or nothing there (`None`).
     pub fn equip(&self, session: &Session, slot: &str, item: Option<&str>) -> Result<Me, Error> {
         let body = json!({ "slot": slot, "item": item });
@@ -431,6 +458,53 @@ impl Service {
             saved.pending.remove(0);
         }
         Ok(())
+    }
+
+    /// Send the changes waiting and read the account's own answer with `session`, which is kept
+    /// while it is live: the account is proved with Mojang once per service session, not once
+    /// per refresh. The service's 401 (its session ended) signs in once more and retries; any
+    /// other failure stands.
+    pub fn sync_with_session(
+        &self,
+        name: &str,
+        uuid: &str,
+        session: &mut Option<std::sync::Arc<Session>>,
+        saved: &mut Saved,
+        join: impl Fn(&str) -> Result<(), String>,
+    ) -> Result<(), Error> {
+        let mut renewed = false;
+        loop {
+            let current = match session.clone().filter(|s| s.for_account(uuid)) {
+                Some(current) => current,
+                None => {
+                    let signed = std::sync::Arc::new(self.sign_in(name, &join)?);
+                    *session = Some(signed.clone());
+                    signed
+                }
+            };
+            if let Err(e) = self.sync(&current, saved) {
+                if e == Error::SignedOut && !renewed {
+                    *session = None;
+                    renewed = true;
+                    continue;
+                }
+                return Err(e);
+            }
+            match self.me(&current) {
+                Ok(mut me) => {
+                    for change in &saved.pending {
+                        me.apply(change);
+                    }
+                    saved.me = Some(me);
+                    return Ok(());
+                }
+                Err(Error::SignedOut) if !renewed => {
+                    *session = None;
+                    renewed = true;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// An item's file, from `cache` (`<id>-<hash>.json`, kept by hash: it never changes for one)

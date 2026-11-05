@@ -227,7 +227,10 @@ impl Click {
     pub fn parse(t: &Tag, kind: &str) -> Option<Self> {
         let s = |key| string(t.get(key));
         Some(match path(kind) {
-            "open_url" => Self::OpenUrl(s("url")?),
+            // ClickEvent.OpenUrl's url is an ExtraCodecs.UNTRUSTED_URI.
+            "open_url" => {
+                Self::OpenUrl(s("url").filter(|url| crate::component::untrusted_http_url(url))?)
+            }
             "run_command" => Self::RunCommand(s("command")?),
             "suggest_command" => Self::SuggestCommand(s("command")?),
             "show_dialog" => Self::ShowDialog(t.get("dialog")?.clone()),
@@ -639,6 +642,19 @@ impl Dialog {
             | Kind::DialogList { exit, .. } => exit.as_ref().and_then(|b| b.action.as_ref()),
         }
     }
+    /// Which of [`Self::buttons`] does what Escape does, if Escape does anything.
+    pub fn escape_button(&self) -> Option<usize> {
+        if !self.can_close_with_escape {
+            return None;
+        }
+        let last = self.buttons().len().checked_sub(1);
+        match &self.kind {
+            Kind::Notice(_) | Kind::Confirmation { .. } => last,
+            Kind::MultiAction { exit, .. }
+            | Kind::ServerLinks { exit, .. }
+            | Kind::DialogList { exit, .. } => exit.as_ref().and(last),
+        }
+    }
     /// The buttons it draws, in order: the list, then the footer's.
     pub fn buttons(&self) -> Vec<&Button> {
         match &self.kind {
@@ -830,6 +846,28 @@ mod tests {
     }
 
     #[test]
+    fn open_url_actions_take_only_web_links() {
+        let open = |url: &str| {
+            let action = Tag::compound([("type", s("minecraft:open_url")), ("url", s(url))]);
+            Action::parse(&action).and_then(|a| a.click(&[], &[]))
+        };
+        assert_eq!(
+            open("https://example.com/a"),
+            Some(Click::OpenUrl("https://example.com/a".into()))
+        );
+        assert!(open("HTTP://example.com").is_some());
+        for url in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "\\\\attacker\\share\\x.exe",
+            "search-ms:query=x&crumb=location:\\\\attacker\\share",
+            "javascript:alert(1)",
+            "/usr/bin/xterm",
+        ] {
+            assert_eq!(open(url), None, "{url}");
+        }
+    }
+
+    #[test]
     fn actions_carry_the_input_values() {
         let d = Dialog::parse(&register()).unwrap();
         let values = [InputValue::Text("p\"w".into())];
@@ -855,6 +893,22 @@ mod tests {
             .unwrap()
             .click(&d.inputs, &values);
         assert_eq!(command, Some(Click::RunCommand("say p\\\"w !".into())));
+    }
+
+    #[test]
+    fn the_button_that_does_what_escape_does() {
+        let notice = |escape: i8| {
+            Dialog::parse(&Tag::compound([
+                ("type", s("notice")),
+                ("title", s("Hi")),
+                ("can_close_with_escape", Tag::Byte(escape)),
+            ]))
+            .unwrap()
+        };
+        assert_eq!(notice(1).escape_button(), Some(0));
+        assert_eq!(notice(0).escape_button(), None);
+        // Multi-action with no exit button: Escape has no button to be.
+        assert_eq!(Dialog::parse(&register()).unwrap().escape_button(), None);
     }
 
     #[test]

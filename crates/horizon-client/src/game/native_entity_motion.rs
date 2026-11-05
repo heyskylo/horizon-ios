@@ -2,7 +2,8 @@
 //! `EntityRef` (docs/native-mods.md, "Entity and level handles", #7387):
 //! velocity, ground, box, eyes and view. They read the entity a handle names
 //! as `native_entity_refs.rs` finds it, and return `None` (or `false`) for a
-//! stale handle or on a client.
+//! stale handle. On a client (API @API:client_entity_refs@) they read the
+//! entities the server shows the window, and nothing moves one.
 use super::entity::{Entity as _, EntityHandle, with_entity, with_entity_mut};
 use super::{Game, commands::Target};
 use horizon_client::mod_api::EntityRef;
@@ -19,6 +20,12 @@ impl Game<'_> {
         self.entity_handles()
             .find(|h| with_entity!(self, *h, e => e.id() == id))
     }
+    /// This window's own player, when a client's target names it.
+    fn native_client_player(&self, t: Target) -> Option<&horizon_client::motion::PlayerMotion> {
+        self.remote.as_ref()?;
+        (t == Target::Player).then_some(())?;
+        self.player.as_ref()
+    }
     /// The server's copy of the player a target names.
     fn native_target_guest(&self, t: Target) -> Option<&horizon_client::lan::guest::Guest> {
         match t {
@@ -30,9 +37,13 @@ impl Game<'_> {
     /// The entity's velocity in blocks a tick (`Entity.getDeltaMovement`). A
     /// player's is the move its client last reported (`getKnownMovement`); an
     /// entity Horizon doesn't simulate (a display, a painting) has none, so
-    /// zero. API 379.
+    /// zero. On a client, another entity's is the motion the server last
+    /// sent it (`Entity.lerpMotion`). API 379.
     pub(super) fn native_entity_velocity(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some([p.velocity.x, p.velocity.y, p.velocity.z]);
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(std::array::from_fn(|i| {
                 g.position[i] - g.previous_position[i]
@@ -46,14 +57,17 @@ impl Game<'_> {
     }
     /// Sets the entity's velocity (`Entity.setDeltaMovement`); clients see it
     /// as they see the entity move. False for a player (its client moves
-    /// it), an entity Horizon doesn't simulate, or a value that isn't finite.
-    /// API 379.
+    /// it), an entity Horizon doesn't simulate, a value that isn't finite,
+    /// or on a client. API 379.
     pub(super) fn native_entity_set_velocity(
         &mut self,
         entity: EntityRef,
         velocity: [f64; 3],
     ) -> bool {
-        if !velocity.iter().all(|v| v.is_finite()) || self.native_entity_target(entity).is_none() {
+        if self.remote.is_some()
+            || !velocity.iter().all(|v| v.is_finite())
+            || self.native_entity_target(entity).is_none()
+        {
             return false;
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
@@ -70,6 +84,9 @@ impl Game<'_> {
     /// 379.
     pub(super) fn native_entity_on_ground(&self, entity: EntityRef) -> Option<bool> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some(p.ground.on_ground);
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(g.on_ground);
         }
@@ -83,6 +100,9 @@ impl Game<'_> {
     /// markers, End crystals, the dragon). API 379.
     pub(super) fn native_entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some(corners(p.bounds()));
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(corners(g.bounds()));
         }

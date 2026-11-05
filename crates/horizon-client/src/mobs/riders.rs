@@ -5,7 +5,7 @@
 //! two (`game/passengers.rs`) and spawns the jockeys.
 use super::{
     Mob, MobWorld, Seen, Species,
-    goals::{JUMP, LOOK, MOVE},
+    goals::{JUMP, LOOK, MOVE, TARGET},
 };
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_world::nbt::{Compound, Tag};
@@ -47,6 +47,19 @@ fn pt(x: f32, y: f32, z: f32) -> [f64; 3] {
 fn up(y: f32) -> [f64; 3] {
     pt(0.0, y, 0.0)
 }
+/// `EntityType.HAPPY_GHAST` `passengerAttachments`: four seats at the corners
+/// of the back (front, left, back, right), picked by the rider's place in
+/// `getPassengers` (`EntityAttachments.get` clamps the index to the last).
+pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
+    const SEATS: [[f32; 3]; 4] = [
+        [0.0, 4.0, 1.7],
+        [-1.7, 4.0, 0.0],
+        [0.0, 4.0, -1.7],
+        [1.7, 4.0, 0.0],
+    ];
+    let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
+    pt(x, y, z)
+}
 fn base_attachment(v: &Mob) -> [f64; 3] {
     let baby = v.is_baby();
     // Players and mannequins have no `passengerAttachments`: their box top.
@@ -83,7 +96,7 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Endermite | Species::Silverfish => up(0.2375),
         Species::Enderman => up(2.80625),
         Species::Ghast => up(4.0625),
-        Species::HappyGhast => pt(0.0, 4.0, 1.7),
+        Species::HappyGhast => happy_ghast_attachment(0),
         Species::Warden => up(3.15),
         Species::Sniffer => up(2.09375),
         Species::Fox => pt(0.0, 0.6375, -0.25),
@@ -331,24 +344,45 @@ fn ranged(s: Species) -> bool {
             | Species::Piglin
     )
 }
-/// A mob rider steers: while it has a target, its vehicle gives up its own
-/// movement goals and carries it toward the target (melee riders to contact,
-/// archers to a shooting distance). Without a target the vehicle wanders.
+/// `Mob.getControllingPassenger`: NoAI belongs to the vehicle, not its rider.
+fn controller<'a>(m: &Mob, w: &'a MobWorld) -> Option<&'a Seen> {
+    if m.no_ai {
+        return None;
+    }
+    m.extra.rider.and_then(|id| w.seen(id)).filter(|r| {
+        r.alive
+            && !w.data.entity_has(
+                "minecraft:non_controlling_rider",
+                &format!("minecraft:{}", super::species::def(r.species).name),
+            )
+    })
+}
+/// Vehicle goal flags are independent of whether the rider has a combat target.
+/// Ravager.updateControlFlags permits raiders, unlike Mob.updateControlFlags.
 pub fn drive(m: &mut Mob, w: &MobWorld) {
-    let Some(rider) = m.extra.rider else {
-        m.ai.goals.disabled &= !CONTROLLED;
+    let rider = controller(m, w);
+    let disabled = rider
+        .is_some_and(|r| m.species() != Species::Ravager || !super::raider::is_raider(r.species));
+    let flags = CONTROLLED
+        | if m.species() == Species::Ravager {
+            TARGET
+        } else {
+            0
+        };
+    if disabled {
+        m.ai.goals.disabled |= flags;
+    } else {
+        m.ai.goals.disabled &= !flags;
+    }
+    // Keep the existing combat steering and ranged stopping distance.
+    let Some((seen, t)) = rider.and_then(|r| {
+        r.target
+            .and_then(|target| w.target_info(target))
+            .filter(|t| t.alive && !(t.is_player && t.creative))
+            .map(|t| (r, t))
+    }) else {
         return;
     };
-    let seen = w.seen(rider).filter(|s| s.alive);
-    let info = seen
-        .and_then(|s| s.target)
-        .and_then(|t| w.target_info(t))
-        .filter(|t| t.alive && !(t.is_player && t.creative));
-    let (Some(seen), Some(t)) = (seen, info) else {
-        m.ai.goals.disabled &= !CONTROLLED;
-        return;
-    };
-    m.ai.goals.disabled |= CONTROLLED;
     m.look_at_speed([t.position.x, t.eye_y, t.position.z], 30.0, 30.0);
     let close =
         ranged(seen.species) && m.distance_sqr(t.position) < RANGED_DISTANCE * RANGED_DISTANCE;
@@ -358,15 +392,65 @@ pub fn drive(m: &mut Mob, w: &MobWorld) {
         m.nav_move_to_entity(w, [t.position.x, t.position.y, t.position.z], 0, 1.0);
     }
 }
-/// `Mob.getControllingPassenger` for a mob on its back: the rider, unless it
-/// is in `#non_controlling_rider` (`Entity.canControlVehicle`).
 pub fn mob_controlled(m: &Mob, w: &MobWorld) -> bool {
-    m.extra.rider.and_then(|r| w.seen(r)).is_some_and(|r| {
-        !matches!(
-            r.species,
-            Species::Slime | Species::MagmaCube | Species::SulfurCube
-        )
-    })
+    controller(m, w).is_some()
+}
+
+/// Tick a passenger with Mob.getNavigation's recursive vehicle redirection.
+/// Navigation is lent, not copied: goal start/stop/path progress all address
+/// the same object the vehicle ticks. The pathfinder sees the vehicle body.
+pub fn tick(
+    mobs: &mut [Mob],
+    index: usize,
+    w: &MobWorld,
+    random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<super::MobEvent>,
+) -> bool {
+    let mut owner = index;
+    if !mobs[index].no_ai {
+        for _ in 0..mobs.len() {
+            let Some(vehicle) = mobs[owner]
+                .extra
+                .mount
+                .and_then(|id| mobs.iter().position(|m| m.id == id))
+            else {
+                break;
+            };
+            if vehicle == index
+                || controller(&mobs[vehicle], w).is_none_or(|r| r.id != mobs[owner].id)
+            {
+                break;
+            }
+            owner = vehicle;
+        }
+    }
+    if owner == index {
+        return mobs[index].tick(w, random, events);
+    }
+    let (rider, vehicle) = if index < owner {
+        let (left, right) = mobs.split_at_mut(owner);
+        (&mut left[index], &mut right[0])
+    } else {
+        let (left, right) = mobs.split_at_mut(index);
+        (&mut right[0], &mut left[owner])
+    };
+    let body = vehicle.path_mob();
+    std::mem::swap(&mut rider.ai.nav, &mut vehicle.ai.nav);
+    rider.ai.navigation_redirect = Some(Box::new(super::nav::Redirect {
+        own: std::mem::take(&mut vehicle.ai.nav),
+        body,
+        follow_range: vehicle.attrs.follow_range as f32,
+        passenger: vehicle.extra.mount.is_some(),
+        in_liquid: vehicle.is_in_liquid(),
+    }));
+    let kept = rider.tick(w, random, events);
+    let redirect = rider
+        .ai
+        .navigation_redirect
+        .take()
+        .expect("navigation loan lasts for the tick");
+    vehicle.ai.nav = std::mem::replace(&mut rider.ai.nav, redirect.own);
+    kept
 }
 /// `Mob.requiresCustomPersistence`: a passenger never despawns.
 pub fn keeps_alive(m: &Mob) -> bool {
@@ -551,5 +635,20 @@ mod tests {
         ];
         assert!(start_riding(&mut others, 1, 2));
         assert_eq!(others[0].extra.variant3, 4);
+    }
+}
+
+#[cfg(test)]
+mod happy_ghast_seat_tests {
+    use super::happy_ghast_attachment;
+
+    #[test]
+    fn passengers_take_separate_seats() {
+        assert_eq!(happy_ghast_attachment(0), [0.0, 4.0, f64::from(1.7_f32)]);
+        let seats: Vec<_> = (0..4).map(happy_ghast_attachment).collect();
+        for (i, a) in seats.iter().enumerate() {
+            assert!(seats[i + 1..].iter().all(|b| a != b));
+        }
+        assert_eq!(happy_ghast_attachment(9), seats[3]);
     }
 }

@@ -34,7 +34,7 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
     move |name: &str| {
         let home = root.join(crate::modpacks::slug(name));
         if home.exists() {
-            return Err(format!("There is already an instance called {name}."));
+            return Err(instances::name_taken(name));
         }
         fs::create_dir_all(&home).unwrap();
         Ok(Instance {
@@ -263,5 +263,35 @@ fn an_export_comes_back_as_an_instance_and_nothing_escapes_its_folder() {
         )],
     );
     assert!(import_into(&java, NONE, &maker(&made)).is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_java_pack_cannot_plant_the_browsers_list() {
+    let dir = scratch("planted-list");
+    let made = dir.join("instances");
+    let pack = dir.join("planted.mrpack");
+    let list = br#"{"entries":[{"source":"modrinth","project":"p","slug":"p","title":"p",
+        "kind":"mod","version":"1","number":"1","file":"mods/a.jar",
+        "checksum":"SHA-512:00","page":""}]}"#;
+    zip_file(
+        &pack,
+        &[
+            (
+                "modrinth.index.json",
+                br#"{"name":"Planted","files":[],"dependencies":{"fabric-loader":"0.16"}}"#,
+            ),
+            ("overrides/mod-browser.json", list),
+            ("client-overrides/Mod-Browser.json", list),
+            ("overrides/mods/a.jar", b"jar"),
+        ],
+    );
+    let i = import_mrpack_into(&pack, NONE, &maker(&made)).unwrap();
+    assert!(i.home.join("mods/a.jar").is_file());
+    let names: Vec<_> = fs::read_dir(&i.home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["mods"]);
     fs::remove_dir_all(&dir).unwrap();
 }

@@ -429,10 +429,10 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     let step = (start + select(corner, 4u - corner, dir == 1u)) & 3u;
     let du = select(0u, 1u, step == 1u || step == 2u);
     let dw = select(0u, 1u, step >= 2u);
-    var pos = block;
-    pos[axis] = block[axis] + side;
-    pos[(axis + 1u) % 3u] = block[(axis + 1u) % 3u] + du;
-    pos[(axis + 2u) % 3u] = block[(axis + 2u) % 3u] + dw;
+    // No dynamic component stores: FXC (DirectX 12) rejects them (X3500). A component's offset
+    // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets.
+    let rel = (vec3(0u, 1u, 2u) + vec3(3u - axis)) % vec3(3u);
+    let pos = block + select(select(vec3(dw), vec3(du), rel == vec3(1u)), vec3(side), rel == vec3(0u));
     let sel = lo.z >> 24u;
     let us = (sel >> (2u * corner)) & 1u;
     let vs = (sel >> (2u * corner + 1u)) & 1u;
@@ -512,7 +512,8 @@ fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
 }
 @vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);
-    return corner_vertex(s.c, slot_origins[block_slots[s.slot >> 8u]]);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    return corner_vertex(s.c, origin);
 }
 @vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);
