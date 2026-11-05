@@ -3097,8 +3097,6 @@ impl Game<'_> {
             ),
             _ => None,
         };
-        let player = Text::literal(self.acting_player_name());
-        let players = targets.len();
         if let (Some(i), Some(Arg::Str(criterion))) = (index, ctx.get("criterion")) {
             let a = &tree.list[i];
             let name = super::advancements::adv_name(a);
@@ -3108,19 +3106,18 @@ impl Game<'_> {
                     &[name, Text::literal(criterion.clone())],
                 )));
             }
-            let changed = if grant {
-                self.grant_advancement(i, Some(criterion))
-            } else {
-                self.revoke_advancement(i, Some(criterion))
-            };
-            let to = if players == 1 { "one" } else { "many" };
-            let who = if players == 1 {
-                player
-            } else {
-                Text::literal(players.to_string())
-            };
+            // AdvancementCommands.performCriterion: each selected player's own turn.
+            let results = self.advancement_turns(&targets, |g| {
+                i32::from(if grant {
+                    g.grant_advancement(i, Some(criterion))
+                } else {
+                    g.revoke_advancement(i, Some(criterion))
+                })
+            });
+            let (who, many) = self.advancement_subject(&results);
+            let to = if many { "many" } else { "one" };
             let args = [Text::literal(criterion.clone()), name, who];
-            if !changed {
+            if results.iter().map(|r| r.1).sum::<i32>() == 0 {
                 return Err(CommandError::new(Text::translate(
                     &format!("commands.advancement.{key}.criterion.to.{to}.failure"),
                     &args,
@@ -3130,7 +3127,7 @@ impl Game<'_> {
                 &format!("commands.advancement.{key}.criterion.to.{to}.success"),
                 &args,
             ));
-            return Ok(1);
+            return Ok(results.iter().map(|r| r.1).sum());
         }
         // getAdvancements: parents first (nearest up), the target, then
         // the subtree depth first.
@@ -3159,30 +3156,32 @@ impl Game<'_> {
                 out
             }
         };
-        self.adv.quiet = index.is_none();
-        let mut count = 0;
-        for &i in &list {
-            let changed = if grant {
-                self.grant_advancement(i, None)
-            } else {
-                self.revoke_advancement(i, None)
-            };
-            count += i32::from(changed);
-        }
-        self.adv.quiet = false;
-        let to = if players == 1 { "one" } else { "many" };
-        let who = if players == 1 {
-            player
-        } else {
-            Text::literal(players.to_string())
-        };
+        let quiet = index.is_none();
+        // AdvancementCommands.perform: Action.perform for each selected player.
+        let results = self.advancement_turns(&targets, |g| {
+            let was_quiet = std::mem::replace(&mut g.adv.quiet, quiet);
+            let mut count = 0;
+            for &i in &list {
+                let changed = if grant {
+                    g.grant_advancement(i, None)
+                } else {
+                    g.revoke_advancement(i, None)
+                };
+                count += i32::from(changed);
+            }
+            g.adv.quiet = was_quiet;
+            count
+        });
+        let total: i32 = results.iter().map(|r| r.1).sum();
+        let (who, many) = self.advancement_subject(&results);
+        let to = if many { "many" } else { "one" };
         let (what, first) = if list.len() == 1 {
             ("one", super::advancements::adv_name(&tree.list[list[0]]))
         } else {
             ("many", Text::literal(list.len().to_string()))
         };
         let args = [first, who];
-        if count == 0 {
+        if total == 0 {
             return Err(CommandError::new(Text::translate(
                 &format!("commands.advancement.{key}.{what}.to.{to}.failure"),
                 &args,
@@ -3192,7 +3191,34 @@ impl Game<'_> {
             &format!("commands.advancement.{key}.{what}.to.{to}.success"),
             &args,
         ));
-        Ok(count)
+        Ok(total)
+    }
+    /// Run `f` as each selected player's own turn and collect what it changed;
+    /// a target without a turn counts as unchanged, like in `cmd_clear`.
+    fn advancement_turns(
+        &mut self,
+        targets: &[Target],
+        f: impl Fn(&mut Self) -> i32,
+    ) -> Vec<(Target, i32)> {
+        targets
+            .iter()
+            .map(|&t| (t, self.for_player(t, &f).unwrap_or(0)))
+            .collect()
+    }
+    /// The player argument of the advancement feedback: with the tracker's
+    /// NON_ZERO elements on success and every element on failure, the one
+    /// player's name, else the count (CommandResponseTracker.dispatch).
+    fn advancement_subject(&self, results: &[(Target, i32)]) -> (Text, bool) {
+        let changed: Vec<Target> = results.iter().filter(|r| r.1 != 0).map(|r| r.0).collect();
+        let picked: Vec<Target> = if changed.is_empty() {
+            results.iter().map(|r| r.0).collect()
+        } else {
+            changed
+        };
+        match picked.as_slice() {
+            [t] => (self.target_name(*t), false),
+            _ => (Text::literal(picked.len().to_string()), true),
+        }
     }
     fn cmd_experience(&mut self, ctx: &Context) -> R<i32> {
         let levels = ctx.has("levels");
