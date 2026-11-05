@@ -2501,6 +2501,21 @@ impl Game<'_> {
     pub(super) fn native_level_tick_post(&mut self, dimension: &str) {
         mod_api::dispatch_level_tick_post(self, mod_api::mods(), dimension);
     }
+    /// A client tick of the window starts (NeoForge's `ClientTickEvent.Pre`,
+    /// at the top of `Minecraft.tick`), before any of its work. The window
+    /// ticks 20 times a second on the title screen, while paused and in a
+    /// world alike, and runs the ticks a slow frame owes back to back. Never
+    /// on a server, single player's own included: it ticks on its own thread.
+    /// Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_pre(&mut self) {
+        mod_api::dispatch_client_tick_pre(self, mod_api::mods());
+    }
+    /// The same client tick ends (`ClientTickEvent.Post`): the world's tick,
+    /// the chat queue, music and sounds are done. A tick that errors ends
+    /// before it. Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_post(&mut self) {
+        mod_api::dispatch_client_tick_post(self, mod_api::mods());
+    }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
     /// `native_fill` and `native_text`. Skip a corner `native_corner_shown`
