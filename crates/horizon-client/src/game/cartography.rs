@@ -161,6 +161,29 @@ impl Game<'_> {
                 [[s.u0, s.v0], [s.u1, s.v0], [s.u1, s.v1], [s.u0, s.v1]],
                 u32::MAX,
             );
+            if let Some(name) = &d.name {
+                let text = horizon_client::text::Text::literal(name);
+                let f = self.gui.atlas.font.width_text(&text);
+                if f > 0.0 {
+                    let f1 = (25.0 / f).clamp(0.0, 6.0 / 9.0);
+                    let mut temp = HudBatch::new([1, 1]);
+                    temp.name_tag(&self.gui.atlas, &text, 0.0, 0xFFFF_FFFF, 0x8000_0000);
+                    batch.patches.extend(temp.patches);
+                    let tm = glam::Mat4::from_translation(glam::Vec3::new(
+                        x + (f32::from(d.x) / 2.0 + 64.0) * scale,
+                        y + (f32::from(d.y) / 2.0 + 64.0 + 4.0) * scale,
+                        0.0,
+                    )) * glam::Mat4::from_scale(glam::Vec3::splat(scale * f1));
+                    for quad in temp.vertices.as_chunks::<6>().0 {
+                        let corners = [quad[0], quad[1], quad[2], quad[5]].map(|v| {
+                            let p = tm.transform_point3(glam::Vec3::new(v.pos[0], v.pos[1], 0.0));
+                            [p.x, p.y]
+                        });
+                        let uvs = [quad[0].uv, quad[1].uv, quad[2].uv, quad[5].uv];
+                        batch.quad(corners, uvs, quad[0].color);
+                    }
+                }
+            }
         }
         // A native mod's own icons (`native_map_decorations`).
         for d in self.mod_map_decorations(id, true) {
@@ -286,5 +309,18 @@ mod tests {
                 [71.0 - 4.5 * 0.45, 17.0 - 3.5 * 0.45],
             ],
         );
+    }
+
+    #[test]
+    fn map_marker_name_scale_clamps_as_vanilla() {
+        let scale = |f: f32| (25.0 / f).clamp(0.0, 6.0 / 9.0);
+        // Short text (width 10): capped at 6/9 (~0.667).
+        assert!((scale(10.0) - 6.0 / 9.0).abs() < 1e-4);
+        // Width 37.5: 25 / 37.5 == 6 / 9 exactly.
+        assert!((scale(37.5) - 6.0 / 9.0).abs() < 1e-4);
+        // Long text (width 100): scaled down to 0.25.
+        assert!((scale(100.0) - 0.25).abs() < 1e-4);
+        // Extremely long text (width 10,000): approaches 0.0.
+        assert!(scale(10_000.0) < 0.01);
     }
 }
