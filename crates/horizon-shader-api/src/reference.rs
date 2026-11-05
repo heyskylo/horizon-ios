@@ -1,8 +1,8 @@
-//! docs/api/shaders-reference.md, generated from the stages and inputs this
-//! crate defines (`tests/reference.rs` fails when the file drifts).
+//! docs/api/shaders-reference.md (0.1) and shaders-reference-0.2.md, generated from the stages
+//! and inputs this crate defines (`tests/reference.rs` fails when a file drifts).
 use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
 use crate::inputs::{DISPLACEMENT_INPUT, Frame, SURFACE, Struct};
-use crate::manifest::{API, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
+use crate::manifest::{Api, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
 use crate::stages::{GROUP, StageKind};
 
@@ -29,33 +29,93 @@ fn one_line(doc: &str) -> String {
     doc.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub fn markdown() -> String {
+/// Where the line's reference lives, from the repository's root.
+pub fn path(api: Api) -> &'static str {
+    match api {
+        Api::V0_1 => "docs/api/shaders-reference.md",
+        Api::V0_2 => "docs/api/shaders-reference-0.2.md",
+    }
+}
+
+/// 0.2's rules, after the introduction.
+const RULES_0_2: &str = "\
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, but the game refuses them
+for now and the registry doesn't list them, and anything here may change in any release. The design:
+[hdr-linear-light.md](../design/hdr-linear-light.md).
+
+## Colour
+
+Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries, scene-referred, 1.0 is
+vanilla's white at paper white, more is brighter. Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
+the piecewise sRGB curve), replacing negatives and NaN with 0 first, and encodes a stage's result the same way where
+the frame stores gamma (`[frame] blend`, below).
+
+- **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap` and `colored_light`; `VertexInput.tint`; `SkyInput.color`;
+  `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
+  `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
+  `opaque_color`, `reflection`, `shadow_color`).
+- **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
+  `[[textures]]`.
+- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
+  them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
+  `block_light_color`.
+- **Alpha is coverage only.** A post pass's alpha is ignored.
+
+## The display
+
+`frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display. Until HDR output is served for
+0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too: `hdr` 0, `headroom` 1, `paper_white` and `peak`
+80, `black_level` 0, and its picture is shown at paper white with nothing lifted.
+
+## `[frame] blend`
+
+`blend = \"gamma\"` (the default) keeps the frame in vanilla's gamma, values above 1 kept: Horizon encodes the material,
+sky and weather stages' results before they are stored and blended, so glass, water, clouds and particles blend as
+vanilla's. `blend = \"linear\"` stores linear light, so see-through draws blend as light does. A stage sees the same
+values either way. `\"linear\"` passes the check; the game doesn't serve it yet.
+
+";
+
+/// The line's reference.
+pub fn markdown(api: Api) -> String {
     let mut out = format!(
-        "# Shader API reference ({API})\n\n\
+        "# Shader API reference ({api})\n\n\
          Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`\n\
-         rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).\n\n\
-         A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the\n\
-         resources and helpers) before your files and calls the function from its own pass. Your files declare no\n\
-         bindings and no entry points, and no names starting with `horizon_`.\n\n\
-         ## Stages\n\n\
-         | Stage | In `horizon-shaders.toml` | Your function |\n| --- | --- | --- |\n"
+         rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).\n\n"
     );
-    for kind in StageKind::ALL {
+    if api == Api::V0_2 {
+        out += RULES_0_2;
+    }
+    out += "A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the\n\
+            resources and helpers) before your files and calls the function from its own pass. Your files declare no\n\
+            bindings and no entry points, and no names starting with `horizon_`.\n\n\
+            ## Stages\n\n\
+            | Stage | In `horizon-shaders.toml` | Your function |\n| --- | --- | --- |\n";
+    for &kind in api.stages() {
         let key = match kind {
             StageKind::Post => "[[post]]",
             StageKind::Sky => "[sky]",
             StageKind::Material => "[material]",
             StageKind::Vertex => "[vertex]",
             StageKind::Weather => "[weather]",
+            StageKind::Tonemap => "[tonemap]",
         };
         out += &format!("| {} | `{key}` | `{}` |\n", kind.name(), kind.signature());
     }
     out += "\n";
-    for kind in StageKind::ALL {
+    for &kind in api.stages() {
         out += &format!("## {}\n\n`{}`\n\n", kind.name(), kind.signature());
         out += &table(kind.input(), None);
         if kind == StageKind::Material {
-            out += &table(&SURFACE, None);
+            let surface = table(&SURFACE, None);
+            // 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
+            out += &match api {
+                Api::V0_1 => surface,
+                Api::V0_2 => surface.replace(
+                    "The lit colour, 0..1, with its alpha.",
+                    "The lit colour, linear light (more than 1 is brighter than white), with its alpha.",
+                ),
+            };
             out += "Under `[displacement]` the stage also defines \
                     `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \
                     faces near the camera are cut into; the corner moves along the face's normal by the depth it \
@@ -70,6 +130,12 @@ pub fn markdown() -> String {
             out += &format!("| {} | `{}` | {} |\n", r.binding, r.ty, r.doc);
         }
         out += "\n";
+        if kind == StageKind::Tonemap {
+            out += "It runs once per pixel at the window's size, after the post chain and before the camera overlays and\n\
+                    the HUD. A pack without it gets Horizon's: a clip at white in SDR, a roll-off into the headroom in HDR.\n\
+                    Horizon holds the result to 0 to `frame.headroom`.\n\n";
+            continue;
+        }
         if kind != StageKind::Sky {
             out += "Helpers:\n\n";
         }
@@ -112,7 +178,8 @@ pub fn markdown() -> String {
         }
     }
     out += "## The frame\n\n";
-    out += &table(&Frame::WGSL, Some(Frame::OFFSETS));
+    let frame = Frame::line(api);
+    out += &table(&frame, Some(&Frame::OFFSETS[..frame.fields.len()]));
     out += "## Anti-aliasing\n\n\
             While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`\n\
             and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the\n\
