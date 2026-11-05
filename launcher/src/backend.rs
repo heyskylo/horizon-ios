@@ -3868,6 +3868,18 @@ pub fn cannot_replace_itself() -> bool {
     })
 }
 
+/// Whether a package manager owns this launcher: the update target is classified, rather than
+/// the executable inside an AppImage's mount. Asked while the sidebar is drawn, and the launcher
+/// doesn't move while it runs, so the path is resolved once.
+pub fn package_managed_launcher() -> bool {
+    static MANAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MANAGED.get_or_init(|| {
+        let target = update_target();
+        let target = target.canonicalize().unwrap_or(target);
+        crate::update_recovery::package_managed(&target)
+    })
+}
+
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
     let made = fs::OpenOptions::new()

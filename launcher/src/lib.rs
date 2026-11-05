@@ -53,5 +53,6 @@ pub mod telemetry;
 pub mod themes;
 pub mod uninstall_aside;
 pub mod update_handoff;
+pub mod update_recovery;
 pub mod wardrobe;
 pub mod worlds;
