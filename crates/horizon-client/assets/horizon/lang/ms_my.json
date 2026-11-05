@@ -460,8 +460,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Tersembunyi: setiap pemain Horizon melihat anda tanpa kosmetik anda, termasuk anda. Suis yang sama seperti Almari Pakaian pelancar.",
   "horizon.extras.cosmetics_others": "Kosmetik pemain lain",
   "horizon.extras.cosmetics_others.tooltip": "Perkara yang dipakai oleh pemain Horizon lain: segala-galanya, hanya gaya tanda nama mereka, atau tiada apa-apa. Tersembunyi, permainan tidak pernah bertanya apa yang mereka pakai.",
-  "horizon.extras.cosmetics_auras": "Aura dan jejak orang lain",
-  "horizon.extras.cosmetics_auras.tooltip": "Aura dan jejak yang dipakai pemain lain. Mati secara lalai.",
+  "horizon.extras.cosmetics_hide_fx": "Sembunyikan jejak dan aura pemain lain",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Jejak dan aura pemain lain kekal tersembunyi; kosmetik mereka yang lain masih kelihatan. Mati secara lalai.",
   "horizon.extras.cosmetics.shown": "Ditunjukkan",
   "horizon.extras.cosmetics.hidden": "Tersembunyi",
   "horizon.extras.cosmetics.name_tags": "Tanda nama sahaja"

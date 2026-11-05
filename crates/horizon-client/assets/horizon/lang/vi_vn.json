@@ -479,8 +479,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ẩn: mọi người chơi Horizon đều nhìn thấy bạn mà không có mỹ phẩm, bao gồm cả bạn. Công tắc tương tự như Tủ quần áo của bệ phóng.",
   "horizon.extras.cosmetics_others": "Mỹ phẩm của người chơi khác",
   "horizon.extras.cosmetics_others.tooltip": "Những gì người chơi Horizon khác mặc: mọi thứ, chỉ kiểu thẻ tên của họ hoặc không có gì. Ẩn, trò chơi không bao giờ hỏi họ mặc gì.",
-  "horizon.extras.cosmetics_auras": "Hào quang và dấu vết của người khác",
-  "horizon.extras.cosmetics_auras.tooltip": "Hào quang và đường mòn mà người chơi khác mặc. Tắt theo mặc định.",
+  "horizon.extras.cosmetics_hide_fx": "Ẩn vệt và hào quang của người chơi khác",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Vệt và hào quang của người chơi khác bị ẩn; các vật phẩm trang trí khác của họ vẫn hiển thị. Mặc định tắt.",
   "horizon.extras.cosmetics.shown": "Đã hiển thị",
   "horizon.extras.cosmetics.hidden": "Ẩn",
   "horizon.extras.cosmetics.name_tags": "Chỉ gắn thẻ tên"

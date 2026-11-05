@@ -464,8 +464,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Falaichte: chì a h-uile cluicheadair Horizon thu às aonais na cungaidhean maise agad, thug thu a-steach. An aon tionndadh ri Wardrobe an lannsair.",
   "horizon.extras.cosmetics_others": "Coltas cluicheadairean eile",
   "horizon.extras.cosmetics_others.tooltip": "Na bhios cluicheadairean Horizon eile a’ caitheamh: a h-uile càil, dìreach na stoidhlichean tag ainm aca, no dad. Falaichte, cha bhith an geama a-riamh a’ faighneachd dè a bhios orra.",
-  "horizon.extras.cosmetics_auras": "Auras agus slighean cuid eile",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras agus slighean bidh cluicheadairean eile a’ caitheamh. Cuir dheth gu bunaiteach.",
+  "horizon.extras.cosmetics_hide_fx": "Falaich slighean is aurathan chluicheadairean eile",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Fanaidh slighean is aurathan chluicheadairean eile falaichte; chithear an cuid maise eile fhathast. Dheth a ghnàth.",
   "horizon.extras.cosmetics.shown": "Air a shealltainn",
   "horizon.extras.cosmetics.hidden": "Falaichte",
   "horizon.extras.cosmetics.name_tags": "Tagaichean ainmean a-mhàin"

@@ -491,8 +491,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Кистэлэҥ: хас биирдии Horizon оонньооччу эйигин косметикаҥ суох көрөр, эн эмиэ. Пускатель гардеробун курдук биир переключатель.",
   "horizon.extras.cosmetics_others": "Атын оонньооччулар косметикалара",
   "horizon.extras.cosmetics_others.tooltip": "Атын Horizon оонньооччулар тугу кэтэллэрий: барытын, ааттарын бэлиэтин стиллэрэ эрэ, эбэтэр туох да суох. Кистэлэҥ, оонньуу хаһан да тугу кэтэллэрин ыйыппат.",
-  "horizon.extras.cosmetics_auras": "Атыттар ауралара уонна суоллара",
-  "horizon.extras.cosmetics_auras.tooltip": "Атын оонньооччулар кэтэр ауралара уонна суоллара. По умолчанию выключено.",
+  "horizon.extras.cosmetics_hide_fx": "Атын оонньооччулар суолларын уонна ааураларын кистээ",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Атын оонньооччулар суоллара уонна аауралара кистэлэҥҥэ хаалаллар; кинилэр атын киэргэллэрэ көстөр. Сүрүннээн араарыллыбыт.",
   "horizon.extras.cosmetics.shown": "Көрдөрүллүбүт",
   "horizon.extras.cosmetics.hidden": "Буккуллубут",
   "horizon.extras.cosmetics.name_tags": "Аат бэлиэлэрэ эрэ"

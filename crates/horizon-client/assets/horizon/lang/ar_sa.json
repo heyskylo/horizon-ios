@@ -491,8 +491,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "مخفي: يراك كل لاعب في Horizon بدون مستحضرات التجميل الخاصة بك، بما في ذلك أنت. نفس مفتاح خزانة المشغل.",
   "horizon.extras.cosmetics_others": "مستحضرات التجميل للاعبين الآخرين",
   "horizon.extras.cosmetics_others.tooltip": "ما يرتديه لاعبو Horizon الآخرون: كل شيء، فقط أنماط بطاقة الاسم الخاصة بهم، أو لا شيء. مخفيًا، اللعبة لا تسأل أبدًا عما يرتدونه.",
-  "horizon.extras.cosmetics_auras": "هالات ومسارات الآخرين",
-  "horizon.extras.cosmetics_auras.tooltip": "الهالات والمسارات التي يرتديها اللاعبون الآخرون. إيقاف بشكل افتراضي.",
+  "horizon.extras.cosmetics_hide_fx": "إخفاء آثار وهالات اللاعبين الآخرين",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "تبقى آثار وهالات اللاعبين الآخرين مخفية؛ وتظل مستحضراتهم الأخرى ظاهرة. معطّل افتراضيًا.",
   "horizon.extras.cosmetics.shown": "معروض",
   "horizon.extras.cosmetics.hidden": "مخفي",
   "horizon.extras.cosmetics.name_tags": "علامات الاسم فقط"

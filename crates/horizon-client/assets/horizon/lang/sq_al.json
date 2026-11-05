@@ -465,8 +465,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "I fshehur: çdo lojtar Horizon ju sheh pa kozmetikën tuaj, përfshirë ju. I njëjti çelës si veshjet e lëshuesit.",
   "horizon.extras.cosmetics_others": "Kozmetikë për lojtarë të tjerë",
   "horizon.extras.cosmetics_others.tooltip": "Çfarë veshin lojtarët e tjerë Horizon: gjithçka, vetëm stilet e etiketave të emrave të tyre ose asgjë. E fshehur, loja nuk pyet kurrë se çfarë veshin.",
-  "horizon.extras.cosmetics_auras": "Aurat dhe shtigjet e të tjerëve",
-  "horizon.extras.cosmetics_auras.tooltip": "Aurat dhe shtigjet që lojtarët e tjerë veshin. Joaktiv si parazgjedhje.",
+  "horizon.extras.cosmetics_hide_fx": "Fshih gjurmët dhe aurat e lojtarëve të tjerë",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Gjurmët dhe aurat e lojtarëve të tjerë mbeten të fshehura; kozmetikat e tjera të tyre shihen ende. Joaktiv si parazgjedhje.",
   "horizon.extras.cosmetics.shown": "Treguar",
   "horizon.extras.cosmetics.hidden": "I fshehur",
   "horizon.extras.cosmetics.name_tags": "Vetëm etiketat e emrave"

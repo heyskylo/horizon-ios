@@ -399,8 +399,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ferburgen: elke Horizon-spiler sjocht jo sûnder jo kosmetika, jo ynbegrepen. Deselde switch as de Launcher syn Wardrobe.",
   "horizon.extras.cosmetics_others": "Oare spilers 'cosmetica",
   "horizon.extras.cosmetics_others.tooltip": "Wat oare Horizon-spilers drage: alles, allinich har nammelabelstilen, of neat. Ferburgen, it spultsje freget noait wat se drage.",
-  "horizon.extras.cosmetics_auras": "Oare aura's en spoaren",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras en spoaren oare spilers drage. Standert út.",
+  "horizon.extras.cosmetics_hide_fx": "Spoaren en aura's fan oare spilers ferbergje",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spoaren en aura's fan oare spilers bliuwe ferburgen; harren oare kosmetika bliuwt sichtber. Standert út.",
   "horizon.extras.cosmetics.shown": "Oanjûn",
   "horizon.extras.cosmetics.hidden": "Ferburgen",
   "horizon.extras.cosmetics.name_tags": "Allinnich nammelabels"

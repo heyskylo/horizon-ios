@@ -434,8 +434,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Verborge: eder Horizon speuler ziet dich zoonder dien cosmetica, inclusief dich. Dezelfde schakelaar es de garderobe vaan de launcher.",
   "horizon.extras.cosmetics_others": "Cosmetica vaan aandere speulers",
   "horizon.extras.cosmetics_others.tooltip": "Wat aandere Horizon speulers drage: alles, allein hun stijl vaan naamlabel, of niks. Verborge, vraog ‘t spel noets wat ze drage.",
-  "horizon.extras.cosmetics_auras": "Auras en spore vaan aandere",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras en spore die aandere speulers drage. Standaard oet.",
+  "horizon.extras.cosmetics_hide_fx": "Spore en aura's van anger spelers verberge",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spore en aura's van anger spelers blieve verborge; hun anger cosmetica blieve zichbaar. Standaard oet.",
   "horizon.extras.cosmetics.shown": "Getoend",
   "horizon.extras.cosmetics.hidden": "Verborge",
   "horizon.extras.cosmetics.name_tags": "Allein naamtags"

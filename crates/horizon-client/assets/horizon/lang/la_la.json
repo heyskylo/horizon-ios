@@ -399,8 +399,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Occultus: omnisHorizonlusor te sine tuis fucis videt, te comprehendit. Idem transitum cum vestiario launcher.",
   "horizon.extras.cosmetics_others": "Alii histriones medicamentis",
   "horizon.extras.cosmetics_others.tooltip": "Quid aliud?Horizonhistriones gerunt: omnia, solum nomen tag stili, vel nihil. Occultus, ludus numquam quaerit quod gerunt.",
-  "horizon.extras.cosmetics_auras": "Aliorum auras et calles",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras et calles alii lusores gerunt. Off per defaltam.",
+  "horizon.extras.cosmetics_hide_fx": "Vestigia et auras aliorum lusorum celare",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Vestigia et aurae aliorum lusorum celata manent; cetera ornamenta eorum adhuc videntur. Ex defalta exstinctum.",
   "horizon.extras.cosmetics.shown": "Ostensum",
   "horizon.extras.cosmetics.hidden": "Occultus",
   "horizon.extras.cosmetics.name_tags": "Nomen tags tantum"

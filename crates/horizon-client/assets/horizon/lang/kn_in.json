@@ -481,8 +481,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "ಮರೆಮಾಡಲಾಗಿದೆ: ಪ್ರತಿ Horizon ಪ್ಲೇಯರ್ ನಿಮ್ಮ ಸೌಂದರ್ಯವರ್ಧಕಗಳಿಲ್ಲದೆ ನಿಮ್ಮನ್ನು ನೋಡುತ್ತಾರೆ, ನೀವು ಸೇರಿಸಿದ್ದೀರಿ. ಲಾಂಚರ್‌ನ ವಾರ್ಡ್‌ರೋಬ್‌ನಂತೆಯೇ ಅದೇ ಸ್ವಿಚ್.",
   "horizon.extras.cosmetics_others": "ಇತರ ಆಟಗಾರರ ಸೌಂದರ್ಯವರ್ಧಕಗಳು",
   "horizon.extras.cosmetics_others.tooltip": "ಇತರ Horizon ಆಟಗಾರರು ಏನು ಧರಿಸುತ್ತಾರೆ: ಎಲ್ಲವೂ, ಅವರ ಹೆಸರಿನ ಟ್ಯಾಗ್ ಶೈಲಿಗಳು ಅಥವಾ ಏನೂ ಇಲ್ಲ. ಮರೆಮಾಡಲಾಗಿದೆ, ಆಟವು ಅವರು ಏನು ಧರಿಸುತ್ತಾರೆ ಎಂದು ಎಂದಿಗೂ ಕೇಳುವುದಿಲ್ಲ.",
-  "horizon.extras.cosmetics_auras": "ಇತರರ ಸೆಳವು ಮತ್ತು ಹಾದಿಗಳು",
-  "horizon.extras.cosmetics_auras.tooltip": "ಔರಾಸ್ ಮತ್ತು ಟ್ರೇಲ್ಸ್ ಇತರ ಆಟಗಾರರು ಧರಿಸುತ್ತಾರೆ. ಡೀಫಾಲ್ಟ್ ಆಗಿ ಆಫ್.",
+  "horizon.extras.cosmetics_hide_fx": "ಇತರ ಆಟಗಾರರ ಹಾದಿಗಳು ಮತ್ತು ಪ್ರಭಾವಳಿಗಳನ್ನು ಮರೆಮಾಡಿ",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "ಇತರ ಆಟಗಾರರ ಹಾದಿಗಳು ಮತ್ತು ಪ್ರಭಾವಳಿಗಳು ಮರೆಯಾಗಿರುತ್ತವೆ; ಅವರ ಇತರ ಅಲಂಕಾರಗಳು ಕಾಣುತ್ತವೆ. ಪೂರ್ವನಿಯೋಜಿತವಾಗಿ ಆಫ್.",
   "horizon.extras.cosmetics.shown": "ತೋರಿಸಲಾಗಿದೆ",
   "horizon.extras.cosmetics.hidden": "ಮರೆಮಾಡಲಾಗಿದೆ",
   "horizon.extras.cosmetics.name_tags": "ಹೆಸರು ಟ್ಯಾಗ್‌ಗಳು ಮಾತ್ರ"

@@ -460,8 +460,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Cudd: mae pob chwaraewr Horizon yn eich gweld heb eich colur, fe wnaethoch chi gynnwys. Yr un switsh â Wardrob y lansiwr.",
   "horizon.extras.cosmetics_others": "Colur chwaraewyr eraill",
   "horizon.extras.cosmetics_others.tooltip": "Beth mae chwaraewyr Horizon eraill yn ei wisgo: popeth, dim ond eu steil tag enw, neu ddim byd. Yn gudd, nid yw'r gêm byth yn gofyn beth maen nhw'n ei wisgo.",
-  "horizon.extras.cosmetics_auras": "Auras a llwybrau eraill",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras a llwybrau mae chwaraewyr eraill yn eu gwisgo. Wedi'i ddiffodd yn ddiofyn.",
+  "horizon.extras.cosmetics_hide_fx": "Cuddio llwybrau ac awrâu chwaraewyr eraill",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Mae llwybrau ac awrâu chwaraewyr eraill yn aros yn gudd; mae eu colur arall yn dal i ddangos. I ffwrdd yn ddiofyn.",
   "horizon.extras.cosmetics.shown": "Dangosir",
   "horizon.extras.cosmetics.hidden": "Cudd",
   "horizon.extras.cosmetics.name_tags": "Tagiau enw yn unig"

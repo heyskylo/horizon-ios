@@ -7,7 +7,7 @@
 //! basket and the founder claim, paid on the website; "Claim for free" where Paddle doesn't sell:
 //! `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
-//! other players' cosmetics and Show other players' auras and trails (the game's
+//! other players' cosmetics and Hide other players' trails and auras (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
 //!
 //! It opens on the outfit kept on disk (`wardrobe::Saved`), so it shows offline and when the
@@ -1295,13 +1295,13 @@ impl Launcher {
             )
             .child(
                 item(
-                    "wardrobe-auras",
-                    prefs.auras,
-                    "Show other players' auras and trails",
+                    "wardrobe-hide-fx",
+                    prefs.hide_fx,
+                    "Hide other players' trails and auras",
                     "Off by default. Also in the game's Horizon settings.",
                 )
                 .on_click(save(Prefs {
-                    auras: !prefs.auras,
+                    hide_fx: !prefs.hide_fx,
                     ..prefs
                 })),
             )

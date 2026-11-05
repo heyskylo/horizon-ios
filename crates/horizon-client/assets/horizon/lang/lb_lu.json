@@ -435,8 +435,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Verstoppt: all Horizon Spiller gesäit Iech ouni Är Kosmetik, Dir abegraff. Deeselwechte Schalter wéi de Launcher Kleederschaf.",
   "horizon.extras.cosmetics_others": "Aner Spiller Kosmetik",
   "horizon.extras.cosmetics_others.tooltip": "Wat aner Horizon Spiller droen: alles, nëmmen hir Numm Tag Stiler, oder näischt. Verstoppt, d'Spill freet ni wat se droen.",
-  "horizon.extras.cosmetics_auras": "Anerer hir Auraen an Trëppelweeër",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras an Trëppelweeër aner Spiller zouzedrécken. Off par défaut.",
+  "horizon.extras.cosmetics_hide_fx": "Spueren an Auraen vun anere Spiller verstoppen",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spueren an Auraen vun anere Spiller bleiwe verstoppt; hir aner Kosmetik ass ëmmer nach ze gesinn. Standardméisseg aus.",
   "horizon.extras.cosmetics.shown": "gewisen",
   "horizon.extras.cosmetics.hidden": "Verstoppt",
   "horizon.extras.cosmetics.name_tags": "Numm Tags nëmmen"

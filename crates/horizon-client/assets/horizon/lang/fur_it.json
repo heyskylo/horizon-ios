@@ -467,8 +467,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Scuindût: ogni zuiadôr Horizon al viôt cence il to cosmetic, tu ancje. Il stes interrutôr dal Armadi dal lançadôr.",
   "horizon.extras.cosmetics_others": "I cosmetics dai altris zuiadôrs",
   "horizon.extras.cosmetics_others.tooltip": "Ce che a metin sù altris zuiadôrs Horizon: dut, dome i lôr stîi di etichetis, o nuie. Scuindût, il zûc nol domande mai ce che a metin sù.",
-  "horizon.extras.cosmetics_auras": "Auris e sentiers di altris",
-  "horizon.extras.cosmetics_auras.tooltip": "Auris e pistis che a metin sù altris zuiadôrs. Disactivât par automatic.",
+  "horizon.extras.cosmetics_hide_fx": "Plate lis olmis e lis aureis dai altris zuiadôrs",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Lis olmis e lis aureis dai altris zuiadôrs a restin platadis; i lôr altris cosmetics si viodin ancjemò. Distudât di predefinît.",
   "horizon.extras.cosmetics.shown": "Mostrât",
   "horizon.extras.cosmetics.hidden": "Scuindût",
   "horizon.extras.cosmetics.name_tags": "Dome lis etichetis dai nons"

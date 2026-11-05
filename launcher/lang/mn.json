@@ -984,7 +984,7 @@
   "Off: everyone sees you without them.": "Унтраах: тэдэнгүйгээр бүгд чамайг хардаг.",
   "Hide other players' cosmetics": "Бусад тоглогчдын гоо сайхны бүтээгдэхүүнийг нуу",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Бусад нь танд энгийн тоглогч шиг харагдаж байна. Мөн тоглоомын Horizon тохиргоонд.",
-  "Show other players' auras and trails": "Бусад тоглогчдын аура болон замуудыг харуул",
+  "Hide other players' trails and auras": "Бусад тоглогчийн мөр ба аурыг нуух",
   "Off by default. Also in the game's Horizon settings.": "Өгөгдмөлөөр унтраа. Мөн тоглоомын Horizon тохиргоонд.",
   "Friend": "Найз",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Нэг Wi-Fi дээрх найзууд: Олон тоглогч, Сервер нэмэх, буулгах.",

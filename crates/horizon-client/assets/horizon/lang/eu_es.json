@@ -469,8 +469,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ezkutuan: Horizon jokalari bakoitzak zure kosmetikarik gabe ikusten zaitu, zuk barne. Abiarazlearen armairuaren etengailu bera.",
   "horizon.extras.cosmetics_others": "Beste jokalarien kosmetika",
   "horizon.extras.cosmetics_others.tooltip": "Beste Horizon jokalariek zer janzten duten: denetarik, izenaren etiketa estiloak bakarrik, edo ezer ez. Ezkutuan, jokoak ez du inoiz galdetzen zer janzten duten.",
-  "horizon.extras.cosmetics_auras": "Besteen aura eta ibilbideak",
-  "horizon.extras.cosmetics_auras.tooltip": "Beste jokalariek janzten dituzten aura eta arrastoak. Desaktibatuta lehenespenez.",
+  "horizon.extras.cosmetics_hide_fx": "Ezkutatu beste jokalarien arrastoak eta aurak",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Beste jokalarien arrastoak eta aurak ezkutuan geratzen dira; haien beste kosmetikoak ikusten jarraitzen dute. Desaktibatuta lehenespenez.",
   "horizon.extras.cosmetics.shown": "Erakutsita",
   "horizon.extras.cosmetics.hidden": "Ezkutuan",
   "horizon.extras.cosmetics.name_tags": "Izena etiketak soilik"
