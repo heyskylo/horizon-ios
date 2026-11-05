@@ -325,7 +325,8 @@ impl Game<'_> {
                 let tags = self.tags_of(t);
                 for (tag, negated) in &s.tags {
                     let has = if tag.is_empty() {
-                        !tags.is_empty()
+                        // EntitySelectorOptions' empty-name predicate (lambda$bootStrap$43).
+                        tags.is_empty()
                     } else {
                         tags.contains(tag)
                     };
@@ -1122,3 +1123,6 @@ mod team_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod empty_tag_tests;
