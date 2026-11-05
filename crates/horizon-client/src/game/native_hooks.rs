@@ -2475,6 +2475,21 @@ impl Game<'_> {
     pub(super) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         mod_api::dispatch_hud(self, mod_api::mods(), batch, corners);
     }
+    /// After the complete normal GUI batch, including screens, prompts, toasts,
+    /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
+    /// file/world loading and resource-reload overlays do not fire it. The batch
+    /// is in GUI pixels. `native_camera` is this frame's world camera (None on
+    /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
+    /// A mod decides whether its foreground indicator respects those flags.
+    /// Client only; the host is read-only. API @API:gui_render_post@.
+    pub(super) fn native_gui_render_post(
+        &self,
+        batch: &mut HudBatch,
+        gui_hidden: bool,
+        focused: bool,
+    ) {
+        mod_api::dispatch_gui_render_post(self, mod_api::mods(), batch, gui_hidden, focused);
+    }
     /// Before one of vanilla's HUD layers is drawn (`RenderGuiLayerEvent.Pre`):
     /// draw here to put something below the layer, or set `canceled` to hide
     /// it. `layer` is the layer's id, in the order Horizon draws them:
@@ -9043,6 +9058,7 @@ impl Game<'_> {
         self.res.facts().get(state).name.to_string()
     }
     /// The most recently extracted world frame's camera, if one exists.
+    /// During GUI rendering this is the current frame, including bob/spin and FOV.
     pub(super) fn native_camera(&self) -> Option<NativeCamera> {
         self.native_camera_frame.clone()
     }

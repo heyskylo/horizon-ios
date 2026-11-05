@@ -8600,7 +8600,6 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_cursor(&mut batch);
-        self.resolve_inline_profiles(&batch.inline_profiles);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -16092,8 +16091,6 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
-        self.flush_ime(&mut hud);
         let title = self.shows_panorama();
         let (yaw, pitch) = if title {
             // PanoramaRenderer: the title cube spins at 0.1 degrees per tick, pitched 10 degrees.
@@ -16112,8 +16109,6 @@ impl Game<'_> {
         } else {
             self.fov_degrees(camera_alpha as f32, camera.to_array())
         };
-        self.locator_camera =
-            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
         let bob = if title {
             glam::Mat4::IDENTITY
         } else {
@@ -16124,7 +16119,6 @@ impl Game<'_> {
         } else {
             self.spinning_matrix(camera_alpha as f32)
         };
-        let requested_post_effects = self.requested_post_effects();
         let terrain_distance = self.terrain_distance();
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
@@ -16155,6 +16149,14 @@ impl Game<'_> {
                 dimension: self.dim.id().to_string(),
             }
         });
+        // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
+        self.flush_ime(&mut hud);
+        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
+        self.resolve_inline_profiles(&hud.inline_profiles);
+        self.locator_camera =
+            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
+        let requested_post_effects = self.requested_post_effects();
         self.view_frustum = self
             .renderer
             .as_ref()
