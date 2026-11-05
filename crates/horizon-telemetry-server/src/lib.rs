@@ -227,16 +227,24 @@ pub fn header_name(text: &str) -> Option<String> {
 }
 
 impl Config {
+    /// Why the client-address settings can't run, when they can't: `TRUST_PROXY=1` without the header
+    /// would count every client as the proxy, one shared bucket, which stops intake and refuses
+    /// players' deletion requests. `main.rs` refuses to start then, as the relay does without
+    /// `RELAY_PROXY_FROM`, so a deployment missing the setting fails its health check instead of
+    /// going live.
+    pub fn client_ip_refusal(&self) -> Option<String> {
+        (self.trust_proxy && self.client_ip_header.is_none()).then(|| {
+            "HORIZON_TELEMETRY_TRUST_PROXY=1 needs HORIZON_TELEMETRY_CLIENT_IP_HEADER, the header your proxy \
+             overwrites with the client's address (x-real-ip on Railway, as the Dockerfile sets): without it \
+             every client would count as the proxy and share one rate-limit bucket. Not starting."
+                .into()
+        })
+    }
+
     /// What the client-address settings will do, when it isn't what they seem to ask for: printed at
     /// start (`main.rs`).
     pub fn client_ip_warning(&self) -> Option<String> {
         match (self.trust_proxy, &self.client_ip_header) {
-            (true, None) => Some(
-                "HORIZON_TELEMETRY_TRUST_PROXY=1 but HORIZON_TELEMETRY_CLIENT_IP_HEADER is unset: rate limits \
-                 count the TCP peer, which behind a proxy is the proxy, so every client shares one bucket. Set \
-                 it to the header your proxy overwrites with the client's address (x-real-ip on Railway)."
-                    .into(),
-            ),
             (false, Some(name)) => Some(format!(
                 "HORIZON_TELEMETRY_CLIENT_IP_HEADER={name} is ignored without HORIZON_TELEMETRY_TRUST_PROXY=1: \
                  rate limits count the TCP peer"

@@ -16,6 +16,10 @@ async fn main() {
         .unwrap_or(8080);
     let store = Store::open(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let config = Config::from_env();
+    if let Some(why) = config.client_ip_refusal() {
+        eprintln!("horizon-telemetry-server: {why}");
+        std::process::exit(1);
+    }
     if let Some(warning) = config.client_ip_warning() {
         eprintln!("horizon-telemetry-server: WARNING: {warning}");
     }

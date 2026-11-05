@@ -685,14 +685,21 @@ async fn the_client_address_comes_from_the_configured_header_only() {
 }
 
 #[test]
-fn client_address_settings_warn_when_they_do_nothing() {
+fn client_address_settings_refuse_or_warn_when_they_cannot_work() {
     let config = |trust_proxy, header: Option<&str>| Config {
         trust_proxy,
         client_ip_header: header.map(str::to_owned),
         ..Config::default()
     };
-    let warning = config(true, None).client_ip_warning().unwrap();
-    assert!(warning.contains("every client shares one bucket") && warning.contains("x-real-ip"));
+    // TRUST_PROXY=1 without the header: refused, never started with one shared bucket.
+    let refusal = config(true, None).client_ip_refusal().unwrap();
+    assert!(
+        refusal.contains("HORIZON_TELEMETRY_CLIENT_IP_HEADER") && refusal.contains("Not starting")
+    );
+    assert_eq!(config(true, Some("x-real-ip")).client_ip_refusal(), None);
+    assert_eq!(config(false, None).client_ip_refusal(), None);
+    assert_eq!(config(false, Some("x-real-ip")).client_ip_refusal(), None);
+    assert_eq!(config(true, None).client_ip_warning(), None);
     assert!(
         config(false, Some("x-real-ip"))
             .client_ip_warning()

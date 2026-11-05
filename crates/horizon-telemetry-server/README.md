@@ -80,7 +80,7 @@ All are environment variables:
 - `HORIZON_TELEMETRY_MIN_INSTALL_DAYS` (5)
 - `HORIZON_TELEMETRY_REQUESTS_PER_HOUR` per address (60, bursts of 6)
 - `HORIZON_TELEMETRY_ITEMS_PER_DAY` per install (100)
-- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy, with `HORIZON_TELEMETRY_CLIENT_IP_HEADER` naming the one header the proxy overwrites with the client's address (`x-real-ip` on Railway; its last comma-separated entry is used). No other header is read. The address is used only for the rate limits, in memory, and never stored or logged. `TRUST_PROXY=1` without the header counts the TCP peer, which behind a proxy is the proxy, so every client shares one bucket: the server prints a warning at start.
+- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy, with `HORIZON_TELEMETRY_CLIENT_IP_HEADER` naming the one header the proxy overwrites with the client's address (`x-real-ip` on Railway; its last comma-separated entry is used). No other header is read. The address is used only for the rate limits, in memory, and never stored or logged. `TRUST_PROXY=1` without the header would count the TCP peer, which behind a proxy is the proxy, so every client would share one bucket: the server refuses to start instead.
 - `HORIZON_TELEMETRY_ALLOW_ORIGIN` (`https://playhorizon.dev`)
 - `HORIZON_TELEMETRY_LIVE_PER_HOUR` per address, pings and reads (600, bursts of 60: ten players behind one address)
 - `HORIZON_TELEMETRY_LIVE_WINDOW_SECONDS` (120)
@@ -105,7 +105,7 @@ All are environment variables:
 On Railway it is a service of the same project as the website:
 
 - Source: this repository, root directory `/` (the Dockerfile needs the shared crate), config file `/crates/horizon-telemetry-server/railway.json` (Dockerfile build, health check `/healthz`, one replica in `europe-west4`, Amsterdam: one SQLite file can't be shared).
-- A volume mounted at `/data`. The Dockerfile already sets `HORIZON_TELEMETRY_DB=/data/telemetry.sqlite3` and `HORIZON_TELEMETRY_TRUST_PROXY=1`; Railway sets `PORT`.
+- A volume mounted at `/data`. The Dockerfile already sets `HORIZON_TELEMETRY_DB=/data/telemetry.sqlite3`, `HORIZON_TELEMETRY_TRUST_PROXY=1` and `HORIZON_TELEMETRY_CLIENT_IP_HEADER=x-real-ip`; Railway sets `PORT`.
 - The custom domain `telemetry.playhorizon.dev`: a `CNAME` at Porkbun to the target Railway gives.
 
 Check it with `curl https://telemetry.playhorizon.dev/healthz`.
