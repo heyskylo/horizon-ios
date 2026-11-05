@@ -1,5 +1,6 @@
-// `joml::Mat4::rotation` and `invert_orthonormal` in this file are adapted from JOML 1.10.9's
-// `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+// `joml::Mat4::rotation`, `rotate_affine`, `transform_affine` and `invert_orthonormal`, and
+// `joml::Quat::rotation_x`/`_y`/`_z`, in this file are adapted from JOML 1.10.9's `Matrix4f`,
+// `Quaternionf` and `Vector4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
 //
 // Copyright (c) 2015-2026 Richard Greenlees
 //
@@ -141,6 +142,40 @@ pub mod joml {
                 z: w * sz - z * cz,
                 w: w * cz + z * sz,
             }
+        }
+        /// `Quaternionf.rotationX(angle)`.
+        pub fn rotation_x(angle: f32) -> Self {
+            let (x, w) = Self::half_turn(angle);
+            Self {
+                x,
+                y: 0.0,
+                z: 0.0,
+                w,
+            }
+        }
+        /// `Quaternionf.rotationY(angle)`.
+        pub fn rotation_y(angle: f32) -> Self {
+            let (y, w) = Self::half_turn(angle);
+            Self {
+                x: 0.0,
+                y,
+                z: 0.0,
+                w,
+            }
+        }
+        /// `Quaternionf.rotationZ(angle)`.
+        pub fn rotation_z(angle: f32) -> Self {
+            let (z, w) = Self::half_turn(angle);
+            Self {
+                x: 0.0,
+                y: 0.0,
+                z,
+                w,
+            }
+        }
+        fn half_turn(angle: f32) -> (f32, f32) {
+            let sin = sin(angle * 0.5);
+            (sin, cos_from_sin(sin, angle * 0.5))
         }
         /// `Quaternionf.transform(x, y, z, dest)` (`Vector3f.rotate`).
         pub fn transform(&self, v: [f32; 3]) -> [f32; 3] {
@@ -335,6 +370,57 @@ pub mod joml {
             self.set(2, 1, dyz - dxw);
             self.set(2, 2, z2 - y2 - x2 + w2);
             self.properties = AFFINE | ORTHONORMAL;
+        }
+        /// An affine matrix of no more specific kind, as JOML's property flags have it.
+        pub fn affine(m: glam::Mat4) -> Self {
+            Self {
+                m: m.to_cols_array(),
+                properties: AFFINE,
+            }
+        }
+        /// `Matrix4f.rotate(Quaternionfc)` of an affine matrix that is neither the identity nor
+        /// a pure translation (`rotateAffine`).
+        pub fn rotate_affine(&mut self, q: Quat) {
+            debug_assert!(
+                self.properties & AFFINE != 0 && self.properties & (IDENTITY | TRANSLATION) == 0
+            );
+            let (w2, x2, y2, z2) = (q.w * q.w, q.x * q.x, q.y * q.y, q.z * q.z);
+            let zw = q.z * q.w;
+            let dzw = zw + zw;
+            let xy = q.x * q.y;
+            let dxy = xy + xy;
+            let xz = q.x * q.z;
+            let dxz = xz + xz;
+            let yw = q.y * q.w;
+            let dyw = yw + yw;
+            let yz = q.y * q.z;
+            let dyz = yz + yz;
+            let xw = q.x * q.w;
+            let dxw = xw + xw;
+            let r = [
+                [w2 + x2 - z2 - y2, dxy + dzw, dxz - dyw],
+                [-dzw + dxy, y2 - z2 + w2 - x2, dyz + dxw],
+                [dyw + dxz, dyz - dxw, z2 - y2 - x2 + w2],
+            ];
+            let s = *self;
+            for (column, r) in r.iter().enumerate() {
+                for row in 0..3 {
+                    let v = s.get(0, row) * r[0] + s.get(1, row) * r[1] + s.get(2, row) * r[2];
+                    self.set(column, row, v);
+                }
+                self.set(column, 3, 0.0);
+            }
+            self.properties &= !(PERSPECTIVE | IDENTITY | TRANSLATION);
+        }
+        /// `Vector4f.mul(Matrix4fc)` of an affine matrix (`mulAffine`, JOML's `Math.fma`
+        /// unfused): the matrix times `v`, `w` kept.
+        pub fn transform_affine(&self, v: [f32; 4]) -> [f32; 3] {
+            debug_assert!(self.properties & AFFINE != 0);
+            let [x, y, z, w] = v;
+            std::array::from_fn(|row| {
+                self.get(0, row) * x
+                    + (self.get(1, row) * y + (self.get(2, row) * z + self.get(3, row) * w))
+            })
         }
         /// `Matrix4f.invert()` of a rotation and translation (`invertOrthonormal`; with the
         /// identity and pure-translation shortcuts). `None` for any other matrix, which JOML

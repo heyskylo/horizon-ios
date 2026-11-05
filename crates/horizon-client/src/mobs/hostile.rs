@@ -350,6 +350,13 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             1.0,
             0.5,
         ));
+        // Creeper.tick: `gameEvent(GameEvent.PRIME_FUSE)` with the sound.
+        events.push(MobEvent::GameEvent {
+            event: "minecraft:prime_fuse",
+            at: [m.position.x, m.position.y, m.position.z],
+            source: m.id,
+            state: horizon_world::registry::BlockStateId(0),
+        });
     }
     m.swell = (m.swell + dir).max(0);
     if m.swell >= m.max_swell {
