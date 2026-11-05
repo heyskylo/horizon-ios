@@ -681,11 +681,13 @@ mod tests {
                     assert_eq!(m.extra.owner, owner);
                     assert_eq!(m.extra.sitting, expected, "{id} {owner:?} {sitting:?}");
                     // No raw compound: this must come from the modeled flag.
-                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None);
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None, |_| None);
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(expected))));
                     // A stale raw flag must not override a later model change.
                     m.extra.sitting = !expected;
-                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None);
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None, |_| None);
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(!expected))));
                 }
             }
