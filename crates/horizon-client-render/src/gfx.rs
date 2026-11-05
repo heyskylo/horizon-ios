@@ -902,6 +902,8 @@ pub struct Frame<'a> {
     pub outline_after_terrain: bool,
     /// `BlockOutlineRenderState.highContrast`: a thick black outline under a bright one.
     pub outline_high_contrast: bool,
+    /// The PvP & HUD page's outline and hit colour (`pvp::Frame`; default: vanilla's).
+    pub pvp: crate::pvp::Frame,
     /// `lines` with a colour and pixel width (`gizmos::camera_relative`):
     /// the fishing line and debug gizmos, depth tested, then gizmos drawn
     /// over everything.
@@ -7574,8 +7576,9 @@ impl Renderer {
             },
             colored_count: [
                 frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
-                0,
-                0,
+                // PvP & HUD's hurt texel and enable flag, including zero-valued opaque black.
+                frame.pvp.hurt_texel,
+                u32::from(frame.pvp.custom_hit),
                 0,
             ],
             emissive_layers: {
@@ -8470,12 +8473,14 @@ impl Renderer {
                     line
                 })
             };
+            // A custom outline (PvP & HUD) takes the bright stroke's colour, scales both widths.
+            let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
             let lines: Vec<[f32; 8]> = if frame.outline_high_contrast {
-                stroke(0xff00_0000, 7.0)
-                    .chain(stroke(0xff57_ffe1, width))
+                stroke(0xff00_0000, 7.0 * scale)
+                    .chain(stroke(custom.unwrap_or(0xff57_ffe1), width * scale))
                     .collect()
             } else {
-                stroke(0x6600_0000, width).collect()
+                stroke(custom.unwrap_or(0x6600_0000), width * scale).collect()
             };
             self.uploads
                 .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(&lines));
