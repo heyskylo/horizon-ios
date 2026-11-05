@@ -145,6 +145,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hud_editor;
 mod ime;
 mod initial_spawn;
 mod input_trace;
@@ -863,6 +864,8 @@ enum Screen {
     /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
+    /// PvP & HUD's widget editor (game/hud_editor.rs).
+    HudEditor,
 }
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
@@ -891,6 +894,7 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud_editor",
         }
     }
 }
@@ -8292,6 +8296,7 @@ impl Game<'_> {
                     | Screen::DialogWarning
                     | Screen::CommandBlock
                     | Screen::DebugOptions
+                    | Screen::HudEditor
             ) || self.book.is_some()
                 || self.win_screen_pauses())
     }
@@ -9102,6 +9107,7 @@ impl Game<'_> {
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
+            Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -16799,7 +16805,11 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.sort_key_press(key) || self.hdr_key_press(key) {
+        if self.sort_key_press(key)
+            || self.hdr_key_press(key)
+            || horizon_client::keybinds::key_name(key)
+                .is_some_and(|name| self.hud_editor_key_press(name))
+        {
             return Ok(());
         }
         if self.remote.is_some() && self.remote_key(key)? {
@@ -16848,6 +16858,7 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
+                Screen::HudEditor => self.close_hud_editor(),
             },
             // `checkHotbarKeyPressed`: the keys the controls bind to the off
             // hand and the hotbar slots, so a rebound key swaps instead of
@@ -18134,6 +18145,9 @@ impl Game<'_> {
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
+                        if self.screen == Screen::HudEditor {
+                            self.hud_editor_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
@@ -18306,6 +18320,9 @@ impl Game<'_> {
                     if self.screen == Screen::DebugOptions && d != 0.0 {
                         self.debug_options_scroll(d);
                     }
+                    if self.screen == Screen::HudEditor && d != 0.0 {
+                        self.hud_editor_scroll(f64::from(d));
+                    }
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
@@ -18448,7 +18465,13 @@ impl Game<'_> {
                         // Neither edge of a bound button is an ordinary slot click.
                         return Ok(());
                     }
-                    if pressed && (self.sort_mouse_press(button) || self.hdr_mouse_press(button)) {
+                    if pressed
+                        && (self.sort_mouse_press(button)
+                            || self.hdr_mouse_press(button)
+                            || self.hud_editor_key_press(&horizon_client::keybinds::mouse_name(
+                                button,
+                            )))
+                    {
                         return Ok(());
                     }
                     match self.screen {
@@ -18533,6 +18556,15 @@ impl Game<'_> {
                         }
                         Screen::DebugOptions if button == MouseButton::Left => {
                             self.debug_options_release()
+                        }
+                        Screen::HudEditor
+                            if pressed
+                                && matches!(button, MouseButton::Left | MouseButton::Right) =>
+                        {
+                            self.hud_editor_press(button == MouseButton::Right)
+                        }
+                        Screen::HudEditor if button == MouseButton::Left => {
+                            self.hud_editor_release()
                         }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()

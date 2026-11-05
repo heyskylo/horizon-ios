@@ -452,6 +452,7 @@ impl Extras {
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
+            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
         true
@@ -979,6 +980,7 @@ impl Item {
     pub fn key_name(self) -> Option<&'static str> {
         match self {
             Item::SortKey => Some(SORT_KEY),
+            Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
     }

@@ -1309,6 +1309,8 @@ enum Act {
     ToggleMod(usize),
     /// PvP & HUD's PvP preset (`pvp::apply_preset`).
     PvpPreset,
+    /// PvP & HUD's Edit HUD button.
+    HudEditor,
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
@@ -1491,6 +1493,8 @@ pub enum Event {
     NativeButton(usize, usize),
     /// Roll the credits (`CreditsAndAttributionScreen.openCreditsScreen`).
     Credits,
+    /// PvP & HUD's Edit HUD: open the HUD editor over the game.
+    HudEditor,
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
     /// The AI Agent page's recording button: start or stop.
@@ -1955,6 +1959,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
         Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
+        Act::HudEditor => Some("horizon.pvp.editor.tooltip".into()),
         _ => None,
     };
     if let Some(key) = key.filter(|key| lang::has(key)) {
@@ -2523,7 +2528,10 @@ impl OptionsUi {
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
                 let mut rows = Vec::new();
                 if self.page() == Page::Pvp {
-                    rows.push(Row::Buttons(preset, None));
+                    // The editor moves what the game shows: only from a world.
+                    let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
+                    let edit = if self.in_world { edit } else { inactive(edit) };
+                    rows.push(Row::Buttons(preset, Some(edit)));
                 }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
@@ -4260,6 +4268,7 @@ impl OptionsUi {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
                         }
+                        Act::HudEditor => events.push(Event::HudEditor),
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -5222,6 +5231,7 @@ impl OptionsUi {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
                         }
+                        Act::HudEditor => events.push(Event::HudEditor),
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {

@@ -1257,6 +1257,7 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud-editor",
         }
     }
 
