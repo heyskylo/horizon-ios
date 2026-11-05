@@ -5508,11 +5508,15 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 # what they leave behind reaches no other group.
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
-ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
+ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES
 
 
 def groups():
+    try:
+        from .transmute_patch_corpus import cases as transmute_patches
+    except ImportError:
+        from transmute_patch_corpus import cases as transmute_patches
     try:
         from .allay_damage_corpus import allay_player_damage
         from .allay_healing_corpus import allay_healing
@@ -5533,6 +5537,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('transmute result patches', transmute_patches(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
