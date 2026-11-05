@@ -364,6 +364,52 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   `state.jsonl` is the oracle for where the re-run should have ended. A server recording replays
   only `--in-place`, into the same world.
 
+### Repeatable screenshots
+
+`HORIZON_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
+run, pixel for pixel, on the same build, GPU and driver: a change's before and after are then
+compared by a pixel diff, not by eye, where two runs otherwise differ by a shade or two over much
+of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
+
+- The world starts frozen (`/tick freeze`) before its first tick, on the server and the client:
+  how many ticks run while the world loads differs between runs, and the torch flicker and the
+  particles move on each.
+- What the frame shows of time follows the world's ticks, not the client's or the wall clock's:
+  - animated textures, the enchantment glint, the world border's scroll, the darkness effect's
+    pulse, the dragon's healing beam and the player model's idle swing (third person, the
+    inventory);
+  - the HUD: the hearts' jiggle and blink, chat fading, titles, the action bar, the held item's
+    name, the locator bar and the tab list (a title shown while frozen fades in on the next
+    `/tick step`);
+  - a shader pack's clock (Iris's `frameTimeCounter`, `frameCounter` and `frameTime`, a Horizon
+    pack's `time`, `frame_index` and `delta_time`, with smoothed values at their targets) and the
+    randoms behind custom uniforms, cave mood (`playerMood`), obfuscated text and a clock or
+    compass that spins;
+  - the camera's partial tick, held at 1 like the level's while frozen.
+- While frozen, the client's own entity effects (endermen's and blazes' particles) and its
+  countdowns (effects, a totem's pop, the hotbar's, the border's size change) wait for the world.
+- `/tick step N` moves the scene on by N ticks (flames, water, particles). What the server changes
+  during a step reaches the client between its ticks whenever it arrives, so particles that
+  follow can differ from run to run. Wait a second or more after a step before a capture (`wait
+  40`): the server sends its time once a second, which can leave the client a tick ahead until the
+  next, and the last tick still eases for a client tick. `/tick unfreeze` plays on as without the
+  switch.
+- The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
+  mob AI during a step, can differ when other server work drew on them first, and ids follow the
+  order the server loads and creates entities in, which loading changes from run to run. What an
+  id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
+  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene.
+- A script should wait until the world has loaded before it changes it: a command that acts on
+  what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
+- The player still ticks while frozen, as in vanilla: stand the player on a block (it falls
+  otherwise), and after a turn or a move wait a few seconds (`wait 60`) before a capture, or the
+  hand, which eases toward the view each tick, is a hair off. What the player does goes on too:
+  using an item, riding, running out of air.
+- Not covered: temporal AA and frame generation (they build on earlier frames: turn them off), a
+  shader pack's own buffers kept from frame to frame, custom entity model animations, native mods,
+  and what eases on the wall clock for a moment (toasts, the boss bar's fill, chunks fading in,
+  the spyglass): wait for them to settle. Frame times are real ones: not for timing.
+
 ## Tests
 
 - **Unit tests:**
