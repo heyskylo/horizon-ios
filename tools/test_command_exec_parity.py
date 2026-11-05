@@ -94,6 +94,9 @@ def main():
     parser.add_argument('--orb-water-raw-diagnostic', action='store_true', help='add whole Pos/Motion records')
     parser.add_argument('--orb-lava-fixture', action='store_true', help='guarded server orb lava contact scene')
     parser.add_argument('--orb-lava-raw-diagnostic', action='store_true', help='retain random Pos/Motion as exact raw diagnostics')
+    parser.add_argument('--mob-home-fixture', action='store_true')
+    parser.add_argument('--mob-home-holder-removal-diagnostic', action='store_true')
+    parser.add_argument('--mob-home-late-detach-control', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -159,6 +162,12 @@ def main():
             from orb_lava_corpus import orb_lava
         groups = [('setup', corpus_module.group_setup()),
                   ('orb lava contact', orb_lava(args.orb_lava_raw_diagnostic))]
+    if args.mob_home_fixture:
+        try:
+            from .mob_home_corpus import mob_home
+        except ImportError:
+            from mob_home_corpus import mob_home
+        groups = [('setup', corpus_module.group_setup()), ('mob home NBT', mob_home(args.mob_home_holder_removal_diagnostic, args.mob_home_late_detach_control))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:

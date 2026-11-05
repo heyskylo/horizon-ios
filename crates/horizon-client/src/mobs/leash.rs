@@ -451,7 +451,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 pub fn remove(m: &mut Mob) -> Option<Holder> {
     let was = m.extra.leash.take();
     if was.is_some() {
-        m.ai.home = None;
+        m.ai.clear_home();
     }
     was
 }
