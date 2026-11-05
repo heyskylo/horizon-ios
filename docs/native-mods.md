@@ -1736,22 +1736,37 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet. An x64 launcher
-   also refuses to build native mods when the selected game is ARM64: its compiler only produces x64 binaries.
-   Choosing x64 from the ARM64 launcher does not provide an x64 compiler. An Intel
-   Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
-   `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
-   (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
-   SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
-   and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on
-   macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`). On Linux the
-   game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found with
-   `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
-   launcher checks for `cc`, the C library's headers (`cc` compiles an include of `stdint.h`), `pkg-config`,
-   `alsa` and `libudev` and names what is missing, with the install command for the distribution in
-   `/etc/os-release` (Debian, Ubuntu and Mint:
-   `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has GCC without the C
-   library's headers, and a read-only system: native builds don't work there yet.
+   x86-64, Windows x64 and Windows ARM64. The managed compiler follows the launcher's process architecture. An x64
+   launcher running under ARM64 emulation keeps the existing x64 Rust and MinGW toolchain. The game architecture
+   setting does not switch the compiler or enable cross-compilation. Windows x64 uses `x86_64-pc-windows-gnu` and
+   WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0 (MSVCRT), with its SHA-pinned `mingw64/` folder on `PATH`.
+
+   On Windows ARM64, Rust 1.99.1's native host tools use `aarch64-pc-windows-gnullvm`; the launcher also downloads
+   a SHA-pinned LLVM-MinGW 23.1.5 toolchain with UCRT. Rust's `aarch64-pc-windows-msvc` release target cannot be
+   reused as a self-contained player toolchain: it needs the MSVC linker and C libraries, while the launcher must
+   bring its own C compiler and linker for dependencies such as `ring` and `hidapi` and for Windows imports. The
+   selected game's source is rebuilt in full for `aarch64-pc-windows-gnullvm`; the existing MSVC executable is never
+   linked into the output. Rust and C code therefore use one Windows ARM64 calling convention and ABI. The
+   executable's PE machine is checked before installation. LLVM-MinGW's ARM64 `windres` and archive tools are
+   selected for Windows icon resources; the generic resource compiler can emit x64 objects on an ARM64 host.
+   Prebuilt MSVC static libraries in a native mod are not compatible. The output uses UCRT, which is included with
+   Windows 10 and later. Rust's unwinder is statically linked because Windows does not include LLVM-MinGW's
+   `libunwind.dll`; the built game imports only Windows system DLLs.
+
+   Before compiling, the launcher checks that the selected game's installed executable matches its managed compiler.
+   The Windows ARM64 launcher builds a selected ARM64 game, and the x64 launcher builds a selected x64 game,
+   including when it runs under ARM64 emulation. A selection that does not match the launcher's process architecture
+   is rejected, and an ARM64 selection that has only installed the x64 fallback is rejected by the PE check. Install
+   a matching game build before building native mods. ARM64EC executables are unsupported. ARM64 Cargo artifacts
+   and build records have their own cache namespace; the existing x64 cache layout is unchanged. An Intel Mac has
+   no bundled compiler either, so native builds there stop with "the launcher has none for macos x86_64". The linker
+   is the system's on macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`).
+   On Linux the game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found
+   with `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
+   launcher checks for `cc`, the C library's headers (`cc` compiles an include of `stdint.h`), `pkg-config`, `alsa`
+   and `libudev` and names what is missing, with the install command for the distribution in `/etc/os-release`
+   (Debian, Ubuntu and Mint: `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has
+   GCC without the C library's headers, and a read-only system: native builds don't work there yet.
    `horizon-launcher rust status|install|remove`.
 2. **horizon-mixins**, at the commit the mods name (their `.hnmod`'s `mixins`), else `native_mods::MIXINS_REV`,
    built once with that cargo (`cargo install --locked --git … --rev …`) into `native/tools/<commit>/`.
@@ -2584,7 +2599,8 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
 ([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a
 class whose `registerGoals` skips `super`'s, or add to them. A villager acts through its brain, which goals don't replace:
-a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. A goal is a
+a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. For a
+neutral mob whose goals are all the mod's, copy `minecraft:wandering_trader`. A goal is a
 Rust type implementing
 `horizon_client::mobs::goals::Goal` (a bundle compiles into the game, so nothing is loaded at run time): its `flags` (`MOVE`,
 `LOOK`, `JUMP`, `TARGET`), `can_use`, `can_continue`, `start`, `tick` and `stop` run by priority and flag as vanilla's
@@ -2987,6 +3003,29 @@ pieces.
   read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
+
+### Structure templates
+
+`crates/horizon-client/src/game/native_structures.rs`: a helper for server mods that reads a structure template without
+placing it, for a builder that places it a block at a time (a colony's builder, a schematic cannon). API
+@API:structure_template@.
+
+- `native_structure_template(id, at, rotation, mirror)` (`Host::structure_template`) finds template `id` (`mymod:hut`)
+  as vanilla's `StructureTemplateManager.get` does: the world's saved structures (`generated/<namespace>/structures/`,
+  what a structure block saves), then the game's and the content mods' (`data/<namespace>/structure/`). It answers what
+  `/place template id` would place at `at` with that `Rotation` and `Mirror`: `NativeStructureTemplate` holds the
+  template's `size` after the rotation and its `blocks`. Each block has its position in the level, its state after the
+  mirror and the rotation, as `native_set_block` takes it, and the block entity data the template saved with it (`nbt`:
+  a chest's items, a sign's text), for the mod to apply.
+- The blocks come in the order `StructureTemplate.placeInWorld` places them: full blocks, then the others, then those
+  with a block entity, each group by y, then x, then z. Of a template with several palettes, it is the one
+  `/place template` picks at `at`. No processor runs, nothing is placed, and the template's entities are left out.
+- It answers `None` on a client, for an id that doesn't parse or has a `.` or `..` part, and for a template the game
+  doesn't have.
+
+A builder reads the template once when it starts and keeps it. Then, each time it places a block, it walks there (its
+goals, [Mob goals](#mob-goals)) and calls `native_set_block(dimension, pos, state, 3)`, skipping blocks that are already
+right. It keeps how far it got in an attachment on the builder, so the build goes on after a save.
 
 ### Chunk tickets
 

@@ -551,6 +551,8 @@ impl Game<'_> {
             self.keys.insert(KeyCode::ShiftLeft);
         }
         self.using = None;
+        // The oracle's player wears nothing: no armor left on from an earlier case.
+        self.armor = Default::default();
         self.inventory[self.selected] = stack.clone();
         self.offhand = parse_stack(op["offhand"].as_str().unwrap_or("-"))?;
         // The used statistic of each item held, once.

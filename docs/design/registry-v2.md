@@ -38,7 +38,7 @@ screenshots = ["screenshots/my_mod/1.png"]  # optional, at most 8: screenshots/<
 ```
 
 - **description**: Markdown, required, at least 50 characters once trimmed, at most 10,000.
-- **icon**: required. A PNG, square, 64 to 512 pixels, at most 256 KiB, in `icons/<id>.png` (or `https://`).
+- **icon**: required. A PNG, square, 64 to 1024 pixels, at most 256 KiB, in `icons/<id>.png` (or `https://`).
 - **screenshots**: PNG or JPEG, 320×180 to 3840×2160 pixels, at most 1 MiB each, stored in the registry
   repository like icons and served from its Pages site; the index lists their `https://` addresses in order.
 - **tags**: free-form, lowercase. Tags naming gambling (`casino`, `gambling`, `slots`, `lottery`, `betting`...) are

@@ -709,24 +709,19 @@ pub fn lookup(
     ];
     for (kind, url) in urls {
         let Some(url) = url else { continue };
-        // registerTexture computes the hash first. A cape or elytra URL the
-        // hash cannot take is that texture's problem alone: vanilla's lookup
-        // goes on to the next, and only the skin texture decides the default.
-        let Some(hash) = texture_hash(url) else {
-            if kind == Kind::Skin {
-                return None;
-            }
-            continue;
-        };
+        // registerTexture computes the hash first: a bad URL, even a cape's,
+        // fails the whole lookup.
+        let hash = texture_hash(url)?;
         if kind == Kind::Skin {
             skin = Some(skin_location(&hash));
         }
         match download(kind, url) {
-            // A cape or elytra that cannot be fetched is simply not drawn; only
-            // the skin itself falls back to the default one (`SkinManager.get`).
-            Download::Failed if kind == Kind::Skin => return None,
-            Download::Failed | Download::Ready => {}
+            // `SkinManager.registerTextures` joins the skin, cape and elytra
+            // futures with `allOf`: any one failing fails the profile's
+            // `PlayerSkin`, and `createLookup` then shows the default skin.
+            Download::Failed => return None,
             Download::Pending => state = Download::Pending,
+            Download::Ready => {}
         }
     }
     if state != Download::Ready || require_secure && !textures.signed {
@@ -1562,35 +1557,37 @@ mod tests {
         );
     }
 
-    /// A cape or elytra that cannot be fetched takes only itself out of the
-    /// picture: the player's skin still shows. Only the skin texture's own
-    /// failure is the default skin.
+    /// `SkinManager.registerTextures` waits on the skin, cape and elytra
+    /// together (`CompletableFuture.allOf`): a cape or elytra that cannot be
+    /// fetched, or whose URL has no hash, fails the profile, and the player
+    /// shows the default skin, as the skin's own failure does.
     #[test]
-    fn a_failed_cape_does_not_hide_the_skin() {
+    fn a_failed_cape_or_elytra_shows_the_default_skin() {
         let textures = super::Textures {
             skin: Some("https://textures.minecraft.net/texture/skin1".into()),
             cape: Some("https://textures.minecraft.net/texture/cape1".into()),
-            elytra: None,
+            elytra: Some("https://textures.minecraft.net/texture/elytra1".into()),
             signed: true,
             slim: false,
         };
-        let skin = super::lookup(&textures, true, |kind, _| match kind {
-            super::Kind::Skin => super::Download::Ready,
-            _ => super::Download::Failed,
-        });
-        assert_eq!(skin, Some(super::skin_location("skin1")));
-        // A cape URL the hash cannot take is the same: the skin shows.
-        let bad_url = super::Textures {
+        let all_ready = super::lookup(&textures, true, |_, _| super::Download::Ready);
+        assert_eq!(all_ready, Some(super::skin_location("skin1")));
+        for failing in [super::Kind::Skin, super::Kind::Cape, super::Kind::Elytra] {
+            let skin = super::lookup(&textures, true, |kind, _| {
+                if kind == failing {
+                    super::Download::Failed
+                } else {
+                    super::Download::Ready
+                }
+            });
+            assert_eq!(skin, None, "{failing:?} failed");
+        }
+        let bad_cape_url = super::Textures {
             cape: Some("no-scheme".into()),
             ..textures.clone()
         };
         assert_eq!(
-            super::lookup(&bad_url, true, |_, _| super::Download::Ready),
-            Some(super::skin_location("skin1"))
-        );
-        // The skin itself failing is still the default skin.
-        assert_eq!(
-            super::lookup(&textures, true, |_, _| super::Download::Failed),
+            super::lookup(&bad_cape_url, true, |_, _| super::Download::Ready),
             None
         );
     }

@@ -80,7 +80,7 @@ pub fn register(m: &mut Mob) {
                 2,
                 NearestTarget::player(true)
                     .interval(10)
-                    .when(|m, _| m.extra.anger > 0),
+                    .when(super::tame::angry_at_player),
             );
         }
         S::Drowned => {
@@ -479,6 +479,12 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
     } else if m.ai.target.is_none() {
         m.extra.flag2 = false;
     }
+    // The anger's target is whoever the piglin holds as its target, so a
+    // piglin hit by another mob is angry at that mob and not at the player
+    // (`NearestAttackableTargetGoal` tests `isAngryAt`).
+    if m.ai.target.is_some() {
+        m.extra.angry_at = m.ai.target;
+    }
     if m.extra.anger > 0 {
         m.extra.anger -= 1;
         if !m.is_baby() {
@@ -500,6 +506,7 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
         }
         if m.extra.anger == 0 {
             m.ai.target = None;
+            m.extra.angry_at = None;
             m.extra.flag2 = false;
         }
     } else {
@@ -1571,5 +1578,37 @@ mod wither_arrow_tests {
             }
         });
         let _ = ran;
+    }
+
+    /// #9808: a zombified piglin angry at another mob (a skeleton's arrow
+    /// hit it) is not angry at the player (`NeutralMob.isAngryAt`).
+    #[test]
+    fn a_piglin_angry_at_a_mob_does_not_target_the_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Mob(99));
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            for _ in 0..40 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                assert_ne!(m.ai.target, Some(Who::Player));
+            }
+            // Fresh piglin, angry at the player: it does take the player.
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(2, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Player);
+            let mut hit = false;
+            for _ in 0..60 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                hit |= m.ai.target == Some(Who::Player);
+            }
+            assert!(hit, "angry at the player targets the player");
+        });
     }
 }

@@ -7,7 +7,7 @@
 //! block log, the level events and the entity tracker.
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
-    respawn_anchor::RespawnConfig,
+    lan_crafting::MenuRemoval, respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
     command::vanilla,
@@ -1435,6 +1435,21 @@ impl Game<'_> {
         } else {
             return false;
         };
+        // `ContainerEntity.unpackChestVehicleLootTable`: a chest boat still
+        // holding a loot table rolls it on the first open.
+        if let Some(i) = self
+            .boats
+            .iter()
+            .position(|b| b.id as i32 == pos.2 && b.chest)
+        {
+            // AbstractChestBoat.createMenu: a spectator opens no boat whose
+            // loot table is still to roll, and the table stays.
+            let spectator = host.hub.guest(conn).is_some_and(|g| g.spectator());
+            if spectator && self.boat_loot_pending(self.boats[i].id) {
+                return false;
+            }
+            self.unpack_boat_loot(i);
+        }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
         let Some((menu, _)) = horizon_client::containers::vehicle_menu(&entity_type) else {
@@ -1463,6 +1478,64 @@ impl Game<'_> {
         true
     }
 
+    /// `ContainerEntity.unpackChestVehicleLootTable` for a chest boat: the table
+    /// its raw NBT still holds rolls into the slots on the first open (an empty
+    /// boat, as a command leaves one), and `player_generates_container_loot`
+    /// fires for the player who opened it.
+    fn boat_loot_pending(&self, id: u32) -> bool {
+        matches!(
+            self.persist.raw.get(&id),
+            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
+        )
+    }
+
+    fn unpack_boat_loot(&mut self, i: usize) {
+        use horizon_world::nbt::Tag;
+        let id = self.boats[i].id;
+        let (table, seed) = {
+            let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) else {
+                return;
+            };
+            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+            else {
+                return;
+            };
+            let seed = match map.get(&"LootTableSeed".into()) {
+                Some(Tag::Long(seed)) => Some(*seed),
+                _ => None,
+            };
+            // The table is spent even when nothing can be rolled into it (the
+            // loot data is not loaded): vanilla clears it before filling.
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+            (table, seed)
+        };
+        // `LootTable.fill` sets the slots it rolls and leaves the rest; a boat
+        // that already holds something keeps it, so no table is applied over it.
+        if self.boats[i].items.iter().any(Option::is_some) {
+            return;
+        }
+        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
+        let b = &self.boats[i];
+        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
+        let biome = self.biome_name_at(at).unwrap_or_default();
+        let pos = (
+            b.position.x.floor() as i32,
+            b.position.y.floor() as i32,
+            b.position.z.floor() as i32,
+        );
+        crate::structure_blocks::roll_container(
+            &mut self.boats[i].items,
+            loot.as_deref(),
+            table.clone(),
+            seed,
+            pos,
+            &biome,
+        );
+        self.trigger_loot_table(&table);
+    }
+
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):
     /// it no longer counts among the openers of the lid, and the lid's close
     /// sound is played for everyone around (`ChestBlockEntity.onClose`, a
@@ -1487,9 +1560,25 @@ impl Game<'_> {
     /// whose server is closing. The guest must be in `host.hub.guests` and the
     /// level they are in must be the one in place.
     pub(super) fn guest_close_all(&mut self, host: &mut LanHost, conn: u32) {
+        self.guest_remove_menus(host, conn, MenuRemoval::Live);
+    }
+
+    /// `AbstractContainerMenu.removed` after the player has disconnected.
+    /// Only HostEvent::Left selects this policy; ordinary closes and shutdown
+    /// keep their existing return-to-inventory behavior.
+    pub(super) fn guest_disconnected(&mut self, host: &mut LanHost, conn: u32) {
+        self.guest_remove_menus(host, conn, MenuRemoval::Disconnected);
+    }
+
+    /// `AbstractContainerMenu.removed`: close the guest's active menu using
+    /// its live or disconnected disposition for cursor and crafting inputs.
+    fn guest_remove_menus(&mut self, host: &mut LanHost, conn: u32, removal: MenuRemoval) {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        if removal == MenuRemoval::Disconnected {
+            self.guest_drop_carried(host, gi);
+        }
         if let Some((window, slots)) = host.hub.guests[gi]
             .menu
             .as_ref()
@@ -1504,10 +1593,17 @@ impl Game<'_> {
             host.hub.container_closed(conn, window);
         }
         self.lan_merchant_closed(host, conn, None);
-        self.lan_crafting_closed(host, conn, None);
+        self.lan_crafting_removed(host, conn, None, removal);
+        if removal == MenuRemoval::Disconnected {
+            // The inventory grid is separate from an open table. Empty both
+            // before lan_crafting_left saves the guest; never drop result slots.
+            self.lan_crafting_removed(host, conn, Some(0), removal);
+        }
         self.lan_station_closed(host, conn, None);
         self.lan_mount_closed(host, conn, None);
-        self.guest_carried_back(host, gi);
+        if removal == MenuRemoval::Live {
+            self.guest_carried_back(host, gi);
+        }
         // `PlayerContainerEvent.Close`, after the menu's `removed`.
         self.player_menu_closing(host, conn);
     }

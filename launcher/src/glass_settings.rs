@@ -209,6 +209,31 @@ impl Launcher {
         )
     }
 
+    /// The Game card's switch for registry mods' automatic updates (`horizon::auto`).
+    fn mods_auto_update_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let on = self.settings.auto_updates_mods();
+        ui::setting_row(
+            tr("Update registry mods automatically"),
+            Some(
+                div()
+                    .child(tr(
+                        "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                crate::switch("mods-auto-update", on, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.mods_auto_update = Some(!this.settings.auto_updates_mods());
+                        this.save_settings();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
+    }
+
     /// The Game card's Native mods row. The mockup has an on/off switch; native mods are always
     /// on here, so the row picks the profile they build with, as the Mods page does.
     fn native_mods_row(&mut self, cx: &mut Context<Self>) -> Div {
@@ -401,6 +426,7 @@ impl Launcher {
         let game = card()
             .child(self.game_architecture_row(n, cx))
             .child(self.game_args_row(n + 1, cx))
+            .child(self.mods_auto_update_row(cx))
             .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))

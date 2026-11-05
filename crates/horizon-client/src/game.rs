@@ -244,6 +244,7 @@ mod native_reload_listeners;
 mod native_scene;
 mod native_server;
 mod native_shaders;
+mod native_structures;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
@@ -444,6 +445,7 @@ pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
+pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
@@ -6837,7 +6839,12 @@ impl Game<'_> {
             }
             return Ok(true);
         }
-        if block_hit.is_some() && (self.use_bone_meal(&stack)? || self.ignite_tnt(&stack)?) {
+        // TntBlock.useItemOn is the block's own: a sneak with something in hand skips it, and
+        // the flint and steel or fire charge lights a fire on the TNT instead.
+        if block_hit.is_some()
+            && (self.use_bone_meal(&stack)?
+                || (!(sneaking && hands_full) && self.ignite_tnt(&stack)?))
+        {
             return Ok(true);
         }
         // ShearsItem.useOn: shears crop a growing plant's head to its top age.
@@ -6907,6 +6914,16 @@ impl Game<'_> {
         if !on_block && &*stack.item == "minecraft:spyglass" {
             self.use_spyglass();
             return Ok(true);
+        }
+        // FoodOnAStickItem.use with no boost (not riding its mount, or the
+        // mount refused): PASS, but counted as a use of the stick.
+        if !on_block
+            && matches!(
+                &*stack.item,
+                "minecraft:carrot_on_a_stick" | "minecraft:warped_fungus_on_a_stick"
+            )
+        {
+            self.award_stat("used", &stack.item, 1);
         }
         // BundleItem.use: startUsingItem, then onUseTick empties it.
         if !on_block && info.bundle {
@@ -13844,6 +13861,15 @@ impl Game<'_> {
                         &mut self.world.random,
                     ),
                 );
+                // FlintAndSteelItem / FireChargeItem.useOn: BLOCK_CHANGE at the lit block,
+                // and ItemStack.useOn's used statistic.
+                self.post_block_game_event(
+                    "minecraft:block_change",
+                    hit.pos,
+                    self.sculk_actor(),
+                    None,
+                );
+                self.award_stat("used", &stack.item, 1);
                 if item == "fire_charge" {
                     self.consume_held();
                 } else {
@@ -13866,6 +13892,20 @@ impl Game<'_> {
                     &mut self.world.random,
                 );
                 self.audio.play(sound, Some(at(target)), 1.0, pitch);
+                // BLOCK_PLACE: flint and steel names the clicked block, a fire charge the
+                // fire. Then ItemStack.useOn's used statistic.
+                let placed_at = if item == "fire_charge" {
+                    target
+                } else {
+                    hit.pos
+                };
+                self.post_block_game_event(
+                    "minecraft:block_place",
+                    placed_at,
+                    self.sculk_actor(),
+                    None,
+                );
+                self.award_stat("used", &stack.item, 1);
                 if item == "fire_charge" {
                     self.consume_held();
                 } else {
@@ -14288,6 +14328,7 @@ impl Game<'_> {
             .map_or(eye, |pl| [pl.position.x, pl.position.y, pl.position.z]);
         self.audio
             .play("minecraft:entity.arrow.shoot", Some(feet), 1.0, pitch);
+        self.award_stat("used", "minecraft:bow", 1);
         if !self.creative
             && !infinity
             && let Some(i) = arrow_slot

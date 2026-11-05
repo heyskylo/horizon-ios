@@ -111,6 +111,32 @@ impl Game<'_> {
         result
     }
 
+    /// The connected owner's authoritative block/crafting menu, without
+    /// client prediction. Only its own slots are counted (not the inventory).
+    fn harness_owner_menu(&mut self) -> Result<(u32, usize, i32)> {
+        let owner = self.serving.as_ref().ok_or("menu state: no server")?.owner;
+        self.in_owner_level(|g| {
+            let host = g.lan.as_ref().ok_or("menu state: no hub")?;
+            let guest = host
+                .hub
+                .guests
+                .iter()
+                .find(|p| p.uuid == owner && p.placed)
+                .ok_or("menu state: owner is not connected")?;
+            if let Some(menu) = &guest.menu {
+                return Ok((guest.conn, menu.size, menu.window));
+            }
+            if let Some((window, _, menu, _)) = host
+                .play
+                .get(&guest.conn)
+                .and_then(|p| p.crafting.table.as_ref())
+            {
+                return Ok((guest.conn, menu.slot_count() - 36, *window));
+            }
+            Ok((guest.conn, 0, 0))
+        })
+    }
+
     /// The player's portal process finished in the nether portal it stands
     /// in (the oracle's player is not ticked, so neither is the wait).
     fn harness_portal(&mut self) -> Result<()> {
@@ -249,6 +275,68 @@ impl Game<'_> {
                         out.push_str(&record.to_string());
                         out.push('\n');
                     }
+                }
+                "mob_anger" => {
+                    // Metadata-state equality through the production writer, not packet delivery.
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("anger state: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let index = op["index"].as_u64().ok_or("anger state: missing index")? as u8;
+                    let state = self.harness_owner(|g| {
+                        let Some(super::commands::Target::Mob(id)) = g.target_by_uuid(uuid) else {
+                            return Err("anger state: UUID is not a loaded mob".into());
+                        };
+                        let actual = g
+                            .persist
+                            .uuids
+                            .get(&id)
+                            .copied()
+                            .ok_or("anger state: no saved UUID")?;
+                        if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
+                            return Err("anger state: UUID mismatch".into());
+                        }
+                        let m = g
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == id && m.alive() && !m.removed)
+                            .ok_or("anger state: missing live actor")?;
+                        if Some(m.kind.id.as_str()) != op["kind"].as_str() {
+                            return Err("anger state: wrong actor type".into());
+                        }
+                        let hub = &g.lan.as_ref().ok_or("anger state: no connected hub")?.hub;
+                        let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+                        super::lan::mob_meta(
+                            m,
+                            hub,
+                            None,
+                            g.world.game_time,
+                            &mut meta,
+                            &mut defaults,
+                        );
+                        let entry = meta
+                            .iter()
+                            .find(|e| e.0 == index)
+                            .or_else(|| defaults.iter().find(|e| e.0 == index))
+                            .ok_or("anger state: metadata entry/default absent")?;
+                        if entry.1 != horizon_protocol::entity_data::serializer::LONG {
+                            return Err("anger state: metadata serializer is not LONG".into());
+                        }
+                        let horizon_protocol::entity_data::Value::Long(value) = &entry.2 else {
+                            return Err("anger state: metadata value is not long".into());
+                        };
+                        Ok(json!({"uuid":actual,"kind":m.kind.id,"index":index,
+                            "serializer":entry.1,"value":value,"game_time":g.world.game_time}))
+                    })?;
+                    out.push_str(
+                        &json!({"cmd":format!("#mob_anger {}",op["label"].as_str().unwrap_or("")),
+                        "messages":[],"results":[],"state":state})
+                        .to_string(),
+                    );
+                    out.push('\n');
                 }
                 "server_distances" => {
                     let state = self.harness_owner(|g| {
@@ -554,9 +642,34 @@ impl Game<'_> {
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }
+                "menu_state" => {
+                    let (_, own_slots, _) = self.harness_owner_menu()?;
+                    let record = json!({"cmd": format!("#menu_state {}", op["label"].as_str().unwrap_or("")),
+                        "messages": [], "results": [], "state": {"own_slots": own_slots}});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "close_menu" => {
+                    let (conn, _, window) = self.harness_owner_menu()?;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let mut host = g.lan.take().ok_or("close menu: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::ContainerClose(
+                                horizon_protocol::packets::play::ContainerClose {
+                                    container: window,
+                                },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    let sequence = op["sequence"].as_i64().unwrap_or(0) as i32;
                     let face = op["face"].as_i64().unwrap_or(1) as i32;
                     let owner = self
                         .serving
@@ -587,11 +700,18 @@ impl Game<'_> {
                                     cursor: [0.5, 1.0, 0.5],
                                     inside: false,
                                     world_border: false,
-                                    sequence: 0,
+                                    sequence,
                                 },
                             ),
                         );
+                        let acknowledged = host
+                            .hub
+                            .guest(conn)
+                            .is_some_and(|p| p.ack_up_to.get() >= sequence);
                         g.lan = Some(host);
+                        if !acknowledged {
+                            return Err("use block: owner packet was not acknowledged".into());
+                        }
                         Ok(())
                     })?;
                 }

@@ -353,6 +353,32 @@ def scenario_switch():
         g.quit()
 
 
+def scenario_controller_profiles():
+    print('controller_profiles: P2 sees and changes its own controller settings, not P1\'s')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+
+        def labels(n):
+            return [w.get('label') or '' for w in g.ctl(n, 'ui')['widgets']]
+
+        g.ctl(2, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P2' in l for l in labels(2)), 'P2 named on its screen')
+        g.ctl(2, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(2)), 'the Device page')
+        g.ctl(2, 'click-button', next(l for l in labels(2) if l.startswith('Vibration')))
+        saved = lambda: [p for p in g.home.rglob('horizon-controller.txt') if 'vibration:false' in p.read_text()]
+        g.wait(saved, 'P2 saved its vibration')
+        check('only P2 has it', [p.parent.name for p in saved()], ['P2'])
+        g.ctl(1, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P1' in l for l in labels(1)), 'P1 named on its screen')
+        g.ctl(1, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(1)), 'P1\'s Device page')
+        check('P1 keeps its own', next(l for l in labels(1) if l.startswith('Vibration')).endswith('ON'), True)
+    finally:
+        g.quit()
+
+
 def scenario_bumpers():
     print('bumpers: reorder views, move into a new window, return and join there')
     g = Game(2, HORIZON_SPLIT_PICK='1')
@@ -1236,9 +1262,70 @@ def scenario_launcher():
         os.environ.pop('HORIZON_ACCOUNT_SESSIONS', None)
 
 
+def scenario_custom_skin():
+    print("custom_skin: P1's uploaded skin survives P2 joining")
+    from server_pack_e2e import decode_png, png
+
+    output = Path(tempfile.mkdtemp(prefix='split-skin-'))
+    skin = output / 'synthetic-skin.png'
+    skin.write_bytes(png(64, 64, lambda x, y: (255, 0, 0, 255)))
+
+    def red_pixels(path, gui_size=None):
+        width, height, rows = decode_png(path.read_bytes())
+        if gui_size is None:
+            box = (width * .25, height * .2, width * .75, height * .75)
+        else:
+            # InventoryScreen's player preview, within the 176 x 166 inventory.
+            gui_width, gui_height = gui_size
+            scale = width / gui_width
+            left, top = (gui_width - 176) / 2, (gui_height - 166) / 2
+            box = tuple(v * scale for v in (left + 26, top + 8, left + 75, top + 78))
+        left, top, right, bottom = map(round, box)
+        return sum(r > 80 and r > 3 * g and r > 3 * b
+                   for y in range(top, bottom) for r, g, b in rows[y][left:right])
+
+    def seed(home):
+        (home / 'splitscreen/profiles/Ada').mkdir(parents=True)
+        (home / 'options.txt').write_text('tutorialStep:none\n')
+
+    # A synthetic texture exercises the same dynamic atlas slots as a downloaded
+    # Microsoft skin, without using an account or a player's skin. No native input.
+    game = Game(2, pick=True, seed=seed, args=('--offscreen',), HORIZON_OFFLINE_SKIN=str(skin))
+    results = []
+    try:
+        game.wait(lambda: (game.ctl(2, 'state').get('menu') or {}).get('mode')
+                  == 'splitscreen-profiles', 'P2 profile picker')
+        game.press(2, 'Ada')
+        game.wait(lambda: game.ctl(2, 'state').get('player') is not None, 'P2 in the world')
+        for player in (1, 2):
+            game.ctl(player, 'key', 'f5', 'tap')
+            game.ctl(player, 'wait', '20')
+            world = output / f'p{player}-world.png'
+            game.ctl(player, 'screenshot', str(world))
+            game.ctl(player, 'command', 'gamemode survival')
+            game.ctl(player, 'key', 'e', 'tap')
+            game.ctl(player, 'wait', '10')
+            inventory = output / f'p{player}-inventory.png'
+            game.ctl(player, 'screenshot', str(inventory))
+            size = game.ctl(player, 'ui')['gui_size']
+            result = dict(player=player, world_red=red_pixels(world),
+                          inventory_red=red_pixels(inventory, size))
+            results.append(result)
+            print(json.dumps(result), flush=True)
+            check(f'P{player} custom skin in third person', result['world_red'] > 1000, True)
+            check(f'P{player} custom skin in inventory', result['inventory_red'] > 100, True)
+            game.ctl(player, 'key', 'esc', 'tap')
+    finally:
+        game.quit()
+        (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        print(f'  screenshots and results: {output}')
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
+    'controller_profiles': scenario_controller_profiles,
+    'custom_skin': scenario_custom_skin,
     'four': scenario_four,
     'windows': scenario_windows,
     'picker': scenario_picker,

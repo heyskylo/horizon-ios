@@ -174,7 +174,7 @@ enum SelfUpdate {
     Ready(String),
     /// A newer launcher can't go in here: this copy can't replace itself
     /// (`backend::cannot_replace_itself`), or the installer said why (the error). The player
-    /// downloads the launcher again once.
+    /// follows the recovery advice for its install location.
     Stuck(Option<String>),
     Failed(String),
 }
@@ -234,6 +234,7 @@ struct Launcher {
     checked: Option<Instant>,
     update_error: Option<String>,
     self_update: SelfUpdate,
+    self_update_hidden: bool,
     /// The Horizon version being installed as an update, and whether it becomes the selected one.
     update_install: Option<(String, bool)>,
     /// The Horizon version being installed because an instance was made or saved to play it: it
@@ -590,6 +591,7 @@ impl Launcher {
             // The installer the last Update started could not put the new launcher in place.
             self_update: horizon_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
+            self_update_hidden: false,
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -768,6 +770,7 @@ impl Launcher {
         this.load_profile_heads();
         this.load_auth_statuses(true);
         this.fetch_startup_releases();
+        this.mods_auto_update();
         this.fetch_links();
         this.watch_shop(cx);
         if home::getting_ready_preview() {
@@ -886,6 +889,27 @@ impl Launcher {
         std::thread::spawn(move || {
             let _ = tx.send(Msg::Updates(backend::check_updates().map(Box::new)));
         });
+    }
+
+    /// Recovery text shared by both sidebar styles and Settings.
+    fn launcher_update_help(&self, error: Option<&str>) -> String {
+        if let Some(error) = error {
+            return trf("the update failed: {error}", &[("error", error)]);
+        }
+        if backend::package_managed_launcher() {
+            return tr("Update this launcher with your package manager.").to_string();
+        }
+        let folder = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from(tr("Downloads")));
+        trf(
+            "Close this launcher, move it to {folder}, and open it there to enable updates.",
+            &[("folder", &folder.display().to_string())],
+        )
+    }
+
+    fn launcher_download_available(&self) -> bool {
+        !backend::package_managed_launcher()
     }
 
     fn update_launcher(&mut self, release: Release) {
@@ -1356,8 +1380,11 @@ impl Launcher {
                     }) {
                         Err(Ok(list)) => self.native_mismatch = Some(list),
                         Err(Err(e)) => self.native_error = Some(e),
+                        // Play waited for this build (`Mods::rebuild`).
+                        Ok(_) if std::mem::take(&mut self.mods.play_after_build) => self.play(),
                         Ok(_) => {}
                     }
+                    self.mods.play_after_build = false;
                 }
                 Msg::LauncherProgress(p) => {
                     if let SelfUpdate::Downloading(_, f) = &mut self.self_update {
@@ -1751,6 +1778,20 @@ impl Launcher {
         if !self.can_start(&tag) {
             return;
         }
+        // Native mods the start's automatic update moved on: the game they are built into is
+        // built again first (the Mods page's Build), then plays.
+        let rebuild = self
+            .selected_instance()
+            .map(|i| i.id.clone())
+            .filter(|id| self.mods.rebuild.contains(id));
+        if let Some(id) = rebuild.filter(|_| self.native_step.is_none()) {
+            self.mods.rebuild.retain(|r| *r != id);
+            if native_mods::is_native(&tag) {
+                self.mods.play_after_build = true;
+                self.build_native(false);
+                return;
+            }
+        }
         self.starting_pack = None;
         self.start_client(tag);
     }
@@ -1818,8 +1859,25 @@ impl Launcher {
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
         let offline_without_owner = self.settings.dev_offline;
+        // Registry mods update before the game reads them (`horizon::auto`); native mods only
+        // at start, where a build can follow.
+        let auto = self
+            .selected_instance()
+            .filter(|_| self.settings.auto_updates_mods() && self.starting_pack.is_none())
+            .map(|i| mods_page::AutoTarget {
+                instance: i.clone(),
+                level: Some(backend::mod_api_level(&tag)),
+                natives: false,
+            });
+        let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
+            if let Some(auto) = auto {
+                let (lines, _) = mods_page::auto_update(&[auto]);
+                if !lines.is_empty() {
+                    let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
+                }
+            }
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
             let _ = tx.send(Msg::Session(session));
         });
@@ -2962,11 +3020,8 @@ impl Launcher {
                         )),
                 )
             }
-            SelfUpdate::Stuck(error) => {
-                let why = match error {
-                    Some(e) => trf("the update failed: {error}", &[("error", e)]),
-                    None => tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.").to_string(),
-                };
+            SelfUpdate::Stuck(error) if !self.self_update_hidden => {
+                let why = self.launcher_update_help(error.as_deref());
                 let url = backend::download_page(&self.links.website);
                 foot = foot.child(
                     update(tr("A new version is available").to_string())
@@ -2976,10 +3031,29 @@ impl Launcher {
                                 .child(why),
                         )
                         .child(
-                            div().relative().flex().child(
-                                button("download-launcher", "Download again", Kind::Primary, &t)
-                                    .on_click(move |_, _, cx| cx.open_url(&url)),
-                            ),
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(6.))
+                                .when(self.launcher_download_available(), |actions| {
+                                    actions.child(
+                                        button(
+                                            "download-launcher",
+                                            "Download again",
+                                            Kind::Primary,
+                                            &t,
+                                        )
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    )
+                                })
+                                .child(
+                                    button("dismiss-launcher-update", "Dismiss", Kind::Ghost, &t)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.self_update_hidden = true;
+                                            cx.notify();
+                                        })),
+                                ),
                         ),
                 )
             }
@@ -3755,7 +3829,7 @@ impl Launcher {
             SelfUpdate::Stuck(None) => format!(
                 "{}  ·  {}",
                 backend::VERSION,
-                tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.")
+                self.launcher_update_help(None)
             ),
             SelfUpdate::Failed(e) => format!(
                 "{}  ·  {}",
@@ -3789,7 +3863,7 @@ impl Launcher {
                     }))
                     .into_any_element(),
             ),
-            SelfUpdate::Stuck(_) => {
+            SelfUpdate::Stuck(_) if self.launcher_download_available() => {
                 let url = backend::download_page(&self.links.website);
                 Some(
                     button("download-settings", "Download again", Kind::Secondary, &t)
@@ -3797,7 +3871,7 @@ impl Launcher {
                         .into_any_element(),
                 )
             }
-            SelfUpdate::Downloading(..) => None,
+            SelfUpdate::Downloading(..) | SelfUpdate::Stuck(_) => None,
             _ => Some(
                 // The glass look's About tile has the mockup's filled button.
                 button(

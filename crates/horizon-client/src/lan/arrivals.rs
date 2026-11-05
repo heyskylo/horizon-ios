@@ -578,7 +578,7 @@ mod hub_tests {
     fn hub() -> Hub {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "ArrivalsTest".into(), 4)
+            ..NetConfig::loopback(0, "ArrivalsTest".into(), 4)
         };
         let mut sync = data::SyncData::empty();
         // The entity types the tracker names: the player, as id 0.

@@ -42,7 +42,8 @@ pub(super) struct ShadowTargets {
     /// The rows a depth copy goes through to `linear` (a depth format copies only to a buffer),
     /// and their stride in bytes.
     staging: Option<(wgpu::Buffer, u32)>,
-    /// Both sides of each shadowcolor buffer used.
+    /// Both sides of each shadowcolor buffer used; one texture for both when no `shadowcomp`
+    /// program draws into or flips the buffer.
     pub color: [Option<[wgpu::TextureView; 2]>; SHADOW_COLORS],
     /// The clear colour of each buffer cleared every frame.
     pub clears: [Option<[f32; 4]>; SHADOW_COLORS],
@@ -85,12 +86,14 @@ fn target(
 impl ShadowTargets {
     /// The buffers of `shadow` the pack uses: `colors` (bit n: shadowcolor n), `depth1` when
     /// some program reads `shadowtex1`, `linear` (bit n: shadowtex n read through a filtering
-    /// sampler). The resolution is kept within the device's limit.
+    /// sampler), `doubled` (bit n: shadowcolor n needs a B texture). The resolution is kept
+    /// within the device's limit.
     pub fn new(
         device: &wgpu::Device,
         shadow: &horizon_shaders::Shadow,
         formats: [wgpu::TextureFormat; SHADOW_COLORS],
         colors: u16,
+        doubled: u16,
         depth1: bool,
         linear: u8,
     ) -> Self {
@@ -101,8 +104,8 @@ impl ShadowTargets {
         let depth = wgpu::TextureFormat::Depth32Float;
         let color = std::array::from_fn(|n| {
             (colors & 1 << n != 0).then(|| {
-                [0, 1].map(|side| {
-                    let label = format!("Shader pack shadowcolor{n} {}", ["A", "B"][side]);
+                let side = |side: &str| {
+                    let label = format!("Shader pack shadowcolor{n} {side}");
                     target(
                         device,
                         &label,
@@ -111,7 +114,14 @@ impl ShadowTargets {
                         wgpu::TextureUsages::empty(),
                     )
                     .1
-                })
+                };
+                let a = side("A");
+                let b = if doubled & 1 << n != 0 {
+                    side("B")
+                } else {
+                    a.clone()
+                };
+                [a, b]
             })
         });
         let linear = [0, 1].map(|n| {
