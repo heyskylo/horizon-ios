@@ -13470,6 +13470,7 @@ mod shadow_caster_tests {
                     planes: [Vec4::W; 6],
                 },
                 casters: Some(shadow_casters(camera, Vec3::Y)),
+                reach: None,
             };
             let min = Vec3::new(
                 section[0] * 16.0 - 13.5,
