@@ -7626,20 +7626,22 @@ impl Renderer {
         shadow_visible.clear();
         if let Some(v) = &shadow_view {
             let radius = (frame.detail_distance / 16.0) as i32;
-            let radius = v
-                .distance
-                .map_or(radius, |d| radius.min((d / 16.0).ceil() as i32));
             let light = ShadowCull {
                 light: Frustum {
                     planes: frustum(v.cull),
                 },
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
+                reach: v.distance,
             };
             crate::spans::time("shadow visibility", || {
                 // Within the unculled distance every section, then those in the light's box.
                 if let Some(d) = v.unculled {
-                    let all = Frustum {
-                        planes: [glam::Vec4::W; 6],
+                    let all = ShadowCull {
+                        light: Frustum {
+                            planes: [glam::Vec4::W; 6],
+                        },
+                        casters: None,
+                        reach: v.distance,
                     };
                     let near = radius.min((d / 16.0).ceil() as i32);
                     self.sections.visible(
@@ -11359,6 +11361,25 @@ impl Cull for Frusta {
 pub struct ShadowCull {
     pub light: Frustum,
     pub casters: Option<[Frustum; 2]>,
+    /// `shadowDistance × shadowDistanceRenderMul`: only what lies within this many blocks of the
+    /// camera along each axis, a cube around it. Our probe's Iris 1.11.7 maps keep the sections
+    /// whose box, grown by `SHADOW_CASTER_MARGIN` as for the casters, meets that cube (#8464):
+    /// out to its corners, and a section 1 block past its side but not one 1.5 blocks past.
+    pub reach: Option<f32>,
+}
+impl ShadowCull {
+    /// Whether the camera-relative box `min..max`, grown by the margin, meets (`whole`: lies
+    /// within) `reach`'s cube.
+    fn within_reach(&self, min: Vec3, max: Vec3, whole: bool) -> bool {
+        let (min, max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
+        self.reach.is_none_or(|d| {
+            if whole {
+                min.cmpge(Vec3::splat(-d)).all() && max.cmple(Vec3::splat(d)).all()
+            } else {
+                max.cmpge(Vec3::splat(-d)).all() && min.cmple(Vec3::splat(d)).all()
+            }
+        })
+    }
 }
 /// How far past a section's 16 blocks the shadow pass looks for what can shade the view: our
 /// probes' Iris 1.11.7 maps keep the sections whose box, grown by this much on every side, meets
@@ -11370,14 +11391,16 @@ const SHADOW_CASTER_MARGIN: f32 = 1.125;
 impl Cull for ShadowCull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool {
         let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
-        self.light.intersects(min, max)
+        self.within_reach(min, max, false)
+            && self.light.intersects(min, max)
             && self
                 .casters
                 .is_none_or(|c| c.iter().all(|f| f.intersects(grown_min, grown_max)))
     }
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
         let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
-        self.light.contains(min, max)
+        self.within_reach(min, max, true)
+            && self.light.contains(min, max)
             && self
                 .casters
                 .is_none_or(|c| c.iter().all(|f| f.contains(grown_min, grown_max)))
@@ -13295,6 +13318,7 @@ mod shadow_caster_tests {
                 planes: [Vec4::W; 6],
             },
             casters: Some(shadow_casters(camera, light)),
+            reach: None,
         };
         let min = Vec3::from(min);
         cull.intersects(min, min + 16.0)
@@ -13341,6 +13365,7 @@ mod shadow_caster_tests {
                     planes: [Vec4::W; 6],
                 },
                 casters: Some(shadow_casters(camera, Vec3::Y)),
+                reach: None,
             };
             let min = Vec3::new(
                 column[0] * 16.0 - 13.5,
@@ -13353,6 +13378,42 @@ mod shadow_caster_tests {
         assert!(kept(90.0, [-2.0, -6.0]));
         // Looking south (yaw 7.5), the one at (3, 0) needs a margin of 1.3 blocks: Iris drops it.
         assert!(!kept(7.5, [3.0, 0.0]));
+    }
+
+    /// With `shadowDistanceRenderMul`, our probe's Iris 1.11.7 maps keep the sections within
+    /// `shadowDistance × mul` of the camera along each axis, out to the cube's corners, and with
+    /// some slack (the camera at (13.5, 69.62, -13.5)):
+    /// - at 100 blocks, the column at chunk (7, 5), 98.5 and 93.5 blocks out (136 diagonally), and
+    ///   the one at (-6, -7) are kept; the one at (8, -4), 114.5 out on x, is not;
+    /// - at 49.5 blocks, the column at (-2, -5), 50.5 out on z, is kept; at 49 it is not;
+    /// - at 50 blocks from a camera at y 151.62, the ground's sections 70 blocks below are not.
+    #[test]
+    fn the_shadow_distance_render_mul_keeps_a_cube() {
+        let kept = |camera: DVec3, reach: f32, keys: &[(i32, i32)]| {
+            let y = (64 - crate::chunk::MIN_Y) / 16;
+            let mut sections = resident::Resident::<()>::default();
+            for &(x, z) in keys {
+                sections.insert_with_bounds((x, y, z), (), None);
+            }
+            let cull = ShadowCull {
+                light: Frustum {
+                    planes: [Vec4::W; 6],
+                },
+                casters: None,
+                reach: Some(reach),
+            };
+            let mut out = Vec::new();
+            sections.visible(camera, 12, &cull, |_| true, |_, _| false, &mut out);
+            let mut kept: Vec<_> = out.iter().map(|v| (v.key.0, v.key.2)).collect();
+            kept.sort_unstable();
+            kept
+        };
+        let ground = DVec3::new(13.5, 69.62, -13.5);
+        let columns = [(7, 5), (8, -4), (-6, -7)];
+        assert_eq!(kept(ground, 100.0, &columns), [(-6, -7), (7, 5)]);
+        assert_eq!(kept(ground, 49.5, &[(-2, -5)]), [(-2, -5)]);
+        assert_eq!(kept(ground, 49.0, &[(-2, -5)]), []);
+        assert_eq!(kept(DVec3::new(13.5, 151.62, -13.5), 50.0, &[(0, 0)]), []);
     }
 
     /// With the camera looking straight up under a noon sun, our probe's Iris 1.11.7 map holds
@@ -13382,6 +13443,7 @@ mod shadow_caster_tests {
         let shadow = ShadowCull {
             light: all,
             casters: Some(shadow_casters(up, Vec3::Y)),
+            reach: None,
         };
         assert_eq!(
             drawn(&|out| sections.visible(camera, 4, &shadow, |_| true, |_, _| false, out)),
