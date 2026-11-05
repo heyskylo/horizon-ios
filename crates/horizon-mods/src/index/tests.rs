@@ -42,6 +42,11 @@ fn reads_the_sample_and_keeps_unknown_kinds() {
     assert!(!text.contains("downloads"));
     let counted = text.replacen("\"versions\"", "\"downloads\":12345,\"versions\"", 1);
     assert_eq!(Index::parse(&counted).unwrap().projects[0].downloads, 12345);
+    // GitHub stars: the same, the source repository's.
+    assert_eq!(hud.stars, 0);
+    assert!(!text.contains("\"stars\""));
+    let starred = text.replacen("\"versions\"", "\"stars\":42,\"versions\"", 1);
+    assert_eq!(Index::parse(&starred).unwrap().projects[0].stars, 42);
 }
 
 #[test]
