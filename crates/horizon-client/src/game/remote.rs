@@ -171,8 +171,9 @@ fn hurt_sound_for(
 fn entity_sound_state(
     id: i32,
     player: Option<(i32, [f64; 3], bool)>,
-    mobs: &[Mob],
+    mob: Option<horizon_client::sound_engine::SoundEntityState>,
     tracked: &HashMap<i32, Tracked>,
+    dragon: Option<(i32, [f64; 3])>,
 ) -> Option<horizon_client::sound_engine::SoundEntityState> {
     use horizon_client::sound_engine::SoundEntityState;
     if let Some((player_id, position, silent)) = player
@@ -184,18 +185,20 @@ fn entity_sound_state(
             removed: false,
         });
     }
-    if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
-        return Some(SoundEntityState {
-            position: [m.position.x, m.position.y, m.position.z],
-            silent: m.silent,
-            removed: m.removed,
-        });
+    let mut state = mob.or_else(|| {
+        tracked.get(&id).map(|t| SoundEntityState {
+            position: t.position,
+            silent: t.silent,
+            removed: false,
+        })
+    })?;
+    // The dragon's Mob is metadata storage; only Dragon follows its movement.
+    if let Some((dragon_id, position)) = dragon
+        && dragon_id == id
+    {
+        state.position = position;
     }
-    tracked.get(&id).map(|t| SoundEntityState {
-        position: t.position,
-        silent: t.silent,
-        removed: false,
-    })
+    Some(state)
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -776,7 +779,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn remote_sound_entity_state(
-        &self,
+        &mut self,
         id: i32,
     ) -> Option<horizon_client::sound_engine::SoundEntityState> {
         let r = self.remote.as_ref()?;
@@ -787,9 +790,29 @@ impl Game<'_> {
                 r.local_entity_silent,
             )
         });
-        let mut state = entity_sound_state(id, player, &self.mobs, &r.entities)?;
-        // Vehicles, projectiles and other simulated objects may have moved since
-        // the last tracking packet, just as the mob interpolation has.
+        // The local player is not in mobs, so avoid a guaranteed index miss.
+        if player.is_some_and(|p| p.0 == id) {
+            return entity_sound_state(id, player, None, &r.entities, None);
+        }
+        let mob = self.mob_index.get(&self.mobs, id as u32).map(|m| {
+            horizon_client::sound_engine::SoundEntityState {
+                position: [m.position.x, m.position.y, m.position.z],
+                silent: m.silent,
+                removed: m.removed,
+            }
+        });
+        let dragon = self
+            .dragon
+            .as_ref()
+            .map(|d| (d.id as i32, [d.position.x, d.position.y, d.position.z]));
+        let mut state = entity_sound_state(id, player, mob, &r.entities, dragon)?;
+        // Mob states already use the live position. In particular,
+        // level_entity would find the dragon's stale Mob before its Dragon.
+        if mob.is_some() || dragon.is_some_and(|d| d.0 == id) {
+            return Some(state);
+        }
+        // Vehicles, projectiles and other simulated objects may have moved
+        // since the last tracking packet.
         if let Some(position) = self
             .level_entity(id)
             .and_then(|target| self.target_position(target))
@@ -11393,28 +11416,28 @@ mod tests {
         );
         let player = Some((2, [0.5, 70.0, 0.5], false));
         assert_eq!(
-            super::entity_sound_state(2, player, &[], &tracked)
+            super::entity_sound_state(2, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             Some([0.5, 70.0, 0.5]),
             "the local player is named by Remote.entity_id"
         );
         assert_eq!(
-            super::entity_sound_state(7, player, &[], &tracked)
+            super::entity_sound_state(7, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             Some([8.5, 64.0, -3.5]),
             "another entity the server spawned"
         );
         assert_eq!(
-            super::entity_sound_state(9, player, &[], &tracked)
+            super::entity_sound_state(9, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             None,
             "getEntity is null: handleSoundEntityEvent returns"
         );
         assert_eq!(
-            super::entity_sound_state(2, None, &[], &tracked)
+            super::entity_sound_state(2, None, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             None,
@@ -11433,15 +11456,40 @@ mod tests {
                 silent: true,
             },
         );
-        let state = super::entity_sound_state(7, None, &[], &tracked).unwrap();
+        let state = super::entity_sound_state(7, None, None, &tracked, None).unwrap();
         assert!(state.silent);
         assert!(!state.removed);
         assert_eq!(state.position, [8.5, 64.0, -3.5]);
         let player =
-            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), &[], &tracked).unwrap();
+            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), None, &tracked, None)
+                .unwrap();
         assert!(player.silent);
-        assert!(super::entity_sound_state(9, None, &[], &tracked).is_none());
+        assert!(super::entity_sound_state(9, None, None, &tracked, None).is_none());
     }
+    #[test]
+    fn a_dragon_sound_uses_live_movement_without_losing_mob_metadata() {
+        use horizon_client::sound_engine::SoundEntityState;
+        let stale = SoundEntityState {
+            position: [0.0, 64.0, 0.0],
+            silent: true,
+            removed: false,
+        };
+        let tracked = std::collections::HashMap::new();
+        for position in [[24.0, 80.0, -16.0], [25.5, 81.0, -18.0]] {
+            let state =
+                super::entity_sound_state(7, None, Some(stale), &tracked, Some((7, position)))
+                    .unwrap();
+            assert_eq!(state.position, position);
+            assert!(state.silent);
+            assert!(!state.removed);
+        }
+        let unrelated =
+            super::entity_sound_state(7, None, Some(stale), &tracked, Some((8, [99.0; 3])))
+                .unwrap();
+        assert_eq!(unrelated.position, stale.position);
+        assert!(super::entity_sound_state(7, None, None, &tracked, Some((7, [99.0; 3]))).is_none());
+    }
+
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW
     /// drops the stack, so the player's hand swings, as `LivingEntity.drop`
     /// does for `Prediction.PREDICTED`; a plain pick up drops nothing.
