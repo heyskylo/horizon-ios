@@ -123,6 +123,7 @@ impl<'a> Game<'a> {
             guest.clear_lod();
             self.retired_far_terrain
                 .append(&mut guest.retired_far_terrain);
+            self.retire_guest_skin_workers(&mut guest);
             if let Some(mut remote) = guest.remote.take() {
                 remote.session.disconnect();
             }
@@ -158,6 +159,7 @@ pub(super) fn update<'a>(host: &mut Game<'a>, guest: &mut Option<Box<Game<'a>>>)
             second.clear_lod();
             host.retired_far_terrain
                 .append(&mut second.retired_far_terrain);
+            host.retire_guest_skin_workers(&mut second);
             if let Some(error) = second.error.take() {
                 log::warn!("Horizon: splitscreen guest: {error}");
             }

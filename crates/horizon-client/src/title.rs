@@ -483,8 +483,14 @@ pub(crate) struct Button {
     /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text
     /// centred in the room left of it.
     trailing: Option<(&'static str, f32)>,
+    /// Its job on the screen, for the controller (`widgets::Action`).
+    action: Option<crate::widgets::Action>,
 }
 impl Button {
+    fn does(mut self, action: crate::widgets::Action) -> Self {
+        self.action = Some(action);
+        self
+    }
     /// `AbstractButton.extractDefaultLabel`: the label centred with a 2 px
     /// margin, and slid inside the button when it does not fit
     /// (`AbstractWidget.extractScrollingStringOverContents`), instead of being
@@ -509,12 +515,17 @@ impl Button {
             Some((_, size)) => self.x + self.w - size - 4.0,
             None => self.x + self.w - 2.0,
         };
+        let room = if self.action.is_some() && self.enabled {
+            crate::widgets::action_glyph_room()
+        } else {
+            0.0
+        };
         crate::ui::scrolling_text_around_at(
             batch,
             atlas,
             &Text::literal(&self.label),
             self.x + (self.w / 2.0).floor(),
-            self.x + 2.0,
+            self.x + 2.0 + room,
             right,
             self.y,
             self.y + 20.0,
@@ -1774,6 +1785,7 @@ impl Title {
             id,
             icon: None,
             trailing: None,
+            action: None,
         };
         match &self.mode {
             Mode::Main => {
@@ -1813,7 +1825,8 @@ impl Title {
                         &lang::get_or("menu.options", "Options..."),
                         true,
                         3,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Options),
                     b(
                         cx + 2.0,
                         y + 96.0,
@@ -1821,7 +1834,8 @@ impl Title {
                         &lang::get_or("menu.quit", "Quit Game"),
                         true,
                         2,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Exit),
                 ];
                 // iOS account management lives in the native launcher.
                 let icons = [
@@ -1911,7 +1925,8 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         12,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Create {
@@ -1978,7 +1993,8 @@ impl Title {
                         &lang::get_or("gui.cancel", "Cancel"),
                         true,
                         36,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Cancel),
                 ]
             }
             Mode::Delete { .. } => {
@@ -2001,7 +2017,8 @@ impl Title {
                         &lang::get_or("gui.cancel", "Cancel"),
                         true,
                         38,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Cancel),
                 ]
             }
             Mode::Account => {
@@ -2046,7 +2063,8 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         95,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Recover { issues, .. } => {
@@ -2069,7 +2087,8 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         91,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Recovered { success: true, .. } => {
@@ -2092,7 +2111,8 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         93,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Recovered { success: false, .. } => {
@@ -2100,14 +2120,17 @@ impl Title {
                 let y = (90.0 + self.message_lines.get() as f32 * 9.0 + 12.0)
                     .max(h / 6.0 + 96.0)
                     .min(h - 24.0);
-                vec![b(
-                    (w / 2.0).floor() - 75.0,
-                    y,
-                    150.0,
-                    &lang::get_or("gui.back", "Back"),
-                    true,
-                    93,
-                )]
+                vec![
+                    b(
+                        (w / 2.0).floor() - 75.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.back", "Back"),
+                        true,
+                        93,
+                    )
+                    .does(crate::widgets::Action::Back),
+                ]
             }
             Mode::Error { alert, .. } => {
                 let lines = self.message_lines.get();
@@ -2119,14 +2142,17 @@ impl Title {
                 } else {
                     confirm_top(h, lines) + 41.0 + lines as f32 * 9.0
                 };
-                vec![b(
-                    (w / 2.0).floor() - 75.0,
-                    y,
-                    150.0,
-                    &lang::get_or("gui.back", "Back"),
-                    true,
-                    39,
-                )]
+                vec![
+                    b(
+                        (w / 2.0).floor() - 75.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.back", "Back"),
+                        true,
+                        39,
+                    )
+                    .does(crate::widgets::Action::Back),
+                ]
             }
             Mode::BackupBeforeUpgrade { .. } => {
                 // BackupConfirmScreen.init: the buttons sit under the text at fixed offsets.
@@ -2158,7 +2184,8 @@ impl Title {
                         &lang::get_or("gui.cancel", "Cancel"),
                         true,
                         42,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Cancel),
                 ]
             }
             Mode::OptimizeConfirm { .. } => {
@@ -2192,9 +2219,11 @@ impl Title {
                         &lang::get_or("gui.cancel", "Cancel"),
                         true,
                         45,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Cancel),
                 ]
             }
+            // No `does`: Escape is inert here on purpose, so B is too. A on the button stops it.
             Mode::Optimize { .. } => vec![b(
                 (w / 2.0).floor() - 100.0,
                 (h / 4.0).floor() + 150.0,
@@ -2222,7 +2251,8 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         71,
-                    ),
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Onboarding(_) => self.onboarding_buttons(w, h),
@@ -2252,7 +2282,11 @@ impl Title {
             Mode::Multiplayer(screen) => screen
                 .buttons(w, h)
                 .into_iter()
-                .map(|(x, y, bw, label, enabled, id)| b(x, y, bw, &label, enabled, id))
+                .map(|(x, y, bw, label, enabled, id)| {
+                    let mut button = b(x, y, bw, &label, enabled, id);
+                    button.action = crate::multiplayer::button_action(id);
+                    button
+                })
                 .collect(),
             Mode::Realms(screen) => screen
                 .buttons(w, h)
@@ -3260,6 +3294,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
+            if let Some(action) = b.action.filter(|_| !self.preparing) {
+                crate::widgets::declare_action(action, [b.x, b.y, b.w, 20.0], b.enabled);
+            }
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
             crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));

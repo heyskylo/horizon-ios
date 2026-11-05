@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 #[derive(Default)]
 pub(super) struct Devices {
     connected: usize,
+    active: Option<PadId>,
 }
 
 /// The glyphs to draw, from the product category iOS reports, through the vendor ids gilrs' pads are
@@ -35,11 +36,18 @@ impl Pads {
             }
             self.devices.connected = controllers.len();
         }
-        let Some(pad) = horizon_gamecontroller::active() else {
+        let selected = horizon_gamecontroller::active_controller();
+        let active = selected.as_ref().map(|pad| pad.id);
+        if self.devices.active != active {
+            // Changing/disconnecting a controller is not its A release.
+            self.menu.armed = None;
+            self.devices.active = active;
+        }
+        let Some(pad) = selected else {
             return PadState::default();
         };
-        self.style = style(&pad.category);
-        state_of(&pad)
+        self.style = style(&pad.state.category);
+        state_of(&pad.state)
     }
 }
 

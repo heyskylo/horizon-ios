@@ -87,13 +87,26 @@ mod ios {
     }
 
     pub fn active() -> Option<Snapshot> {
-        // SAFETY: as above; every object is retained for the length of the read.
+        active_controller().map(|controller| controller.state)
+    }
+
+    pub fn active_controller() -> Option<ConnectedController> {
+        // Refresh identities even when the last controller disconnected, so
+        // reconnecting cannot inherit its old armed menu action.
+        let available = snapshots();
+        // SAFETY: retained GameController objects are read on the game's main thread.
         unsafe {
             let gamepad = |c: &GCController| c.extendedGamepad().is_some();
             let controller = GCController::current()
                 .filter(|c| gamepad(c))
                 .or_else(|| GCController::controllers().iter().find(|c| gamepad(c)))?;
-            snapshot(&controller)
+            let id = IDS.with_borrow(|ids| {
+                ids.live
+                    .iter()
+                    .find(|(_, previous)| std::ptr::eq(&**previous, &*controller))
+                    .map(|(id, _)| *id)
+            })?;
+            available.into_iter().find(|controller| controller.id == id)
         }
     }
 
@@ -180,6 +193,14 @@ pub fn snapshots() -> Vec<ConnectedController> {
     return ios::snapshots();
     #[cfg(not(target_os = "ios"))]
     Vec::new()
+}
+
+/// The currently selected controller and its stable connection identity.
+pub fn active_controller() -> Option<ConnectedController> {
+    #[cfg(target_os = "ios")]
+    return ios::active_controller();
+    #[cfg(not(target_os = "ios"))]
+    None
 }
 
 /// The pad that drives the game, read now: the one iOS last saw used, else the first with a full gamepad

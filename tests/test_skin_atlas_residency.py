@@ -38,7 +38,14 @@ STUBS = r'''
 #![allow(dead_code)]
 extern crate self as horizon_client;
 mod tab_list{pub fn default_skin(_:u128)->&'static str{"entity/player/wide/steve"}}
-use std::{cell::RefCell,collections::HashMap,path::PathBuf};
+use std::{cell::RefCell,collections::HashMap,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}}};
+// Atlas residency has no IO jobs; the real owned service/pressure lifecycle
+// is exercised independently by skins/workers and blocked-HTTP tests.
+mod workers{use super::*;pub struct Pool;impl Pool{
+ pub fn new(_:&str,_:usize)->Arc<Self>{Arc::new(Self)}
+ pub fn cancel_scope(&self,scope:&Arc<AtomicBool>){scope.store(true,Ordering::Release);}
+ pub fn request_shutdown(&self){}
+}}
 #[derive(Clone,Copy,Hash,PartialEq,Eq)]enum Kind{Skin,Cape,Elytra}
 #[derive(Clone,Copy)]enum Download{Ready,Pending,Failed}
 const MAX_SKIN_IMAGES:usize=1024;

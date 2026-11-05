@@ -26,7 +26,7 @@ def program():
     b = commands.index('\n}', a) + 2
     fetch = commands[a:b].replace('pub(in crate::game) ', '').replace('super::execute::Source', 'u32')
     methods_game = '\n'.join(method(commands, n) for n in ('cmd_fetchprofile', 'profile_fetches_pending', 'tick_profile_fetches'))
-    return lifetime.CLOCK.replace("{collections,sync}", "{collections,mem,sync}") + lifetime.SKIN_ENDPOINTS + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + lifetime.CACHE_ENDPOINTS + '\n}\n' + STUBS + fetch + '\nimpl Game {' + methods_game + '}\n' + CASES
+    return lifetime.CLOCK.replace("{collections,sync}", "{collections,mem,sync}") + lifetime.SKIN_ENDPOINTS + method(skins, 'io_active') + '\n' + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + lifetime.CACHE_ENDPOINTS + '\n}\n' + STUBS + fetch + '\nimpl Game {' + methods_game + '}\n' + CASES
 
 
 STUBS = r'''

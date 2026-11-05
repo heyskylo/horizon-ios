@@ -181,6 +181,13 @@ impl Dynamic {
             if let Some(v) = int("logical_height") {
                 d.logical_height = v;
             }
+            // DimensionType's codec refuses a shape outside these; the client sizes
+            // its columns and light from them, so keep the named type's own.
+            if !DimensionType::valid_shape(d.min_y, d.height) {
+                let vanilla = DimensionType::vanilla(name);
+                d.min_y = vanilla.min_y;
+                d.height = vanilla.height;
+            }
             if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_skylight")) {
                 d.has_skylight = *v != 0;
             }
@@ -227,6 +234,15 @@ pub struct DimensionType {
     pub default_clock: Option<String>,
 }
 impl DimensionType {
+    /// `DimensionType.MIN_Y`, `MAX_Y` and `MIN_HEIGHT`: a type's `min_y` and
+    /// `height` are multiples of 16, at least 16 high, inside -2032..=2031.
+    pub fn valid_shape(min_y: i32, height: i32) -> bool {
+        min_y % 16 == 0
+            && height % 16 == 0
+            && height >= 16
+            && min_y >= -2032
+            && i64::from(min_y) + i64::from(height) <= 2032
+    }
     pub fn vanilla(name: &str) -> Self {
         let (min_y, height, logical_height, has_skylight, has_ceiling, default_clock) = match name {
             "minecraft:the_nether" => (0, 256, 128, false, true, None),
@@ -314,6 +330,32 @@ mod tests {
         assert_eq!(ceil_log2(35723), 16);
         assert_eq!(ceil_log2(65), 7);
         assert_eq!(ceil_log2(64), 6);
+    }
+
+    #[test]
+    fn a_dimension_shape_the_codec_refuses_keeps_the_named_types() {
+        let shape = |min_y: i32, height: i32| {
+            let mut d = Dynamic::default();
+            d.add(RegistryData {
+                registry: "minecraft:dimension_type".into(),
+                entries: vec![RegistryEntry {
+                    id: "example:tall".into(),
+                    data: Some(Tag::compound([
+                        ("min_y", Tag::Int(min_y)),
+                        ("height", Tag::Int(height)),
+                    ])),
+                }],
+            });
+            let t = d.dimension(0);
+            (t.min_y, t.height)
+        };
+        // The tallest the codec takes, and a few it refuses.
+        assert_eq!(shape(-2032, 4064), (-2032, 4064));
+        assert_eq!(shape(0, 2_147_483_632), (-64, 384));
+        assert_eq!(shape(0, 8), (-64, 384));
+        assert_eq!(shape(-64, 100), (-64, 384));
+        assert_eq!(shape(-2048, 256), (-64, 384));
+        assert_eq!(shape(1024, 1024), (-64, 384));
     }
 
     #[test]

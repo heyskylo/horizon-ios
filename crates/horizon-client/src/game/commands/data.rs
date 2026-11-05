@@ -362,6 +362,9 @@ impl Game<'_> {
                         slot.extra.owner = old.extra.owner;
                     }
                     slot.ai = old.ai;
+                    // Mob.readAdditionalSaveData updates persistent home fields,
+                    // while retaining the rest of the live AI/runtime state.
+                    entity_nbt::read_mob_home(slot, &tag);
                     slot.extra.armor_attributes = old.extra.armor_attributes;
                     slot.age = old.age;
                     slot.previous = slot.position;
@@ -572,6 +575,19 @@ impl Game<'_> {
         let prefix = if role == 0 { "target" } else { "source" };
         self.data_ref_named(ctx, role, prefix)
     }
+    /// `PistonMovingBlockEntity.saveAdditional`, with full command metadata.
+    fn moving_piston_data(&self, p: [i32; 3]) -> Option<Tag> {
+        let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+        let (_, piston) = self
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .find(|(at, _)| *at == pos)?;
+        let mut tag = self.moving_piston_to_nbt(pos, piston);
+        // BlockEntity.saveWithoutMetadata includes the component map.
+        set_key(&mut tag, "components", empty());
+        Some(tag)
+    }
     pub(in crate::game) fn data_ref_named(
         &mut self,
         ctx: &Context,
@@ -601,6 +617,7 @@ impl Game<'_> {
                 if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
                     && self.comparator_data(p).is_none()
                     && self.pot_data(p).is_none()
+                    && self.moving_piston_data(p).is_none()
                 {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
@@ -625,6 +642,9 @@ impl Game<'_> {
                 Ok(tag)
             }
             DataRef::Block(p) => {
+                if let Some(tag) = self.moving_piston_data(*p) {
+                    return Ok(tag);
+                }
                 if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
                     return Ok(tag);
                 }
@@ -654,6 +674,11 @@ impl Game<'_> {
         match r {
             DataRef::Entity(t) => self.apply_entity_nbt(*t, tag),
             DataRef::Block(p) => {
+                // This view is read-only: never decode a live piston into a
+                // second, detached entry in world.block_entities.
+                if self.moving_piston_data(*p).is_some() {
+                    return Err(err("commands.data.block.invalid", &[]));
+                }
                 if self.set_pot_data(*p, &tag).is_some() {
                     return Ok(());
                 }
@@ -724,8 +749,25 @@ impl Game<'_> {
             ),
         }
     }
-    fn query_text(&self, r: &DataRef, data: &Tag) -> Text {
-        let pretty = snbt::pretty(data);
+    fn query_text(&self, r: &DataRef, data: &Tag, path: Option<&NbtPath>) -> Text {
+        // Only the live piston writer supplies this provenance. The same
+        // compound in storage, an entity, or another block keeps default order.
+        let piston = if let DataRef::Block(p) = r
+            && self.moving_piston_data(*p).is_some()
+        {
+            match path {
+                None => Some(snbt::PistonPart::Entity),
+                Some(p) if p.is_field_path(&[]) => Some(snbt::PistonPart::Entity),
+                Some(p) if p.is_field_path(&["blockState"]) => Some(snbt::PistonPart::State),
+                Some(p) if p.is_field_path(&["blockState", "properties"]) => {
+                    Some(snbt::PistonPart::Properties)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let pretty = piston.map_or_else(|| snbt::pretty(data), |p| snbt::pretty_piston(data, p));
         match r {
             DataRef::Entity(_) => {
                 Text::translate("commands.data.entity.query", &[self.data_name(r), pretty])
@@ -818,7 +860,7 @@ impl Game<'_> {
             "data.get" => {
                 let data = self.data_of(&target)?;
                 if ctx.get("path").is_none() {
-                    let message = self.query_text(&target, &data);
+                    let message = self.query_text(&target, &data, None);
                     self.system_feedback(message);
                     return Ok(1);
                 }
@@ -831,7 +873,7 @@ impl Game<'_> {
                     return Ok(value);
                 }
                 let value = data_cmd::get_value(&tag, &path)?;
-                let message = self.query_text(&target, &tag);
+                let message = self.query_text(&target, &tag, Some(&path));
                 self.system_feedback(message);
                 Ok(value)
             }

@@ -2,7 +2,8 @@
 
 Production resolver/request ownership and mannequin lifetime methods execute
 with deterministic time and deferred fetch workers. Profile decoding is an
-endpoint here; ordinary skin tests cover the real property/texture codec.
+endpoint here; worker pressure/shutdown is covered separately by the actual
+owned-queue tests, and ordinary skin tests cover the property/texture codec.
 """
 from pathlib import Path
 import shutil
@@ -31,7 +32,7 @@ def program():
     impl_at = remote.index('impl MannequinProfile {', b)
     mannequin += 'impl MannequinProfile {\n' + method(remote[impl_at:], 'new') + method(remote[impl_at:], 'textures') + '}\n'
     mannequin += method(remote, 'prune_mannequin_profiles')
-    return CLOCK + SKIN_ENDPOINTS + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + CACHE_ENDPOINTS + '\n}\n' + ENTITIES + mannequin + '\nimpl Game {' + method(remote, 'mannequin_textures') + '}\n' + CASES
+    return CLOCK + SKIN_ENDPOINTS + method(skins, 'io_active') + '\n' + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + CACHE_ENDPOINTS + '\n}\n' + ENTITIES + mannequin + '\nimpl Game {' + method(remote, 'mannequin_textures') + '}\n' + CASES
 
 
 CLOCK = r'''
@@ -62,11 +63,28 @@ fn reset(){TASKS.lock().unwrap().clear();NOW.store(1_000_000_000,Ordering::SeqCs
 SKIN_ENDPOINTS = r'''
 mod skins {
 use crate::std;
+use crate::real_std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+mod workers {
+ use super::*;
+ pub struct Pool;
+ struct Deferred {scope:Arc<AtomicBool>,run:Option<Box<dyn FnOnce(&AtomicBool,&AtomicBool)+Send>>,cancel:Option<Box<dyn FnOnce()+Send>>}
+ impl Deferred{fn execute(mut self){let stopping=AtomicBool::new(false);if !self.scope.load(Ordering::Acquire){self.run.take().unwrap()(&stopping,&self.scope);self.cancel.take();}}}
+ impl Drop for Deferred{fn drop(&mut self){if let Some(cancel)=self.cancel.take(){cancel();}}}
+ impl Pool{
+  pub fn new(_:&str,_:usize)->Arc<Self>{Arc::new(Self)}
+  pub fn stopped(&self)->bool{false}
+  pub fn submit(&self,scope:Arc<AtomicBool>,run:impl FnOnce(&AtomicBool,&AtomicBool)+Send+'static,cancel:impl FnOnce()+Send+'static){
+   let job=Deferred{scope,run:Some(Box::new(run)),cancel:Some(Box::new(cancel))};
+   crate::LOADS.fetch_add(1,Ordering::SeqCst);crate::TASKS.lock().unwrap().push((crate::NOW.load(Ordering::SeqCst)+45_000_000,Box::new(move||job.execute())));
+  }
+ }
+}
 #[derive(Clone,Debug,Hash,PartialEq,Eq)]pub enum NameOrId{Name(String),Id(u128)}
 #[derive(Clone,Copy,PartialEq)]pub enum Signature{Signed,Unsigned}
 #[derive(Clone,Debug,Default,PartialEq)]pub struct Textures{pub skin:Option<String>,pub slim:bool}
 pub const TEXTURE_URIS:[&str;2]=["https://example.invalid/texture/{textureId}","http://example.invalid/texture/{textureId}"];
 pub fn unpack(value:&str,_:Signature,_:&[&str])->Textures{Textures{skin:Some(format!("skins/{value}")),slim:value.contains("Slim")}}
+fn resolve_profile_cancellable(key:&NameOrId,doc:&(),active:&impl Fn()->bool)->Option<ResolvedProfile>{if !active(){return None;}resolve_profile(key,doc)}
 fn resolve_profile(key:&NameOrId,_:&())->Option<ResolvedProfile>{let name=match key{NameOrId::Name(name)=>name.clone(),NameOrId::Id(id)=>format!("NPC{id}")};if name=="Missing"{return None;}Some(ResolvedProfile{id:1,name:name.clone(),properties:vec![("textures".into(),name,None)]})}
 '''
 

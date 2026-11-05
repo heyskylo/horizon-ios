@@ -287,7 +287,7 @@ impl Game<'_> {
         }
     }
     /// `PistonMovingBlockEntity.saveAdditional`.
-    fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
+    pub(super) fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
         let flag = |b: bool| Tag::Byte(i8::from(b));
         Tag::compound([
             ("id", Tag::String("minecraft:piston".into())),

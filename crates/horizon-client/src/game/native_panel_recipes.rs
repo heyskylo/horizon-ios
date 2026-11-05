@@ -305,6 +305,7 @@ impl Game<'_> {
         let (back, label) = self.back_button(layout);
         let atlas = &self.gui.atlas;
         let hover = inside(cursor, back);
+        horizon_client::widgets::declare_action(horizon_client::widgets::Action::Back, back, true);
         let sprite = if hover {
             "gui/sprites/widget/button_highlighted"
         } else {

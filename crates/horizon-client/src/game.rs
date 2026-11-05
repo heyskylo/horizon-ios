@@ -216,6 +216,7 @@ pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_chunk_tickets;
 mod native_claimed_items;
+pub mod native_client_services;
 mod native_components;
 mod native_configs;
 mod native_criteria;
@@ -267,6 +268,7 @@ mod options;
 mod ordered_tick;
 mod packs;
 mod pad;
+mod pad_actions;
 mod pad_menu;
 mod paintings;
 mod pandas;
@@ -444,7 +446,7 @@ pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
 pub use native_criteria::NativeCriterion;
 pub use native_data_maps::NativeDataMapType;
 pub use native_falling::NativeFalling;
-pub use native_hooks::{NativeClock, NativeItemEntity, NativeShake};
+pub use native_hooks::{NativeClock, NativeItemEntity, NativePlayer, NativeShake};
 pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
@@ -2952,6 +2954,7 @@ struct Game<'a> {
     /// `ProfileResolver.Cached`: `Dynamic` profiles (name- or id-only heads
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<horizon_client::skins::Resolver>,
+    retired_skin_workers: Vec<horizon_client::skins::WorkHandle>,
     skin_slots: horizon_client::skins::SkinSlots,
     /// Cosmetics on players (game/cosmetics.rs), off by default.
     cosmetics: cosmetics::Cosmetics,
@@ -3151,6 +3154,7 @@ struct Game<'a> {
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
+    native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
@@ -4431,9 +4435,7 @@ impl Game<'_> {
                 && (alive || item.age == 6000 && item.position.y > -128.0)
                 && item.ticks.is_multiple_of(rate)
             {
-                let catalog = world_items!(self);
-                let max_stack =
-                    |stack: &ItemStack| catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1);
+                let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
                 horizon_client::entities::merge_with_neighbours(
                     &mut items,
                     &mut removed,
@@ -12919,6 +12921,10 @@ impl Game<'_> {
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {
+        if self.native_window() && !self.native_client_stopped {
+            self.native_client_stopped = true;
+            self.native_client_stopping();
+        }
         // Native application termination can bypass CloseRequested. Finish any
         // save screen synchronously here, before the process can go away.
         while self.pending_save.is_some() {
@@ -16711,7 +16717,9 @@ impl Game<'_> {
                     || self.dialog_open()
                     || (self.screen == Screen::Win && self.win_screen_pauses())));
         let radius = self.settings.menu_blur as f32;
-        (blurred && radius >= 1.0).then_some(radius)
+        let mut radius = (blurred && radius >= 1.0).then_some(radius);
+        self.native_menu_background(&mut radius);
+        radius.filter(|r| r.is_finite() && (1.0..=64.0).contains(r))
     }
     /// `LevelExtractor` / `LevelRenderer`: the world border wall this frame.
     fn border_draw(
@@ -17140,6 +17148,26 @@ impl Game<'_> {
         self.retired_far_terrain
             .retain_mut(|workers| !workers.shutdown());
         self.retired_far_terrain.is_empty()
+    }
+    fn shutdown_skin_workers(&mut self) -> bool {
+        let mut stopped = self.skin_profiles.get_mut().shutdown();
+        stopped &= self.skin_downloads.get_mut().shutdown();
+        stopped &= self.poll_retired_skin_workers();
+        stopped
+    }
+    fn poll_retired_skin_workers(&mut self) -> bool {
+        self.retired_skin_workers
+            .retain(|worker| !worker.shutdown());
+        self.retired_skin_workers.is_empty()
+    }
+    fn retire_guest_skin_workers(&mut self, guest: &mut Game<'_>) {
+        self.retired_skin_workers
+            .push(guest.skin_profiles.get_mut().retire_workers());
+        self.retired_skin_workers
+            .push(guest.skin_downloads.get_mut().retire_workers());
+        self.retired_skin_workers
+            .append(&mut guest.retired_skin_workers);
+        self.poll_retired_skin_workers();
     }
     fn prepare_lod(&mut self) {
         let enabled = self.far_terrain_choice().0 > 0
@@ -19218,6 +19246,7 @@ impl Game<'_> {
     /// save, world entry, the control socket, pads), then the next frame.
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
         self.poll_retired_far_terrain();
+        self.poll_retired_skin_workers();
         // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if horizon_threads::stop_requests() > 0
             && !self.options.split_guest
@@ -19413,7 +19442,7 @@ impl<'a> Game<'a> {
             &gui.atlas.sprites,
             &gui.atlas.translucent,
         );
-        Ok(Game {
+        let mut game = Game {
             world_biomes: None,
             world_biomes_base: None,
             res: res.clone(),
@@ -19748,6 +19777,7 @@ impl<'a> Game<'a> {
                 downloads
             }),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
+            retired_skin_workers: Vec::new(),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             cosmetics: Default::default(),
             skin_3d: Default::default(),
@@ -19856,6 +19886,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
+            native_client_stopped: false,
             pending_save: None,
             frame_drawn: true,
             world_icon: None,
@@ -19927,7 +19958,11 @@ impl<'a> Game<'a> {
             camera_type: Default::default(),
             fangs: Default::default(),
             player_model: None,
-        })
+        };
+        if game.native_window() {
+            game.native_client_start();
+        }
+        Ok(game)
     }
 }
 
@@ -22263,6 +22298,7 @@ impl App {
                     stopped &= game.shutdown_server_pack_worker();
                     stopped &= game.shutdown_culling_workers();
                     stopped &= game.shutdown_far_terrain();
+                    stopped &= game.shutdown_skin_workers();
                     stopped &= world_loading::shutdown_preload();
                     if let Some(renderer) = &mut game.renderer {
                         stopped &= renderer.shutdown_pack_compiler();

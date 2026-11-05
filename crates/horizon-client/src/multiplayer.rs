@@ -139,6 +139,17 @@ pub enum Outcome {
     Connect { address: String, lan: bool },
 }
 
+/// The job of [`Screen::buttons`]'s button `id`, for the controller.
+pub fn button_action(id: u8) -> Option<crate::widgets::Action> {
+    use crate::widgets::Action;
+    match id {
+        46 => Some(Action::Back),
+        50 => Some(Action::Done),
+        51 | 53 | 57 | 59 => Some(Action::Cancel),
+        _ => None,
+    }
+}
+
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
     /// screen hooks): one per variant, a hook's contract, so it stays the

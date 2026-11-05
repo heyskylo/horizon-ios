@@ -1520,6 +1520,46 @@ fn read_argument_properties(r: &mut Reader, id: i32) -> Result<()> {
     ArgumentProperties::read(r, id).map(|_| ())
 }
 
+/// Whether following `edges` from any node never comes back to it. The
+/// packet decoder validates all indices before walking either edge set.
+fn acyclic(nodes: &[CommandNode], edges: impl Fn(&CommandNode) -> &[i32]) -> bool {
+    const NEW: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![NEW; nodes.len()];
+    // Depth first without recursion: a node and how many of its edges are followed.
+    let mut path: Vec<(usize, usize)> = Vec::new();
+    for start in 0..nodes.len() {
+        if state[start] != NEW {
+            continue;
+        }
+        state[start] = ON_PATH;
+        path.push((start, 0));
+        while let Some(&(node, followed)) = path.last() {
+            let Some(&edge) = edges(&nodes[node]).get(followed) else {
+                state[node] = DONE;
+                path.pop();
+                continue;
+            };
+            if let Some(top) = path.last_mut() {
+                top.1 += 1;
+            }
+            let Some(next) = usize::try_from(edge).ok().filter(|&e| e < nodes.len()) else {
+                continue;
+            };
+            match state[next] {
+                ON_PATH => return false,
+                NEW => {
+                    state[next] = ON_PATH;
+                    path.push((next, 0));
+                }
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
 /// The command tree: nodes and the index of the root.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Commands {
@@ -1532,6 +1572,10 @@ impl Codec<Commands> for Commands {
         let mut nodes = Vec::with_capacity(n.min(4096));
         for _ in 0..n {
             let flags = r.u8()?;
+            let kind = flags & 3;
+            if kind > 2 {
+                return Err(crate::Error::new("unknown command node kind"));
+            }
             let count = r.count(r.remaining())?;
             let children = (0..count).map(|_| r.varint()).collect::<Result<_>>()?;
             let redirect = if flags & 8 != 0 {
@@ -1539,7 +1583,6 @@ impl Codec<Commands> for Commands {
             } else {
                 None
             };
-            let kind = flags & 3;
             let (mut name, mut parser, mut suggestions) = (String::new(), None, None);
             if kind >= 1 {
                 name = r.string(32767)?;
@@ -1564,10 +1607,24 @@ impl Codec<Commands> for Commands {
                 suggestions,
             });
         }
-        Ok(Self {
-            nodes,
-            root: r.varint()?,
-        })
+        let root = r.varint()?;
+        let valid_index = |index: i32| usize::try_from(index).ok().is_some_and(|i| i < nodes.len());
+        if !valid_index(root) || nodes[root as usize].kind != 0 {
+            return Err(crate::Error::new("invalid command tree root"));
+        }
+        if nodes.iter().any(|node| {
+            node.children.iter().any(|&child| !valid_index(child))
+                || node.redirect.is_some_and(|redirect| !valid_index(redirect))
+        }) {
+            return Err(crate::Error::new("command tree references a missing node"));
+        }
+        // ClientboundCommandsPacket.validateEntries: every node's redirect builds
+        // first (canBuild), then its children (canResolve). A cycle in either never
+        // does, and walking it would recurse without end.
+        if !acyclic(&nodes, |n| n.redirect.as_slice()) || !acyclic(&nodes, |n| &n.children) {
+            return Err(crate::Error::new("Server sent an impossible command tree"));
+        }
+        Ok(Self { nodes, root })
     }
     fn write(v: &Self, w: &mut Writer) {
         w.varint(v.nodes.len() as i32);
@@ -2688,6 +2745,110 @@ mod tests {
         packets::{recipes::RecipeBookSeenRecipe, round_trip},
         text::literal,
     };
+
+    #[test]
+    fn command_tree_roots_and_references_must_name_real_nodes() {
+        let node = |kind: u8, children: Vec<i32>, redirect: Option<i32>| CommandNode {
+            kind,
+            executable: false,
+            restricted: false,
+            children,
+            redirect,
+            name: "x".into(),
+            parser: (kind == 2).then_some((0, Vec::new())),
+            suggestions: None,
+        };
+        let read = |nodes: Vec<CommandNode>, root| {
+            let mut w = Writer::new();
+            Commands::write(&Commands { nodes, root }, &mut w);
+            Commands::read(&mut Reader::new(&w.data))
+        };
+        assert!(read(Vec::new(), 0).is_err());
+        for root in [-1, 1, i32::MAX] {
+            assert!(read(vec![node(0, Vec::new(), None)], root).is_err());
+        }
+        for kind in [1, 2, 3] {
+            assert!(read(vec![node(kind, Vec::new(), None)], 0).is_err());
+        }
+        for missing in [-1, 2, i32::MAX] {
+            assert!(
+                read(
+                    vec![node(0, vec![missing], None), node(1, Vec::new(), None)],
+                    0
+                )
+                .is_err()
+            );
+            assert!(
+                read(
+                    vec![node(0, vec![1], None), node(1, Vec::new(), Some(missing))],
+                    0
+                )
+                .is_err()
+            );
+        }
+        // The root need not be entry zero. Ordinary redirects back to it
+        // (execute ... run) remain valid; neither edge set is cyclic alone.
+        assert!(read(vec![node(1, Vec::new(), None), node(0, vec![0], None)], 1).is_ok());
+        assert!(
+            read(
+                vec![
+                    node(0, vec![1], None),
+                    node(1, vec![2], None),
+                    node(1, Vec::new(), Some(0))
+                ],
+                0
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_command_tree_with_a_cycle_is_refused() {
+        let node = |kind: u8, name: &str, children: Vec<i32>, redirect: Option<i32>| CommandNode {
+            kind,
+            executable: false,
+            restricted: false,
+            children,
+            redirect,
+            name: name.into(),
+            parser: None,
+            suggestions: None,
+        };
+        let read = |nodes: Vec<CommandNode>| {
+            let mut w = Writer::new();
+            Commands::write(&Commands { nodes, root: 0 }, &mut w);
+            Commands::read(&mut Reader::new(&w.data))
+        };
+        // `execute` with `run` redirecting back to the root, as vanilla's tree has it.
+        let execute = vec![
+            node(0, "", vec![1], None),
+            node(1, "execute", vec![2], None),
+            node(1, "run", vec![], Some(0)),
+        ];
+        assert!(read(execute).is_ok());
+        // root -> a -> b -> a
+        let children = vec![
+            node(0, "", vec![1], None),
+            node(1, "a", vec![2], None),
+            node(1, "b", vec![1], None),
+        ];
+        assert!(read(children).is_err());
+        assert!(read(vec![node(0, "", vec![0], None)]).is_err());
+        // a redirects to b, b to a
+        let redirects = vec![
+            node(0, "", vec![1, 2], None),
+            node(1, "a", vec![], Some(2)),
+            node(1, "b", vec![], Some(1)),
+        ];
+        assert!(read(redirects).is_err());
+        // A long chain is fine and checked without recursing.
+        let mut chain: Vec<_> = (1..=100_000).map(|i| node(1, "x", vec![i], None)).collect();
+        chain[0].kind = 0;
+        chain.push(node(1, "x", vec![], None));
+        assert!(read(chain.clone()).is_ok());
+        chain.last_mut().unwrap().children.push(50_000);
+        assert!(read(chain).is_err());
+    }
 
     #[test]
     fn vec_delta_quantizes_the_base_like_math_round() {

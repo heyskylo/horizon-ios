@@ -223,6 +223,7 @@ impl<'a> Split<'a> {
             let mut stopped = game.shutdown_server_pack_worker();
             stopped &= game.shutdown_culling_workers();
             stopped &= game.shutdown_far_terrain();
+            stopped &= game.shutdown_skin_workers();
             if let Some(renderer) = &mut game.renderer {
                 stopped &= renderer.shutdown_pack_compiler();
             }
