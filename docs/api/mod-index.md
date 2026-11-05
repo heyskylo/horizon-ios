@@ -102,8 +102,9 @@ them into the profile's game folder.
 ## The registry repository
 
 [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) holds one `mods/<id>.toml` per project and
-`revoked.toml`. An entry is **a link and a page**: the project's GitHub repository and what the listing says about it.
-Its versions are the repository's GitHub releases. What an entry can't vouch for is read from the file by the kind's own
+`revoked.toml`. An entry is **a page and its pinned versions**: every version is a file submitted through the form (or a
+pull request), checked, reviewed and pinned by SHA-256 in `[[versions]]`. Entries listed before 2026-11-05 may still
+name a `repo` whose releases are read as below; new ones may not (`registry review` refuses them). What an entry can't vouch for is read from the file by the kind's own
 check (`index::inspect`): a mod's API, side and capabilities, a modpack's mods, the size. Types and rules:
 `horizon_mods::index::registry`.
 
@@ -127,7 +128,7 @@ license = "MIT"
 # source defaults to https://github.com/<repo>
 ```
 
-**Versions come from the releases.** For each entry with a `repo`, the registry's CI lists its GitHub releases (drafts
+**Legacy: versions from releases.** For each entry with a `repo`, the registry's CI lists its GitHub releases (drafts
 and pre-releases are skipped) and, for each release it has not read yet, downloads the asset with the kind's extension
 (and its `<name>.minisig` when the project has a key), runs the checks of a submission (below), and if they pass
 adds the version. The version, the game and the pins are the file's own manifest (`horizon-mod.toml`,
@@ -144,8 +145,8 @@ does: a release deleted or an asset replaced later does not change the index (th
 `description`, `authors` and `license` (unknown keys, and anything about owners, key, kind or icon, are refused): they fill the
 page fields the entry leaves out. A listing that is incomplete without it is refused until it is.
 
-**`[[versions]]` in an entry are optional** and kept for projects listed before releases were read, and for Horizon's own
-mods built in the registry (`native/<name>/`):
+**`[[versions]]`** hold every version (the form writes them; Horizon's own mods are built in the registry,
+`native/<name>/`):
 
 ```toml
 [[versions]]                     # newest first
@@ -222,6 +223,7 @@ API line are its facts. A new kind gets its own check before it opens.
 
 ## Changelog
 
+- 2026-11-05: the registry follows no repository any more: `registry review` refuses a new entry with `repo` (and an entry turning into one); entries from before keep theirs until they are pinned. The form uploads the icon and up to 8 screenshots into the registry and takes "Edit project" (an owner's page change, no version: pull request `edit/<id>-<time>`, label `owner-edit`).
 - 2026-11-05: kinds `shaderpack` and `datapack`; optional `categories`, `tags` and `screenshots` (entries and index). The index's schema is unchanged: readers from before keep the new kinds as unknown and ignore the new fields.
 - 2026-10-30: an entry names its GitHub repository (`repo`) and its versions are the repository's releases, read by the registry's CI; `file.url` may be a release asset of that repository. The index's schema is unchanged.
 - 2026-10-26: `projects[].downloads`, GitHub's download counts of a project's files, refreshed every hour.
