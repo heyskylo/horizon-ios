@@ -224,7 +224,9 @@ fn preference_label(preference: i32, region: Option<&str>) -> String {
         (client::MANUAL, Some(region)) => {
             client::region_translation_key(region).map_or_else(|| region.to_owned(), t)
         }
-        (client::AUTOMATIC_PLAYER, _) => t("realms.configuration.region_preference.automatic_player"),
+        (client::AUTOMATIC_PLAYER, _) => {
+            t("realms.configuration.region_preference.automatic_player")
+        }
         _ => t("realms.configuration.region_preference.automatic_owner"),
     }
 }
@@ -232,10 +234,17 @@ fn preference_label(preference: i32, region: Option<&str>) -> String {
 /// `RealmsPreferredRegionSelectionScreen.RegionSelectionList`'s rows: automatic by player,
 /// automatic by owner, then every region as a manual choice.
 fn region_rows(regions: &[RegionDataDto]) -> Vec<(i32, Option<String>)> {
-    [(client::AUTOMATIC_PLAYER, None), (client::AUTOMATIC_OWNER, None)]
-        .into_iter()
-        .chain(regions.iter().map(|r| (client::MANUAL, Some(r.region.clone()))))
-        .collect()
+    [
+        (client::AUTOMATIC_PLAYER, None),
+        (client::AUTOMATIC_OWNER, None),
+    ]
+    .into_iter()
+    .chain(
+        regions
+            .iter()
+            .map(|r| (client::MANUAL, Some(r.region.clone()))),
+    )
+    .collect()
 }
 
 /// `RealmsConfigureWorldScreen`'s tabs, in `MenuTabBar` order.
@@ -3232,8 +3241,14 @@ mod tests {
         )
         .unwrap();
         let mut draft = SettingsDraft::of(&server);
-        assert_eq!((draft.name.as_str(), draft.description.as_str()), ("Mine", "Hello"));
-        assert_eq!((draft.preference, draft.region.as_deref()), (2, Some("EastUs2")));
+        assert_eq!(
+            (draft.name.as_str(), draft.description.as_str()),
+            ("Mine", "Hello")
+        );
+        assert_eq!(
+            (draft.preference, draft.region.as_deref()),
+            (2, Some("EastUs2"))
+        );
         draft.preference = client::AUTOMATIC_PLAYER;
         assert_eq!(draft.preference_dto().preferred_region, None);
         let bare = SettingsDraft::of(&RealmServer::default());

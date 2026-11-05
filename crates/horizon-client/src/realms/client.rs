@@ -229,29 +229,62 @@ struct PreferredRegionsResponse {
 /// `RealmsRegion`: each region's `nameId` and its translation key.
 pub fn region_translation_key(name_id: &str) -> Option<&'static str> {
     const REGIONS: [(&str, &str); 27] = [
-        ("AustraliaEast", "realms.configuration.region.australia_east"),
-        ("AustraliaSoutheast", "realms.configuration.region.australia_southeast"),
+        (
+            "AustraliaEast",
+            "realms.configuration.region.australia_east",
+        ),
+        (
+            "AustraliaSoutheast",
+            "realms.configuration.region.australia_southeast",
+        ),
         ("BrazilSouth", "realms.configuration.region.brazil_south"),
-        ("CanadaCentral", "realms.configuration.region.canada_central"),
+        (
+            "CanadaCentral",
+            "realms.configuration.region.canada_central",
+        ),
         ("CentralIndia", "realms.configuration.region.central_india"),
         ("CentralUs", "realms.configuration.region.central_us"),
         ("EastAsia", "realms.configuration.region.east_asia"),
         ("EastUs", "realms.configuration.region.east_us"),
         ("EastUs2", "realms.configuration.region.east_us_2"),
-        ("FranceCentral", "realms.configuration.region.france_central"),
+        (
+            "FranceCentral",
+            "realms.configuration.region.france_central",
+        ),
         ("JapanEast", "realms.configuration.region.japan_east"),
         ("JapanWest", "realms.configuration.region.japan_west"),
         ("KoreaCentral", "realms.configuration.region.korea_central"),
-        ("MexicoCentral", "realms.configuration.region.mexico_central"),
-        ("NorthCentralUs", "realms.configuration.region.north_central_us"),
+        (
+            "MexicoCentral",
+            "realms.configuration.region.mexico_central",
+        ),
+        (
+            "NorthCentralUs",
+            "realms.configuration.region.north_central_us",
+        ),
         ("NorthEurope", "realms.configuration.region.north_europe"),
-        ("SouthCentralUs", "realms.configuration.region.south_central_us"),
-        ("SoutheastAsia", "realms.configuration.region.southeast_asia"),
-        ("SouthAfricaNorth", "realms.configuration.region.south_africa_north"),
-        ("SwedenCentral", "realms.configuration.region.sweden_central"),
+        (
+            "SouthCentralUs",
+            "realms.configuration.region.south_central_us",
+        ),
+        (
+            "SoutheastAsia",
+            "realms.configuration.region.southeast_asia",
+        ),
+        (
+            "SouthAfricaNorth",
+            "realms.configuration.region.south_africa_north",
+        ),
+        (
+            "SwedenCentral",
+            "realms.configuration.region.sweden_central",
+        ),
         ("UAENorth", "realms.configuration.region.uae_north"),
         ("UKSouth", "realms.configuration.region.uk_south"),
-        ("WestCentralUs", "realms.configuration.region.west_central_us"),
+        (
+            "WestCentralUs",
+            "realms.configuration.region.west_central_us",
+        ),
         ("WestEurope", "realms.configuration.region.west_europe"),
         ("WestUs", "realms.configuration.region.west_us"),
         ("WestUs2", "realms.configuration.region.west_us_2"),
@@ -849,12 +882,16 @@ mod tests {
                 seen.extend_from_slice(&buf[..n]);
             }
             // The body the headers announce, which may come in a later read.
-            let head = seen.windows(4).position(|w| w == b"\r\n\r\n").map_or(seen.len(), |i| i + 4);
+            let head = seen
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map_or(seen.len(), |i| i + 4);
             let length = String::from_utf8_lossy(&seen[..head])
                 .lines()
                 .find_map(|l| {
                     let (k, v) = l.split_once(':')?;
-                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok())?
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse().ok())?
                 })
                 .unwrap_or(0usize);
             while seen.len() < head + length {
@@ -1051,9 +1088,8 @@ mod tests {
     /// the slot under `options`, the preference as its id and the region as its `nameId`.
     #[test]
     fn a_configuration_update_posts_the_vanilla_dto() {
-        let (base, server) = serve_once(
-            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
+        let (base, server) =
+            serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let detail: RealmServer = serde_json::from_str(
             r#"{"id":7,"activeSlot":1,"slots":[{"slotId":1,
                 "options":"{\"slotName\":\"Spawn\",\"worldTemplateId\":42}",
@@ -1068,7 +1104,10 @@ mod tests {
             .update_configuration(7, "Base", "Hi", &preference, &detail.slots[&1])
             .unwrap();
         let request = server.join().unwrap();
-        assert!(request.starts_with("POST /worlds/7/configuration HTTP/1.1"), "{request}");
+        assert!(
+            request.starts_with("POST /worlds/7/configuration HTTP/1.1"),
+            "{request}"
+        );
         let body: serde_json::Value =
             serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body["options"]["slotId"], 1);
@@ -1100,8 +1139,14 @@ mod tests {
         assert_eq!(
             regions.region_data,
             vec![
-                RegionDataDto { region: "EastUs2".into(), service_quality: 1 },
-                RegionDataDto { region: "WestEurope".into(), service_quality: 4 },
+                RegionDataDto {
+                    region: "EastUs2".into(),
+                    service_quality: 1
+                },
+                RegionDataDto {
+                    region: "WestEurope".into(),
+                    service_quality: 4
+                },
             ]
         );
         assert_eq!(
