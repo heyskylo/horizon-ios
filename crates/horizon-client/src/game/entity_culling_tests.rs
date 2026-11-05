@@ -1,4 +1,5 @@
 use super::*;
+use horizon_client::voxel_occlusion::Culler;
 
 #[allow(dead_code)]
 fn vertex(pos: [f32; 3]) -> Vertex {
@@ -65,24 +66,22 @@ fn coarse_aabb_and_mesh_paths_agree_for_a_complete_wall() {
     let camera = [0.0; 3];
     let bounds = Aabb::new(Vec3::new(8.0, -1.0, -1.0), Vec3::new(10.0, 1.0, 1.0));
     let wall = |pos: [i32; 3]| pos[0] == 4;
-    assert!(
-        horizon_client::voxel_occlusion::Culler::new(camera, 1_000).hidden_bounds(bounds, wall)
-    );
+    assert!(Culler::new(camera, 1_000).hidden_bounds(bounds, wall));
 
     let mesh = [vertex([8.0, -1.0, -1.0]), vertex([10.0, 1.0, 1.0])];
-    assert!(horizon_client::voxel_occlusion::Culler::new(camera, 1_000).hidden(&mesh, 0, wall));
+    assert!(Culler::new(camera, 1_000).hidden(&mesh, 0, wall));
 }
 
 #[test]
 fn partial_wall_and_budget_exhaustion_fail_open() {
     let bounds = [8.0, -4.0, -4.0];
     let max = [10.0, 4.0, 4.0];
-    let culler = horizon_client::voxel_occlusion::Culler::new([0.0; 3], 1_000);
+    let culler = Culler::new([0.0; 3], 1_000);
     assert!(!culler.occluded(bounds, max, |pos| {
         pos[0] == 4 && !(pos[1] == 1 && pos[2] == 1)
     }));
 
-    let exhausted = horizon_client::voxel_occlusion::Culler::new([0.0; 3], 1);
+    let exhausted = Culler::new([0.0; 3], 1);
     assert!(!exhausted.occluded(bounds, max, |_| true));
 }
 
@@ -92,11 +91,7 @@ fn mesh_culling_keeps_geometry_before_the_entity_prefix() {
     let mesh = [vertex([8.0, -1.0, -1.0]), vertex([10.0, 1.0, 1.0])];
     let mut vertices = vec![prefix];
     vertices.extend(mesh);
-    let hidden = horizon_client::voxel_occlusion::Culler::new([0.0; 3], 1_000).cull_vertices(
-        &mut vertices,
-        1,
-        |pos| pos[0] == 4,
-    );
+    let hidden = Culler::new([0.0; 3], 1_000).cull_vertices(&mut vertices, 1, |pos| pos[0] == 4);
     assert!(hidden);
     assert_eq!(vertices.len(), 1);
     assert_eq!(vertices[0].pos, prefix.pos);

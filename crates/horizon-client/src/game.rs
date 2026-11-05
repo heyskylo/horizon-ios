@@ -2962,6 +2962,10 @@ struct Game<'a> {
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
+    /// Whether the renderer's section-occlusion graph is active for this view.
+    entity_section_visibility_valid: bool,
+    /// The camera section in the current world layout.
+    entity_section_camera: Option<(i32, i32, i32)>,
     sync_occlusion_culler: Option<horizon_client::voxel_occlusion::Culler>,
     async_occlusion_culler: Option<Box<occlusion_culling::AsyncOcclusionCuller>>,
     async_occlusion_culling_failed: bool,
@@ -19352,6 +19356,8 @@ impl<'a> Game<'a> {
             repro: Default::default(),
             agent: agent::Agent::default(),
             view_frustum: None,
+            entity_section_visibility_valid: false,
+            entity_section_camera: None,
             sync_occlusion_culler: None,
             async_occlusion_culler: None,
             async_occlusion_culling_failed: false,

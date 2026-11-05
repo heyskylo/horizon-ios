@@ -165,7 +165,10 @@ fn budgets_are_shared_and_exhaustion_fails_open() {
     }
     assert_eq!(calls.get(), 3);
     assert!(!Culler::new([0.0; 3], 0).occluded([8.0; 3], [10.0; 3], |_| panic!()));
-    assert!(!Culler::new([0.0; 3], 1).occluded([8.0; 3], [10.0; 3], |_| true));
+    // This plane projects to four cells: four lookups prove it covered, while a
+    // budget of one runs out first.
+    assert!(Culler::new([0.0; 3], 4).occluded([8.0, -4.0, -4.0], [10.0, 4.0, 4.0], |_| true));
+    assert!(!Culler::new([0.0; 3], 1).occluded([8.0, -4.0, -4.0], [10.0, 4.0, 4.0], |_| true));
 }
 
 #[test]

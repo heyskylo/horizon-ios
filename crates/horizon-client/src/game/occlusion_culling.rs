@@ -2033,21 +2033,35 @@ impl<'a> SyncOccluder<'a> {
 
 impl Game<'_> {
     pub(super) fn prepare_occlusion_culling(&mut self, camera: glam::DVec3) {
+        self.entity_section_camera = None;
+        self.entity_section_visibility_valid = false;
         let entity_mode = self.settings.horizon.entity_culling;
         let requested = entity_mode != EntityCullingMode::Off;
-        let at = camera.to_array().map(|v| v.floor() as i32);
         let eligible = requested
             // Packs can replace opaque models, so their terrain is not a safe occluder.
             && self.model_packs_are_vanilla()
             && self.player.is_some()
-            && !self.spectator()
-            && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));
+            && !self.spectator();
         if !eligible {
             self.sync_occlusion_culler = None;
             self.async_occlusion_culler = None;
             self.async_occlusion_culling_failed = false;
             return;
         }
+        let at = camera.to_array().map(|v| v.floor() as i32);
+        self.entity_section_camera = at[1]
+            .checked_sub(self.world.bottom_y())
+            .map(|y| (at[0] >> 4, y >> 4, at[2] >> 4));
+        let camera_facts = self.res.facts().get(self.world.block(at[0], at[1], at[2]));
+        if opaque(camera_facts) {
+            self.sync_occlusion_culler = None;
+            self.async_occlusion_culler = None;
+            self.async_occlusion_culling_failed = false;
+            return;
+        }
+        self.entity_section_visibility_valid = self.settings.horizon.cave_culling
+            && !camera_facts.solid_render
+            && self.entity_section_camera.is_some();
 
         let wants_async = entity_mode == EntityCullingMode::Asynchronous;
         let wants_sync = entity_mode == EntityCullingMode::Synchronous;

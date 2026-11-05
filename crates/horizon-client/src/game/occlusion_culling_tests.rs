@@ -380,7 +380,7 @@ fn entity_ray_walks_negative_axes_without_skipping_an_opaque_cell() {
 
 #[test]
 fn entity_ray_fails_open_when_the_traversal_budget_is_exhausted() {
-    let chunk = Chunk::with_layout(0, 0, horizon_client::chunk::ColumnLayout::VANILLA);
+    let chunk = Chunk::with_layout(0, 0, ColumnLayout::VANILLA);
     let chunk = Arc::new(chunk);
     let snapshot = OcclusionSnapshot {
         chunks: vec![((0, 0), Arc::downgrade(&chunk))],

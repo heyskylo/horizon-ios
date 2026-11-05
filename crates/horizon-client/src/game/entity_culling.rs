@@ -8,6 +8,42 @@ use horizon_client::graphics::EntityCullingMode;
 use horizon_client::mobs::Species;
 use horizon_core::geometry::{Aabb, Vec3};
 
+const MAX_ENTITY_SECTION_COVERAGE: i64 = 50;
+
+/// The inclusive range of sections an entity's padded render bounds can touch,
+/// in the layout whose section 0 starts at `bottom_y`. `None` when the bounds
+/// are not finite, hold block coordinates outside `i32`, or span more sections
+/// than `MAX_ENTITY_SECTION_COVERAGE`: those go to the per-entity path.
+fn entity_section_span(bounds: Aabb, bottom_y: i32) -> Option<([i32; 3], [i32; 3])> {
+    // A half-block border keeps models near section edges checked against
+    // every section their geometry could touch.
+    let lo = bounds.min_position();
+    let hi = bounds.max_position();
+    let min_block = [lo.x - 0.5, lo.y - 0.5, lo.z - 0.5];
+    let max_block = [hi.x + 0.5, hi.y + 0.5, hi.z + 0.5];
+    if min_block
+        .into_iter()
+        .chain(max_block)
+        .any(|v| !v.is_finite() || v < f64::from(i32::MIN) || v > f64::from(i32::MAX))
+    {
+        return None;
+    }
+    let min_block = min_block.map(|v| v.floor() as i32);
+    let max_block = max_block.map(|v| v.floor() as i32);
+    let min_y = min_block[1].checked_sub(bottom_y)?;
+    let max_y = max_block[1].checked_sub(bottom_y)?;
+    let min = [min_block[0] >> 4, min_y >> 4, min_block[2] >> 4];
+    let max = [max_block[0] >> 4, max_y >> 4, max_block[2] >> 4];
+    let sections = (0..3).try_fold(1_i64, |count, axis| {
+        count.checked_mul(i64::from(max[axis]) - i64::from(min[axis]) + 1)
+    });
+    // Very large render envelopes (for example, beams) are cheaper and safer to
+    // leave to the existing per-entity path.
+    sections
+        .is_some_and(|count| count <= MAX_ENTITY_SECTION_COVERAGE)
+        .then_some((min, max))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum EntityCullDecision {
     Bypass,
@@ -145,6 +181,12 @@ impl Game<'_> {
         // would make coarse walls falsely visible and force mesh generation.
         let margin = Vec3::new(1.0e-4, 1.0e-4, 1.0e-4);
         let bounds = render_bounds.inflate(margin);
+        if self.terrain_sections_occlude(bounds) {
+            if let Some(culler) = &self.async_occlusion_culler {
+                culler.record_entity_culled();
+            }
+            return EntityCullDecision::Hidden;
+        }
         match self.settings.horizon.entity_culling {
             EntityCullingMode::Off => EntityCullDecision::Bypass,
             EntityCullingMode::Synchronous => {
@@ -190,6 +232,41 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    /// Reject entities whose padded render bounds lie entirely in sections the
+    /// terrain visibility graph cannot reach. Unknown graph cells fail open.
+    fn terrain_sections_occlude(&self, bounds: Aabb) -> bool {
+        if !self.entity_section_visibility_valid
+            || (self.sync_occlusion_culler.is_none() && self.async_occlusion_culler.is_none())
+        {
+            return false;
+        }
+        let Some(renderer) = &self.renderer else {
+            return false;
+        };
+        let Some(camera_section) = self.entity_section_camera else {
+            return false;
+        };
+        let Some((min, max)) = entity_section_span(bounds, self.world.bottom_y()) else {
+            return false;
+        };
+
+        for x in min[0]..=max[0] {
+            for y in min[1]..=max[1] {
+                for z in min[2]..=max[2] {
+                    let Some(visible) =
+                        renderer.section_occlusion_visible((x, y, z), camera_section)
+                    else {
+                        return false;
+                    };
+                    if visible {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Refine an AABB-visible result with the exact bounds of the rendered mesh.
@@ -510,6 +587,54 @@ mod vanilla_entity_tests {
         );
         assert_eq!(range, 96.0);
     }
+
+    /// The sections an entity's padded bounds can touch: the half-block border
+    /// a model near a section edge reaches into, the layout `bottom_y` sets,
+    /// and the boxes that get no answer and stay on the per-entity path.
+    #[test]
+    fn entity_section_spans_cover_the_border_and_fail_open() {
+        let span = |lo: [f64; 3], hi: [f64; 3], bottom_y: i32| {
+            entity_section_span(
+                Aabb::new(
+                    Vec3::new(lo[0], lo[1], lo[2]),
+                    Vec3::new(hi[0], hi[1], hi[2]),
+                ),
+                bottom_y,
+            )
+        };
+
+        // A chicken well inside one section stays in it.
+        assert_eq!(
+            span([100.2, -63.4, 7.1], [100.6, -62.9, 7.5], -64),
+            Some(([6, 0, 0], [6, 0, 0]))
+        );
+        // A box 0.8 wide inside the next section does not spill out of it.
+        assert_eq!(
+            span([16.6, -60.0, 100.6], [17.4, -59.4, 101.4], -64),
+            Some(([1, 0, 6], [1, 0, 6]))
+        );
+        // On a section border the model reaches the section either side.
+        assert_eq!(
+            span([16.0, -60.0, 100.0], [16.0, -59.0, 100.0], -64),
+            Some(([0, 0, 6], [1, 0, 6]))
+        );
+        // `bottom_y` places section 0: the same box in the Nether.
+        assert_eq!(
+            span([100.2, -63.4, 7.1], [100.6, -62.9, 7.5], 0),
+            Some(([6, -4, 0], [6, -4, 0]))
+        );
+        // Not finite, beyond `i32`, or more sections than the coverage cap:
+        // no answer.
+        assert_eq!(span([f64::NAN, 0.0, 0.0], [f64::NAN, 1.0, 1.0], -64), None);
+        assert_eq!(span([0.0; 3], [f64::INFINITY; 3], -64), None);
+        assert_eq!(
+            span([0.0; 3], [f64::from(i32::MAX) + 1.0, 1.0, 1.0], -64),
+            None
+        );
+        // A beam across the world spans far more than the cap.
+        assert_eq!(span([0.0, -63.0, 0.0], [1.0e6, -62.0, 1.0], -64), None);
+    }
 }
+#[cfg(test)]
 #[path = "entity_culling_tests.rs"]
 mod tests;
