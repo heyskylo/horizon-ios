@@ -23,6 +23,9 @@ impl BuildingPlayers {
         outer: Option<BuildingPlayer>,
         current: Vec<BuildingPlayer>,
     ) -> Self {
+        // The borrowed ancestors are the few nested turns (usually none or
+        // one): only they are searched, so a turn costs O(players), not
+        // O(players²), every guest's turn of every tick.
         let mut players: Vec<_> = self
             .0
             .iter()
@@ -41,8 +44,13 @@ impl BuildingPlayers {
                 players.push(outer);
             }
         }
+        let ancestors = players.len();
+        players.reserve(current.len());
         for player in current {
-            if player.conn != Some(actor) && !players.iter().any(|p| p.conn == player.conn) {
+            // Hub conns are unique, so only the ancestors can already hold one.
+            if player.conn != Some(actor)
+                && !players[..ancestors].iter().any(|p| p.conn == player.conn)
+            {
                 players.push(player);
             }
         }
