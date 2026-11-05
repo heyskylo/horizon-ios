@@ -13142,8 +13142,8 @@ def check_recipes_hmod(host, guest, out):
         # The native panel is to the right of the vanilla recipe book's search field.
         field = max(fields, key=lambda w: w['bounds'][0])
         game.raw('click', field['id'])
-        modifier = 'cmd' if sys.platform == 'darwin' else 'ctrl'
-        game.script([f'key {modifier} down', 'key a tap', f'key {modifier} up', f'type {text}'])
+        # `key` drives key bindings; `type` drives this focused edit box, including backspace.
+        game.script([r"type '\b'"] * 50 + [f'type {text}'])
         game.wait(5)
 
     def page(game):
