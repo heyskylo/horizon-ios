@@ -273,6 +273,52 @@ impl Game<'_> {
                     }
                     self.harness_owner(|g| g.harness_settle(deadline))?;
                 }
+                "use_item" => {
+                    // Exercise the connected owner's normal server packet route.
+                    let sequence = op["sequence"].as_i64().unwrap_or(0) as i32;
+                    let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+                    let pitch = op["pitch"].as_f64().unwrap_or(0.0) as f32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItem(
+                                horizon_protocol::packets::play::UseItem {
+                                    hand: 0,
+                                    yaw,
+                                    pitch,
+                                    sequence,
+                                },
+                            ),
+                        );
+                        let ack = host
+                            .hub
+                            .guest(conn)
+                            .is_some_and(|g| g.ack_up_to.get() >= sequence);
+                        g.lan = Some(host);
+                        if !ack {
+                            return Err("command harness: UseItem was not acknowledged".into());
+                        }
+                        Ok(())
+                    })?;
+                }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);

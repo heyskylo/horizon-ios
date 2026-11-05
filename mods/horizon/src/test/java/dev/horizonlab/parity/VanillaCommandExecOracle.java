@@ -251,6 +251,19 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "settle" -> settle();
+                    case "use_item" -> {
+                        player.connection.handleUseItem(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
+                            net.minecraft.world.InteractionHand.MAIN_HAND, op.get("sequence").getAsInt(),
+                            op.get("yaw").getAsFloat(), op.get("pitch").getAsFloat()));
+                        try {
+                            var ack = net.minecraft.server.network.ServerGamePacketListenerImpl.class.getDeclaredField("ackBlockChangesUpTo");
+                            ack.setAccessible(true);
+                            if (ack.getInt(player.connection) < op.get("sequence").getAsInt())
+                                throw new IllegalStateException("UseItem was not acknowledged");
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());

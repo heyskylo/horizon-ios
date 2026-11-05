@@ -83,8 +83,12 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument("--boat-item-hit-fixture", action="store_true")
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--reference-only", action="store_true")
+    parser.add_argument("--boat-motion-diagnostic", action="store_true")
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
@@ -115,6 +119,9 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.boat_item_hit_fixture:
+        from boat_item_hit_corpus import boat_item_hits
+        groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -137,6 +144,17 @@ def main():
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
+
+    if args.reference_only:
+        reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
+        recorded = [op for op in script if op['op'] == 'cmd' and op.get('record', True)]
+        if len(recorded) != len(reference):
+            sys.exit('reference-only record count differs')
+        for op, row in zip(recorded, reference):
+            if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
+                sys.exit(f'Java fixture guard failed: {op}: {row.get("results")}')
+        print(f'Java reference: {len(reference)} records, fixture guards passed')
+        return
 
     if args.binary:
         binary = args.binary.resolve(strict=True)
