@@ -306,6 +306,34 @@ fn a_review_protects_published_files() {
 }
 
 #[test]
+fn a_review_refuses_following_a_repository() {
+    let pinned: Entry = toml::from_str(COZY).unwrap();
+    let follows: Entry = toml::from_str(COZY_REPO).unwrap();
+    // A new entry that follows a repository, and a pinned entry turned into one.
+    for base in [vec![], vec![pinned.clone()]] {
+        let r = review(&base, std::slice::from_ref(&follows), "acme");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("doesn't follow repositories")),
+            "{r:?}"
+        );
+    }
+    // An entry from before keeps its repository until it is pinned, and may drop it.
+    let r = review(
+        std::slice::from_ref(&follows),
+        std::slice::from_ref(&follows),
+        "acme",
+    );
+    assert!(r.errors.is_empty(), "{r:?}");
+    let r = review(&[follows], &[pinned], "acme");
+    assert!(
+        !r.errors.iter().any(|e| e.contains("repositories")),
+        "{r:?}"
+    );
+}
+
+#[test]
 fn a_mod_may_turn_native_once() {
     let base: Entry = toml::from_str(&hud_entry()).unwrap();
     let mut native = base.clone();

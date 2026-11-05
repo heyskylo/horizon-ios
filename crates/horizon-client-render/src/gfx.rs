@@ -312,6 +312,15 @@ fn world_pass_after_culling<'e>(
         ..Default::default()
     })
 }
+/// The point a `shaders/` pack's terrain is drawn relative to: the camera with the fraction of
+/// each coordinate rounded to the nearest 1/65536 block. Read back with a probe pack of ours,
+/// Iris 1.11.7's terrain `gl_Vertex` is the block's position minus this, for cameras from 13
+/// to 40000 blocks out (#8464); `cameraPosition` and the matrices keep the exact camera. Off by
+/// up to 2^-17 blocks, a fragment on a texel boundary of the shadow map reads the other texel.
+fn pack_terrain_camera(camera: DVec3) -> DVec3 {
+    let whole = camera.floor();
+    whole + ((camera - whole) * 65536.0).round() / 65536.0
+}
 /// A section's instance: its camera-relative origin and its UV step, negated
 /// past its fade code while it fades in over far terrain (`lod::instance`).
 fn section_instance(origin: [f32; 3], fade: u32, visibility: f32) -> [f32; 4] {
@@ -7999,6 +8008,21 @@ impl Renderer {
                 height(b).total_cmp(&height(a))
             });
         }
+        // A `shaders/` pack that draws the terrain, or its shadow, sees it as Iris does.
+        let shaders_pack = !frame.title
+            && self
+                .pack_post
+                .as_ref()
+                .and_then(|p| p.1.as_ref())
+                .is_some_and(|p| p.has_terrain() || p.has_shadow());
+        if shaders_pack {
+            let from = pack_terrain_camera(camera);
+            for v in visible.iter_mut().chain(shadow_visible.iter_mut()) {
+                v.origin = resident::origin(v.key, self.sections.min_y(), from)
+                    .as_vec3()
+                    .to_array();
+            }
+        }
         if self.animated_textures {
             self.active_animated_layers.fill(0);
             for v in &visible {
@@ -12686,6 +12710,33 @@ mod tests {
         assert_eq!(chunk_visibility(750, 750), 1.0);
         assert_eq!(chunk_visibility(0, 0), 1.0, "Off: whole at once");
         assert_eq!(chunk_visibility(u64::MAX, 750), 1.0);
+    }
+    /// Iris 1.11.7's terrain `gl_Vertex`, read back by a probe pack of ours, is each block's
+    /// position minus the camera with its fraction rounded to 1/65536 block: these are the
+    /// fractions (in 65536ths) it implied, for eyes at y 69.62 and 82.92, at x 100.3 and
+    /// 40000.3, at z -13.7 and 20000.7, and off the grid by a fraction of a 65536th.
+    #[test]
+    fn a_shader_pack_s_terrain_is_drawn_from_the_camera_in_65536ths() {
+        let eye = |x: f64, feet: f64, z: f64| glam::DVec3::new(x, feet + f64::from(1.62f32), z);
+        let cases = [
+            (eye(13.5, 68.0, -13.5), [32768.0, 40632.0, 32768.0]),
+            (eye(13.5, 81.3, -13.5), [32768.0, 60293.0, 32768.0]),
+            (eye(100.3, 90.0, -13.7), [19661.0, 40632.0, 19661.0]),
+            (eye(40000.3, 120.0, 20000.7), [19661.0, 40632.0, 45875.0]),
+            (
+                eye(
+                    13.0 + 0.7 / 8192.0,
+                    81.0 + 0.3 / 8192.0,
+                    -13.0 - 0.6 / 8192.0,
+                ),
+                [6.0, 40635.0, 65531.0],
+            ),
+        ];
+        for (camera, sixty_fifths) in cases {
+            let from = super::pack_terrain_camera(camera);
+            let fraction = (from - camera.floor()) * 65536.0;
+            assert_eq!(fraction.to_array(), sixty_fifths, "{camera}");
+        }
     }
     #[test]
     fn section_instance_carries_the_fade_in_the_step() {

@@ -1,4 +1,6 @@
 //! Settings for the native mobile extras.
+#[cfg(not(target_os = "ios"))]
+use super::native_ios::{ZOOM_KEY, ZOOM_LEVELS};
 use super::*;
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +12,9 @@ pub enum Item {
     MusicPage,
     CosmeticsMine,
     CosmeticsOthers,
+    CosmeticsSolo,
+    HorizonMarks,
+    HorizonMe,
     ReproKeys,
     WheelCyclesSettings,
     Fullbright,
@@ -97,8 +102,11 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         rows.extend([
             Err("horizon.extras.header.cosmetics"),
             Ok(CosmeticsMine),
+            Ok(CosmeticsSolo),
             Ok(CosmeticsOthers),
             Ok(CosmeticsAuras),
+            Ok(HorizonMarks),
+            Ok(HorizonMe),
         ]);
     }
     rows
@@ -127,6 +135,9 @@ impl Item {
             Self::MusicPage => super::desktop_ui::Item::MusicPage,
             Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
             Self::CosmeticsOthers => super::desktop_ui::Item::CosmeticsOthers,
+            Self::CosmeticsSolo => super::desktop_ui::Item::CosmeticsSolo,
+            Self::HorizonMarks => super::desktop_ui::Item::HorizonMarks,
+            Self::HorizonMe => super::desktop_ui::Item::HorizonMe,
             Self::ReproKeys => super::desktop_ui::Item::ReproKeys,
             Self::WheelCyclesSettings => super::desktop_ui::Item::WheelCyclesSettings,
             Self::Fullbright => super::desktop_ui::Item::Fullbright,
@@ -165,6 +176,9 @@ impl Item {
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
+            | Item::CosmeticsSolo
+            | Item::HorizonMarks
+            | Item::HorizonMe
             | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
@@ -207,8 +221,8 @@ impl Item {
             Pvp(option) => return option.parent().map(Pvp),
             ChatIndicator => ChatAnimation,
             HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | PackBrowser
-            | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers | ReproKeys
-            | WheelCyclesSettings => return None,
+            | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers | CosmeticsSolo
+            | HorizonMarks | HorizonMe | ReproKeys | WheelCyclesSettings => return None,
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -230,6 +244,9 @@ impl Item {
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
+            | Item::CosmeticsSolo
+            | Item::HorizonMarks
+            | Item::HorizonMe
             | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
@@ -292,6 +309,9 @@ impl Item {
             Item::Fullbright | Item::Zoom | Item::Fps | Item::Keystrokes => Some(Cost::None),
             Item::Minimap | Item::DynamicLights => Some(Cost::Low),
             Item::AutoReconnect | Item::MouseTweaks | Item::Sort => Some(Cost::None),
+            Item::CosmeticsSolo | Item::HorizonMarks | Item::HorizonMe => {
+                self.shared().unwrap().cost()
+            }
             _ => None,
         }
     }
@@ -304,6 +324,9 @@ impl Item {
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
+            | Item::CosmeticsSolo
+            | Item::HorizonMarks
+            | Item::HorizonMe
             | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
@@ -336,9 +359,12 @@ impl Item {
     /// The value of the other items, as their button shows it.
     pub fn value(self, e: &Extras) -> String {
         match self {
-            Item::Pvp(_) | Item::CosmeticsMine | Item::CosmeticsOthers => {
-                self.shared().unwrap().value(e)
-            }
+            Item::Pvp(_)
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::CosmeticsSolo
+            | Item::HorizonMarks
+            | Item::HorizonMe => self.shared().unwrap().value(e),
             Item::ZoomKey => crate::keybinds::display_name(&e.zoom_key).plain(),
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::ZoomLevel => format!("{}x", e.zoom_level),
@@ -367,6 +393,9 @@ impl Item {
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
+            | Item::CosmeticsSolo
+            | Item::HorizonMarks
+            | Item::HorizonMe
             | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
@@ -415,5 +444,50 @@ impl Item {
             Item::SortKey => Some(SORT_KEY),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_cosmetic_switches_round_trip_the_service_and_singleplayer_choices() {
+        let mut extras = Extras::default();
+        // Exercise the same mobile Items the options screen dispatches, including
+        // switches absent from the old mobile adapter.
+        for item in [Item::CosmeticsSolo, Item::HorizonMarks, Item::HorizonMe] {
+            assert!(!item.caption_text().is_empty());
+            assert!(!item.description_text().is_empty());
+            assert!(item.parent().is_none());
+            item.cycle(&mut extras, false);
+        }
+        let loaded = Extras::parse(&extras.serialize());
+        assert!(loaded.cosmetics_solo);
+        assert!(!loaded.horizon_marks);
+        assert!(!loaded.horizon_listed);
+        let home = std::env::temp_dir().join(format!(
+            "horizon-mobile-cosmetic-prefs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(FILE), extras.serialize()).unwrap();
+        assert!(!horizon_cosmetics::prefs::listed(&home));
+        Item::HorizonMe.cycle(&mut extras, false);
+        std::fs::write(home.join(FILE), extras.serialize()).unwrap();
+        assert!(horizon_cosmetics::prefs::listed(&home));
+        std::fs::remove_dir_all(home).unwrap();
+        for item in [Item::CosmeticsSolo, Item::HorizonMarks, Item::HorizonMe] {
+            assert_eq!(item.switch(&loaded), item.shared().unwrap().switch(&loaded));
+            assert_eq!(item.value(&loaded), item.shared().unwrap().value(&loaded));
+        }
+        // Existing mobile-only controls keep their own policy.
+        Item::Zoom.cycle(&mut extras, false);
+        assert!(extras.zoom);
+        assert_eq!(Item::ZoomKey.key_name(), Some(ZOOM_KEY));
     }
 }

@@ -16,8 +16,8 @@ mods, `.hnmod`) aren't on Modrinth or CurseForge yet (Modrinth has no `horizon` 
 | Java mods (Fabric, NeoForge, Forge, Quilt) | ported into `horizon-mods/<mod id>/` and turned on | Checked from its jar before install: **Works**, **Partly** or **Doesn't run** ([below](#java-mods)) |
 | Resource packs | `resourcepacks/` beside `options.txt` | **Works** when made for 26.3 ([resource-packs.md](resource-packs.md) lists what Horizon reads). Older packs are **Partly**: they load with vanilla's compatibility warning |
 | Modpacks (`.mrpack`, CurseForge zip) | the Modpacks page's import | **Partly**: Horizon runs the mods it can port, from the player's own downloads ([modpacks.md](modpacks.md)) |
-| Shader packs (`.hshader`, Horizon's registry only) | `shaderpacks/` beside `options.txt` | **Works** when made for 26.3: checked by the game's own check before install ([shaders.md](shaders.md)). The `shaders/`-format packs on Modrinth and CurseForge are not offered |
-| Data packs (Modrinth) | `datapacks/` of the world picked on the **Data packs** tab (`mods install <pack> --world <world>`); not in the Installed list: each world's list on Home has them | **Partly**: Horizon runs a data pack's functions, function tags, predicates and item modifiers, not yet its recipes, loot tables, advancements, other tags or worldgen. The install reads the zip and says what of it runs; a pack with none of those (worldgen only, such as Tectonic) is refused |
+| Shader packs (`.hshader` and `shaders/`-format zips, Horizon's registry only) | `shaderpacks/` beside `options.txt` | **Works** when made for 26.3: checked against the registry's index before install (a `.hshader` by the game's own check, [shaders.md](shaders.md)). The `shaders/`-format packs on Modrinth and CurseForge are not offered |
+| Data packs (Horizon's registry, Modrinth) | `datapacks/` of the world picked on the **Data packs** tab (`mods install <pack> --world <world>`); not in the Installed list: each world's list on Home has them | **Partly**: Horizon runs a data pack's functions, function tags, predicates and item modifiers, not yet its recipes, loot tables, advancements, other tags or worldgen. The install reads the zip and says what of it runs; a pack with none of those (worldgen only, such as Tectonic) is refused |
 
 Mods, resource packs and shader packs go into the game folder of the instance selected in the sidebar, and the
 Installed list, updates and Remove are that instance's: picking another instance reads its list. The page says which
@@ -82,10 +82,12 @@ start); the hedge places and its recipe crafts 4.
 ## The Mods page
 
 The launcher's **Mods** page has the five kinds as tabs: **Mods**, **Modpacks**, **Resource packs**, **Shader packs**
-and **Data packs**, each with a search field (Enter searches). Mods, Modpacks and Resource packs pick their source:
-Horizon's registry or Modrinth, with **CurseForge (coming soon)** beside them, disabled. Mods start on Horizon's
-registry; **Shader packs** search it only (Horizon's own `.hshader` packs), **Data packs** search Modrinth only and
-install into the world picked under the search. A Java instance's tabs always search Modrinth for its version and
+and **Data packs**, each with a search field (Enter searches). Mods, Modpacks, Resource packs and Data packs pick their
+source: Horizon's registry or Modrinth, with **CurseForge (coming soon)** beside them, disabled. Mods start on
+Horizon's registry; **Shader packs** search it only (Horizon's own packs); data packs install into the world picked
+under the search. On Horizon's registry, **Filters** lists the kind's categories (`horizon_mods::index::page::categories`):
+a result has every category picked; the search words also match a project's tags. A project's page shows its
+categories. A Java instance's tabs always search Modrinth for its version and
 loader, with the version and loader filters. A Horizon instance searching Modrinth's Java mods sees them all, each
 marked **Works**, **Partly** or **Doesn't run in Horizon** once its jar is checked; **Show everything** adds what was
 made for other Minecraft versions. Each result is an index row: its summary, author,
@@ -102,8 +104,10 @@ A result's title opens its page inside the launcher, not in a web browser: its i
 last update, licence and source, how well it runs (for a Java mod, what ports and what doesn't, from its check) with
 **Install** or **Import**, the project's links (its page on the source, source code, issues, wiki, Discord,
 donations; `https://` only, opened in the system browser), then three tabs: **Description** (the project's Markdown,
-drawn by the launcher's renderer), **Gallery** and **Versions** (each version's date, loaders, game versions, file
-and size, and the verdict of any version already checked). The data is `browser::details` (`Source::details`; on
+drawn by the launcher's renderer), **Gallery** (one image large, a click shows the next; the arrows and the strip of
+thumbnails under it pick another; Modrinth's gallery, or the screenshots a registry project lists, which the registry
+mirrors beside its icons; no tab when there are none) and **Versions** (each version's date, loaders, game versions,
+file and size, and the verdict of any version already checked). The data is `browser::details` (`Source::details`; on
 Modrinth `GET /project/{id}` and `/project/{id}/members`, then `/project/{id}/version`).
 
 **Filters** sit above the results: the order (best match, relevance, downloads, follows, newest, updated) and, under

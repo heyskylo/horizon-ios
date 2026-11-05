@@ -1448,6 +1448,12 @@ impl Loader<'_> {
                 return None;
             }
         };
+        notes.extend(
+            program
+                .notes
+                .iter()
+                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
+        );
         self.post.config = config;
         let mut buffers =
             config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
@@ -1601,6 +1607,12 @@ impl Loader<'_> {
                     return None;
                 }
             };
+        notes.extend(
+            program
+                .notes
+                .iter()
+                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
+        );
         self.post.config = config;
         let mut buffers =
             config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
@@ -1683,6 +1695,12 @@ impl Loader<'_> {
             }
             match translate_compute(&pp) {
                 Ok(program) => {
+                    notes.extend(
+                        program
+                            .notes
+                            .iter()
+                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
+                    );
                     self.post.config.read(&pp);
                     out.push((name, program));
                 }
@@ -1829,6 +1847,46 @@ fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_defaults_are_notes_without_skipping_render_or_compute() {
+        let pack = Pack::from_zip_bytes(
+            "original-default-control",
+            crate::pack::tests::zip(&[
+                ("shaders/composite.vsh", "#version 430\nvoid main() { gl_Position = vec4(0.0); }"),
+                ("shaders/composite.fsh", "#version 430\nuniform double unknown = double(2.0);\nout vec4 color; void main() { color = vec4(1.0); }"),
+                ("shaders/composite.csh", "#version 430\nlayout(local_size_x=1) in; uniform double unknown = double(2.0); void main() {}"),
+            ]),
+        ).unwrap();
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        let program = post
+            .programs
+            .iter()
+            .find(|p| p.name == "composite")
+            .unwrap();
+        assert!(program.program.is_some());
+        assert_eq!(program.compute.len(), 1);
+        for file in ["composite.fsh", "composite.csh"] {
+            assert!(
+                post.notes
+                    .iter()
+                    .any(|n| n.contains(file) && n.contains("unknown") && n.contains("using zero")),
+                "{:?}",
+                post.notes
+            );
+        }
+        assert!(
+            !post.notes.iter().any(|n| n.contains("skipped")),
+            "{:?}",
+            post.notes
+        );
+    }
 
     #[test]
     fn named_dimension_folder_reaches_the_program_loader() {

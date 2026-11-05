@@ -174,3 +174,26 @@ fn common_array_types_preserve_each_uniform_default() {
     assert_eq!(words(&p, "first", 8), [f(0.125), 0, 0, 0, f(0.25), 0, 0, 0]);
     assert_eq!(words(&p, "second", 8), [f(0.5), 0, 0, 0, f(0.75), 0, 0, 0]);
 }
+
+#[test]
+fn unsupported_double_defaults_keep_programs_and_supported_neighbors() {
+    let p = program("uniform double unknown = double(2.0); uniform float kept = 0.625;");
+    assert_eq!(words(&p, "unknown", 2), [0, 0]);
+    assert_eq!(words(&p, "kept", 1), [0.625f32.to_bits()]);
+    assert_eq!(p.notes.len(), 1);
+    let note = &p.notes[0];
+    assert_eq!((&*note.file, note.line), ("original.glsl", 1));
+    assert!(note.message.contains("unknown") && note.message.contains("using zero"));
+    let p = translate_compute(&source("layout(local_size_x=1) in; uniform double unknown = double(2.0); uniform float kept = 0.625; void main() {}" )).unwrap();
+    assert_eq!(p.notes.len(), 1);
+    let u = p
+        .interface
+        .uniforms
+        .iter()
+        .find(|u| u.name == "unknown")
+        .unwrap();
+    assert_eq!(
+        &p.interface.initial_values[u.offset as usize..u.offset as usize + 8],
+        &[0; 8]
+    );
+}

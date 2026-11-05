@@ -103,6 +103,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             reference: 0.1,
         }),
         item_id_declared: false,
+        far_depth: false,
     }
 }
 
@@ -166,6 +167,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         terrain_lighting: None,
         alpha_test: None,
         item_id_declared: false,
+        far_depth: false,
     }
 }
 

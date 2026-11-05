@@ -787,6 +787,14 @@ pub fn review(base: &[Entry], head: &[Entry], author: &str) -> Review {
         }
     }
     for new in head {
+        // Every version is a submission, checked and reviewed: the registry no longer follows a
+        // repository's releases (entries from before keep theirs until they are pinned).
+        if new.repo.is_some() && base.iter().all(|e| e.id != new.id || e.repo.is_none()) {
+            r.errors.push(format!(
+                "{}: the registry doesn't follow repositories any more: list each version's file (the form, or [[versions]])",
+                new.id
+            ));
+        }
         if !base.iter().any(|e| e.id == new.id) {
             r.notes.push(format!(
                 "{}: a new {} by {}{}",

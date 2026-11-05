@@ -983,6 +983,7 @@ impl Game<'_> {
             if landed {
                 self.post_landing_event(self.armor_stands[i].position, true);
             }
+            self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
             let a = &self.armor_stands[i];
             if !a.marker && !a.no_gravity {
                 self.entity_powder_snow_particles(
@@ -1570,6 +1571,10 @@ impl Game<'_> {
                 || c.same_item_same_components(stack)
         }) {
             return true;
+        }
+        // Counted on the server only, before the swap.
+        if self.remote.is_none() {
+            self.award_stat("used", &stack.item, 1);
         }
         let swap = swap_with_equipment_slot(stack, current, self.creative);
         self.armor[index] = Some(swap.worn.clone());

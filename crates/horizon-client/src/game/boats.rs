@@ -1240,9 +1240,19 @@ impl Game<'_> {
                 ],
             );
         }
+        // BoatItem.use: ENTITY_PLACE at the hit (the boat's position), by the player.
+        let at = self
+            .boats
+            .last()
+            .map(|b| [b.position.x, b.position.y, b.position.z]);
+        if let Some(at) = at {
+            let ctx = self.player_context(None);
+            self.post_game_event("minecraft:entity_place", at, ctx);
+        }
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -1361,22 +1371,114 @@ impl Game<'_> {
     /// `CONTAINER_OPEN` and angers the piglins that see it.
     pub(super) fn open_chest_boat_container(&mut self, i: usize) {
         let b = &self.boats[i];
-        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
+        let id = b.id;
+        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
         let at = [b.position.x, b.position.y, b.position.z];
-        let items = b.items.clone();
-        // A second viewer shares the existing inventory, including edits
-        // made through commands or automation since the first viewer opened it.
-        self.world.block_entities.get_or_insert_with(key, || {
-            horizon_client::containers::BlockEntity::Chest(items)
-        });
-        self.container = Some(key);
-        self.screen = super::Screen::Inventory;
-        self.capture(false);
-        self.right = false;
+        // AbstractChestBoat.createMenu rejects a spectator before unpacking.
+        // Prepare in the acting player's turn, before copying the live menu
+        // inventory; leave_guest hands that same inventory to the network menu.
+        if !self.spectator() || !self.boat_loot_pending(id) {
+            self.unpack_boat_loot(i);
+            let Some(b) = self.boats.iter().find(|b| b.id == id) else {
+                return;
+            };
+            let items = b.items.clone();
+            // Another viewer's edits remain authoritative.
+            self.world.block_entities.get_or_insert_with(key, || {
+                horizon_client::containers::BlockEntity::Chest(items)
+            });
+            self.container = Some(key);
+            self.screen = super::Screen::Inventory;
+            self.capture(false);
+            self.right = false;
+        }
+        // interactWithContainerVehicle consumes the interaction even when a
+        // spectator's createMenu returned null, so its events still occur.
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:container_open", at, ctx);
         self.anger_piglins(true);
     }
+    /// ContainerEntity's pending table, before a spectator's createMenu.
+    pub(super) fn boat_loot_pending(&self, id: u32) -> bool {
+        matches!(
+            self.persist.raw.get(&id),
+            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
+        )
+    }
+
+    /// Unpack before a menu snapshots its slots, while the opening player's
+    /// advancements are installed. A live container owns its edited inventory.
+    fn unpack_boat_loot(&mut self, i: usize) {
+        use horizon_client::containers::BlockEntity;
+        use horizon_world::nbt::Tag;
+        let id = self.boats[i].id;
+        let (table, seed) = {
+            let Some(Tag::Compound(map)) = self.persist.raw.get(&id) else {
+                return;
+            };
+            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+            else {
+                return;
+            };
+            let seed = match map.get(&"LootTableSeed".into()) {
+                Some(Tag::Long(seed)) => Some(*seed),
+                _ => None,
+            };
+            (table, seed)
+        };
+        // ContainerEntity fires GENERATE_LOOT for the opener before consuming
+        // the table, including when the container has no empty slots.
+        self.trigger_loot_table(&table);
+        if let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+        // Advancement rewards can run commands; do not retain a vector index
+        // across that callback.
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return;
+        };
+        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
+        let mut items = self
+            .world
+            .block_entities
+            .get(&key)
+            .map(|e| e.slots().to_vec())
+            .unwrap_or_else(|| self.boats[i].items.clone());
+        // LootTable.fill shuffles the ascending list of empty slot indices.
+        // Filling a compact list of those slots preserves the same shuffle
+        // and split budget while leaving every occupied live slot unchanged.
+        let mut empty = vec![None; items.iter().filter(|s| s.is_none()).count()];
+        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
+        let b = &self.boats[i];
+        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
+        let biome = self.biome_name_at(at).unwrap_or_default();
+        let pos = (
+            b.position.x.floor() as i32,
+            b.position.y.floor() as i32,
+            b.position.z.floor() as i32,
+        );
+        crate::structure_blocks::roll_container(
+            &mut empty,
+            loot.as_deref(),
+            table,
+            seed,
+            pos,
+            &biome,
+        );
+        let mut rolled = empty.into_iter();
+        for slot in &mut items {
+            if slot.is_none() {
+                *slot = rolled.next().flatten();
+            }
+        }
+        self.boats[i].items = items.clone();
+        if let Some(BlockEntity::Chest(live)) = self.world.block_entities.get_mut(&key) {
+            *live = items;
+        }
+    }
+
     /// `AbstractChestBoat.openCustomInventoryScreen` (`HasCustomInventoryScreen`),
     /// the inventory key while riding a chest boat: its chest opens, not the
     /// player's inventory.

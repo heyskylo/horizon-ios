@@ -1,5 +1,6 @@
-// `invert_generic` and the formula of `pack_projection` in this file are adapted from JOML
-// 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+// `invert_generic`, `invert_affine` and the formulas of `pack_projection` and `shadow_ortho` in
+// this file are adapted from JOML 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see
+// THIRD_PARTY_NOTICES.md).
 //
 // Copyright (c) 2015-2026 Richard Greenlees
 //
@@ -525,18 +526,80 @@ pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
     depth * gl * view
 }
 
-/// How far toward the light the shadow projection starts, in blocks: part of the projection,
-/// not of `shadowModelView` (Iris's matrices, measured).
-pub const SHADOW_EYE: f32 = 100.0;
+/// How far toward the light a `shadowMapFov` projection starts, in blocks.
+const SHADOW_EYE: f32 = 100.0;
+
+/// The orthographic shadow projection's planes when the pack sets none, as JOML's `zNear` and
+/// `zFar`: Iris 1.11.7's, measured with a probe pack (each unset plane on its own).
+const SHADOW_NEAR: f32 = -100.05;
+const SHADOW_FAR: f32 = 156.0;
+
+/// `shadowProjection` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
+/// readings (13 settings of `shadowDistance`, `shadowNearPlane` and `shadowFarPlane`, each
+/// plane set or not) fit JOML's `setOrtho` over `shadowDistance` each side with `zZeroToOne`,
+/// its depth terms then taken to GL's -1..1 (`m22 * 2`, `m32 * 2 - 1`), in floats; and JOML's
+/// `invertAffine` of that. The planes are the pack's, or `SHADOW_NEAR`/`SHADOW_FAR`: a pack
+/// that sets one gets it as it is, with no 100-block offset (#8464).
+fn shadow_ortho(shadow: &Shadow) -> (Mat4, Mat4) {
+    let d = shadow.distance;
+    let near = shadow.near.unwrap_or(SHADOW_NEAR);
+    let far = shadow.far.unwrap_or(SHADOW_FAR);
+    let side = 2.0 / (d - -d);
+    let projection = Mat4::from_cols(
+        Vec4::new(side, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, side, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0 / (near - far) * 2.0, 0.0),
+        Vec4::new(0.0, 0.0, near / (near - far) * 2.0 - 1.0, 1.0),
+    );
+    (projection, invert_affine(projection))
+}
+
+/// JOML's `Matrix4f.invertAffine()`, operation by operation.
+fn invert_affine(m: Mat4) -> Mat4 {
+    let g = |c: usize, r: usize| m.col(c)[r];
+    let (m00, m01, m02) = (g(0, 0), g(0, 1), g(0, 2));
+    let (m10, m11, m12) = (g(1, 0), g(1, 1), g(1, 2));
+    let (m20, m21, m22) = (g(2, 0), g(2, 1), g(2, 2));
+    let (m30, m31, m32) = (g(3, 0), g(3, 1), g(3, 2));
+    let (m11m00, m10m01, m10m02) = (m00 * m11, m01 * m10, m02 * m10);
+    let (m12m00, m12m01, m11m02) = (m00 * m12, m01 * m12, m02 * m11);
+    let det = (m11m00 - m10m01) * m22 + (m10m02 - m12m00) * m21 + (m12m01 - m11m02) * m20;
+    let s = 1.0 / det;
+    let (m10m22, m10m21, m11m22) = (m10 * m22, m10 * m21, m11 * m22);
+    let (m11m20, m12m21, m12m20) = (m11 * m20, m12 * m21, m12 * m20);
+    let (m20m02, m20m01, m21m02) = (m20 * m02, m20 * m01, m21 * m02);
+    let (m21m00, m22m01, m22m00) = (m21 * m00, m22 * m01, m22 * m00);
+    Mat4::from_cols_array(&[
+        (m11m22 - m12m21) * s,
+        (m21m02 - m22m01) * s,
+        (m12m01 - m11m02) * s,
+        0.0,
+        (m12m20 - m10m22) * s,
+        (m22m00 - m20m02) * s,
+        (m10m02 - m12m00) * s,
+        0.0,
+        (m10m21 - m11m20) * s,
+        (m20m01 - m21m00) * s,
+        (m11m00 - m10m01) * s,
+        0.0,
+        (m10m22 * m31 - m10m21 * m32 + m11m20 * m32 - m11m22 * m30 + m12m21 * m30 - m12m20 * m31)
+            * s,
+        (m20m02 * m31 - m20m01 * m32 + m21m00 * m32 - m21m02 * m30 + m22m01 * m30 - m22m00 * m31)
+            * s,
+        (m11m02 * m30 - m12m01 * m30 + m12m00 * m31 - m10m02 * m31 + m10m01 * m32 - m11m00 * m32)
+            * s,
+        1.0,
+    ])
+}
 
 /// The shadow camera as Iris places it (7.1; measured from the outside): its view (player
 /// space to shadow view space) and GL projection. The view undoes `sunPathRotation`, turns the
 /// light's path about Z by the light's angle from the zenith, then X by 90 degrees, so the
 /// light lies on the view's +Z. Its origin is `shadowIntervalSize / 2 - camera % interval`
 /// (the remainder takes the camera's sign) from the player on each world axis, so the map moves
-/// in whole steps. The orthographic projection covers `shadowDistance` each side and depths
-/// from `-near` to `far`, counted from `SHADOW_EYE` blocks toward the light; or perspective
-/// with `shadowMapFov`.
+/// in whole steps. The orthographic projection is `shadow_ortho`'s; or perspective with
+/// `shadowMapFov`, from `shadowNearPlane` (0.05) to `shadowFarPlane` (256) counted from
+/// `SHADOW_EYE` blocks toward the light.
 pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4) {
     let tilt = f64::from(shadow.sun_path_rotation).to_radians();
     let untilted = DMat4::from_rotation_x(tilt).transform_vector3(light.as_dvec3());
@@ -556,14 +619,13 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
         DVec3::ZERO
     };
     let view = (rotation * DMat4::from_translation(-origin)).as_mat4();
-    let (near, far) = (shadow.near, shadow.far);
-    let eye = Mat4::from_translation(Vec3::new(0.0, 0.0, -SHADOW_EYE));
     let projection = match shadow.fov {
-        Some(fov) => Mat4::perspective_rh_gl(fov.to_radians(), 1.0, near, far) * eye,
-        None => {
-            let d = shadow.distance;
-            Mat4::orthographic_rh_gl(-d, d, -d, d, -near, far) * eye
+        Some(fov) => {
+            let (near, far) = (shadow.near.unwrap_or(0.05), shadow.far.unwrap_or(256.0));
+            let eye = Mat4::from_translation(Vec3::new(0.0, 0.0, -SHADOW_EYE));
+            Mat4::perspective_rh_gl(fov.to_radians(), 1.0, near, far) * eye
         }
+        None => shadow_ortho(shadow).0,
     };
     (view, projection)
 }
@@ -730,7 +792,13 @@ impl FrameUniforms {
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
-        let (_, shadow_projection) = shadow_camera(light, frame.camera, &self.shadow);
+        let (shadow_projection, shadow_projection_inverse) = match self.shadow.fov {
+            Some(_) => {
+                let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
+                (projection, projection.inverse())
+            }
+            None => shadow_ortho(&self.shadow),
+        };
         let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
@@ -792,7 +860,7 @@ impl FrameUniforms {
                 "shadowModelView" => m4(shadow_view),
                 "shadowModelViewInverse" => m4(shadow_view_inverse),
                 "shadowProjection" => m4(shadow_projection),
-                "shadowProjectionInverse" => m4(shadow_projection.inverse()),
+                "shadowProjectionInverse" => m4(shadow_projection_inverse),
                 "atlasSize" => Value::i(&[self.atlas[0] as i32, self.atlas[1] as i32]),
                 "frameTime" => Value::f(&[frame_time]),
                 "frameTimeCounter" => Value::f(&[seconds]),
@@ -1491,6 +1559,80 @@ mod initial_history_tests {
     /// The bits of a matrix uniform.
     fn bits(u: &FrameUniforms, name: &str) -> [u32; 16] {
         float(u, name).map(f32::to_bits)
+    }
+
+    /// `shadowProjection` and its inverse to the last bit, as a probe pack of ours read them
+    /// back in Iris 1.11.7, for `shadowDistance`, `shadowNearPlane` and `shadowFarPlane` (none
+    /// meaning the pack doesn't set it): a plane the pack sets is taken as it is, with no
+    /// 100-block offset; one it doesn't set is -100.05 (near) or 156 (far).
+    #[test]
+    fn the_shadow_projection_is_iris_s_for_the_pack_s_planes() {
+        let hud = HudBatch::new([1280, 720]);
+        let f = frame(&hud);
+        let (o, z, one) = (0, 0x80000000, 0x3f800000);
+        type Case = (f32, Option<f32>, Option<f32>, [u32; 4], [u32; 4]);
+        // (distance, near, far, [side, m22, m32, -], [inverse side, m22, m32, -])
+        let cases: [Case; 5] = [
+            (
+                100.0,
+                None,
+                None,
+                [0x3c23d70a, 0xbbfff335, 0xbe5fc198, 0],
+                [0x42c80001, 0xc3000666, 0xc1dfccc8, 0],
+            ),
+            (
+                100.0,
+                Some(0.5),
+                Some(128.0),
+                [0x3c23d70a, 0xbc808081, 0xbf810101, 0],
+                [0x42c80000, 0xc27f0000, 0xc2808000, 0],
+            ),
+            (
+                100.0,
+                None,
+                Some(128.0),
+                [0x3c23d70a, 0xbc0fb013, 0xbdfb0128, 0],
+                [0x42c80000, 0xc2e40ccc, 0xc15f9994, 0],
+            ),
+            (
+                100.0,
+                Some(0.05),
+                None,
+                [0x3c23d70a, 0xbc521e5f, 0xbf801503, 0],
+                [0x42c80000, 0xc29bf333, 0xc29c0ccd, 0],
+            ),
+            (
+                127.3,
+                Some(1.7),
+                Some(333.3),
+                [0x3c00b42f, 0xbbc5a2bf, 0xbf814ffb, 0],
+                [0x42fe9999, 0xc325cccc, 0xc3277fff, 0],
+            ),
+        ];
+        for (distance, near, far, [side, m22, m32, _], [i_side, i22, i32, _]) in cases {
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    distance,
+                    near,
+                    far,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            assert_eq!(
+                bits(&u, "shadowProjection"),
+                [side, o, o, o, o, side, o, o, o, o, m22, o, o, o, m32, one],
+                "{near:?} {far:?}"
+            );
+            assert_eq!(
+                bits(&u, "shadowProjectionInverse"),
+                [
+                    i_side, z, z, o, z, i_side, z, o, z, z, i22, o, z, z, i32, one
+                ],
+                "{near:?} {far:?}"
+            );
+        }
     }
 
     /// Iris 1.11.7's camera and shadow matrices to the last bit, read back from its uniforms by

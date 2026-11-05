@@ -887,12 +887,9 @@ pub fn lookup_locations(
         (Kind::Elytra, &textures.elytra),
     ] {
         let Some(url) = url else { continue };
-        let Some(hash) = texture_hash(url) else {
-            if kind == Kind::Skin {
-                return None;
-            }
-            continue;
-        };
+        // Native TextureCache.getOrLoad asks getHash before registering the
+        // future. A malformed accessory URL fails the complete profile too.
+        let hash = texture_hash(url)?;
         match download(kind, url) {
             // Native registerTextures combines all three futures with allOf:
             // an exceptional download falls back to the whole default profile.
@@ -3017,37 +3014,65 @@ mod tests {
     }
 
     /// SkinManager.registerTextures combines the body/cape/wings futures with
-    /// allOf. Native createLookup uses the whole default profile after a failed
-    /// future (VanillaWingTextureOracle), not just a missing optional texture.
+    /// allOf. An exceptional future makes createLookup use the default profile,
+    /// but registration still submits its sibling textures first.
     #[test]
     fn an_exceptional_accessory_download_uses_the_default_profile() {
-        let textures = super::Textures {
+        use super::{Download, Kind, Textures};
+        let textures = Textures {
             skin: Some("https://textures.minecraft.net/texture/skin1".into()),
             cape: Some("https://textures.minecraft.net/texture/cape1".into()),
-            elytra: None,
+            elytra: Some("https://textures.minecraft.net/texture/elytra1".into()),
             signed: true,
             slim: false,
         };
-        let skin = super::lookup(&textures, true, |kind, _| match kind {
-            super::Kind::Skin => super::Download::Ready,
-            _ => super::Download::Failed,
-        });
-        assert_eq!(skin, None);
-        // A URL from which no texture registration is made is distinct from
-        // an exceptional future after a real registration.
-        let bad_url = super::Textures {
-            cape: Some("no-scheme".into()),
-            ..textures.clone()
-        };
         assert_eq!(
-            super::lookup(&bad_url, true, |_, _| super::Download::Ready),
+            super::lookup(&textures, true, |_, _| Download::Ready),
             Some(super::skin_location("skin1"))
         );
-        // The skin itself failing is still the default skin.
-        assert_eq!(
-            super::lookup(&textures, true, |_, _| super::Download::Failed),
-            None
-        );
+        for failing in [Kind::Skin, Kind::Cape, Kind::Elytra] {
+            let mut submitted = Vec::new();
+            let result = super::lookup_locations(&textures, true, |kind, _| {
+                submitted.push(kind);
+                if kind == failing {
+                    Download::Failed
+                } else {
+                    Download::Ready
+                }
+            });
+            assert!(result.is_none(), "{failing:?}");
+            assert_eq!(submitted, [Kind::Skin, Kind::Cape, Kind::Elytra]);
+        }
+    }
+
+    /// Actual 26.3 getHash -> registerTextures -> cache completion -> createLookup
+    /// uses the whole default profile if any URL is malformed. The failure is
+    /// synchronous, so textures after the malformed one are not registered.
+    #[test]
+    fn malformed_texture_urls_fail_the_profile_in_registration_order() {
+        use super::{Download, Kind, Textures};
+        let order = [Kind::Skin, Kind::Cape, Kind::Elytra];
+        for (index, bad) in order.into_iter().enumerate() {
+            let mut textures = Textures {
+                skin: Some("https://textures.minecraft.net/texture/body".into()),
+                cape: Some("https://textures.minecraft.net/texture/cape".into()),
+                elytra: Some("https://textures.minecraft.net/texture/elytra".into()),
+                signed: true,
+                slim: false,
+            };
+            match bad {
+                Kind::Skin => textures.skin = Some("no-scheme".into()),
+                Kind::Cape => textures.cape = Some("no-scheme".into()),
+                Kind::Elytra => textures.elytra = Some("no-scheme".into()),
+            }
+            let mut submitted = Vec::new();
+            let result = super::lookup_locations(&textures, true, |kind, _| {
+                submitted.push(kind);
+                Download::Ready
+            });
+            assert!(result.is_none(), "{bad:?}");
+            assert_eq!(submitted, order[..index], "{bad:?}");
+        }
     }
 
     #[test]

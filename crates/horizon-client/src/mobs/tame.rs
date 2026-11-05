@@ -155,7 +155,7 @@ fn baby_turtle_on_land(s: &super::Seen) -> bool {
 /// `universal_anger` rule on and no anger target left, any player. Creative and
 /// spectator players are dropped first (`isValidPlayerTarget`), by the goal's
 /// `can_target_player`.
-fn angry_at_player(m: &Mob, w: &MobWorld) -> bool {
+pub(super) fn angry_at_player(m: &Mob, w: &MobWorld) -> bool {
     m.extra.angry_at == Some(Who::Player)
         || (w.universal_anger && m.extra.anger > 0 && m.extra.angry_at.is_none())
 }

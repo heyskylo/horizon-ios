@@ -5895,3 +5895,7 @@ mod spin_target_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "lan_actions/vehicle_loot_tests.rs"]
+mod vehicle_loot_tests;

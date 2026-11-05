@@ -1,6 +1,7 @@
 //! What the game asks the service about its own account: whether it owns a cosmetic (`GET
 //! /v1/me`: no other player's cosmetics show for one that owns none, unless the player asks), and
-//! the one setting it changes itself, "Show my cosmetics" (`PUT /v1/visible`).
+//! the settings it changes itself, "Show my cosmetics" (`PUT /v1/visible`) and "Show me as a
+//! Horizon player" (`POST /v1/presence`, also sent every `PRESENCE_EVERY` while on).
 //!
 //! The game signs in the way an online-mode server checks a player: the service hands out a
 //! one-time server id, the game tells Mojang's session server it joins it (`join`, with the
@@ -37,6 +38,28 @@ impl Call for crate::Http {
         let bytes = crate::Http::read(request.send_bytes(body.to_string().as_bytes()))?;
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
+}
+
+/// How often a running game tells the service its player plays Horizon (the service's
+/// `PRESENCE_EVERY`; it forgets them some hours after the last time).
+pub const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// "Show me as a Horizon player": listed, other Horizon players see the mark by `name`'s name for
+/// a while (sent again every `PRESENCE_EVERY`); not listed, the service forgets it at once.
+pub fn set_listed(
+    service: &impl Call,
+    name: &str,
+    join: impl FnOnce(&str) -> Result<(), String>,
+    listed: bool,
+) -> Result<bool, String> {
+    let session = sign_in(service, name, join)?;
+    let answer = service.call(
+        "POST",
+        "/v1/presence",
+        Some(&session),
+        &json!({ "listed": listed }),
+    )?;
+    answer["listed"].as_bool().ok_or_else(|| "no answer".into())
 }
 
 /// A session of the service's own for the account `name`; `join` tells Mojang that account joins
@@ -125,6 +148,7 @@ mod tests {
                 "/v1/auth/finish" => Err("HTTP 401".into()),
                 "/v1/visible" if s == Some("svc") => Ok(json!({"visible": body["visible"]})),
                 "/v1/me" if s == Some("svc") => Ok(json!({"owned": self.owned})),
+                "/v1/presence" if s == Some("svc") => Ok(json!({"listed": body["listed"]})),
                 _ => Err("HTTP 401".into()),
             }
         }
@@ -186,5 +210,21 @@ mod tests {
         assert_eq!(service.sent.borrow().len(), 1);
         // A join Mojang never saw: the service refuses the id.
         assert!(set_visible(&service, "Alex", |_| Ok(()), false).is_err());
+    }
+
+    #[test]
+    fn leaving_the_list_signs_in_the_same_way() {
+        let service = Service::default();
+        let join = |id: &str| {
+            *service.joined.borrow_mut() = Some(id.to_owned());
+            Ok(())
+        };
+        assert_eq!(set_listed(&service, "Alex", join, false), Ok(false));
+        let sent = service.sent.borrow();
+        assert_eq!(sent[2].1, "/v1/presence");
+        assert_eq!(
+            (sent[2].2.as_deref(), &sent[2].3),
+            (Some("svc"), &json!({"listed": false}))
+        );
     }
 }

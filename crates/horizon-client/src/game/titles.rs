@@ -11,6 +11,21 @@ use horizon_client::{
 };
 
 impl Game<'_> {
+    /// `ServerPlayer.sendOverlayMessage`: the steady player sees it on this
+    /// game's HUD; a server client receives it as a packet.
+    pub(super) fn send_overlay_message(&mut self, message: Text) {
+        if self.lan_acting.is_some() {
+            self.guest_packets
+                .push(horizon_protocol::packets::play::Clientbound::SystemChat(
+                    horizon_protocol::packets::play::SystemChat {
+                        content: horizon_client::lan::data::component_nbt(&message.component()),
+                        overlay: true,
+                    },
+                ));
+        } else if self.options.dedicated.is_none() {
+            self.titles.set_overlay(message, false);
+        }
+    }
     /// `Hud.extractOverlayMessage`: the action bar.
     pub(super) fn draw_overlay_message(&self, batch: &mut HudBatch, bar_height: i32) {
         let (w, h) = (batch.width as i32, batch.height as i32);

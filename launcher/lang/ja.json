@@ -1168,5 +1168,6 @@
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
   "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
   "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
-  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it."
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "ネイティブ Mod には、対応する Windows アーキテクチャの一致が必要です。ゲーム: {game_arch}、ビルド ツールチェーン: {toolchain_arch}。"
 }

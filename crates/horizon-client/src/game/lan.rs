@@ -284,6 +284,37 @@ pub(super) struct LanHost {
     pub(super) states_next_entity: Option<u32>,
 }
 
+#[cfg(test)]
+impl LanHost {
+    pub(super) fn fixture(hub: Hub) -> Self {
+        Self {
+            settings: LanSettings {
+                port: hub.lan.port,
+                guest_commands: false,
+                force_game_mode: false,
+            },
+            hub,
+            players_told_left: false,
+            play: HashMap::new(),
+            broken: Vec::new(),
+            mob_state: HashMap::new(),
+            poses: HashMap::new(),
+            mob_players: Default::default(),
+            owner: None,
+            waypoints: Default::default(),
+            waypoint_dead: Default::default(),
+            border_sent: None,
+            commands: Vec::new(),
+            quiet: Default::default(),
+            far: None,
+            native_commands: None,
+            sleep_ignored: Default::default(),
+            states: Default::default(),
+            states_next_entity: None,
+        }
+    }
+}
+
 impl Game<'_> {
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
     /// player is saved, heard by native mods first. Once per guest, however
@@ -503,7 +534,7 @@ fn mob_variant_meta(
 /// from the defaults the client constructs), with vanilla's entry indices:
 /// Entity 0..=7, LivingEntity 8..=14, Mob 15, then the subclasses.
 /// `defaults` gets the defaults of the entries that can go back to theirs.
-fn mob_meta(
+pub(super) fn mob_meta(
     m: &Mob,
     hub: &Hub,
     player_entity: Option<i32>,

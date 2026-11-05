@@ -355,12 +355,10 @@ impl Game<'_> {
         }
         // Server path of `use`: `dropAllLeashConnections(null)`, and when that
         // drops anything `playSound(null, player, LEAD_BREAK, NEUTRAL, 1, 1)`.
-        // `SoundEvents.LEAD_BREAK` is `minecraft:item.lead.break`. A position
-        // is what the server thread forwards, so the window hears the snap.
-        if self.drop_all_leash_connections()
-            && let Some(p) = self.player.as_ref()
-        {
-            self.lead_sound("break", [p.position.x, p.position.y, p.position.z]);
+        // The entity overload follows the player and excludes nobody, including
+        // the guest whose action is running while its hub is swapped out.
+        if self.drop_all_leash_connections() {
+            self.play_player_bound_sound("minecraft:item.lead.break", 6, 1.0, 1.0, false);
         }
         let at = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
         let mut rocket = self.new_rocket(at, stack, true);
@@ -370,6 +368,7 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", "minecraft:firework_rocket", 1);
         self.swing_arm();
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_elytra_boost(player, &name);
@@ -772,8 +771,9 @@ mod tests {
 
     /// `FireworkRocketItem.use` on the server, while fall-flying: a lead on a
     /// mob within the 32-block box drops as an item and one
-    /// `minecraft:item.lead.break` plays at the player's feet. A lead outside
-    /// that box, or held for another player, stays. Standing still does neither.
+    /// `minecraft:item.lead.break` follows the player on NEUTRAL, heard by the
+    /// acting player too. A lead outside that box, or held for another player,
+    /// stays. Standing still does neither.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_gliding_firework_drops_leads_and_plays_lead_break() {
@@ -823,6 +823,9 @@ mod tests {
             .get("minecraft:cow")
             .expect("cow")
             .clone();
+        // A server action keeps the guest identity while its hub is swapped out.
+        game.lan_acting = Some(11);
+        game.lan_acting_entity = Some(37);
         let me = game.acting_uuid();
         let someone_else = [me[0].wrapping_add(1), me[1], me[2], me[3]];
         let mut leashed = |id, at: Vec3, owner: [i32; 4]| {
@@ -860,11 +863,26 @@ mod tests {
         assert_eq!(leads.len(), 1);
         let heard = game.audio.capture.take().unwrap_or_default();
         let snaps: Vec<_> = heard
-            .into_iter()
+            .iter()
             .filter(|s| s.event == "minecraft:item.lead.break")
-            .map(|s| (s.position, s.volume, s.pitch))
             .collect();
-        assert_eq!(snaps, vec![(feet, 1.0, 1.0)]);
+        assert_eq!(snaps.len(), 1);
+        let snap = snaps[0];
+        assert_eq!((snap.position, snap.volume, snap.pitch), (feet, 1.0, 1.0));
+        assert_eq!(
+            snap.entity,
+            Some(37),
+            "the snap must follow the acting guest"
+        );
+        assert_eq!(snap.source, 6, "SoundSource.NEUTRAL");
+        assert_eq!(snap.except_entity, None, "vanilla excludes no player");
+        let (packet, range) =
+            horizon_client::lan::containers::captured_sound_packet(snap, None, 42);
+        let horizon_protocol::packets::play::Clientbound::SoundEntity(packet) = packet else {
+            panic!("a firework lead snap must use the entity-bound packet");
+        };
+        assert_eq!((packet.id, packet.source, range), (37, 6, 16.0));
+        assert_eq!(packet.sound.1.unwrap().0, "minecraft:item.lead.break");
     }
 }
 horizon_client::impl_joined!(Rocket);
