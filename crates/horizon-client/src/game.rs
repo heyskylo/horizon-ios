@@ -8819,6 +8819,13 @@ impl Game<'_> {
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
         let show_hud = !self.ui.hide_gui;
+        // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
+        // defers the subtitles over itself, and keeps them while F1 hides the
+        // rest of the HUD.
+        let subtitles = subtitles(
+            show_hud,
+            in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
+        );
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
@@ -9046,9 +9053,11 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
-            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                g.draw_subtitles(batch);
-            });
+            if subtitles == Subtitles::Now {
+                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                    g.draw_subtitles(batch);
+                });
+            }
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -9125,6 +9134,13 @@ impl Game<'_> {
         // prompts, books and sign editors drawn over gameplay keep it, draw
         // after this point and so over what a mod drew.
         self.fire_screen_render_post(&mut batch);
+        // `Hud.extractDeferredSubtitles`: the subtitles an in-game screen
+        // deferred draw over it, and over its tooltips, under the toasts.
+        if subtitles == Subtitles::Deferred {
+            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                g.draw_subtitles(batch);
+            });
+        }
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
@@ -22585,6 +22601,44 @@ fn is_game_master_block(name: &str) -> bool {
                 | "minecraft:test_block"
                 | "minecraft:test_instance_block"
         )
+}
+
+/// `Screen.isInGameUi`: the screens that keep the game behind them — the
+/// container screens (`AbstractContainerScreen`) and the block editors
+/// (`AbstractCommandBlockEditScreen`, structure block, jigsaw, test block) —
+/// plus the two Horizon draws over `Screen::Playing`: a book (`BookViewScreen`)
+/// and a sign editor (`AbstractSignEditScreen`).
+fn in_game_ui(screen: Screen, book_or_sign: bool) -> bool {
+    book_or_sign
+        || matches!(
+            screen,
+            Screen::Inventory | Screen::Creative | Screen::CommandBlock | Screen::BlockEditor
+        )
+}
+
+/// Where `Hud.extractRenderState` draws the subtitles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Subtitles {
+    /// Hidden with the rest of the HUD: F1 with no screen over the game.
+    Hidden,
+    /// In the HUD's own pass, under any screen that draws later.
+    Now,
+    /// Deferred (`Hud.extractDeferredSubtitles`): over the open in-game
+    /// screen, whether or not the HUD is hidden.
+    Deferred,
+}
+
+/// `Hud.extractRenderState`'s subtitle rule: with no in-game screen the
+/// subtitles follow the HUD (`!isHidden`); with one they are deferred and
+/// draw over it, which is the one HUD element F1 does not take away.
+fn subtitles(show_hud: bool, in_game_ui: bool) -> Subtitles {
+    if in_game_ui {
+        Subtitles::Deferred
+    } else if show_hud {
+        Subtitles::Now
+    } else {
+        Subtitles::Hidden
+    }
 }
 
 #[cfg(test)]
