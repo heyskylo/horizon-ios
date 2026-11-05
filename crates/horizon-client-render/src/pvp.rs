@@ -595,6 +595,12 @@ pub struct Hud {
     pub speed_corner: Corner,
     /// A dark box behind each widget.
     pub background: bool,
+    /// The boxes' opacity, in percent.
+    pub opacity: u8,
+    /// The widgets' text colour (durability keeps its own).
+    pub text: Colour,
+    /// A shadow under the widgets' text, as vanilla's HUD text has.
+    pub shadow: bool,
 }
 impl Hud {
     /// Whether any widget is on: with none, the HUD draws nothing and reads nothing.
@@ -648,10 +654,22 @@ impl Default for Hud {
             speed: false,
             speed_corner: Corner::TopLeft,
             background: true,
+            opacity: HUD_OPACITY,
+            text: Colour::White,
+            shadow: true,
         }
     }
 }
 pub use crate::extras::Corner;
+/// The widgets' boxes at first: the extras' 0x78 alpha, 47%.
+pub const HUD_OPACITY: u8 = 47;
+pub const HUD_OPACITIES: (u8, u8) = (0, 100);
+impl Hud {
+    /// The boxes' colour, ARGB.
+    pub fn background_argb(&self) -> u32 {
+        alpha(self.opacity) << 24
+    }
+}
 /// The value of the view options while they follow the world.
 fn world_label() -> String {
     crate::lang::get_or("horizon.pvp.view.world", "World's")
@@ -741,6 +759,8 @@ pub struct Pvp {
     pub hud: Hud,
     pub tweaks: Tweaks,
     pub chat: ChatOptions,
+    /// Where each HUD widget sits and its size.
+    pub layout: crate::pvp_hud::Layout,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -794,6 +814,14 @@ impl Pvp {
             "hudHeld" => u.held = flag(value, u.held),
             "hudHeldCorner" => u.held_corner = Corner::parse(value, u.held_corner),
             "hudBackground" => u.background = flag(value, u.background),
+            "hudOpacity" => u.opacity = num(value, HUD_OPACITIES, u.opacity),
+            "hudTextColour" => {
+                u.text = Colour::parse(value)
+                    .filter(|c| *c != Colour::Inverted)
+                    .unwrap_or(u.text)
+            }
+            "hudShadow" => u.shadow = flag(value, u.shadow),
+            "hudPlace" => self.layout.parse(value),
             "hudPing" => u.ping = flag(value, u.ping),
             "hudPingCorner" => u.ping_corner = Corner::parse(value, u.ping_corner),
             "hudCoords" => u.coords = flag(value, u.coords),
@@ -921,6 +949,14 @@ impl Pvp {
             u.speed,
             u.speed_corner.name(),
         );
+        let _ = write!(
+            out,
+            "hudOpacity:{}\nhudTextColour:{}\nhudShadow:{}\n",
+            u.opacity,
+            u.text.name(),
+            u.shadow,
+        );
+        self.layout.serialize(out);
         let t = &self.tweaks;
         let _ = write!(
             out,
@@ -1053,6 +1089,10 @@ opts! {
     HudSpeed, "hud_speed", "Speed", "How fast you move across the ground, in blocks per second.";
     HudSpeedCorner, "hud_speed_corner", "Speed corner", "Where the speed shows.";
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
+    HudOpacity, "hud_opacity", "Background opacity", "How dark the boxes behind the widgets are.";
+    HudTextColour, "hud_text_colour", "Text colour",
+        "The widgets' text colour. Durability keeps its green to red.";
+    HudShadow, "hud_shadow", "Text shadow", "A shadow under the widgets' text, as vanilla's HUD text has.";
     NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
         "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
     FireLower, "fire_lower", "Lower fire",
@@ -1140,6 +1180,9 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
             HudSpeed,
             HudSpeedCorner,
             HudBackground,
+            HudOpacity,
+            HudTextColour,
+            HudShadow,
         ]
         .map(Ok),
     );
@@ -1164,7 +1207,8 @@ impl Opt {
             HitColour | HitOpacity => Some(Hit),
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
             | HudFps | HudCps | HudKeys | HudClock | HudReach | HudSpeed | HudBackground
-            | NumericEnchants => None,
+            | HudTextColour | HudShadow | NumericEnchants => None,
+            HudOpacity => Some(HudBackground),
             HudFpsCorner => Some(HudFps),
             HudCpsCorner => Some(HudCps),
             HudKeysCorner => Some(HudKeys),
@@ -1197,6 +1241,7 @@ impl Opt {
             Opt::HudEffects => p.hud.effects,
             Opt::HudHeld => p.hud.held,
             Opt::HudBackground => p.hud.background,
+            Opt::HudShadow => p.hud.shadow,
             Opt::HudPing => p.hud.ping,
             Opt::HudCoords => p.hud.coords,
             Opt::HudServer => p.hud.server,
@@ -1252,6 +1297,8 @@ impl Opt {
             Opt::HudClockCorner => corner_label(p.hud.clock_corner),
             Opt::HudReachCorner => corner_label(p.hud.reach_corner),
             Opt::HudSpeedCorner => corner_label(p.hud.speed_corner),
+            Opt::HudOpacity => format!("{}%", p.hud.opacity),
+            Opt::HudTextColour => p.hud.text.label(),
             Opt::FireLower => match p.tweaks.fire_lower {
                 0 => crate::lang::get_or("Off", "Off"),
                 v => format!("{v}%"),
@@ -1319,6 +1366,9 @@ impl Opt {
             Opt::HudHeld => u.held = !u.held,
             Opt::HudHeldCorner => u.held_corner = corner(u.held_corner),
             Opt::HudBackground => u.background = !u.background,
+            Opt::HudOpacity => u.opacity = step_by(u.opacity, HUD_OPACITIES, 10, back),
+            Opt::HudTextColour => u.text = u.text.step_solid(back),
+            Opt::HudShadow => u.shadow = !u.shadow,
             Opt::HudPing => u.ping = !u.ping,
             Opt::HudPingCorner => u.ping_corner = corner(u.ping_corner),
             Opt::HudCoords => u.coords = !u.coords,

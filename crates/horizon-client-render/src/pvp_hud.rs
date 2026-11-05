@@ -361,6 +361,173 @@ pub fn keys_size() -> (f32, f32) {
     (w, y + h)
 }
 
+/// The HUD widgets, for their places on screen ([`Layout`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidgetId {
+    Armour,
+    Effects,
+    Held,
+    Ping,
+    Coords,
+    Server,
+    Combo,
+    Fps,
+    Cps,
+    Keys,
+    Clock,
+    Reach,
+    Speed,
+}
+impl WidgetId {
+    pub const ALL: [WidgetId; 13] = [
+        WidgetId::Armour,
+        WidgetId::Effects,
+        WidgetId::Held,
+        WidgetId::Ping,
+        WidgetId::Coords,
+        WidgetId::Server,
+        WidgetId::Combo,
+        WidgetId::Fps,
+        WidgetId::Cps,
+        WidgetId::Keys,
+        WidgetId::Clock,
+        WidgetId::Reach,
+        WidgetId::Speed,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            WidgetId::Armour => "armour",
+            WidgetId::Effects => "effects",
+            WidgetId::Held => "held",
+            WidgetId::Ping => "ping",
+            WidgetId::Coords => "coords",
+            WidgetId::Server => "server",
+            WidgetId::Combo => "combo",
+            WidgetId::Fps => "fps",
+            WidgetId::Cps => "cps",
+            WidgetId::Keys => "keys",
+            WidgetId::Clock => "clock",
+            WidgetId::Reach => "reach",
+            WidgetId::Speed => "speed",
+        }
+    }
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Where a widget sits: in its corner, stacked with the others there (`at` is `None`), or at a
+/// place the player dragged it to, as fractions of the room the screen leaves around the box
+/// (0 at the left or top edge, 1 at the right or bottom), so it stays on screen at any size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub at: Option<(f32, f32)>,
+    /// Its size in percent.
+    pub scale: u8,
+}
+impl Default for Place {
+    fn default() -> Self {
+        Self {
+            at: None,
+            scale: 100,
+        }
+    }
+}
+pub const SCALES: (u8, u8) = (50, 200);
+/// Every widget's place.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Layout(pub [Place; 13]);
+impl Layout {
+    pub fn get(&self, id: WidgetId) -> Place {
+        self.0[id.index()]
+    }
+    pub fn get_mut(&mut self, id: WidgetId) -> &mut Place {
+        &mut self.0[id.index()]
+    }
+    /// One `hudPlace` value: `armour,0.25,0.5,150`, or `armour,corner,,150`.
+    pub fn parse(&mut self, value: &str) {
+        let mut parts = value.split(',');
+        let Some(id) = parts
+            .next()
+            .and_then(|n| WidgetId::ALL.into_iter().find(|w| w.name() == n))
+        else {
+            return;
+        };
+        let (x, y, scale) = (parts.next(), parts.next(), parts.next());
+        let frac = |v: Option<&str>| {
+            v.and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 1.0))
+        };
+        let place = self.get_mut(id);
+        place.at = frac(x).zip(frac(y));
+        if let Some(s) = scale.and_then(|s| s.parse::<u8>().ok()) {
+            place.scale = s.clamp(SCALES.0, SCALES.1);
+        }
+    }
+    /// The `hudPlace` lines of the widgets that left their corner or their size.
+    pub fn serialize(&self, out: &mut String) {
+        use std::fmt::Write;
+        for id in WidgetId::ALL {
+            let p = self.get(id);
+            if p == Place::default() {
+                continue;
+            }
+            let _ = match p.at {
+                Some((x, y)) => writeln!(out, "hudPlace:{},{x:.4},{y:.4},{}", id.name(), p.scale),
+                None => writeln!(out, "hudPlace:{},corner,,{}", id.name(), p.scale),
+            };
+        }
+    }
+}
+/// A box `w` x `h` placed at fractions `(fx, fy)` of the room left on a `screen`.
+pub fn from_fractions((fx, fy): (f32, f32), (w, h): (f32, f32), screen: (f32, f32)) -> (f32, f32) {
+    (
+        (fx * (screen.0 - w).max(0.0)).round(),
+        (fy * (screen.1 - h).max(0.0)).round(),
+    )
+}
+/// The fractions that put a `w` x `h` box at `(x, y)` on a `screen`, kept on screen.
+pub fn to_fractions((x, y): (f32, f32), (w, h): (f32, f32), screen: (f32, f32)) -> (f32, f32) {
+    let frac = |v: f32, room: f32| {
+        if room > 0.0 {
+            (v / room).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    (frac(x, screen.0 - w), frac(y, screen.1 - h))
+}
+/// How near, in GUI pixels, an edge must come to another to snap to it.
+pub const SNAP: f32 = 4.0;
+/// Snaps a box's start `x` of length `w` along one axis of length `screen`: to the screen's
+/// edges and middle, and to the edges of the `others` boxes (`(start, length)`), where one
+/// is within [`SNAP`]. Returns the new start and the line it snapped to, if any.
+pub fn snap(x: f32, w: f32, screen: f32, others: &[(f32, f32)]) -> (f32, Option<f32>) {
+    let mut best: Option<(f32, f32, f32)> = None;
+    let mut consider = |start: f32, line: f32| {
+        let d = (start - x).abs();
+        if d <= SNAP && best.is_none_or(|(b, _, _)| d < b) {
+            best = Some((d, start, line));
+        }
+    };
+    // The screen's edges, with the corners' margin, and its middle.
+    consider(2.0, 0.0);
+    consider(screen - 2.0 - w, screen);
+    consider((screen - w) / 2.0, screen / 2.0);
+    for &(o, ow) in others {
+        // Side by side, or lined up on the same edge.
+        consider(o + ow, o + ow);
+        consider(o - w, o);
+        consider(o, o);
+        consider(o + ow - w, o + ow);
+    }
+    match best {
+        Some((_, start, line)) => (start.clamp(0.0, (screen - w).max(0.0)), Some(line)),
+        None => (x.clamp(0.0, (screen - w).max(0.0)), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +718,75 @@ mod tests {
                 assert!(apart, "{a:?} and {b:?} overlap");
             }
         }
+    }
+
+    #[test]
+    fn places_round_trip_and_only_moved_widgets_are_written() {
+        let mut l = Layout::default();
+        let mut text = String::new();
+        l.serialize(&mut text);
+        assert_eq!(text, "", "a vanilla layout writes nothing");
+        *l.get_mut(WidgetId::Keys) = Place {
+            at: Some((0.25, 1.0)),
+            scale: 150,
+        };
+        l.get_mut(WidgetId::Fps).scale = 75;
+        l.serialize(&mut text);
+        assert_eq!(
+            text,
+            "hudPlace:fps,corner,,75\nhudPlace:keys,0.2500,1.0000,150\n"
+        );
+        let mut back = Layout::default();
+        for line in text.lines() {
+            back.parse(line.split_once(':').unwrap().1);
+        }
+        assert_eq!(back, l);
+        // Out of range values are clamped, unknown widgets and bad numbers ignored.
+        back.parse("speed,-3,7,250");
+        assert_eq!(back.get(WidgetId::Speed).at, Some((0.0, 1.0)));
+        assert_eq!(back.get(WidgetId::Speed).scale, 200);
+        back.parse("radar,0.5,0.5,100");
+        back.parse("clock,NaN,0.5,100");
+        assert_eq!(back.get(WidgetId::Clock).at, None);
+    }
+
+    #[test]
+    fn fractions_keep_a_box_on_screen_at_any_size() {
+        let screen = (480.0, 270.0);
+        let at = to_fractions((100.0, 50.0), (80.0, 20.0), screen);
+        assert_eq!(from_fractions(at, (80.0, 20.0), screen), (100.0, 50.0));
+        // A box at the right edge stays at the right edge on a wider screen.
+        let right = to_fractions((400.0, 0.0), (80.0, 20.0), screen);
+        assert_eq!(right, (1.0, 0.0));
+        assert_eq!(
+            from_fractions(right, (80.0, 20.0), (960.0, 540.0)),
+            (880.0, 0.0)
+        );
+        // Dragged past the edge: kept inside.
+        assert_eq!(
+            to_fractions((-30.0, 900.0), (80.0, 20.0), screen),
+            (0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn boxes_snap_to_screen_edges_middle_and_each_other() {
+        // Near the left margin.
+        assert_eq!(snap(4.5, 50.0, 480.0, &[]), (2.0, Some(0.0)));
+        // Centred: the middle of 480 for a 50-wide box starts at 215.
+        assert_eq!(snap(213.0, 50.0, 480.0, &[]), (215.0, Some(240.0)));
+        // Beside another box (100..160): its start goes to 160.
+        assert_eq!(
+            snap(163.0, 50.0, 480.0, &[(100.0, 60.0)]),
+            (160.0, Some(160.0))
+        );
+        // Lined up with its left edge.
+        assert_eq!(
+            snap(98.0, 50.0, 480.0, &[(100.0, 60.0)]),
+            (100.0, Some(100.0))
+        );
+        // Too far from anything: stays, but never off screen.
+        assert_eq!(snap(300.0, 50.0, 480.0, &[(100.0, 60.0)]), (300.0, None));
+        assert_eq!(snap(470.0, 50.0, 480.0, &[]), (430.0, None));
     }
 }
