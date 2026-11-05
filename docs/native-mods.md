@@ -3372,13 +3372,16 @@ as the terrain samples them. API 380.
 
 Look blocks up once and keep what you need (a few words a block for your own shader), not every frame.
 
-### Block states
+### Block states and resource files
 
-`crates/horizon-client/src/game/native_block_sprites.rs` and `horizon_client::block_states`: for a client mod working
-out what every block looks like (a map's colours, a voxel renderer's table) on a thread of its own. The helper returns
-a copy to keep, cheap to clone, `Send` and `Sync`: fetch it on the game's thread, then use it anywhere. It follows the
-resources loaded at the time, so ask again when `native_block_sprites_version()` changes
-(`native_client_resources_reloaded` hears the same reloads, but not the first load).
+`crates/horizon-client/src/game/native_block_sprites.rs`, `horizon_client::block_states` and
+`horizon_client::client_resources`: for a client mod working out what every block looks like (a map's colours, a
+voxel renderer's table) or reading textures, on a thread of its own. `native_block_states()` returns a copy to keep,
+and `native_client_resources()` a handle that reads the files on disk at each call. Both are cheap to clone, `Send` and
+`Sync`: fetch them on the game's thread, then use them anywhere. Both follow the resources loaded at the time, so ask
+again when `native_block_sprites_version()` changes (`native_client_resources_reloaded` hears the same reloads, but not
+the first load). A reload rebuilds the tree's files in place, so while it runs a read can miss a file or get the new
+pack's before the version changes: read again after it does.
 
 - `native_block_states()` (`BlockStates`) holds every block state by its id (`BlockStateId`, as the world stores
   blocks): `len()`, `get(id)` and `iter()` give each state's `BlockStateFacts`:
@@ -3399,6 +3402,17 @@ resources loaded at the time, so ask again when `native_block_sprites_version()`
   `sprites(id)` says what the state's model draws on each side, as `native_block_sprites` does for a block by name,
   and `texture(sprite)` names the texture behind any of its sprites (`block/grass_block_top`: vanilla's without their
   namespace, a mod's with it), the name `native_texture_sprites` and `native_draw_cube` take.
+- `native_client_resources()` (`ClientResources`) reads the resources the game loaded as one tree: vanilla's, with the
+  resource packs turned on (a higher pack over a lower one) and the content mods' files over it. `read(path)` gives a
+  file's bytes by its path in the tree (`assets/minecraft/textures/entity/cow/cow_temperate.png`, a texture's
+  `.png.mcmeta`), only for plain names under `assets/`; `texture(name)` the decoded pixels of a texture by name
+  (`block/stone`, `entity/cow/cow_temperate`, `mymod:item/gear`), as `TexturePixels`: `width` by `height` RGBA, rows
+  top first, as its PNG stores them. An animated texture is its frames one under another. Both are none for a file
+  that isn't there.
+
+A face's colour on a map, say: `states.sprites(id)` for its top, `states.texture(face.sprite)` for its name, and
+`resources.texture(name)` for its pixels, averaged as the mod likes. Many states share a texture: decode each one
+once.
 
 ### Menu extra data
 

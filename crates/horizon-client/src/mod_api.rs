@@ -12,6 +12,7 @@ pub use crate::biome::{BiomeColors, SpawnEntry};
 pub use crate::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
 pub use crate::block_states::{BlockStateFacts, BlockStates};
 pub use crate::camera::{CameraEntity, FovPlayer};
+pub use crate::client_resources::{ClientResources, TexturePixels};
 pub use crate::command::Suggestion;
 pub use crate::containers::{ModBlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks};
 pub use crate::crafting::{CustomRecipe, Ingredient};

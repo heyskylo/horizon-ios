@@ -1,9 +1,10 @@
 //! Where blocks' textures are in the block sprite arrays, for a client mod drawing blocks with the player's own
 //! textures (resource packs included) in its own pass: with `WorldDrawn::block_sprites`, the arrays themselves.
-//! Also every block state's facts and looks, for a mod working on them off the main thread.
+//! Also every block state's facts and looks, and the resources' files, for a mod working on them off the main thread.
 use super::Game;
 use horizon_client::block_sprites::{BlockSprites, Lookup, SpriteRef};
 use horizon_client::block_states::BlockStates;
+use horizon_client::client_resources::ClientResources;
 use horizon_core::geometry::Direction;
 use horizon_world::registry::BlockStateId;
 
@@ -68,6 +69,12 @@ impl Game<'_> {
             self.pack.context.clone(),
             self.native_sprite_split(),
         )
+    }
+    /// For a client mod: the files of the resources loaded now, resource packs' over vanilla's, to read textures
+    /// and other resources on any thread. Ask again when `native_block_sprites_version` changes. API
+    /// @API:block_appearance@.
+    pub(super) fn native_client_resources(&self) -> ClientResources {
+        ClientResources::new(self.options.resources.clone())
     }
     fn native_sprite_lookup(&self) -> Lookup<'_> {
         Lookup::new(&self.pack.context, self.native_sprite_split())
