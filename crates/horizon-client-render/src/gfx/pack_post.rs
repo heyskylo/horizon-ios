@@ -3000,7 +3000,15 @@ impl PackPost {
         let n = head.len().min(pass.block.len());
         pass.block[..n].copy_from_slice(&head[..n]);
         for (index, ty, offset) in &pass.uniforms {
-            if let Some(v) = index.and_then(|i| self.uniforms.values.get(i)) {
+            let Some((i, v)) = index.and_then(|i| Some((i, self.uniforms.values.get(i)?))) else {
+                continue;
+            };
+            // A built-in of another type keeps its initial value (0); custom uniforms were
+            // checked when the pass was built.
+            if pack_uniforms::NAMES
+                .get(i)
+                .is_none_or(|name| v.read_as(name, ty))
+            {
                 v.write(ty, &mut pass.block, *offset as usize);
             }
         }
@@ -5568,6 +5576,9 @@ mod const_offset_tests;
 
 #[cfg(test)]
 mod integer_colortex0_tests;
+
+#[cfg(test)]
+mod wrong_type_uniform_tests;
 
 #[cfg(test)]
 mod atlas_name_post_tests;

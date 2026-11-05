@@ -155,6 +155,31 @@ impl Value {
         Value::I(a)
     }
 
+    /// Whether a program that declares the built-in `name` as `ty` reads this value. Iris 1.11.7
+    /// disables a built-in declared with another GLSL type than the one it gives ("Wrong uniform
+    /// type ... Disabling that uniform"), and the program reads 0. Our probe packs saw it for a
+    /// float declared `int` or `vec2`, an int `float`, an `ivec2` `vec2`, `int` or `ivec3`, a
+    /// `vec3` `vec2` or `vec4`, a `mat4` `mat3`, and any `uint`; an int or a bool built-in
+    /// declared `bool` or `int` was kept. A float declared `bool` is left as it was: Iris warned,
+    /// but our probe read true.
+    pub fn read_as(&self, name: &str, ty: &str) -> bool {
+        let int = matches!(self, Value::I(_));
+        let (declared_int, size) = match ty {
+            "float" => (false, 1),
+            "bool" if !int => return true,
+            "int" | "bool" => (true, 1),
+            "mat2" => (false, 4),
+            "mat3" => (false, 9),
+            "mat4" => (false, 16),
+            t if t.starts_with('u') => return false,
+            t if let Some(n) = t.strip_prefix("ivec") => (true, n.parse().unwrap_or(0)),
+            t if let Some(n) = t.strip_prefix("vec") => (false, n.parse().unwrap_or(0)),
+            _ => return true,
+        };
+        let name = name.strip_prefix("gbuffers.").unwrap_or(name);
+        declared_int == int && size == components(name)
+    }
+
     /// Writes the value as the type the pack declared, at `offset` of a std140 block.
     pub fn write(&self, ty: &str, out: &mut [u8], offset: usize) {
         let ints = matches!(ty, "int" | "bool" | "uint") || ty.starts_with(['i', 'u']);
@@ -1012,6 +1037,36 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    /// The declarations our probe packs (#9307) ran in Iris 1.11.7: kept, or read as 0.
+    #[test]
+    fn built_ins_are_read_only_as_iris_gives_them() {
+        let int = Value::i(&[1]);
+        let float = Value::f(&[0.25]);
+        let matrix = Value::f(&[1.0; 16]);
+        for (value, name, ty, kept) in [
+            (&int, "isSpectator", "bool", true),
+            (&int, "isSpectator", "int", true),
+            (&int, "worldTime", "bool", true),
+            (&int, "worldTime", "uint", false),
+            (&int, "worldTime", "float", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "ivec2", true),
+            (&Value::i(&[2048, 2048]), "atlasSize", "vec2", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "int", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "ivec3", false),
+            (&float, "sunAngle", "float", true),
+            (&float, "sunAngle", "vec2", false),
+            (&float, "viewWidth", "int", false),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec3", true),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec4", false),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec2", false),
+            (&matrix, "gbufferModelView", "mat4", true),
+            (&matrix, "gbufferModelView", "mat3", false),
+            (&Value::i(&[1]), GBUFFERS_FOG_MODE, "int", true),
+        ] {
+            assert_eq!(value.read_as(name, ty), kept, "{ty} {name}");
+        }
     }
 
     /// The load-time run of custom uniforms sees each built-in at its size: Iris 1.11.7 reads 2
