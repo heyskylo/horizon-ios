@@ -61,6 +61,62 @@ pub(super) struct Cosmetics {
     listed: AccountSync,
     /// Whether the signed-in account owns a cosmetic.
     owner: OwnerCheck,
+    /// Which other players play an emote (`horizon_cosmetics::Feed`), started with the client.
+    feed: Option<horizon_cosmetics::Feed>,
+    /// My emote on its way to the service.
+    emote_out: EmoteOut,
+}
+
+/// The emote the player plays, told to the service: the last wish sent (`Some(None)`: stopped),
+/// the wish waiting, the request on its way, and the session kept for it.
+#[derive(Default)]
+struct EmoteOut {
+    sent: Option<Option<String>>,
+    /// When a looping emote is said again (`/v1/emote` keeps one a minute).
+    again: Option<Instant>,
+    sending: Option<Receiver<Result<(), String>>>,
+    retry: Option<(Instant, Duration)>,
+    kept: Arc<std::sync::Mutex<horizon_cosmetics::account::Kept>>,
+}
+
+/// Tells the service the player plays `emote` (`None`: stopped).
+fn send_emote(
+    kept: &std::sync::Mutex<horizon_cosmetics::account::Kept>,
+    emote: Option<&str>,
+) -> Result<(), String> {
+    let Some(session) = horizon_client::auth::current() else {
+        return Ok(());
+    };
+    let mut kept = kept
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    horizon_cosmetics::account::play_emote(
+        &mut kept,
+        &http(),
+        &session.name,
+        |id| horizon_client::auth::join_server(&session, id).map_err(|e| format!("{e:?}")),
+        emote,
+    )
+}
+
+/// The emotes the signed-in account owns, for the wheel (none signed in: none).
+fn load_owned_emotes(
+    kept: &std::sync::Mutex<horizon_cosmetics::account::Kept>,
+) -> Result<Vec<horizon_cosmetics::account::OwnedEmote>, String> {
+    let Some(session) = horizon_client::auth::current() else {
+        return Ok(Vec::new());
+    };
+    let service = http();
+    let mut kept = kept
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    horizon_cosmetics::account::owned_emotes(
+        &mut kept,
+        &service,
+        &session.name,
+        |id| horizon_client::auth::join_server(&session, id).map_err(|e| format!("{e:?}")),
+        |path| horizon_cosmetics::Transport::get(&service, path),
+    )
 }
 
 /// Whether the signed-in account owns a cosmetic: the answer kept from the last run first
@@ -256,6 +312,9 @@ fn own_uuid(
     }
 }
 
+/// How often a looping emote is said again (the service keeps one a minute).
+const LOOP_AGAIN: Duration = Duration::from_secs(30);
+
 /// The game's model of an item's part.
 fn part(p: &horizon_cosmetics::Part) -> Part {
     Part {
@@ -298,8 +357,28 @@ fn covered(m: &Mob, slot: Slot) -> bool {
             .chest
             .as_deref()
             .is_some_and(|c| c != "minecraft:elytra"),
-        Slot::NameTag => true,
+        Slot::NameTag | Slot::Emote => true,
     }
+}
+
+/// How high the tallest item drawn on a body gets above the neck (pixels, `Item::top`): what
+/// lifts the wearer's name tag. None when nothing is drawn on it: the wearer's own cosmetics hidden
+/// (`worn` is None), another player's at "name tags only" or hidden, or every item `covered` (a
+/// helmet over a hat). One max over at most five items, read when the item was parsed.
+fn body_top(
+    extras: &horizon_client::extras::Extras,
+    own: bool,
+    worn: Option<&horizon_cosmetics::Worn>,
+    covered: impl Fn(Slot) -> bool,
+) -> Option<f32> {
+    if !own && extras.effective_others() != Others::Shown {
+        return None;
+    }
+    worn?
+        .iter()
+        .filter(|i| !covered(i.slot))
+        .map(|i| i.top)
+        .reduce(f32::max)
 }
 
 impl Game<'_> {
@@ -314,6 +393,10 @@ impl Game<'_> {
             let (client, local) = Cosmetics::client();
             c.client = Some(client);
             c.local = local;
+            // Others' emotes come from the service only (a local folder has no one playing).
+            if !local {
+                c.feed = Some(horizon_cosmetics::Feed::new(http()));
+            }
         }
         c.frame.set(c.frame.get().wrapping_add(1));
         // Item files from a folder (the art, the bench): shown as to an owner, nothing asked.
@@ -359,7 +442,47 @@ impl Game<'_> {
             let busy =
                 c.owner.asking.is_some() || c.mine.sending.is_some() || c.listed.sending.is_some();
             let extras = &self.settings.extras;
-            if busy {
+            if let Some(done) = c
+                .emote_out
+                .sending
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok())
+            {
+                c.emote_out.sending = None;
+                match done {
+                    Ok(()) => c.emote_out.retry = None,
+                    Err(_) => {
+                        c.emote_out.retry = backoff(c.emote_out.retry);
+                        c.emote_out.sent = None;
+                    }
+                }
+            }
+            // My emote: only while I show myself as a Horizon player (playing one says so).
+            let playing = self.emotes.sending();
+            let looping = playing.as_ref().is_some_and(|(_, looping)| *looping);
+            let wish = playing.map(|(id, _)| id).filter(|_| extras.horizon_listed);
+            let o = &mut c.emote_out;
+            let changed = o.sent.as_ref() != Some(&wish);
+            let again = looping && o.again.is_some_and(|at| Instant::now() >= at);
+            let waited = o.retry.is_none_or(|(at, _)| Instant::now() >= at);
+            // Nothing sent yet and nothing playing: nothing to say (a failed send forgets what
+            // was sent: the service ends a one-shot by itself, a loop within a minute).
+            let quiet = wish.is_none() && o.sent.is_none();
+            let emote_due = !quiet && waited && (changed || again);
+            // One sign-in at a time, the emote's included.
+            if busy || o.sending.is_some() {
+            } else if emote_due {
+                o.sent = Some(wish.clone());
+                o.again = looping.then(|| Instant::now() + LOOP_AGAIN);
+                let (tx, rx) = channel();
+                o.sending = Some(rx);
+                let kept = o.kept.clone();
+                std::thread::Builder::new()
+                    .name("Cosmetics emote".into())
+                    .spawn(move || {
+                        let _ = tx.send(send_emote(&kept, wish.as_deref()));
+                    })
+                    .ok();
             } else if c.mine.due(extras.cosmetics_mine) {
                 c.mine.start(extras.cosmetics_mine, send_mine);
             } else if c.listed.due(extras.horizon_listed) {
@@ -380,14 +503,120 @@ impl Game<'_> {
             .retain(|_, b| Arc::strong_count(&b.item) > 1);
     }
 
+    /// Once a tick: names the Horizon players in view to the emote feed and plays what it says
+    /// they play on their models; one that moved ends theirs here at once. Others' emotes show
+    /// with "Other players' cosmetics" on Shown only; otherwise nothing is asked.
+    pub(super) fn tick_others_emotes(&mut self) {
+        let shown = self.settings.extras.effective_others() == Others::Shown;
+        // Items from a folder (the art, the bench): every mannequin plays its first emote, again
+        // and again.
+        if self.cosmetics.local && shown {
+            let Some(first) = self.owned_emotes().first().cloned() else {
+                return;
+            };
+            for m in self.mobs.iter_mut() {
+                let age = m.age as f32;
+                if &*m.kind.id == "minecraft:mannequin"
+                    && m.emote.as_ref().is_none_or(|p| p.at(age).is_none())
+                {
+                    m.emote = Some(horizon_cosmetics::Playing {
+                        item: first.clone(),
+                        // Out of step, so a crowd doesn't move as one.
+                        start: age - (m.id % 40) as f32,
+                        stop: None,
+                    });
+                }
+            }
+            return;
+        }
+        let (Some(feed), Some(client)) = (&self.cosmetics.feed, &self.cosmetics.client) else {
+            return;
+        };
+        if !shown {
+            feed.ask([]);
+            for m in self.mobs.iter_mut() {
+                m.emote = None;
+            }
+            return;
+        }
+        let mut frame = client.frame();
+        let mut horizon = Vec::new();
+        for m in self.mobs.iter() {
+            if &*m.kind.id == "minecraft:player"
+                && let Some(uuid) = self.remote_player_uuid(m.id)
+                && frame.horizon(uuid)
+            {
+                horizon.push((m.id, uuid));
+            }
+        }
+        drop(frame);
+        feed.ask(horizon.iter().map(|(_, u)| *u));
+        let now = Instant::now();
+        for (id, uuid) in horizon {
+            let seen = feed.playing(uuid);
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                continue;
+            };
+            let age = m.age as f32;
+            let moved = {
+                let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
+                dx * dx + dz * dz > 1e-4
+            };
+            match (seen, &mut m.emote) {
+                (Some(seen), Some(p)) if Arc::ptr_eq(&p.item, &seen.item) => {
+                    if moved && p.stop.is_none() {
+                        p.stop = Some(age);
+                    }
+                }
+                (Some(seen), slot) if !moved => {
+                    let ticks = now.duration_since(seen.started).as_secs_f32() * 20.0;
+                    *slot = Some(horizon_cosmetics::Playing {
+                        item: seen.item,
+                        start: age - ticks,
+                        stop: None,
+                    });
+                }
+                (_, Some(p)) if p.stop.is_none() => p.stop = Some(age),
+                _ => {}
+            }
+            if m.emote.as_ref().is_some_and(|p| p.at(age).is_none()) {
+                m.emote = None;
+            }
+        }
+    }
+
+    /// Asks the service which emotes the account owns, for the wheel: when it opens, at most
+    /// every 10 minutes (a folder's emotes need no asking; an offline account has none).
+    pub(super) fn refresh_owned_emotes(&mut self) {
+        const AGAIN: Duration = Duration::from_secs(600);
+        let e = &mut self.emotes;
+        if self.cosmetics.local
+            || !horizon_cosmetics::enabled()
+            || horizon_client::auth::current().is_none()
+            || e.loading.is_some()
+            || e.loaded.is_some_and(|at| at.elapsed() < AGAIN)
+        {
+            return;
+        }
+        let (tx, rx) = channel();
+        e.loading = Some(rx);
+        let kept = self.cosmetics.emote_out.kept.clone();
+        std::thread::Builder::new()
+            .name("Cosmetics emotes owned".into())
+            .spawn(move || {
+                let _ = tx.send(load_owned_emotes(&kept));
+            })
+            .ok();
+    }
+
     /// Items from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins are dressed and marked too.
     pub(super) fn cosmetics_local(&self) -> bool {
         self.cosmetics.local
     }
 
-    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), and the
-    /// name tag style they wear if cosmetics are shown for them (name tags only counts). One
-    /// look in the cache for both.
+    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), the
+    /// name tag style they wear if cosmetics are shown for them (name tags only counts), and how
+    /// high what is drawn on their body gets (`body_top`). One look in the cache for all three.
     pub(super) fn cosmetics_marks(&self, m: &Mob, own: bool) -> super::names::Marks {
         let mut marks = super::names::Marks::default();
         let extras = &self.settings.extras;
@@ -407,6 +636,9 @@ impl Game<'_> {
         marks.horizon = extras.horizon_marks && frame.horizon(uuid);
         let worn = if styles { frame.worn(uuid) } else { None };
         drop(frame);
+        if !horizon_client::mobs::trader::is_invisible(m) {
+            marks.top = body_top(extras, own, worn.as_ref(), |slot| covered(m, slot));
+        }
         marks.style = worn.and_then(|w| self.cosmetics_tag(&w));
         marks
     }
@@ -493,8 +725,14 @@ impl Game<'_> {
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) -> Option<(glam::Vec3, glam::Vec3)> {
         use horizon_client::mobs::{anim, render};
-        let worn = self.worn(m, own)?;
-        if horizon_client::mobs::trader::is_invisible(m) {
+        let worn = self.worn(m, own);
+        // An emote's props: its time and weight while it plays.
+        let ticks = m.age as f32 + alpha;
+        let emote = m.emote.as_ref().and_then(|p| {
+            let (t, w) = p.at(ticks)?;
+            (p.item.vertices > 0).then_some((&p.item, t, w))
+        });
+        if worn.is_none() && emote.is_none() || horizon_client::mobs::trader::is_invisible(m) {
             return None;
         }
         // The avatar's body, posed as it is drawn.
@@ -505,7 +743,6 @@ impl Game<'_> {
         body_poses.reset(body);
         let data = self.res.mob_data();
         anim::setup(m, &anim::state(m, alpha), body_poses, &data.animations);
-        let ticks = m.age as f32 + alpha;
         let frame = self.cosmetics.frame.get();
         let mut bounds = None;
         // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
@@ -513,8 +750,10 @@ impl Game<'_> {
         let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
         let bodies = own || self.settings.extras.effective_others() == Others::Shown;
-        for item in worn.iter() {
-            if !bodies || covered(m, item.slot) {
+        let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
+        let emote_items = emote.map(|(i, t, w)| (i, Some((t, w))));
+        for (item, emoting) in worn_items.chain(emote_items) {
+            if emoting.is_none() && (!bodies || covered(m, item.slot)) {
                 continue;
             }
             let mut baked = self.cosmetics.baked.borrow_mut();
@@ -557,6 +796,14 @@ impl Game<'_> {
                 };
                 poses.reset(model);
                 item.animate(ticks, |name, pose| *poses.get(name) = pose);
+                if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
+                    e.pose_props(t, |n| item.rest(n), |n, pose| *poses.get(n) = pose);
+                    // Props grow in and shrink out with the emote's blend.
+                    let root = poses.get(&model.name);
+                    for s in &mut root[6..9] {
+                        *s *= w;
+                    }
+                }
                 if gpu {
                     let mut models = self.skin_models.borrow_mut();
                     let mut frame = self.skin_frame.borrow_mut();
@@ -600,9 +847,26 @@ mod tests {
         "texture": {"png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="},
         "tag": {"line": "#a98fff"}}"##;
 
-    /// The service: every player asked about wears `TAG`; each request is logged.
-    #[derive(Clone, Default)]
-    struct Service(Arc<Mutex<Vec<String>>>);
+    /// A crown whose star tops out 20 pixels above the neck: a 2-pixel box on a head item
+    /// attached 18 pixels up (a 16×16 texture).
+    const CROWN: &str = r##"{"format": 1, "id": "crown", "slot": "head", "bone": "head",
+        "attach": {"offset": [0, -18, 0]},
+        "texture": {"png": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGklEQVR4nGM4scXmPyWYYdSAUQNGDRguBgAA+D23H0jXFFsAAAAASUVORK5CYII="},
+        "parts": [{"name": "star", "cubes": [{"origin": [-1, -2, -1], "size": [2, 2, 2], "uv": [0, 0]}]}]}"##;
+
+    /// The service: every player asked about wears its items (`TAG` by default); each request is
+    /// logged.
+    #[derive(Clone)]
+    struct Service(
+        Arc<Mutex<Vec<String>>>,
+        &'static [(&'static str, &'static str)],
+    );
+
+    impl Default for Service {
+        fn default() -> Self {
+            Service(Arc::default(), &[("tag", TAG)])
+        }
+    }
 
     impl horizon_cosmetics::Transport for Service {
         fn post(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
@@ -614,7 +878,10 @@ mod tests {
                 .iter()
                 .map(|p| {
                     let p = p.as_str().unwrap().to_owned();
-                    (p, serde_json::json!([{"id": "tag", "hash": "h"}]))
+                    let items: Vec<_> = (self.1.iter())
+                        .map(|(id, _)| serde_json::json!({"id": id, "hash": "h"}))
+                        .collect();
+                    (p, serde_json::Value::from(items))
                 })
                 .collect();
             Ok(serde_json::json!({"ttl": 60, "players": players})
@@ -624,7 +891,10 @@ mod tests {
 
         fn get(&self, path: &str) -> Result<Vec<u8>, String> {
             self.0.lock().unwrap().push(format!("GET {path}"));
-            Ok(TAG.as_bytes().to_vec())
+            let (_, file) = (self.1.iter())
+                .find(|(id, _)| path.starts_with(&format!("/v1/items/{id}?")))
+                .ok_or_else(|| format!("no item at {path}"))?;
+            Ok(file.as_bytes().to_vec())
         }
     }
 
@@ -636,7 +906,14 @@ mod tests {
         extras: &Extras,
         patience: Duration,
     ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
-        let service = Service::default();
+        other_player_from(Service::default(), extras, patience)
+    }
+
+    fn other_player_from(
+        service: Service,
+        extras: &Extras,
+        patience: Duration,
+    ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
         let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
         let deadline = Instant::now() + patience;
         let worn = loop {
@@ -729,5 +1006,62 @@ mod tests {
         );
         // An offline account in single player: nothing to ask about.
         assert_eq!(own_uuid(Some(OFFLINE), true, true, || None), None);
+    }
+
+    #[test]
+    fn a_tall_cosmetic_lifts_the_name_tag_only_while_it_is_drawn() {
+        use super::super::names::{NAME_TAG_UNIT, cosmetic_lift};
+        use horizon_cosmetics::prefs::Others;
+        // Vanilla: EntityAttachment.NAME_TAG of a standing player, 1.8 + 0.5 above the feet;
+        // the tag's lowest pixel 10 text pixels under it.
+        const VANILLA: f64 = 2.3;
+        let unit = f64::from(NAME_TAG_UNIT);
+        let tag = |top: Option<f32>| VANILLA + top.map_or(0.0, |t| cosmetic_lift(t, 1.0));
+        // The star's top: 20 pixels above the neck, which is 1.501 blocks up the model, scaled
+        // by the avatar's 0.9375.
+        let star = 0.9375 * (1.501 + 20.0 / 16.0);
+        let both: &'static [(&str, &str)] = &[("tag", TAG), ("crown", CROWN)];
+        let shown = Extras {
+            cosmetics_others: Some(Others::Shown),
+            ..Extras::default()
+        };
+        let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
+        let top_of = |extras: &Extras, patience| {
+            let (worn, _) = other_player_from(Service(Arc::default(), both), extras, patience);
+            body_top(extras, false, worn.as_ref(), |_| false)
+        };
+        // No cosmetics drawn on the body (a name tag style only): vanilla's height exactly.
+        let (worn, _) = other_player(&shown, long);
+        assert!(worn.is_some());
+        assert_eq!(
+            tag(body_top(&shown, false, worn.as_ref(), |_| false)),
+            VANILLA
+        );
+        // A small hat under the tag: vanilla's height too.
+        assert_eq!(cosmetic_lift(10.0, 1.0), 0.0);
+        // The crown: the whole tag just over the star.
+        let crowned = tag(top_of(&shown, long));
+        let bottom = crowned - 10.0 * unit;
+        assert!(
+            bottom > star && bottom < star + 2.0 * unit,
+            "{bottom} over {star}"
+        );
+        // A helmet over it: vanilla's height.
+        let (worn, _) = other_player_from(Service(Arc::default(), both), &shown, long);
+        let helmet = body_top(&shown, false, worn.as_ref(), |slot| slot == Slot::Head);
+        assert_eq!(tag(helmet), VANILLA);
+        // Others' cosmetics on name tags only, or hidden: nothing on the body, vanilla's height.
+        for others in [Others::NameTags, Others::Hidden] {
+            let extras = Extras {
+                cosmetics_others: Some(others),
+                ..Extras::default()
+            };
+            let patience = if others == Others::Hidden {
+                short
+            } else {
+                long
+            };
+            assert_eq!(tag(top_of(&extras, patience)), VANILLA, "{others:?}");
+        }
     }
 }

@@ -9,7 +9,9 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var world_depth: texture_depth_2d;
+// A depth view read as an unfilterable float: naga's GLSL backend cannot
+// `textureLoad` a depth texture, and the texel is the same either way.
+@group(0) @binding(1) var world_depth: texture_2d<f32>;
 
 struct World {
     @location(0) color: vec4<f32>,
@@ -24,7 +26,7 @@ fn fs_blit(@builtin(position) p: vec4<f32>) -> World {
     let at = vec2<i32>(i32(p.x), size.y - 1 - i32(p.y));
     var out: World;
     out.color = textureLoad(source, at, 0);
-    out.depth = 1.0 - textureLoad(world_depth, at, 0);
+    out.depth = 1.0 - textureLoad(world_depth, at, 0).r;
     return out;
 }
 
@@ -49,15 +51,51 @@ fn vs_uv(@builtin(vertex_index) i: u32) -> Full {
     return Full(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), vec2<f32>(uv.x, 1.0 - uv.y));
 }
 
+// The screen's own rows: a picture a shader pack's `final` drew (not a GL-rows buffer).
+@vertex
+fn vs_screen(@builtin(vertex_index) i: u32) -> Full {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return Full(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), uv);
+}
+
 @fragment
 fn fs_copy(v: Full) -> @location(0) vec4<f32> {
     return textureSample(source, linear, v.uv);
 }
 
-// One level of a buffer's mip chain from the level above (6.1.7): the average of the 2×2
-// texels under each destination texel, by one bilinear sample at their shared corner.
+// One level of a buffer's mip chain from the level above (6.1.7): a box filter, the average
+// of the texels under each destination texel (OpenGL 4.6, 8.14.4, recommends one). Along an
+// even side a texel covers two of the level above; along an odd side of 2d + 1 texels, texel i
+// covers 2 + 1 / d of them: 2i, 2i + 1 and 2i + 2, weighted d - i, d and i + 1 over 2d + 1.
+// Every texel of the level above then counts as much, so a small bright spot keeps its share
+// down to the last level, which is the buffer's mean.
+fn down_weights(i: u32, side: u32) -> vec3<f32> {
+    if side == 1u {
+        return vec3<f32>(1.0, 0.0, 0.0);
+    }
+    if side % 2u == 0u {
+        return vec3<f32>(0.5, 0.5, 0.0);
+    }
+    let d = f32(side / 2u);
+    return vec3<f32>(d - f32(i), d, f32(i) + 1.0) / f32(side);
+}
+
 @fragment
 fn fs_down(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let size = max(textureDimensions(source) / 2u, vec2<u32>(1u));
-    return textureSampleLevel(source, linear, p.xy / vec2<f32>(size), 0.0);
+    let above = textureDimensions(source);
+    let at = vec2<u32>(p.xy);
+    let wx = down_weights(at.x, above.x);
+    let wy = down_weights(at.y, above.y);
+    let first = vec2<i32>(at * 2u);
+    let last = vec2<i32>(above) - 1;
+    var sum = vec4<f32>(0.0);
+    for (var y = 0; y < 3; y++) {
+        for (var x = 0; x < 3; x++) {
+            let w = wx[x] * wy[y];
+            if w > 0.0 {
+                sum += w * textureLoad(source, min(first + vec2<i32>(x, y), last), 0);
+            }
+        }
+    }
+    return sum;
 }

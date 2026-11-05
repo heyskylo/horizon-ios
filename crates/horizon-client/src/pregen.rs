@@ -6,6 +6,33 @@
 //! memory stays bounded whatever the radius.
 use crate::streaming::Band;
 
+/// The opt-in command's report-format tree, beside vanilla's exported report.
+/// The server sends this to clients so they can complete the command too.
+pub fn command_tree() -> serde_json::Value {
+    use serde_json::json;
+    let center = json!({"type": "argument", "parser": "minecraft:vec2", "executable": true});
+    let shape = json!({"type": "literal", "executable": true, "children": {"center": center}});
+    let mut children = serde_json::Map::new();
+    children.insert(
+        "start".into(),
+        json!({
+            "type": "literal", "children": {"radius": {
+                "type": "argument", "parser": "brigadier:integer",
+                "properties": {"min": 0, "max": 30_000_000}, "executable": true,
+                "children": {"square": shape, "circle": shape}
+            }}
+        }),
+    );
+    for name in ["status", "pause", "continue", "cancel"] {
+        children.insert(name.into(), json!({"type": "literal", "executable": true}));
+    }
+    json!({"type": "root", "children": {"pregen": {
+        "type": "literal",
+        "permissions": {"type": "require", "permission": {"level": "gamemasters"}},
+        "children": children
+    }}})
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     Square,

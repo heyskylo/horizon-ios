@@ -395,6 +395,7 @@
   "Frame Generation": "Generiranje sličica",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Prikazuje izmišljenu sličicu između svake dvije stvarne: glađe, malo veća latencija.",
   "Shadow Cache": "Predmemorija sjena",
+  "Shader Packs...": "Paketi shadera...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ponovno koristi mapu sjena paketa kada se sunce, pogled i svijet podudaraju. Zadano isključeno.",
   "Find BlueMap": "Pronađi BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na poslužiteljima pronalazi njihov BlueMap web preglednik karata za udaljeni teren. Sljedeće pridruživanje.",

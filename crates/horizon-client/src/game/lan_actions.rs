@@ -1434,9 +1434,6 @@ impl Game<'_> {
         }
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
-        // A block's or a double chest's menu counts among the openers of its
-        // lid (a vehicle keeps its own `Container`, an ender chest has none).
-        let counts_openers = matches!(slots, Slots::Block(_) | Slots::Double(_, _));
         let hidden = self.native_hidden_slots(pos, items.len());
         // A mod menu type's block tells the client where it is, with what its
         // mod writes (`openMenu` with an extra-data writer); a stock menu
@@ -1463,19 +1460,11 @@ impl Game<'_> {
         if !hidden.is_empty() {
             host.hub.hide_menu_slots(conn, hidden);
         }
-        // `ContainerOpenersCounter.incrementOpeners` (`ChestBlockEntity.startOpen`,
-        // `ShulkerBoxBlockEntity.startOpen`): the lid opens for the guest, and
-        // when this is the first opener the open sound plays for everyone
-        // around, the opener included (`playSound(null, …)`, which the capture
-        // relay sends on to the guests). Without it the host's copy never
-        // learned of the open, so a guest's box opened silently.
-        // A spectator never joins the openers (`startOpen` returns on
-        // `player.isSpectator()`): its menu opens but the lid stays shut, no
-        // sound plays, and `stopOpen` has nothing to decrement, which is why
-        // the count must not be raised here either (#8517).
-        if counts_openers && !spectator && self.container_openers_changed(pos, true) {
-            self.container_edge_sound(pos, true);
-        }
+        // The opener count was already raised by the guest's use of the block
+        // (`open_menu`, through `BlockEntity.triggerEvent`/`startOpen`); raising
+        // it again here counted one player twice. Only the last closer would
+        // then reach zero and `stopOpen`, so a shulker box stayed open forever
+        // (#9500).
         true
     }
 
@@ -1672,6 +1661,21 @@ impl Game<'_> {
         self.player_menu_closing(host, conn);
     }
 
+    pub(super) fn vehicle_has_other_viewers(
+        container: Option<(i32, i32, i32)>,
+        guests: &[horizon_client::lan::guest::Guest],
+        closing_conn: Option<u32>,
+        key: (i32, i32, i32),
+    ) -> bool {
+        container == Some(key)
+            || guests.iter().any(|g| {
+                Some(g.conn) != closing_conn
+                    && g.menu
+                        .as_ref()
+                        .is_some_and(|m| m.slots == Slots::Block(key))
+            })
+    }
+
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
     /// (`AbstractChestBoat.stopOpen` / `MinecartChest.stopOpen`): the menu's
     /// slots go back to the vehicle, the shared placeholder leaves
@@ -1681,7 +1685,11 @@ impl Game<'_> {
     /// `ServerPlayer.tick` reach/destroyed close.
     fn close_guest_vehicle_menu(&mut self, host: &LanHost, conn: u32, key: (i32, i32, i32)) {
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        let other_viewers =
+            Self::vehicle_has_other_viewers(self.container, &host.hub.guests, Some(conn), key);
+        if !other_viewers {
+            self.world.block_entities.remove(&key);
+        }
         let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
             Some([b.position.x, b.position.y, b.position.z])
         } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
@@ -5025,8 +5033,10 @@ impl Game<'_> {
             let Some(p) = game.player.as_mut() else {
                 return;
             };
-            p.fall_fly_ticks += 1;
+            // updateFallFlying: last tick's count plus one; LivingEntity.tick
+            // counts this tick after aiStep.
             let next = p.fall_fly_ticks + 1;
+            p.fall_fly_ticks += 1;
             let at = [p.position.x, p.position.y, p.position.z];
             if next % 10 != 0 {
                 return;

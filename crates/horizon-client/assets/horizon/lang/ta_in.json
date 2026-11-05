@@ -422,6 +422,7 @@
   "Frame Generation": "பிரேம் தலைமுறை",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "ஒவ்வொரு இரண்டு உண்மையானவற்றிற்கும் இடையே ஒரு தயாரிக்கப்பட்ட சட்டத்தைக் காட்டுகிறது: மென்மையானது, இன்னும் கொஞ்சம் தாமதம்.",
   "Shadow Cache": "நிழல் கேச்",
+  "Shader Packs...": "ஷேடர் பேக்ஸ்...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "சூரியன், காட்சி மற்றும் உலகம் பொருந்தும்போது பேக் நிழல் வரைபடத்தை மீண்டும் பயன்படுத்துகிறது. இயல்பாக ஆஃப்.",
   "Find BlueMap": "BlueMap ஐக் கண்டறியவும்",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "சேவையகங்களில், தொலைதூர நிலப்பரப்பிற்கான அவர்களின் BlueMap வலை வரைபடத்தைக் கண்டறியும். அடுத்து சேரவும்.",

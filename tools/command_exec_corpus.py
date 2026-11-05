@@ -53,6 +53,12 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'mob effect predicate view' in group_names:
+        try:
+            from .mob_effect_predicate_corpus import predicates as effect_predicates
+        except ImportError:
+            from mob_effect_predicate_corpus import predicates as effect_predicates
+        fixtures.update(effect_predicates())
     if 'named smoke predicates' in group_names:
         always = {'type': 'minecraft:all_of', 'terms': []}
         fixtures['command_smoke:always'] = always
@@ -5518,7 +5524,7 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 # what they leave behind reaches no other group.
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
-ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
+ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
 ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING
@@ -5529,6 +5535,14 @@ def groups():
         from .craft_map_take_corpus import cases as craft_map_takes
     except ImportError:
         from craft_map_take_corpus import cases as craft_map_takes
+    try:
+        from .transmute_patch_corpus import cases as transmute_patches
+    except ImportError:
+        from transmute_patch_corpus import cases as transmute_patches
+    try:
+        from .mob_effect_predicate_corpus import cases as mob_effect_predicates
+    except ImportError:
+        from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
         from .frame_map_corpus import frame_maps
         from .allay_damage_corpus import allay_player_damage
@@ -5553,6 +5567,8 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('transmute result patches', transmute_patches(cmd, setup)),
+        ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
         ('craft map takes', craft_map_takes(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
