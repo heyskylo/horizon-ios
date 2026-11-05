@@ -257,6 +257,49 @@
    "issue": "#3910"
   },
   {
+   "id": "end-city-loot",
+   "title": "Enchanted loot in End cities",
+   "status": "shipped",
+   "area": "gameplay",
+   "plain": "Armour and tools in End city chests should come enchanted, as in vanilla.",
+   "dev": "`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues #1437, #1660. The loot's enchantment functions now reach every table that rolls (#1911, #2037).",
+   "links": [
+    "#1437",
+    "#1660",
+    "#1911",
+    "#2037"
+   ],
+   "shipped_in": "v0.2.73"
+  },
+  {
+   "id": "end-city-banners",
+   "title": "End city banners keep their pattern",
+   "status": "shipped",
+   "area": "gameplay",
+   "plain": "Banners in End cities show as plain magenta instead of with their pattern.",
+   "dev": "Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue #1438; possibly related: #526. The templates' block entities now keep their patterns (#1928).",
+   "links": [
+    "#1438",
+    "#526",
+    "#1928"
+   ],
+   "shipped_in": "v0.2.67"
+  },
+  {
+   "id": "languages",
+   "title": "Play in your language",
+   "status": "shipped",
+   "area": "gameplay",
+   "plain": "Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English.",
+   "dev": "Translatable components resolved through the selected language for items, containers and server text (#1806), on top of the bundled languages the prepared resources carry (#1594). Left: the client's own screens (#1672) and the main menu with zh_cn.",
+   "links": [
+    "#1806",
+    "#1594",
+    "#1672"
+   ],
+   "shipped_in": "v0.2.65"
+  },
+  {
    "id": "chicken-flap",
    "title": "Chickens flap while they fall",
    "status": "shipped",
@@ -455,7 +498,21 @@
    "status": "next",
    "area": "servers",
    "plain": "Manage a server from a console, ban and pardon players, and drive it from other tools through a full admin API and an MCP server for AI agents.",
-   "dev": "`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. docs/server.md, docs/api/server.md.",
+   "dev": "`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The last pieces merged: bans edited while the server is stopped (#9767) and the MCP tools' contracts pinned by a test (#9748). The panel's later features and vanilla's management protocol are their own item (server-panel-management). docs/server.md, docs/api/server.md.",
+   "links": [
+    "#9767",
+    "#9748",
+    "docs/server.md",
+    "docs/api/server.md"
+   ]
+  },
+  {
+   "id": "server-panel-management",
+   "title": "Server panel extras and vanilla's management protocol",
+   "status": "later",
+   "area": "servers",
+   "plain": "More of a server managed from its web panel (bans, worlds, logs and crash reports, modpacks), and vanilla's own server-management tools working with a Horizon server.",
+   "dev": "The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. Split from server-admin. docs/server.md, docs/api/server.md.",
    "links": [
     "docs/server.md",
     "docs/api/server.md"
@@ -1150,19 +1207,6 @@
    ]
   },
   {
-   "id": "languages",
-   "title": "Play in your language",
-   "status": "later",
-   "area": "gameplay",
-   "plain": "Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English.",
-   "dev": "Translatable components resolved through the selected language for items, containers and server text (#1806), on top of the bundled languages the prepared resources carry (#1594). Left: the client's own screens (#1672) and the main menu with zh_cn.",
-   "links": [
-    "#1806",
-    "#1594",
-    "#1672"
-   ]
-  },
-  {
    "id": "benchmark-your-pc",
    "title": "Benchmark your computer",
    "status": "help-wanted",
@@ -1171,33 +1215,6 @@
    "dev": "`horizon-launcher play --arg=--benchmark --arg=standard` writes a JSON report; `horizon-launcher data benchmark <report>` shows what would be sent and uploads it (playhorizon.dev/docs/performance). Results from three installs with the same hardware appear on the Benchmarks page. Example: #1711.",
    "links": [
     "https://playhorizon.dev/docs/performance"
-   ]
-  },
-  {
-   "id": "end-city-banners",
-   "title": "End city banners keep their pattern",
-   "status": "help-wanted",
-   "area": "gameplay",
-   "plain": "Banners in End cities show as plain magenta instead of with their pattern.",
-   "dev": "Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue #1438; possibly related: #526. The templates' block entities now keep their patterns (#1928).",
-   "links": [
-    "#1438",
-    "#526",
-    "#1928"
-   ]
-  },
-  {
-   "id": "end-city-loot",
-   "title": "Enchanted loot in End cities",
-   "status": "help-wanted",
-   "area": "gameplay",
-   "plain": "Armour and tools in End city chests should come enchanted, as in vanilla.",
-   "dev": "`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues #1437, #1660. The loot's enchantment functions now reach every table that rolls (#1911, #2037).",
-   "links": [
-    "#1437",
-    "#1660",
-    "#1911",
-    "#2037"
    ]
   },
   {

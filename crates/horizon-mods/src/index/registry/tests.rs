@@ -86,6 +86,15 @@ reason = "Sent chat messages it didn't declare."
 date = "2026-10-24"
 "#;
 
+/// The header of a PNG of `w`×`h` pixels: what the registry reads of an image.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0]);
+    b
+}
+
 /// A registry checkout and its downloaded files, in a scratch folder.
 struct Scratch(PathBuf);
 
@@ -102,7 +111,7 @@ impl Scratch {
         s.write("mods/cozy.toml", COZY);
         s.write("mods/glow.toml", GLOW);
         s.write("revoked.toml", REVOKED_TOML);
-        s.write("icons/coords_hud.png", "png");
+        s.write_bytes("icons/coords_hud.png", &png(128, 128));
         for (name, hash) in [
             ("coords_hud-0.1.0.hmod", HMOD),
             ("cozy-1.0.0.hpack", HPACK),
@@ -115,6 +124,12 @@ impl Scratch {
 
     fn write(&self, path: &str, text: &str) {
         std::fs::write(self.0.join("repo").join(path), text).unwrap();
+    }
+
+    fn write_bytes(&self, path: &str, bytes: &[u8]) {
+        let path = self.0.join("repo").join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
     }
 
     fn build(&self) -> Result<Index, Vec<String>> {
@@ -336,9 +351,49 @@ fn a_mod_may_turn_native_once() {
 }
 
 #[test]
+fn page_fields_and_screenshots_reach_the_index() {
+    let s = Scratch::new("page");
+    let page = "categories = [\"utility\"]\ntags = [\"hud\", \"coordinates\"]\n\
+                screenshots = [\"screenshots/coords_hud/1.png\", \"https://x.test/2.jpg\"]\n";
+    s.write("mods/coords_hud.toml", &format!("{page}{}", hud_entry()));
+    s.write_bytes("screenshots/coords_hud/1.png", &png(1280, 720));
+    let built = s.build().unwrap();
+    let p = built.project("coords_hud").unwrap();
+    assert_eq!(p.categories, ["utility"]);
+    assert_eq!(p.tags, ["hud", "coordinates"]);
+    assert_eq!(
+        p.screenshots,
+        [
+            "https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud/1.png",
+            "https://x.test/2.jpg"
+        ]
+    );
+    Index::parse(&serde_json::to_string(&built).unwrap()).unwrap();
+
+    // A category of another kind, a screenshot too small, one in another project's folder, and an
+    // icon that isn't square.
+    let bad = "categories = [\"bloom\"]\n\
+               screenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/other/2.png\"]\n";
+    s.write("mods/coords_hud.toml", &format!("{bad}{}", hud_entry()));
+    s.write_bytes("screenshots/coords_hud/1.png", &png(100, 100));
+    s.write_bytes("icons/coords_hud.png", &png(128, 64));
+    let errors = s.build().unwrap_err();
+    let has = |part: &str| errors.iter().any(|e| e.contains(part));
+    assert!(has("\"bloom\" is not a category of a mod"), "{errors:?}");
+    assert!(has("1.png: 100×100 pixels"), "{errors:?}");
+    assert!(
+        has("\"screenshots/other/2.png\" is neither screenshots/coords_hud/"),
+        "{errors:?}"
+    );
+    assert!(has("the icon is 128×64"), "{errors:?}");
+    assert_eq!(errors.len(), 4, "{errors:?}");
+}
+
+#[test]
 fn only_open_kinds_are_taken() {
     assert!(open(&Kind::Mod).is_ok() && open(&Kind::ResourcePack).is_ok());
-    assert!(open(&Kind::Shader).is_ok());
+    assert!(open(&Kind::Shader).is_ok() && open(&Kind::ShaderPack).is_ok());
+    assert!(open(&Kind::DataPack).is_ok());
     assert!(open(&Kind::Other("world".into())).is_err());
     let mut submit: Entry = toml::from_str(COZY).unwrap();
     submit.id = "submit".into();

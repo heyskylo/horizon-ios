@@ -607,12 +607,16 @@ impl PackAtlas {
         } else {
             "1.0"
         };
+        // A vertex's place in its section goes down to the 32768th of a block below it: read back
+        // with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` has that for every position
+        // we read (water tops at 8/9 - 0.001, plants' offsets), on all three axes (#8464). A fit,
+        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already.
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
              {cell}\
              hz_scale = vec2({:?}, {:?}) * {side};\n    \
-             hz_Vertex = vec4(hz_v_pos + hz_origin.xyz, 1.0);\n    \
+             hz_Vertex = vec4(floor(hz_v_pos * 32768.0) / 32768.0 + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
              hz_MultiTexCoord0 = vec4((hz_cell + clamp(vec2(hz_v_uv) * hz_uv_scale, 0.0, 1.0)) * hz_scale, 0.0, 1.0);\n    \
@@ -674,6 +678,7 @@ impl PackAtlas {
             after: String::new(),
             alpha_test: None,
             item_id_declared: false,
+            far_depth: false,
         }
     }
 }

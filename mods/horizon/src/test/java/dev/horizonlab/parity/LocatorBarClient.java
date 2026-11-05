@@ -117,6 +117,7 @@ public final class LocatorBarClient {
     private static volatile boolean state;
     private static volatile boolean events;
     private static volatile boolean spawns;
+    private static volatile boolean menus;
     private static final Map<UUID, String> NAMES = new LinkedHashMap<>();
 
     public static void main(String[] args) throws Exception {
@@ -127,6 +128,7 @@ public final class LocatorBarClient {
         int port = Integer.parseInt(args[1]);
         Path output = Path.of(args[2]);
         Map<String, Player> players = new LinkedHashMap<>();
+        List<Player> sessions = new ArrayList<>();
         BufferedReader script = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String line;
         while ((line = script.readLine()) != null) {
@@ -137,10 +139,12 @@ public final class LocatorBarClient {
                     case "join" -> {
                         Player p = new Player(w[1]);
                         players.put(w[1], p);
+                        sessions.add(p);
                         NAMES.put(UUIDUtil.createOfflinePlayerUUID(w[1]), w[1]);
                         p.join(host, port);
                     }
                     case "cmd" -> players.get(w[1]).command(w[2]);
+                    case "send-cmd" -> players.get(w[1]).send(new ServerboundChatCommandPacket(w[2]));
                     case "shift" -> players.get(w[1]).send(new ServerboundPlayerInputPacket(
                         new Input(false, false, false, false, false, w[2].equals("on"), false)));
                     case "fly" -> {
@@ -163,6 +167,23 @@ public final class LocatorBarClient {
                     case "pickup" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(
                         0, 0, Short.parseShort(w[2]), (byte) 0, net.minecraft.world.inventory.ContainerInput.PICKUP,
                         new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), net.minecraft.network.HashedStack.EMPTY));
+                    // A stale state requests the server's complete authoritative post-click snapshot.
+                    case "click" -> {
+                        String[] a = w[2].split(" ");
+                        Player p = players.get(w[1]);
+                        int window = Integer.parseInt(a[0]);
+                        p.send(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(
+                            window, -1, Short.parseShort(a[1]), (byte) 0,
+                            net.minecraft.world.inventory.ContainerInput.PICKUP,
+                            new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), net.minecraft.network.HashedStack.EMPTY));
+                    }
+                    case "close-menu" -> players.get(w[1]).send(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(Integer.parseInt(w[2])));
+                    case "menus" -> menus = w[1].equals("on");
+                    case "dump" -> {
+                        writeSessions(output, sessions);
+                        stdout.println("dumped " + w[1]);
+                    }
                     case "sync" -> {
                         try {
                             players.get(w[1]).sync();
@@ -184,14 +205,8 @@ public final class LocatorBarClient {
                     case "events" -> events = w[1].equals("on");
                     case "spawns" -> spawns = w[1].equals("on");
                     case "end" -> {
-                        try (PrintWriter out = new PrintWriter(Files.newBufferedWriter(output, StandardCharsets.UTF_8))) {
-                            for (Player p : players.values()) {
-                                synchronized (p.lines) {
-                                    for (String l : p.lines) out.println(p.name + " " + l);
-                                }
-                            }
-                        }
-                        for (Player p : players.values()) p.close();
+                        writeSessions(output, sessions);
+                        for (Player p : sessions) p.close();
                         System.exit(0);
                     }
                     default -> throw new IllegalArgumentException("unknown script line " + line);
@@ -203,6 +218,28 @@ public final class LocatorBarClient {
             }
         }
         System.exit(1);
+    }
+
+    private static void writeSessions(Path output, List<Player> sessions) throws Exception {
+        try (PrintWriter out = new PrintWriter(Files.newBufferedWriter(output, StandardCharsets.UTF_8))) {
+            for (Player p : sessions) {
+                synchronized (p.lines) {
+                    for (String line : p.lines) out.println(p.name + " " + line);
+                }
+            }
+        }
+    }
+
+    private static com.google.gson.JsonElement menuStack(net.minecraft.world.item.ItemStack stack) throws Exception {
+        if (stack.isEmpty()) return com.google.gson.JsonNull.INSTANCE;
+        var tag = net.minecraft.world.item.ItemStack.CODEC.encodeStart(
+            ParityData.access.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE), stack).getOrThrow();
+        var bytes = new java.io.ByteArrayOutputStream();
+        net.minecraft.nbt.NbtIo.write((net.minecraft.nbt.CompoundTag) tag, new java.io.DataOutputStream(bytes));
+        var json = new com.google.gson.JsonObject();
+        json.addProperty("snbt", tag.toString());
+        json.addProperty("nbt", java.util.HexFormat.of().formatHex(bytes.toByteArray()));
+        return json;
     }
 
     /** The waypoint packet's fields, read back from its bytes (the operation and type are private enums). */
@@ -237,6 +274,7 @@ public final class LocatorBarClient {
     private static final class Player {
         final String name;
         final List<String> lines = new ArrayList<>();
+        final Map<Integer, Integer> menuStates = new java.util.concurrent.ConcurrentHashMap<>();
         private Socket socket;
         private DataInputStream in;
         private OutputStream out;
@@ -266,9 +304,10 @@ public final class LocatorBarClient {
         void command(String command) throws Exception {
             synchronized (replyLock) {
                 int before = replies;
+                int beforeSync = syncs;
                 send(new ServerboundChatCommandPacket(command));
                 long until = System.nanoTime() + 30_000_000_000L;
-                while (replies == before) {
+                while (replies == before && syncs == beforeSync) {
                     long left = (until - System.nanoTime()) / 1_000_000L;
                     if (left <= 0) {
                         record("error no reply to /" + command);
@@ -453,6 +492,49 @@ public final class LocatorBarClient {
             reader.start();
         }
 
+        private void recordMenu(Packet<?> p, byte[] payload) throws Exception {
+            var j = new com.google.gson.JsonObject();
+            j.addProperty("packet", p.type().id().toString());
+            j.addProperty("wire", java.util.HexFormat.of().formatHex(payload));
+            if (p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket c) {
+                j.addProperty("kind", "content");
+                j.addProperty("window", c.containerId());
+                j.addProperty("state", c.stateId());
+                menuStates.put(c.containerId(), c.stateId());
+                var items = new com.google.gson.JsonArray();
+                for (var stack : c.items()) items.add(menuStack(stack));
+                j.add("items", items);
+                j.add("carried", menuStack(c.carriedItem()));
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket c) {
+                j.addProperty("kind", "slot");
+                j.addProperty("window", c.getContainerId());
+                j.addProperty("state", c.getStateId());
+                menuStates.put(c.getContainerId(), c.getStateId());
+                j.addProperty("slot", c.getSlot());
+                j.add("item", menuStack(c.getItem()));
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetCursorItemPacket c) {
+                j.addProperty("kind", "cursor");
+                j.add("item", menuStack(c.contents()));
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket c) {
+                j.addProperty("kind", "inventory");
+                j.addProperty("slot", c.slot());
+                j.add("item", menuStack(c.contents()));
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundOpenScreenPacket c) {
+                j.addProperty("kind", "open");
+                j.addProperty("window", c.getContainerId());
+                j.addProperty("type", net.minecraft.core.registries.BuiltInRegistries.MENU.getKey(c.getType()).toString());
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket c) {
+                j.addProperty("kind", "login");
+                j.addProperty("mode", c.commonPlayerSpawnInfo().gameType().getId());
+            } else if (p instanceof ClientboundSystemChatPacket c) {
+                j.addProperty("kind", "chat");
+                j.add("text", net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
+                    ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                j.addProperty("overlay", c.overlay());
+            } else return;
+            record("menu-wire " + j);
+        }
+
         private void play() {
             try {
                 while (true) {
@@ -467,6 +549,7 @@ public final class LocatorBarClient {
                         && e.getPos().equals(new net.minecraft.core.BlockPos(0, 80, 0)))
                         record("piston-event " + e.getB0() + " " + e.getB1());
                     if (state) recordState(p);
+                    if (menus) recordMenu(p, r.payload);
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
                         entityTypes.put(a.getId(), net.minecraft.world.entity.EntityType.getKey(a.getType()).toString());
                     }
