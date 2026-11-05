@@ -409,6 +409,29 @@ impl ItemEntity {
 }
 impl ItemEntity {
     pub const WIDTH: f64 = 0.25;
+    /// `EntityType.ITEM` declares `eyeHeight(0.2125)`: an item is lit from the
+    /// block its eye is in, most of a block above the one its base rests in.
+    pub const EYE_HEIGHT: f64 = 0.2125;
+    /// `Entity.getLightProbePosition(partialTick)` for a dropped item: the eye
+    /// position (`getEyePosition`) over the position drawn this frame
+    /// (`getPosition(partialTick)`), not this tick's own.
+    pub fn light_probe(&self, partial: f64) -> [f64; 3] {
+        [
+            self.previous.x + (self.position.x - self.previous.x) * partial,
+            self.previous.y + (self.position.y - self.previous.y) * partial + Self::EYE_HEIGHT,
+            self.previous.z + (self.position.z - self.previous.z) * partial,
+        ]
+    }
+    /// `EntityRenderer.getPackedLightCoords` for a dropped item: the level's
+    /// sky light over the block light of the cell it is lit from, which
+    /// `EntityRenderer.getBlockLightLevel` puts at 15 while the item
+    /// `isOnFire`. `light` is the level's packed light (sky high, block low);
+    /// `environment_tick` clears the fire ticks of a fire-immune stack, as
+    /// `ItemEntity.fireImmune` makes it never on fire.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     pub fn bounds(&self) -> Aabb {
         let h = Self::WIDTH / 2.0;
         Aabb::new(
@@ -4243,6 +4266,7 @@ mod render_light_tests {
         }
     }
 }
+
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
 #[cfg(test)]
 mod orb_lava_tests {
