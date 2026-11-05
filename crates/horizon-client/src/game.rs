@@ -247,6 +247,7 @@ mod native_shaders;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
+pub mod native_world_draw;
 mod native_world_edit;
 mod native_world_read;
 mod natural_spawning;
@@ -441,6 +442,7 @@ pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_world_columns::NativeColumnBlocks;
+pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use std::{
@@ -527,6 +529,9 @@ struct Options {
     /// `--dedicated`: run as a dedicated server; vanilla's server arguments
     /// (`--nogui`, `--port`, `--world`, `--universe`, `--initSettings`) follow.
     dedicated: Option<Vec<String>>,
+    /// `--transfers SETTINGS`: a dedicated server takes a proxy's hand-over requests
+    /// (`server.toml`'s `[transfer]`, which horizon-server passes; lan/arrivals.rs).
+    transfers: Option<horizon_client::lan::arrivals::Settings>,
     /// `--benchmark SCENARIO`: run the benchmark, write its report and quit.
     benchmark: Option<String>,
     /// `--dev-mod PATH` (repeatable): content mods always on.
@@ -662,6 +667,7 @@ impl Options {
                 .ok()
                 .filter(|n| !n.is_empty()),
             dedicated: None,
+            transfers: None,
             benchmark: None,
             dev_mods: Vec::new(),
             execution_role: execution_role::ExecutionRole::Client,
@@ -675,7 +681,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --transfers SETTINGS    A dedicated server takes a proxy's hand-over requests (server.toml [transfer], docs/server.md)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -778,6 +784,10 @@ impl Options {
                             "--name" => o.player_name = Some(value),
                             "--session-file" => o.session_file = Some(value),
                             "--control-socket" => o.control = Some(value.into()),
+                            "--transfers" => {
+                                o.transfers =
+                                    Some(horizon_client::lan::arrivals::Settings::parse(&value)?)
+                            }
                             "--time" => o.time = Some(value.parse()?),
                             "--weather" => o.weather = Some(value),
                             "--dimension" => {
@@ -1005,9 +1015,11 @@ struct GameLevel<'w> {
     debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
-    /// The tool a mod's machine breaks blocks with (`native_machine_destroy_block`):
-    /// `Block.dropResources` rolls the loot with it instead of with none.
-    drop_tool: Option<ItemStack>,
+    /// The block a mod's machine breaks and the tool it breaks it with
+    /// (`native_machine_destroy_block`): `Block.dropResources` rolls that
+    /// block's loot with the tool instead of with none. Neighbours that pop
+    /// off because of the break drop as with no tool, as in vanilla.
+    drop_tool: Option<((i32, i32, i32), Option<ItemStack>)>,
     /// Where `Block.dropResources` puts the drops instead of popping them,
     /// while a mod's machine breaks a block (`native_machine_destroy_block`).
     drop_into: Option<Vec<ItemStack>>,
@@ -1991,6 +2003,15 @@ struct WorldTables {
     /// The values of the data map types native mods registered
     /// (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
+    /// The entity type, biome and damage type tags with the packs' over the
+    /// game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
+    /// what the predicates' `#tag`s of those registries read.
+    pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+}
+
+impl WorldTables {
+    /// The registries [`WorldTables::pack_tags`] holds.
+    const PACK_TAG_REGISTRIES: [&'static str; 3] = ["entity_type", "worldgen/biome", "damage_type"];
 }
 
 impl Resources {
@@ -3869,7 +3890,14 @@ impl Game<'_> {
     /// `HoneyBlock.showSlideParticles` (entity event 53): five honey block
     /// particles at the entity.
     fn honey_slide_particles(&mut self, at: [f64; 3]) {
+        self.honey_entity_particles(at, 53);
+    }
+    /// `HoneyBlock.showParticles`: the crumb count of entity event 53 or 54.
+    fn honey_entity_particles(&mut self, at: [f64; 3], event: i8) {
         use horizon_client::particles::{ParticleOptions, ParticleType};
+        let Some(count) = horizon_client::landing::honey_particle_count(event) else {
+            return;
+        };
         let Some(honey) = self
             .pack
             .assets
@@ -3884,7 +3912,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         ];
         if let Some((sprite, tint)) = self.particle_sprite(honey, block) {
-            for _ in 0..5 {
+            for _ in 0..count {
                 self.particles.add(
                     &ParticleOptions::block(ParticleType::Block, sprite.clone(), tint),
                     at,
@@ -6218,8 +6246,15 @@ impl Game<'_> {
         {
             return Ok(());
         }
-        // ServerPlayerGameMode.destroyBlock.
+        // ServerPlayerGameMode.destroyBlock (and MultiPlayerGameMode.destroyBlock
+        // on the client): a GameMasterBlock stays when the player cannot use
+        // game master blocks (Player.canUseGameMasterBlocks).
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.can_use_game_master_blocks()
+            && is_game_master_block(&self.res.facts().get(state).name)
+        {
+            return Ok(());
+        }
         // Native mods, once the game allowed the break: a canceled one keeps
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
@@ -7719,8 +7754,9 @@ impl Game<'_> {
                 self.world.weather.tick_timers(&mut self.world.random);
             }
             self.world.weather.tick_levels();
-            self.tick_weather_effects();
         }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.tick_weather_effects();
         let _ = self.finish_player_autosaves(false);
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.
@@ -11641,6 +11677,7 @@ impl Game<'_> {
         laps.lap("eg_cracks");
         self.finish_async_entity_culling();
         laps.lap("eg_culling_finish");
+        self.native_world_geometry(camera, alpha as f32, &mut out);
         (
             out,
             static_block_entities,
@@ -17195,7 +17232,7 @@ impl Game<'_> {
                 unloaded.iter().map(|c| (c.x, c.z)).collect();
             self.world
                 .block_entities
-                .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
+                .unload(|p| gone.contains(&(p.0 >> 4, p.2 >> 4)));
             self.world
                 .block_names
                 .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
@@ -19947,6 +19984,14 @@ impl Game<'_> {
             None => self.res.stations(),
         }
     }
+    /// The enchantments item names and tooltips read: a server's, with the
+    /// entries its data packs add, else the world's.
+    fn enchantments(&self) -> &horizon_client::enchant::Enchantments {
+        match self.remote.as_ref().and_then(|r| r.enchantments.as_ref()) {
+            Some(e) => e,
+            None => &self.stations().enchantments,
+        }
+    }
     /// The world's packs' content files, none without packs.
     /// The biome table the world plays with, `None` before a world opens.
     fn packed_biomes(&self) -> Option<Arc<Biomes>> {
@@ -20026,6 +20071,20 @@ impl Game<'_> {
             self.res.core.collision.clone(),
             &causes_suffocation,
         )?;
+        // A registry whose pack tags don't load keeps the game's own tags
+        // (`in_tag` falls back to them), rather than matching no tag at all.
+        let pack_tags = WorldTables::PACK_TAG_REGISTRIES
+            .into_iter()
+            .filter_map(|registry| {
+                match horizon_client::items::load_tags(root, registry, &overlay) {
+                    Ok(tags) => Some((registry, tags)),
+                    Err(e) => {
+                        log::warn!("Horizon: the world's {registry} tags are not applied: {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
         Ok((
             Some(WorldTables {
                 suffocation,
@@ -20034,6 +20093,7 @@ impl Game<'_> {
                 recipes,
                 stations,
                 data_maps,
+                pack_tags,
             }),
             health,
         ))
@@ -22353,6 +22413,19 @@ fn debug_crosshair_drawn(
     panorama: bool,
 ) -> bool {
     enabled && first_person && !hide_gui && !panorama
+}
+
+/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
+/// block, jigsaw and the test blocks.
+fn is_game_master_block(name: &str) -> bool {
+    horizon_client::command_block::Mode::of_block(name).is_some()
+        || matches!(
+            name,
+            "minecraft:structure_block"
+                | "minecraft:jigsaw"
+                | "minecraft:test_block"
+                | "minecraft:test_instance_block"
+        )
 }
 
 #[cfg(test)]

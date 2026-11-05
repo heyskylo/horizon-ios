@@ -749,6 +749,43 @@ mod tests {
         assert!(c.idle(false));
     }
 
+    /// The campfire sleeps while `idle`, so the tick its block runs (`cook_tick` lit,
+    /// `cooldown_tick` unlit) must change nothing then, and must change an awake one.
+    #[test]
+    fn an_idle_campfire_tick_changes_nothing() {
+        let tick = |c: &mut Campfire, lit: bool| {
+            if lit {
+                !c.cook_tick().is_empty()
+            } else {
+                c.cooldown_tick()
+            }
+        };
+        let empty = Campfire::default();
+        let mut food = Campfire::default();
+        assert!(food.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        let mut warm = food.clone();
+        warm.cook_tick();
+        let mut cooled = warm.clone();
+        while cooled.cooldown_tick() {}
+        for (before, lit) in [
+            (&empty, true),
+            (&empty, false),
+            (&food, false),
+            (&cooled, false),
+        ] {
+            assert!(before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            assert!(!tick(&mut after, lit));
+            assert_eq!(&after, before, "lit {lit}");
+        }
+        for (before, lit) in [(&food, true), (&warm, false)] {
+            assert!(!before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            tick(&mut after, lit);
+            assert_ne!(&after, before, "lit {lit}");
+        }
+    }
+
     #[test]
     fn campfire_slots_take_food_cook_it_and_cool_down() {
         let mut c = Campfire::default();

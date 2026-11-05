@@ -1,0 +1,52 @@
+{
+  "missing_token": {
+    "status": 401,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "missing or wrong token (see .horizon/api.json)" }
+  },
+  "wrong_token": {
+    "status": 401,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "missing or wrong token (see .horizon/api.json)" }
+  },
+  "wrong_host": {
+    "status": 403,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "22"]],
+    "body": { "error": "wrong Host" }
+  },
+  "command_malformed": {
+    "status": 400,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "the body must be {\"line\": \"<one command>\"}" }
+  },
+  "command_missing_line": {
+    "status": 400,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "the body must be {\"line\": \"<one command>\"}" }
+  },
+  "command_newline": {
+    "status": 400,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "the body must be {\"line\": \"<one command>\"}" }
+  },
+  "command_blank": {
+    "status": 400,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "58"]],
+    "body": { "error": "the body must be {\"line\": \"<one command>\"}" }
+  },
+  "command_stopped": {
+    "status": 409,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "44"]],
+    "body": { "error": "the game isn't running right now" }
+  },
+  "unknown_endpoint": {
+    "status": 404,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "28"]],
+    "body": { "error": "no such endpoint" }
+  },
+  "wrong_method": {
+    "status": 405,
+    "headers": [["Content-Type", "application/json"], ["Cache-Control", "no-store"], ["Connection", "close"], ["Content-Length", "24"]],
+    "body": { "error": "wrong method" }
+  }
+}

@@ -315,6 +315,10 @@ impl Session {
     pub fn live(&self) -> bool {
         Instant::now() < self.until
     }
+    /// Whether this is the account `uuid`'s session and it has not run out.
+    pub fn for_account(&self, uuid: &str) -> bool {
+        self.uuid == uuid && self.live()
+    }
 }
 
 pub struct Service {
@@ -454,6 +458,53 @@ impl Service {
             saved.pending.remove(0);
         }
         Ok(())
+    }
+
+    /// Send the changes waiting and read the account's own answer with `session`, which is kept
+    /// while it is live: the account is proved with Mojang once per service session, not once
+    /// per refresh. The service's 401 (its session ended) signs in once more and retries; any
+    /// other failure stands.
+    pub fn sync_with_session(
+        &self,
+        name: &str,
+        uuid: &str,
+        session: &mut Option<std::sync::Arc<Session>>,
+        saved: &mut Saved,
+        join: impl Fn(&str) -> Result<(), String>,
+    ) -> Result<(), Error> {
+        let mut renewed = false;
+        loop {
+            let current = match session.clone().filter(|s| s.for_account(uuid)) {
+                Some(current) => current,
+                None => {
+                    let signed = std::sync::Arc::new(self.sign_in(name, &join)?);
+                    *session = Some(signed.clone());
+                    signed
+                }
+            };
+            if let Err(e) = self.sync(&current, saved) {
+                if e == Error::SignedOut && !renewed {
+                    *session = None;
+                    renewed = true;
+                    continue;
+                }
+                return Err(e);
+            }
+            match self.me(&current) {
+                Ok(mut me) => {
+                    for change in &saved.pending {
+                        me.apply(change);
+                    }
+                    saved.me = Some(me);
+                    return Ok(());
+                }
+                Err(Error::SignedOut) if !renewed => {
+                    *session = None;
+                    renewed = true;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// An item's file, from `cache` (`<id>-<hash>.json`, kept by hash: it never changes for one)

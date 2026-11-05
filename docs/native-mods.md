@@ -2792,6 +2792,23 @@ it moves only what the player sees, not where they are or aim.
   moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
   on a client, and inside a player's hook (call it from a tick hook).
 
+### Health HUD rows a mod draws
+
+A mod that answers `native_health_hud` (API 27) draws the health, armor, food and air rows itself. Two client helpers
+give it what Horizon's own rows use, without reading `Game`'s fields:
+
+- `native_health_hud_state()` is Horizon's `HealthHud`. Its `left_height` and `right_height`, as they stand when the hook
+  returns, place the selected item's name and the action bar above the rows, as vanilla's `Hud.leftHeight` and
+  `rightHeight` do: set them when your rows take more or less room than vanilla's. They keep last frame's values until
+  something sets them. To keep some of Horizon's rows (food and air, say), call its `layout(inputs, wi, hi)` with the
+  hook's arguments and keep the draws you want; it also sets both heights. `layout` advances the rows' frame state (the
+  hearts' blink, the air bubbles' pop sound, which the game plays after the hook), so call it at most once a frame.
+- `native_local_attribute(name)` is the current value, base plus modifiers, of an attribute of this client's player
+  (`minecraft:armor_toughness`, which vanilla doesn't draw), as `LivingEntity.getAttributeValue`. None with no player
+  or for an id the player has no attribute for.
+
+Bundles need `"hooks": @API:health_hud_state@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -2923,6 +2940,19 @@ held while any owner holds it. It is kept as a `/forceload`ed chunk is: it is lo
 and its level stays open. `/forceload` neither lists nor releases it. `native_forced_chunks(owner)` lists what an owner
 holds. Tickets are not saved: keep what you hold (a level attachment) and hold it again in `native_level_load`.
 
+Where this differs from NeoForge, and its limits today:
+
+- The ticket goes to the level in place, with no level argument, and every ticket ticks. Hold and release from a hook
+  tied to that level (`native_level_load`, a block entity's tick), not from a server-wide one such as
+  `native_lifecycle_server_tick_start`, where the level in place is whichever ticked last.
+- The Nether and the End open only when something goes there, so their `native_level_load` doesn't run at start: a
+  ticket held there before a restart stays released until the level opens again. `/forceload` has the same limit.
+- A dedicated server that pauses when empty (`pause-when-empty-seconds`) stops ticking held chunks too.
+- `owner` is any namespaced string, not tied to the calling mod, and `native_forced_chunks` needs it exactly: keep the
+  owners you hold for, or a chunk stays held until the server stops.
+- A chunk past the world's edge (beyond 30,000,000 blocks, as `/forceload` refuses) is refused. Each ticket keeps a
+  5x5 ring loaded and the forced set is scanned per column: keep to what a machine needs (dozens, not thousands).
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
@@ -2946,6 +2976,12 @@ given a mod block entity, its drawing through `native_block_entity_submit`, `spi
 sets the point at the box's middle, the turn (`yaw`, counterclockwise seen from above; at 0 the scene is seen from the
 north), the tilt of its top towards the viewer (`pitch`) and the pixels per block (`scale`). The scene has a depth of its
 own and is cut to the box. Draw it from the screen's drawing hook; Create's Ponder steps through its scenes this way.
+
+Limits: each call collects every block's models again and calls `native_block_entity_submit` for every block entity
+(`keep` has no effect here), so keep scenes small. The hook gets the scene's position as `pos`, with no world around it:
+what it reads of the world at that position is unrelated. Only a mod's block entity draws; a chest or a sign shows its
+block model only. `spin` parts follow the world's game time (and stop under `/tick freeze`): a scene with its own
+timeline turns parts through the pose instead. Faces are shaded and culled as in the world.
 
 ### Chat and commands a client mod sends
 
@@ -3530,7 +3566,7 @@ custom copy handler, conditional serialization, the `sendToPlayer` predicate,
 `Host` exposes the documented `Game` helpers listed under `helpers` in
 `native-hooks.json`, without their `native_` prefix. Each keeps the helper's
 receiver and documentation; a helper without `self` (`config_dir`) takes
-`&self` in `Host`. Level services stay on the level hosts above.
+`&self` in `Host`. Level services stay on the level hosts above, except `play_sound` and `send_particles`, which the table below carries for a block entity's own tick.
 A helper's `receiver` also exposes it on that handle. Receivers come from public
 `*Ref` structs in `mod_api.rs`: for example, a public `BlockEntityRef` struct registers
 `block_entity`. Adding a handle requires no separate generator registration.
@@ -3540,7 +3576,7 @@ go through `dyn Host` (`native_host_bridge.rs`):
 
 | `Host` method | For | What it does |
 |---|---|---|
-| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. |
+| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. On a client, `change_mod_block_entity` changes only the local copy, and the next update tag from the server replaces what it changed: change it on the server. |
 | `trigger_criterion(uuid, trigger, &test)` | `trigger_criterion` | The same call, with the test as `&dyn Fn`. |
 | `play_sound`, `send_particles` | `LevelWriteHost`'s methods | Work in the level in place, from any server hook, such as a block entity's tick. |
 | `block_name_in_tag(block, tag)` | `server_block_in_tag` | Takes a block name instead of a state. |
