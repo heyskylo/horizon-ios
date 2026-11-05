@@ -2709,6 +2709,7 @@ dependencies = [
  "horizon-prepare",
  "horizon-protocol",
  "horizon-release-sign",
+ "horizon-shader-api",
  "horizon-telemetry",
  "horizon-theme",
  "horizon-world",

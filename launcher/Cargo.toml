@@ -52,6 +52,8 @@ horizon-bench = { path = "../crates/horizon-bench" }
 horizon-port-pack = { path = "../crates/horizon-port-pack" }
 # Horizon's mod registry: its index and the checks a download passes before install.
 horizon-mods = { path = "../crates/horizon-mods", features = ["index"] }
+# Use the game's manifest validation for native shader identities.
+horizon-shader-api = { path = "../crates/horizon-shader-api" }
 # Signed updates: archives are checked against the release's signed checksums (docs/security.md).
 horizon-release-sign = { path = "../crates/horizon-release-sign" }
 # Opt-in data collection: the consent, the outbox and its upload (docs/telemetry.md).
