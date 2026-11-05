@@ -2023,7 +2023,6 @@ fn direct_address(address: &str) -> String {
         address.trim().to_owned()
     }
 }
-/// Greedy word wrap to a pixel width.
 /// Y positions on the disconnect screen.
 struct DisconnectedLayout {
     title: f32,
@@ -2047,6 +2046,7 @@ fn disconnected_layout(h: f32, lines: usize, retry: bool) -> DisconnectedLayout 
     }
 }
 
+/// Greedy word wrap to a pixel width.
 pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.lines() {
