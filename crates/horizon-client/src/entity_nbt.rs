@@ -1952,7 +1952,8 @@ pub fn mob_from_nbt(
     }
     read_variant(&mut m, tag);
     m.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
-    m.air = number(tag.get("Air")).unwrap_or(300) as i32;
+    // Entity.load: `input.getIntOr("Air", getMaxAirSupply())`, 4800 for a dolphin.
+    m.air = number(tag.get("Air")).map_or(m.max_air_supply(), |air| air as i32);
     if m.species() == crate::mobs::Species::Allay {
         if let Some(Tag::List(inv)) = tag.get("Inventory") {
             for stack in inv.iter().filter_map(item_from_nbt) {
