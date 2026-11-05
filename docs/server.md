@@ -320,7 +320,7 @@ file that is synced and then renamed into place (on Linux and macOS the folder i
 health, experience and advancements as a new player's does. Everyone gets its player-list entry, since everyone will
 be shown its entity; with `announce` true they also get the join line. The log says `<name> placed: it has arrived
 from another server`, and the join line when it is announced. The reply is `{"ok": true, "handover": "...", "parts":
-[...], "placed": true, "announced": true}` only once the file is written, so a proxy sends `player-release moved` to
+[...], "placed": true, "announced": true, "recentered": false}` only once the file is written, so a proxy sends `player-release moved` to
 the source after this reply: from then on a crash of the target, or a power loss, leaves the player's three files there
 as it arrived. When one cannot be written, the reply is an error and the player stays held and imported, to be
 confirmed again or dropped.
@@ -336,6 +336,37 @@ move). The proxy keeps its client on the target and disconnects the source's con
 copy of the player as it is, so the two servers' files differ from that moment. To keep clear of the first case, the
 proxy confirms only while the export's `freeze_ticks_left` leaves it time to release, and otherwise drops the arrival
 and aborts.
+
+**Where the player arrives.** Only the compound of the record is read, so to put the player somewhere other than the
+record says (a proxy that knows where its client stands, which the frozen source may not have seen yet), the request
+takes four optional fields, which win over the compound:
+
+```json
+{"record": {...}, "position": [300.5, 64.0, 300.5], "rotation": [90.0, 20.0], "on_ground": false, "velocity": [0.0, -0.08, 0.0]}
+```
+
+`position` is `[x, y, z]`, `rotation` is `[yaw, pitch]` in degrees, `on_ground` is a boolean and `velocity` is
+`[x, y, z]` in blocks a tick. The pitch is taken as vanilla's `Entity.setXRot` takes it: modulo 360, then cut to ±90;
+the yaw is kept as it is. A velocity component over 10 blocks a tick is taken as 0, as `Entity.load` takes a saved
+`Motion`. The velocity is the server's: the arrival's teleport carries no motion, as a vanilla login's does not, so
+the client starts still, and since a player's client moves itself, its first move replaces it. They belong to the `position` part: a
+request that gives one and does not import that part is refused. A position that is not finite, or farther than the
+record's own may be (30,000,512 blocks from the origin, 20,000,000 up or down), is refused, and so is a rotation or a
+velocity that is not finite numbers (a rotation past what a float holds too). A record with a vehicle still to restore
+(`RootVehicle`) puts the player back on it at the vehicle's own place, so a request that names a position for such a
+record is refused. The border, the blocks and the chunks are not checked,
+as a vanilla server does not check the place its player file names. The player is teleported to the position (the
+client confirms a new teleport id), so an anticheat never sees the arrival as a move, however far it is from the
+export.
+
+**The view follows the imported position.** `recentered` says whether the import moved the player to another chunk
+than the one its view was built around (only possible with the `position` part, and only once the player has been sent
+chunks). When it did, the server moves the view at once, before the position the client confirms: it sends
+`SetChunkCacheCenter` for the new chunk and forgets the chunks that are out of reach, as the next tick would have. The
+chunks around the new place are **not** sent yet: they come one batch at a time with the next ticks, and the client
+acknowledges each batch. Whoever reads the player's world (a proxy building a view of it) must therefore wait for new
+chunk batches after a reply with `"recentered": true`, as it waited for the first ones; with `false` the chunks it
+already has are the ones around the player.
 
 **Importing in two steps, so that a hand-over can be cancelled.** With `"place": false` the record is applied and the
 player's client is sent everything the import changed, but the player stays held: not placed, not simulated, not

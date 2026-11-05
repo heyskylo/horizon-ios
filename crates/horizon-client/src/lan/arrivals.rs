@@ -2683,4 +2683,325 @@ mod hub_tests {
         let other = format!("{UUID} {}", super::handover_text(id ^ 1));
         assert!(super::confirm_args(&hub, &other).is_err());
     }
+
+    // ---- the view follows the imported position ----------------------------
+
+    fn held_with_a_record_at(
+        at: [f64; 3],
+        center: Option<(i32, i32)>,
+    ) -> (serde_json::Value, Hub, Receiver<Out>) {
+        held_with_a_record_of(|g| g.position = at, center)
+    }
+
+    fn held_with_a_record_of(
+        source_player: impl FnOnce(&mut Guest),
+        center: Option<(i32, i32)>,
+    ) -> (serde_json::Value, Hub, Receiver<Out>) {
+        let (mut source, i) = exported_guest();
+        source_player(&mut source.guests[i]);
+        let record = super::export_record(&mut source, i, true, Default::default()).unwrap();
+        let mut hub = hub();
+        assert_eq!(
+            super::expect_request(&mut hub, UUID, Instant::now())["ok"],
+            true
+        );
+        let (newcomer, mine) = guest(2, UUID_N, "Alex");
+        hub.guests.push(newcomer);
+        login_starts(&mut hub, UUID_N);
+        place(&mut hub, 2);
+        hub.guests[0].center = center;
+        let _ = ids(&mine);
+        (record, hub, mine)
+    }
+
+    #[test]
+    fn an_import_to_another_chunk_moves_the_view_at_once_and_says_so() {
+        // Chunk (0, 0) before, chunk (6, -1) after: x 100.5 is block 100, chunk 6; z -3.25 is chunk -1.
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(done.recentered);
+        assert_eq!(
+            hub.guests[0].center,
+            Some((6, -1)),
+            "the view is centred on the new chunk"
+        );
+        let sent = packets(&mine);
+        let centre = sent
+            .iter()
+            .position(|(i, _)| *i == id::SET_CHUNK_CACHE_CENTER)
+            .expect("the new chunk centre is sent with the import");
+        let position = sent
+            .iter()
+            .position(|(i, _)| *i == id::PLAYER_POSITION)
+            .unwrap();
+        assert!(
+            centre < position,
+            "the centre goes before the position the client confirms"
+        );
+        // The centre is the vanilla pair of VarInts: chunk x then chunk z (6, then -1 as an unsigned VarInt).
+        let mut r = horizon_protocol::buf::Reader::new(&sent[centre].1);
+        assert_eq!((r.varint().unwrap(), r.varint().unwrap()), (6, -1));
+    }
+
+    #[test]
+    fn an_import_inside_the_same_chunk_does_not_recentre() {
+        let (record, mut hub, mine) = held_with_a_record_at([3.5, 64.0, 3.5], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.recentered);
+        assert_eq!(hub.guests[0].center, Some((0, 0)));
+        assert!(!ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    #[test]
+    fn without_the_position_part_the_view_stays_where_it_is() {
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request =
+            serde_json::json!({ "record": record, "place": false, "parts": ["inventory"] });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.recentered);
+        assert_eq!(hub.guests[0].center, Some((0, 0)));
+        assert!(!ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    /// A held player that has not been sent any chunk has no view to move: the first tick builds it
+    /// around the new place.
+    #[test]
+    fn a_view_not_yet_built_is_not_recentred() {
+        let (record, mut hub, _mine) = held_with_a_record_at([100.5, 70.0, -3.25], None);
+        let request = serde_json::json!({ "record": record, "place": false });
+        assert!(
+            !import_player(&mut hub, UUID_N, &request)
+                .unwrap()
+                .recentered
+        );
+    }
+
+    /// A retried import of the same hand-over (its reply was lost) finds the view already moved,
+    /// and still says the chunks around the new place are on their way.
+    #[test]
+    fn a_retried_import_still_reports_the_recentring() {
+        let (record, mut hub, _mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        for _ in 0..2 {
+            let done = import_player(&mut hub, UUID_N, &request).unwrap();
+            assert!(done.recentered);
+        }
+    }
+
+    /// A record whose vehicle is still to be restored puts the player back on it at the vehicle's
+    /// own place, so a position the request names would be undone: it is refused, and the record's
+    /// own place is still taken.
+    #[test]
+    fn a_named_position_is_refused_for_a_record_with_a_vehicle_to_restore() {
+        let (record, mut hub, _mine) = held_with_a_record_of(
+            |g| {
+                g.position = [10.5, 70.0, -3.25];
+                g.saved_vehicle = Some([1, 2, 3, 4]);
+            },
+            Some((0, 0)),
+        );
+        let named = serde_json::json!({
+            "record": record.clone(), "place": false, "position": [300.5, 64.0, 300.5],
+        });
+        let error = import_player(&mut hub, UUID_N, &named).unwrap_err();
+        assert!(error.contains("vehicle"), "{error}");
+        assert!(!hub.guests[0].imported);
+        let plain = serde_json::json!({ "record": record, "place": false });
+        import_player(&mut hub, UUID_N, &plain).unwrap();
+        assert_eq!(hub.guests[0].position, [10.5, 70.0, -3.25]);
+        assert_eq!(hub.guests[0].saved_vehicle, Some([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn placing_at_once_reports_the_recentring_too() {
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let done =
+            import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap();
+        assert!(done.place && done.recentered);
+        assert!(ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    // ---- where the player arrives: the request's own position, rotation, on-ground -----
+
+    /// The position a PlayerPosition packet carries, with its look.
+    fn position_sent(mine: &Receiver<Out>) -> ([f64; 3], f32, f32) {
+        let (id_, payload) = packets(mine)
+            .into_iter()
+            .rev()
+            .find(|(i, _)| *i == id::PLAYER_POSITION)
+            .expect("the import sends a position");
+        match horizon_protocol::packets::play::Clientbound::decode(id_, &payload).unwrap() {
+            horizon_protocol::packets::play::Clientbound::PlayerPosition(p) => {
+                (p.position, p.yaw, p.pitch)
+            }
+            other => panic!("not a position: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_requests_position_wins_over_the_records_and_the_client_is_told_it() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({
+            "record": record, "place": false,
+            "position": [300.5, 64.0, 300.5], "rotation": [90.0, 20.0], "on_ground": false,
+        });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        let g = &hub.guests[0];
+        assert_eq!(g.position, [300.5, 64.0, 300.5]);
+        assert_eq!(g.previous_position, [300.5, 64.0, 300.5]);
+        assert_eq!((g.yaw, g.pitch, g.head_yaw), (90.0, 20.0, 90.0));
+        assert!(!g.on_ground);
+        // The chunk is the one of the request's position, not the record's.
+        assert!(done.recentered);
+        assert_eq!(g.center, Some((18, 18)));
+        let (at, yaw, pitch) = position_sent(&mine);
+        assert_eq!((at, yaw, pitch), ([300.5, 64.0, 300.5], 90.0, 20.0));
+    }
+
+    #[test]
+    fn without_the_requests_fields_the_records_place_is_taken() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        import_player(
+            &mut hub,
+            UUID_N,
+            &serde_json::json!({ "record": record, "place": false }),
+        )
+        .unwrap();
+        assert_eq!(hub.guests[0].position, [10.5, 70.0, -3.25]);
+        assert_eq!(position_sent(&mine).0, [10.5, 70.0, -3.25]);
+    }
+
+    #[test]
+    fn a_pitch_is_taken_modulo_a_turn_then_cut_to_a_quarter_turn() {
+        // Entity.setXRot: Math.clamp(pitch % 360, -90, 90); setYRot keeps the yaw as it is.
+        for (asked, yaw, pitch) in [
+            ([10.0, 120.0], 10.0, 90.0),
+            ([10.0, -120.0], 10.0, -90.0),
+            ([10.0, 370.0], 10.0, 10.0),
+            ([-30.0, -350.0], -30.0, -90.0),
+            ([725.0, 45.0], 725.0, 45.0),
+        ] {
+            let (record, mut hub, _mine) = held_with_a_record_at([10.5, 70.0, -3.25], None);
+            let request =
+                serde_json::json!({ "record": record, "place": false, "rotation": asked });
+            import_player(&mut hub, UUID_N, &request).unwrap();
+            assert_eq!(
+                (hub.guests[0].yaw, hub.guests[0].pitch),
+                (yaw, pitch),
+                "{asked:?}"
+            );
+        }
+    }
+
+    /// Every refusal leaves the held player as it was and tells its client nothing.
+    #[test]
+    fn a_place_that_is_not_one_is_refused_and_nothing_changes() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        let before = crate::lan::playerdata::player_tag(&hub.guests[0]);
+        let place = hub.guests[0].position;
+        let with = |extra: serde_json::Value| {
+            let mut r = serde_json::json!({ "record": record.clone(), "place": false });
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            r
+        };
+        let cases = [
+            (
+                "beyond the world",
+                with(serde_json::json!({ "position": [40_000_000.0, 64.0, 0.0] })),
+            ),
+            (
+                "far below",
+                with(serde_json::json!({ "position": [0.0, -40_000_000.0, 0.0] })),
+            ),
+            (
+                "two numbers",
+                with(serde_json::json!({ "position": [1.0, 2.0] })),
+            ),
+            (
+                "a string",
+                with(serde_json::json!({ "position": ["a", "b", "c"] })),
+            ),
+            ("not a list", with(serde_json::json!({ "position": 5 }))),
+            (
+                "rotation of one",
+                with(serde_json::json!({ "rotation": [1.0] })),
+            ),
+            (
+                "a rotation past what a float holds",
+                with(serde_json::json!({ "rotation": [1e39, 1e39] })),
+            ),
+            (
+                "a velocity that is not three numbers",
+                with(serde_json::json!({ "velocity": [0.25, "up", 0.0] })),
+            ),
+            (
+                "on_ground a number",
+                with(serde_json::json!({ "on_ground": 1 })),
+            ),
+            (
+                "the position part left out",
+                with(serde_json::json!({ "position": [1.0, 64.0, 1.0], "parts": ["inventory"] })),
+            ),
+        ];
+        for (what, request) in &cases {
+            let error = import_player(&mut hub, UUID_N, request).expect_err(what);
+            assert!(!error.is_empty(), "{what}");
+            let g = &hub.guests[0];
+            assert!(
+                g.held && !g.imported,
+                "{what}: the player must still be held and not imported"
+            );
+            assert_eq!(g.position, place, "{what}");
+            assert_eq!(
+                crate::lan::playerdata::player_tag(g),
+                before,
+                "{what}: nothing may change"
+            );
+        }
+        assert_eq!(
+            ids(&mine),
+            Vec::<i32>::new(),
+            "a refusal tells the client nothing"
+        );
+    }
+
+    #[test]
+    fn a_position_is_finite_and_inside_the_worlds_limit() {
+        use crate::lan::import::check_position_for_tests as check;
+        assert!(check([0.0, 64.0, 0.0]));
+        // Entity.load's clamp: 3.0000512E7 on x and z, 2.0E7 on y.
+        assert!(check([-30_000_512.0, -64.0, 30_000_512.0]));
+        assert!(check([0.0, -20_000_000.0, 0.0]));
+        assert!(!check([30_000_512.5, 64.0, 0.0]));
+        assert!(!check([0.0, 20_000_000.5, 0.0]));
+        assert!(!check([f64::NAN, 64.0, 0.0]));
+        assert!(!check([0.0, f64::INFINITY, 0.0]));
+        assert!(!check([0.0, 64.0, f64::NEG_INFINITY]));
+    }
+
+    /// The request's velocity is the body's from now on, a component over 10 blocks a tick
+    /// taken as 0 as `Entity.load` takes a saved `Motion`; it belongs to the position part.
+    #[test]
+    fn the_requests_velocity_is_taken_with_the_position() {
+        let (record, mut hub, _mine) = held_with_a_record_at([10.5, 70.0, -3.25], None);
+        let request = serde_json::json!({
+            "record": record,
+            "place": false,
+            "velocity": [0.25, -0.0784, 12.0],
+        });
+        import_player(&mut hub, UUID_N, &request).unwrap();
+        let body = hub.guests[0].loaded_body.unwrap();
+        assert_eq!(body.velocity, [0.25, -0.0784, 0.0]);
+        let alone = serde_json::json!({
+            "record": record,
+            "parts": ["inventory"],
+            "velocity": [0.0, 0.0, 0.0],
+        });
+        let error = import_player(&mut hub, UUID_N, &alone).unwrap_err();
+        assert!(error.contains("belong to the position part"), "{error}");
+    }
 }

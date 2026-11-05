@@ -99,6 +99,7 @@ impl Game<'_> {
                 "handover": arrivals::handover_text(id),
                 "placed": true,
                 "announced": host.hub.guests[i].arrival_announce,
+                "recentered": host.hub.guests[i].arrival_recentered,
                 "retried": true,
             });
             self.lan = Some(host);
@@ -121,6 +122,7 @@ impl Game<'_> {
                         "parts": done.parts,
                         "placed": placed,
                         "announced": done.announce,
+                        "recentered": done.recentered,
                     }),
                     Err(e) => json!({ "error": e }),
                 }

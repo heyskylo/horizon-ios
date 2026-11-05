@@ -1409,7 +1409,12 @@ impl Hub {
     /// What an import changed, told to the held player's client the way a join tells it: game
     /// mode, abilities, held slot, a position to confirm, effects, inventory, and the player
     /// list as it is now (who came while it was held is in it).
-    pub fn send_arrival_state(&mut self, i: usize) {
+    ///
+    /// When the import moved the player to another chunk than the one its view was built around,
+    /// the view is moved at once (the chunk centre is sent and the chunks out of reach are
+    /// forgotten, as the next tick would do), and this returns true: the chunks around the new
+    /// place are still to come, one batch at a time, and whoever reads them must wait for them.
+    pub fn send_arrival_state(&mut self, i: usize) -> bool {
         let (mode, conn) = {
             let g = &self.guests[i];
             (g.game_mode, g.conn)
@@ -1435,6 +1440,12 @@ impl Hub {
                     effect,
                 }));
             }
+        }
+        let recentered = self.guests[i]
+            .center
+            .is_some_and(|c| c != self.guests[i].chunk());
+        if recentered {
+            self.update_view(i);
         }
         let g = &self.guests[i];
         g.send(&C::GameEvent(play::GameEvent {
@@ -1469,6 +1480,7 @@ impl Hub {
             actions: Self::INFO_ACTIONS,
             entries,
         }));
+        recentered
     }
 
     /// Places the held player at `i`: it is simulated, shown to the others and takes part from

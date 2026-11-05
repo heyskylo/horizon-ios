@@ -64,6 +64,10 @@ pub struct Imported {
     pub place: bool,
     /// The record's hand-over.
     pub handover: u128,
+    /// Whether the import moved the player to another chunk than the one its view was built
+    /// around. The chunk centre was sent at once, but the chunks around the new place come with
+    /// the next ticks: whoever reads the player's world must wait for them.
+    pub recentered: bool,
 }
 
 /// What a request of `player-import` asks: the record, the parts (all by default)
@@ -73,6 +77,106 @@ struct Request<'a> {
     parts: Vec<&'static str>,
     announce: bool,
     place: bool,
+    arrival: Arrival,
+}
+
+/// Where the player stands when it arrives, when the request says so instead of the record:
+/// what a proxy knows of its client, which the frozen source may not have seen yet.
+#[derive(Default, Debug, PartialEq)]
+struct Arrival {
+    position: Option<[f64; 3]>,
+    /// Yaw and pitch, in degrees.
+    rotation: Option<[f32; 2]>,
+    on_ground: Option<bool>,
+    /// Blocks a tick, as the body keeps it.
+    velocity: Option<[f64; 3]>,
+}
+
+impl Arrival {
+    fn is_empty(&self) -> bool {
+        *self == Arrival::default()
+    }
+}
+
+/// A position the server will put a player at: finite and inside the world's limit. Nothing
+/// is asked of the border, the blocks or the chunks, as a vanilla server asks nothing of the
+/// place a player's file names.
+/// The same bounds as the record's own position ([`check_values`]).
+fn check_position(p: [f64; 3]) -> Result<[f64; 3], String> {
+    if p.iter().all(|c| c.is_finite())
+        && p[0].abs() <= MAX_XZ
+        && p[2].abs() <= MAX_XZ
+        && p[1].abs() <= MAX_Y
+    {
+        Ok(p)
+    } else {
+        Err(format!(
+            "{p:?} is not a position: x and z must be numbers within {MAX_XZ}, y within {MAX_Y}"
+        ))
+    }
+}
+
+/// For the tests of the hub: whether a position is one the server will take.
+#[cfg(test)]
+pub fn check_position_for_tests(p: [f64; 3]) -> bool {
+    check_position(p).is_ok()
+}
+
+/// `N` numbers out of a JSON list.
+fn numbers<const N: usize>(value: &Value, what: &str) -> Result<[f64; N], String> {
+    let list = value
+        .as_array()
+        .filter(|l| l.len() == N)
+        .ok_or_else(|| format!("{what} is a list of {N} numbers"))?;
+    let mut out = [0.0; N];
+    for (slot, v) in out.iter_mut().zip(list) {
+        *slot = v
+            .as_f64()
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| format!("{what} holds only finite numbers"))?;
+    }
+    Ok(out)
+}
+
+fn read_arrival(request: &Value) -> Result<Arrival, String> {
+    let given = |key: &str| request.get(key).filter(|v| !v.is_null());
+    let position = match given("position") {
+        Some(v) => Some(check_position(numbers::<3>(v, "position")?)?),
+        None => None,
+    };
+    let rotation = match given("rotation") {
+        Some(v) => {
+            let [yaw, pitch] = numbers::<2>(v, "rotation")?;
+            // Entity.setXRot: the pitch is taken modulo a turn (`frem`, the sign of the
+            // dividend, as Rust's `%`), then cut to a quarter turn each way; setYRot keeps the
+            // yaw as it is.
+            let (yaw, pitch) = (yaw as f32, pitch as f32);
+            // Finite as an f64 is not enough: past f32::MAX the cast gives an infinity (and
+            // the pitch's modulo a NaN), which Entity.load would refuse.
+            if !yaw.is_finite() || !pitch.is_finite() {
+                return Err("rotation holds only numbers a float can hold".into());
+            }
+            let pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+            Some([yaw, pitch])
+        }
+        None => None,
+    };
+    // Entity.load: a component over 10 blocks a tick reads as 0.
+    let velocity = match given("velocity") {
+        Some(v) => Some(numbers::<3>(v, "velocity")?.map(|c| if c.abs() > 10.0 { 0.0 } else { c })),
+        None => None,
+    };
+    let on_ground = match given("on_ground") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err("on_ground is true or false".into()),
+    };
+    Ok(Arrival {
+        position,
+        rotation,
+        on_ground,
+        velocity,
+    })
 }
 
 fn read_request(request: &Value) -> Result<Request<'_>, String> {
@@ -109,11 +213,19 @@ fn read_request(request: &Value) -> Result<Request<'_>, String> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("place is true or false".into()),
     };
+    let arrival = read_arrival(request)?;
+    if !arrival.is_empty() && !parts.contains(&"position") {
+        return Err(
+            "position, rotation, on_ground and velocity belong to the position part, which is not imported"
+                .into(),
+        );
+    }
     Ok(Request {
         record,
         parts,
         announce,
         place,
+        arrival,
     })
 }
 
@@ -396,6 +508,17 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     let mut level = Level::default();
     level.read_player(&tag);
     check_values(&level)?;
+    // A record with a vehicle still to restore (`RootVehicle`) puts the player back on it, at
+    // the vehicle's own saved place: a position named by the request would be undone as soon
+    // as the vehicle is restored, so the two cannot be taken together.
+    if request.arrival.position.is_some()
+        && (level.root_vehicle.is_some() || tag.get("RootVehicle").is_some())
+    {
+        return Err(
+            "the record has a vehicle to restore (RootVehicle): a position cannot be named with it"
+                .into(),
+        );
+    }
     // What `playerdata::load` gives `apply` too: the whole compound, for the keys Horizon
     // does not model, the mods' attachments and the body's values.
     level.player_extra = Some(tag);
@@ -428,10 +551,36 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     }
     playerdata::apply(&mut hub.guests[i], &level);
     kept.restore(&mut hub.guests[i], &request.parts);
+    // What the request says of where the player stands wins over the record.
+    {
+        let g = &mut hub.guests[i];
+        let a = &request.arrival;
+        if let Some(p) = a.position {
+            g.position = p;
+            g.previous_position = p;
+        }
+        if let Some([yaw, pitch]) = a.rotation {
+            g.yaw = yaw;
+            g.pitch = pitch;
+            g.head_yaw = yaw;
+        }
+        if let Some(ground) = a.on_ground {
+            g.on_ground = ground;
+        }
+        if let Some(velocity) = a.velocity
+            && let Some(body) = g.loaded_body.as_mut()
+        {
+            body.velocity = velocity;
+        }
+    }
     // Everything the import changed reaches the client now, so that a proxy sees the
     // player as it will be; the player stays held until it is placed or dropped.
-    hub.send_arrival_state(i);
+    let recentered = hub.send_arrival_state(i);
     let g = &mut hub.guests[i];
+    // A retry of this hand-over's import finds the view already moved: it still answers that
+    // the chunks around the new place are on their way, as the first reply did.
+    let recentered = recentered || (g.arrival_handover == Some(handover) && g.arrival_recentered);
+    g.arrival_recentered = recentered;
     g.imported = true;
     g.arrival_announce = request.announce;
     g.arrival_handover = Some(handover);
@@ -451,6 +600,7 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
         announce: request.announce,
         place: request.place,
         handover,
+        recentered,
     })
 }
 
