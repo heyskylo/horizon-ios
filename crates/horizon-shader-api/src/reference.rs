@@ -107,7 +107,15 @@ pub fn markdown(api: Api) -> String {
         out += &format!("## {}\n\n`{}`\n\n", kind.name(), kind.signature());
         out += &table(kind.input(), None);
         if kind == StageKind::Material {
-            out += &table(&SURFACE, None);
+            let surface = table(&SURFACE, None);
+            // 🤖 Agent: 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
+            out += &match api {
+                Api::V0_1 => surface,
+                Api::V0_2 => surface.replace(
+                    "The lit colour, 0..1, with its alpha.",
+                    "The lit colour, linear light (more than 1 is brighter than white), with its alpha.",
+                ),
+            };
             out += "Under `[displacement]` the stage also defines \
                     `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \
                     faces near the camera are cut into; the corner moves along the face's normal by the depth it \
