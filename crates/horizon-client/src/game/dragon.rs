@@ -469,6 +469,50 @@ pub(super) enum Hurt {
 }
 /// The dragon's body among its parts (head, neck, body, ...).
 const BODY: usize = 2;
+/// A direct `AbstractArrow` or `WindCharge`, which a perched dragon shrugs off
+/// (`AbstractDragonSittingPhase.onHurt`); a breeze's `BreezeWindCharge` is neither.
+fn shrugs(direct: Option<&ProjectileKind>) -> bool {
+    matches!(
+        direct,
+        Some(ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::WindCharge)
+    )
+}
+/// `#minecraft:no_knockback` by the damage type's id: `dealDefaultKnockback` skips these.
+fn is_no_knockback_type(ty: &str) -> bool {
+    matches!(
+        ty.trim_start_matches("minecraft:"),
+        "explosion"
+            | "player_explosion"
+            | "bad_respawn_point"
+            | "in_fire"
+            | "lightning_bolt"
+            | "on_fire"
+            | "lava"
+            | "hot_floor"
+            | "sulfur_cube_hot"
+            | "in_wall"
+            | "cramming"
+            | "drown"
+            | "starve"
+            | "cactus"
+            | "fall"
+            | "ender_pearl"
+            | "fly_into_wall"
+            | "out_of_world"
+            | "generic"
+            | "magic"
+            | "wither"
+            | "dragon_breath"
+            | "dry_out"
+            | "sweet_berry_bush"
+            | "freeze"
+            | "stalagmite"
+            | "outside_border"
+            | "generic_kill"
+            | "campfire"
+            | "spear"
+    )
+}
 /// `#minecraft:is_explosion` by the damage type's id.
 fn is_explosion_type(ty: &str) -> bool {
     matches!(
@@ -606,13 +650,7 @@ impl Dragon {
         if is_fire(kind) {
             return Hurt::Refused;
         }
-        let arrow = matches!(
-            direct,
-            Some(
-                ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::WindCharge
-            )
-        );
-        self.hurt_from(part, damage, counts, arrow, from)
+        self.hurt_from(part, damage, counts, shrugs(direct), from)
     }
     /// `EnderDragon.hurt(part, source, damage)`: whether the hit landed
     /// (an arrow is spent, else it turns back). `counts` is the source
@@ -1382,23 +1420,47 @@ impl Game<'_> {
     /// quarter plus up to 1. `reallyHurt` runs only with a player behind the source or an
     /// `#is_explosion` type, and its `LivingEntity.hurtServer` refuses fire (the dragon is fire
     /// immune); `hurt` succeeds either way unless the dragon is dying or the hit is under 0.01.
+    /// `by` is the direct entity, `cause` the causing one (`by` without `from`), and `from`
+    /// the source position (`at`, else the direct entity's), which `dealDefaultKnockback`
+    /// pushes away from for a type not in `#no_knockback`.
     pub(super) fn command_damage_dragon(
         &mut self,
         id: u32,
         amount: f32,
         ty: &str,
         kind: DamageKind,
-        cause: Option<Target>,
+        (by, cause, from): (Option<Target>, Option<Target>, Option<Vec3>),
     ) -> bool {
         let player = self.command_player(cause);
+        // A perched dragon shrugs off a direct arrow or wind charge (`onHurt`).
+        let direct = match by {
+            Some(Target::Projectile(p)) => self
+                .creatures
+                .projectiles
+                .iter()
+                .find(|q| q.id == p)
+                .map(|q| q.kind.clone()),
+            Some(Target::Trident(_)) => Some(ProjectileKind::Trident),
+            _ => None,
+        };
         let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
             return false;
         };
         if is_fire(kind) {
-            return d.hurt_from(BODY, amount, None, false, None) != Hurt::Refused;
+            let hurt = d.hurt_from(BODY, amount, None, shrugs(direct.as_ref()), None);
+            return matches!(hurt, Hurt::Landed { .. });
         }
         let counts = player.is_some() || is_explosion_type(ty);
-        self.hurt_dragon_part(BODY, amount, counts, player, kind, None) != Hurt::Refused
+        // With no source position the push has no direction (knockback(0.4, 0, 0)).
+        let knock = (!is_no_knockback_type(ty)).then(|| from.unwrap_or(d.position));
+        let _attacker = player.map(|who| {
+            let entity = self.fight_entity(who);
+            self.knockback_scope(entity)
+        });
+        let hurt =
+            self.hurt_dragon_part_at(BODY, amount, counts, player, kind, direct.as_ref(), knock);
+        // A shrugged-off arrow is `onHurt`'s 0: under 0.01, refused.
+        matches!(hurt, Hurt::Landed { .. })
     }
     /// `DamageCommand` on an End crystal: `EndCrystal.hurtServer`. `isInvulnerableToBase`
     /// refuses an `Invulnerable` crystal unless the type bypasses it or a creative player is
@@ -1461,8 +1523,6 @@ impl Game<'_> {
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
     ) -> Hurt {
-        let by_id = by.map(|who| self.fight_entity(who));
-        let source = counts.then(|| hurt_source(kind, by_id, direct));
         // `dealDefaultKnockback` for a player's melee: away from the attacker's
         // feet. The scope names that player to the knockback hook.
         let _attacker = (kind == DamageKind::PlayerAttack)
@@ -1470,6 +1530,22 @@ impl Game<'_> {
         let from = (kind == DamageKind::PlayerAttack)
             .then(|| self.player.as_ref().map(|p| p.position))
             .flatten();
+        self.hurt_dragon_part_at(part, damage, counts, by, kind, direct, from)
+    }
+    /// `hurt_dragon_part` with the position a full hit's knockback pushes away from.
+    #[allow(clippy::too_many_arguments)]
+    fn hurt_dragon_part_at(
+        &mut self,
+        part: usize,
+        damage: f32,
+        counts: bool,
+        by: Option<FightWho>,
+        kind: DamageKind,
+        direct: Option<&ProjectileKind>,
+        from: Option<Vec3>,
+    ) -> Hurt {
+        let by_id = by.map(|who| self.fight_entity(who));
+        let source = counts.then(|| hurt_source(kind, by_id, direct));
         let Some(d) = self.dragon.as_mut() else {
             return Hurt::Refused;
         };
@@ -1529,7 +1605,8 @@ impl Game<'_> {
         let id = d.id;
         let blow = self.fight.last_blow.take();
         let guest = match who {
-            FightWho::Guest(conn) if self.lan_acting.is_none() => Some(conn),
+            // Another guest than the one acting: their state, as for a mob's kill.
+            FightWho::Guest(conn) if self.lan_acting != Some(conn) => Some(conn),
             _ => None,
         };
         let credited = guest.is_some_and(|conn| {

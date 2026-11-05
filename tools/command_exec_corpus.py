@@ -933,7 +933,7 @@ def dragon_command_damage():
     ops = setup('/forceload add 0 0 63 47', '/tick freeze')
     ops += [{'op': 'settle'}]
     dragon = '@e[tag=dmg_dragon,limit=1]'
-    ops += setup('/summon ender_dragon 8.5 160 8.5 {Tags:["dmg_actor","dmg_dragon"],NoAI:1b}')
+    ops += setup('/summon ender_dragon 8.5 160 8.5 {Tags:["dmg_actor","dmg_dragon"],NoAI:1b,DragonPhase:0}')
     ops += [cmd(f'/execute if entity {dragon}', expect_result=1),
             cmd(f'/data get entity {dragon} Health', expect_result=200)]
     for damage, health in (
@@ -959,6 +959,27 @@ def dragon_command_damage():
         for damage, stays in hits:
             ops += [cmd(f'/damage {crystal} {damage}'),
                     cmd(f'/execute {"if" if stays else "unless"} entity {crystal}', expect_result=1)]
+    # The dragons are summoned holding their pattern (0): a summoned dragon hovers (10), which
+    # is sitting, and Horizon summons it holding (a separate gap).
+    # One dragon at a time from here. dealDefaultKnockback: fireworks are #is_explosion (the
+    # hit counts) and not #no_knockback, so the dragon is pushed away from the `at` position.
+    knock = '@e[tag=dmg_knock,limit=1]'
+    ops += setup('/kill @e[tag=dmg_dragon]',
+                 '/summon ender_dragon 24.5 160 40.5 {Tags:["dmg_actor","dmg_knock"],NoAI:1b,DragonPhase:0}')
+    ops += [cmd(f'/damage {knock} 10 minecraft:fireworks at 44.5 160 40.5'),
+            cmd(f'/data get entity {knock} Health', expect_result=196),
+            cmd(f'/data get entity {knock} Motion[0] 1000'),
+            cmd(f'/data get entity {knock} Motion[2] 1000')]
+    # AbstractDragonSittingPhase.onHurt: a perched dragon takes nothing from a direct arrow,
+    # so the hit is under 0.01 and refused.
+    perch = '@e[tag=dmg_perch,limit=1]'
+    ops += setup('/kill @e[tag=dmg_knock]',
+                 '/summon ender_dragon 8.5 160 40.5 {Tags:["dmg_actor","dmg_perch"],NoAI:1b,DragonPhase:6}',
+                 '/summon arrow 8.5 170 40.5 {Tags:["dmg_actor","dmg_arrow"],NoGravity:1b}')
+    ops += [cmd(f'/damage {perch} 10 minecraft:arrow by @e[tag=dmg_arrow,limit=1] from @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=200),
+            cmd(f'/damage {perch} 10 minecraft:arrow by @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=196)]  # 196.5
     return ops + setup('/kill @e[tag=dmg_actor]', '/tick unfreeze', '/forceload remove all')
 
 
