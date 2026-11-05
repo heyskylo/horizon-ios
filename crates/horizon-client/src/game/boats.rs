@@ -1240,9 +1240,19 @@ impl Game<'_> {
                 ],
             );
         }
+        // BoatItem.use: ENTITY_PLACE at the hit (the boat's position), by the player.
+        let at = self
+            .boats
+            .last()
+            .map(|b| [b.position.x, b.position.y, b.position.z]);
+        if let Some(at) = at {
+            let ctx = self.player_context(None);
+            self.post_game_event("minecraft:entity_place", at, ctx);
+        }
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
