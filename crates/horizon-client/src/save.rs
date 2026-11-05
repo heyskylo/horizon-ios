@@ -5940,6 +5940,39 @@ mod tests {
         assert_eq!(share_out(0, 4, squares, || true), Vec::<usize>::new());
     }
 
+    /// `RegionFile.getVersion` writes a chunk with the version
+    /// `region-file-compression` selected: `compress_records` asks
+    /// `Compression::selected()` for every record it encodes, so a server told
+    /// to write lz4, gzip or uncompressed regions does
+    /// (`RegionFileVersion.configure`).
+    #[test]
+    fn a_chunk_is_written_with_the_selected_region_version() {
+        use super::{Record, compress_records};
+        let tag = Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([("xPos", Tag::Int(3))]),
+        });
+        let records = [((3, 4), Record::Tag(Arc::clone(&tag)))];
+        let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+        for name in ["none", "lz4", "gzip", "deflate"] {
+            assert!(Compression::configure(name), "{name}");
+            let written = compress_records(&refs, 99)
+                .pop()
+                .expect("one record")
+                .expect("an encoded record")
+                .expect("a chunk, not a deletion");
+            assert_eq!(
+                written.compression,
+                Compression::selected(),
+                "written with {name}"
+            );
+            // The bytes are that codec's, and read back as the chunk.
+            assert_eq!(written.nbt(Limits::default()).unwrap(), *tag);
+        }
+        // Leave the default behind for the rest of this process's tests.
+        assert!(Compression::configure("deflate"));
+    }
+
     #[test]
     fn records_compressed_on_helpers_match_one_thread_in_order() {
         use super::{Record, compress_records};
@@ -5967,7 +6000,7 @@ mod tests {
             let want = record
                 .tag()
                 .map(|t| {
-                    ChunkRecord::from_nbt(&t, Compression::Zlib, 1234, Limits::default())
+                    ChunkRecord::from_nbt(&t, Compression::selected(), 1234, Limits::default())
                 })
                 .transpose()
                 .unwrap();

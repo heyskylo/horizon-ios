@@ -381,6 +381,32 @@ mod tests {
             }
         }
     }
+    /// `RegionFileVersion.configure` and `getSelected`: the names
+    /// server.properties' `region-file-compression` takes, the default before
+    /// any is set, and an unknown name leaving the selection alone.
+    #[test]
+    fn the_selected_region_version_follows_the_property() {
+        assert_eq!(
+            Compression::selected(),
+            Compression::Zlib,
+            "VERSION_DEFLATE is DEFAULT"
+        );
+        for (name, want) in [
+            ("gzip", Compression::Gzip),
+            ("deflate", Compression::Zlib),
+            ("none", Compression::None),
+            ("lz4", Compression::Lz4),
+        ] {
+            assert!(Compression::configure(name), "{name}");
+            assert_eq!(Compression::selected(), want, "{name}");
+        }
+        // Vanilla logs the value and keeps the version it had.
+        assert!(!Compression::configure("zstd"));
+        assert!(!Compression::configure("LZ4"), "the names are exact");
+        assert_eq!(Compression::selected(), Compression::Lz4);
+        assert!(Compression::configure("deflate"));
+        assert_eq!(Compression::selected(), Compression::Zlib);
+    }
     #[test]
     fn checksums_reject_corruption() {
         for codec in [Compression::Gzip, Compression::Zlib, Compression::Lz4] {
