@@ -565,6 +565,7 @@ impl Launcher {
             horizon_cosmetics::Slot::Torso => "torso",
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
+            horizon_cosmetics::Slot::Emote => "emote",
         };
         let state = std::env::var("HORIZON_WARDROBE_STATE").unwrap_or_default();
         let mut equipped = std::collections::BTreeMap::new();
