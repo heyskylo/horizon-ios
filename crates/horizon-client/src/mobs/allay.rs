@@ -12,6 +12,7 @@ use crate::items::ItemStack;
 use crate::sculk::{self, Context, Info};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
+use horizon_protocol::entity_data::PositionSource;
 
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
@@ -392,6 +393,12 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             from: info.pos,
             to: [m.position.x, m.eye_y(), m.position.z],
             ticks: travel,
+            // `Allay.VibrationUser`: `new EntityPositionSource(allay,
+            // allay.getEyeHeight())`.
+            source: PositionSource::Entity {
+                id: m.id as i32,
+                y_offset: (m.eye_y() - m.position.y) as f32,
+            },
         });
     }
     if let Some(info) = tick.received {

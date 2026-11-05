@@ -2134,6 +2134,8 @@ pub enum MobEvent {
         from: [f64; 3],
         to: [f64; 3],
         ticks: i32,
+        /// `VibrationSystem.User.getPositionSource`: the listener itself.
+        source: horizon_protocol::entity_data::PositionSource,
     },
     /// The crumbs of the block under a digging or emerging warden.
     DigParticles {
