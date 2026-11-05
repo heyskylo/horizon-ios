@@ -246,6 +246,20 @@ fn a_registry_data_pack_is_checked_then_goes_into_a_world() {
 }
 
 #[test]
+fn screenshots_are_the_gallery_from_the_registry_only() {
+    let mut p = sample().projects[0].clone();
+    assert!(gallery_of(&p).is_empty());
+    let pages = "https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud";
+    p.screenshots = vec![
+        format!("{pages}/b.png"),
+        "https://example.com/tracker.png".into(),
+        format!("{pages}/a.jpg"),
+    ];
+    let urls: Vec<String> = gallery_of(&p).into_iter().map(|i| i.url).collect();
+    assert_eq!(urls, [format!("{pages}/b.png"), format!("{pages}/a.jpg")]);
+}
+
+#[test]
 fn installs_checked_turns_on_and_removes() {
     let index = sample();
     let home = scratch("install");
