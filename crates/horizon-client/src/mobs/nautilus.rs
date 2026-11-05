@@ -413,6 +413,8 @@ fn find_target(
             s.species == Species::Pufferfish && in_water_at(w, s.position)
         })
         .map(|s| (s.position.distance_squared(m.position), s.id))
+        // TargetingConditions.range(16): feet to feet.
+        .filter(|&(d, _)| d <= 16.0 * 16.0)
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
     near.into_iter()
@@ -821,14 +823,14 @@ mod hostile_target_tests {
         move |world, registry| {
             let water = registry.default_state("minecraft:water").unwrap();
             let stone = registry.default_state("minecraft:stone").unwrap();
-            for cx in -1..1 {
+            for cx in -1..2 {
                 for cz in -1..1 {
                     world
                         .chunks
                         .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
                 }
             }
-            for x in -8..=8 {
+            for x in -8..=18 {
                 for y in 60..=66 {
                     for z in -4..=4 {
                         let block = if wall && x == 3 { stone } else { water };
@@ -843,7 +845,7 @@ mod hostile_target_tests {
     /// level random's 1 in 2, the target is the closest #nautilus_hostiles in
     /// water among NEAREST_VISIBLE_LIVING_ENTITIES, so not a pufferfish behind
     /// stone. Each seed is a fresh level random.
-    fn targets(wall: bool) -> Option<Vec<Option<Who>>> {
+    fn targets(wall: bool, fish_at: Vec3) -> Option<Vec<Option<Who>>> {
         let mut out = None;
         let mut fish = None;
         crate::mobs::world::with_built_test_world(
@@ -851,7 +853,7 @@ mod hostile_target_tests {
             |_, _| {},
             |_, types| {
                 let kind = Arc::new(types.types["minecraft:pufferfish"].clone());
-                fish = Some(Mob::new(2, kind, Vec3::new(6.5, 62.0, 0.5), 0.0).seen(None));
+                fish = Some(Mob::new(2, kind, fish_at, 0.0).seen(None));
             },
         );
         let fish = fish?;
@@ -872,11 +874,19 @@ mod hostile_target_tests {
 
     #[test]
     fn a_nautilus_only_targets_a_pufferfish_it_sees() {
-        let (Some(open), Some(walled)) = (targets(false), targets(true)) else {
+        let near = Vec3::new(6.5, 62.0, 0.5);
+        // 16 out on x and 3 on z: inside the sensor's box, past range(16).
+        let far = Vec3::new(16.5, 62.0, 3.5);
+        let (Some(open), Some(walled), Some(beyond)) = (
+            targets(false, near),
+            targets(true, near),
+            targets(false, far),
+        ) else {
             return;
         };
         assert!(open.contains(&Some(Who::Mob(2))), "{open:?}");
         assert!(open.iter().all(|t| t.is_none() || *t == Some(Who::Mob(2))));
         assert!(walled.iter().all(Option::is_none), "{walled:?}");
+        assert!(beyond.iter().all(Option::is_none), "{beyond:?}");
     }
 }
