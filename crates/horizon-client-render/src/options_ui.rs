@@ -2343,6 +2343,11 @@ impl OptionsUi {
             _ => None,
         }
     }
+    /// Whether a video settings screen is open, Horizon's or vanilla's: the fullscreen mode
+    /// waits for it to close, and Ctrl with the wheel steps the GUI scale.
+    pub fn video_open(&self) -> bool {
+        self.page() == Page::Video || Self::graphics_page(self.page()).is_some()
+    }
     /// Whether the controller screen is open: a controller button pressed now may bind.
     pub fn controller_open(&self) -> bool {
         Self::controller_page(self.page()).is_some()
@@ -2513,20 +2518,13 @@ impl OptionsUi {
                         widget
                     }
                 };
-                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
+                // PvP & HUD opens with its preset; Extras doesn't repeat it, nor the way there
+                // (Horizon Settings has it).
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
-                let mut rows = vec![Row::Buttons(
-                    preset,
-                    (self.page() == Page::Extras).then(|| {
-                        button(
-                            0.0,
-                            0.0,
-                            150.0,
-                            tr("horizon.pages.open.pvp"),
-                            Act::Push(Page::Pvp),
-                        )
-                    }),
-                )];
+                let mut rows = Vec::new();
+                if self.page() == Page::Pvp {
+                    rows.push(Row::Buttons(preset, None));
+                }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     rows.extend(
@@ -2557,23 +2555,16 @@ impl OptionsUi {
             }
             Page::Horizon => {
                 // Two to a row, as vanilla's OptionsList.addSmall lays out
-                // buttons; each opens one of Horizon's settings pages.
+                // buttons; each opens one of Horizon's settings pages. Each page has
+                // one way in: graphics and shader packs are Video Settings' (the graphics
+                // screen), the controller is Controls', mods are the Options screen's.
                 let open =
                     |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
                 vec![
                     Row::Buttons(
-                        open("horizon.pages.open.graphics", Page::Graphics),
-                        Some(open(
-                            "horizon.pages.open.graphics_advanced",
-                            Page::GraphicsAdvanced,
-                        )),
+                        open("horizon.pages.open.extras", Page::Extras),
+                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
                     ),
-                    // Shader packs are on the graphics screen's Shaders page.
-                    Row::Buttons(
-                        open("horizon.pages.open.controller", Page::Controller),
-                        Some(open("horizon.pages.open.extras", Page::Extras)),
-                    ),
-                    Row::Buttons(open("horizon.pages.open.mods", Page::Mods), None),
                     Row::Buttons(
                         open(
                             "horizon.pages.open.split_setup",
@@ -2583,9 +2574,8 @@ impl OptionsUi {
                                 Page::SplitSetup
                             },
                         ),
-                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
+                        Some(open("horizon.pages.open.studio", Page::Studio)),
                     ),
-                    Row::Buttons(open("horizon.pages.open.studio", Page::Studio), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -2643,24 +2633,10 @@ impl OptionsUi {
                 rows
             }
             Page::Video => {
-                // Horizon's graphics settings screen, at General and at Advanced.
-                let mut rows = vec![Row::Buttons(
-                    button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.horizon_graphics"),
-                        Act::Push(Page::Graphics),
-                    ),
-                    Some(button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.graphics_advanced"),
-                        Act::Push(Page::GraphicsAdvanced),
-                    )),
-                )];
-                rows.push(Row::Header("options.video.display.header"));
+                // Vanilla's VideoSettingsScreen as vanilla lays it out. No menu opens it (Video
+                // Settings... opens the graphics screen, which has all of it); it stays for
+                // `horizon-ctl options video-vanilla` and the tests that pin vanilla's screen.
+                let mut rows = vec![Row::Header("options.video.display.header")];
                 rows.push(Row::Big(Opt::ExclusiveMode));
                 rows.extend(pairs(&[
                     Opt::MaxFps,
@@ -3008,7 +2984,9 @@ impl OptionsUi {
                 let entries = [
                     ("options.skinCustomisation", Some(Page::Skin)),
                     ("options.sounds", Some(Page::Sound)),
-                    ("options.video", Some(Page::Video)),
+                    // Video Settings... opens Horizon's graphics screen, which holds every
+                    // video option, as Sodium's replaces vanilla's.
+                    ("options.video", Some(Page::Graphics)),
                     ("options.controls", Some(Page::Controls)),
                     (
                         "options.language",
@@ -5945,8 +5923,6 @@ mod tests {
         let (texts, missed) = page_texts("de_de", &[Page::Horizon, Page::Extras, Page::PadBinds]);
         for want in [
             "Splitscreen …",
-            "Partikel",
-            "Blockpartikel weg: Aus",
             "Weicher Chat: Aus",
             "Nachrichtenmarkierung: An",
             "Kanäle für UI-Töne: Aus",
@@ -5965,7 +5941,7 @@ mod tests {
         assert_eq!(missed, Vec::<String>::new());
         let (texts, _) = page_texts("pl_pl", &[Page::Extras, Page::PadBinds]);
         for want in [
-            "Ukryj cząstki bloków: Wył.",
+            "Płynny czat: Wył.",
             "Pasek szybkiego wyboru: poprzednie pole",
         ] {
             assert!(texts.iter().any(|t| t == want), "{want:?} not in {texts:?}");
@@ -6588,12 +6564,11 @@ mod tests {
                 Row::Pair(a, b) => *a == opt || *b == Some(opt),
                 _ => false,
             }));
-            assert!(rows.iter().any(|row| matches!(row, Row::Buttons(..))));
         }
         ui.settings_search.set_value("no matching video setting");
         let rows = ui.list_rows(&settings);
         assert!(headers(ui.list_rows(&settings)).is_empty());
-        assert!(rows.iter().all(|row| matches!(row, Row::Buttons(..))));
+        assert!(rows.is_empty(), "{}", rows.len());
         ui.settings_search.set_value("");
         assert_eq!(headers(ui.list_rows(&settings)), all_headers);
     }
@@ -7571,6 +7546,141 @@ mod tests {
         assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true)]);
     }
 
+    /// Every setting a player reaches, from the Options screen through every button that opens
+    /// a page, is in one place, and every page has one way in. Vanilla's own repeats stay as
+    /// vanilla has them; the graphics screen stands for Video Settings, so the vanilla video
+    /// options it shows count as Video Settings' (Menu Background Blur is in both of
+    /// vanilla's). Vanilla's Video Settings rows are all on the graphics screen.
+    #[test]
+    fn every_setting_and_page_is_reached_from_one_place() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut s = Settings::default();
+        // The Music page shows once its extra is on.
+        s.extras.music_page = true;
+        let mut ui = OptionsUi::default();
+        let mut places: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut ways_in: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut put = |id: String, page: &str| {
+            places.entry(id).or_default().insert(page.to_owned());
+        };
+        // The graphics screen, drawn by `graphics_ui`.
+        let mut graphics_rows = BTreeSet::new();
+        for (page, groups) in crate::graphics_ui::rows() {
+            for row in groups.into_iter().flat_map(|(_, rows)| rows) {
+                use crate::graphics_ui::{H, Item};
+                let id = match row.item {
+                    // Vanilla's Graphics API button sets the same setting.
+                    Item::Horizon(H::GraphicsApi) => "graphics-api".to_owned(),
+                    Item::Horizon(H::ShaderPacks) => {
+                        ways_in
+                            .entry(format!("{:?}", Page::ShaderPacks))
+                            .or_default()
+                            .insert(format!("Graphics/{page:?}"));
+                        continue;
+                    }
+                    Item::Vanilla(o) => format!("{o:?}"),
+                    Item::Horizon(h) => format!("graphics:{h:?}"),
+                    Item::Extra(e) => format!("extra:{e:?}"),
+                };
+                graphics_rows.insert(id.clone());
+                put(id, "Graphics");
+            }
+        }
+        // Every page from the Options screen, through its buttons.
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![Page::Main];
+        while let Some(page) = todo.pop() {
+            if !seen.insert(format!("{page:?}")) {
+                continue;
+            }
+            ui.stack = vec![page];
+            let (widgets, _, _, _) = ui.layout(&s, 427.0, 4000.0);
+            let name = format!("{page:?}");
+            for w in &widgets {
+                let id = match &w.kind {
+                    WKind::Slider { opt, .. } => format!("{opt:?}"),
+                    WKind::Button { act, .. } => match act {
+                        Act::Cycle(Opt::GraphicsBackend) => "graphics-api".to_owned(),
+                        Act::Cycle(opt) => format!("{opt:?}"),
+                        Act::Extra(e) => format!("extra:{e:?}"),
+                        Act::PvpPreset => "pvp-preset".to_owned(),
+                        Act::Push(to) => {
+                            ways_in
+                                .entry(format!("{to:?}"))
+                                .or_default()
+                                .insert(name.clone());
+                            // The graphics screen's pages are one screen, listed above.
+                            if OptionsUi::graphics_page(*to).is_none() {
+                                todo.push(*to);
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                put(id, &name);
+            }
+        }
+        // Vanilla's own: the same option on two of its screens.
+        let vanilla_repeats: BTreeMap<&str, &[&str]> = [
+            ("MenuBlur", &["Accessibility", "Graphics"][..]),
+            ("ShowSubtitles", &["Accessibility", "Sound"][..]),
+            ("Narrator", &["Accessibility", "Chat"][..]),
+            ("ChatOpacity", &["Accessibility", "Chat"][..]),
+            ("TextBackgroundOpacity", &["Accessibility", "Chat"][..]),
+            ("ChatLineSpacing", &["Accessibility", "Chat"][..]),
+        ]
+        .into();
+        for (id, pages) in &places {
+            let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+            match vanilla_repeats.get(id.as_str()) {
+                Some(expected) => assert_eq!(&pages, expected, "{id}"),
+                None => assert_eq!(pages.len(), 1, "{id} is on {pages:?}"),
+            }
+        }
+        // AccessibilityOptionsScreen links Controls, as vanilla's does.
+        for (page, from) in &ways_in {
+            let from: Vec<&str> = from.iter().map(String::as_str).collect();
+            match page.as_str() {
+                "Controls" => assert_eq!(from, ["Accessibility", "Main"]),
+                _ => assert_eq!(from.len(), 1, "{page} opens from {from:?}"),
+            }
+        }
+        assert_eq!(
+            ways_in.get("ShaderPacks").map(|f| f.len()),
+            Some(1),
+            "{ways_in:?}"
+        );
+        assert!(
+            !seen.contains("Video"),
+            "vanilla's own layout has no way in"
+        );
+        // Every row of vanilla's Video Settings is on the graphics screen.
+        ui.stack = vec![Page::Video];
+        for row in ui.list_rows(&s) {
+            let opts = match row {
+                Row::Big(o) => vec![o],
+                Row::Pair(a, b) => std::iter::once(a).chain(b).collect(),
+                _ => Vec::new(),
+            };
+            for o in opts {
+                let id = match o {
+                    Opt::GraphicsBackend => "graphics-api".to_owned(),
+                    o => format!("{o:?}"),
+                };
+                // macOS has one graphics API: the graphics screen leaves the row out.
+                if id == "graphics-api" && cfg!(target_os = "macos") {
+                    continue;
+                }
+                assert!(
+                    graphics_rows.contains(&id),
+                    "{id} is not on the graphics screen"
+                );
+            }
+        }
+    }
+
     /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
     /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
     #[test]
@@ -7627,17 +7737,15 @@ mod tests {
             &main[main.len() - 3..],
             [Page::Horizon, Page::Mods, Page::Credits]
         );
+        // Video Settings... is the graphics screen, as Sodium's.
+        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
         ui.push(Page::Horizon);
         assert_eq!(
             pushes(&mut ui),
             [
-                Page::Graphics,
-                Page::GraphicsAdvanced,
-                Page::Controller,
                 Page::Extras,
-                Page::Mods,
-                Page::SplitSetup,
                 Page::Pvp,
+                Page::SplitSetup,
                 Page::Studio,
                 Page::Agent,
             ]
@@ -7666,12 +7774,6 @@ mod tests {
             .collect();
         assert!(acts.contains(&&Act::Extra(crate::extras::Item::AgentControl)));
         assert!(acts.contains(&&Act::CopyAgentDetails));
-        // Vanilla's own pages keep the Horizon pages they had.
-        ui.stack = vec![Page::Main, Page::Video];
-        let video = pushes(&mut ui);
-        for page in [Page::Graphics, Page::GraphicsAdvanced] {
-            assert!(video.contains(&page), "{page:?}");
-        }
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
     }

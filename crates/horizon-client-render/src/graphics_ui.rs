@@ -122,6 +122,8 @@ pub enum H {
 pub enum Item {
     Vanilla(Opt),
     Horizon(H),
+    /// A Horizon extra that changes the picture (`extras::Item`, kept in `horizon-extras.txt`).
+    Extra(crate::extras::Item),
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +146,14 @@ fn h(opt: H, cost: Cost, text: &'static str) -> Setting {
         text,
     }
 }
+/// An extra's row: its description is its own language key.
+fn e(item: crate::extras::Item, cost: Cost) -> Setting {
+    Setting {
+        item: Item::Extra(item),
+        cost,
+        text: item.description_key(),
+    }
+}
 
 /// Every page's settings, in named groups of related rows.
 pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
@@ -160,11 +170,18 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             vec![
                 (
                     "Preset",
-                    vec![h(
-                        H::Preset,
-                        None,
-                        "Sets the options below together. Changing one makes it Custom.",
-                    )],
+                    vec![
+                        h(
+                            H::Preset,
+                            None,
+                            "Sets the options below together. Changing one makes it Custom.",
+                        ),
+                        v(
+                            Opt::Preset,
+                            None,
+                            "Vanilla's own preset: sets only vanilla's options, as Minecraft does.",
+                        ),
+                    ],
                 ),
                 (
                     "Distance",
@@ -204,6 +221,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         v(Opt::GuiScale, None, "Size of menus and the HUD."),
                         v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
                         v(
+                            Opt::ExclusiveFullscreen,
+                            None,
+                            "Fullscreen takes the display over, at the mode below.",
+                        ),
+                        v(
+                            Opt::ExclusiveMode,
+                            None,
+                            "The display mode exclusive fullscreen uses. Applies when you leave.",
+                        ),
+                        v(
                             Opt::Vsync,
                             None,
                             "Waits for the display's refresh: no tearing, a little latency.",
@@ -218,17 +245,12 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "Lowers the frame rate when minimised, or idle too.",
                         ),
-                        v(
-                            Opt::Fov,
-                            Low,
-                            "Field of view. Wider shows more terrain at once.",
-                        ),
                     ],
                 ),
                 (
                     "Interface",
                     vec![
-                        v(Opt::ViewBobbing, None, "Sways the view while walking."),
+                        v(Opt::MenuBlur, Low, "Blurs the world behind menus."),
                         v(Opt::AttackIndicator, None, "Shows attack cooldown."),
                         v(Opt::Autosave, None, "Shows when the world saves."),
                     ],
@@ -260,6 +282,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How far rain and snow fall around you.",
                         ),
                         v(Opt::Particles, Medium, "How many particles effects spawn."),
+                        e(crate::extras::Item::HideBlockParticles, None),
                     ],
                 ),
                 (
@@ -287,6 +310,8 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                         v(Opt::Vignette, None, "Darkens the screen's edges."),
                         v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
+                        e(crate::extras::Item::DynamicLights, Low),
+                        e(crate::extras::Item::Fullbright, None),
                     ],
                 ),
                 (
@@ -296,6 +321,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Opt::Mipmaps,
                             None,
                             "Smaller copies of block textures for distant terrain: less shimmer.",
+                        ),
+                        v(
+                            Opt::TextureFiltering,
+                            Low,
+                            "How textures are sampled: sharper at a slant with Anisotropic.",
+                        ),
+                        v(
+                            Opt::MaxAnisotropy,
+                            Low,
+                            "How far Anisotropic filtering goes. Higher is sharper at a slant.",
                         ),
                         v(
                             Opt::CutoutLeaves,
@@ -1090,6 +1125,10 @@ impl Item {
                 Some("Only applies to asynchronous entity culling.")
             }
             Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
+            // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
+            Item::Vanilla(Opt::MaxAnisotropy) if s.file.int("textureFiltering") != 2 => {
+                Some("Only with Anisotropic texture filtering.")
+            }
             _ => None,
         }
     }
@@ -1133,9 +1172,10 @@ impl Item {
             Item::Horizon(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
             }
-            Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
+            Item::Extra(e) => return e.switch(&s.extras),
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
+            Item::Vanilla(Opt::ExclusiveFullscreen) => s.file.bool("exclusiveFullscreen"),
             Item::Vanilla(Opt::SmoothLighting) => s.smooth_lighting,
             Item::Vanilla(Opt::EntityShadows) => s.entity_shadows,
             Item::Vanilla(Opt::Vignette) => s.vignette,
@@ -1149,6 +1189,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Horizon(h) => h.slider(s),
+            Item::Extra(_) => None,
         }
     }
     pub fn label(self, s: &Settings) -> Text {
@@ -1159,6 +1200,10 @@ impl Item {
             ),
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s),
+            Item::Extra(e) => Text::option_name_value(
+                Text::literal(e.caption_text()),
+                Text::literal(e.value(&s.extras)),
+            ),
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
@@ -1166,8 +1211,10 @@ impl Item {
             return;
         }
         match self {
-            Item::Vanilla(o) => o.set_slider(s, v),
+            // Options.applyGraphicsPreset, as Video Settings' slider does it.
+            Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Horizon(h) => h.set_slider(s, v),
+            Item::Extra(_) => {}
         }
         self.touched(s);
     }
@@ -1178,6 +1225,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Horizon(h) => h.cycle(s, back),
+            Item::Extra(e) => e.cycle(&mut s.extras, back),
         }
         self.touched(s);
     }
@@ -1185,36 +1233,39 @@ impl Item {
     fn touched(self, s: &mut Settings) {
         let presetless = matches!(
             self,
-            Item::Horizon(
-                H::Preset
-                    | H::BlueMapAutoDetect
-                    | H::BlueMapRadius
-                    | H::Overlay
-                    | H::ScreenshotQuality
-                    | H::Pacing
-                    | H::PresentMode
-                    | H::Workers
-                    | H::FrameGeneration
-                    | H::BatteryMode
-                    | H::ShadowCache
-                    | H::GraphicsApi
-                    | H::TranslucentBatching
-                    | H::HdrSmoothGradients
-                    | H::GpuCulling
-            ) | Item::Vanilla(
-                Opt::GuiScale
-                    | Opt::Fullscreen
-                    | Opt::Vsync
-                    | Opt::MaxFps
-                    | Opt::Fov
-                    | Opt::Gamma
-                    | Opt::InactivityFps
-                    | Opt::ViewBobbing
-                    | Opt::ChunkFade
-                    | Opt::Vignette
-                    | Opt::Autosave
-                    | Opt::AttackIndicator
-            )
+            Item::Extra(_)
+                | Item::Horizon(
+                    H::Preset
+                        | H::BlueMapAutoDetect
+                        | H::BlueMapRadius
+                        | H::Overlay
+                        | H::ScreenshotQuality
+                        | H::Pacing
+                        | H::PresentMode
+                        | H::Workers
+                        | H::FrameGeneration
+                        | H::BatteryMode
+                        | H::ShadowCache
+                        | H::GraphicsApi
+                        | H::TranslucentBatching
+                        | H::HdrSmoothGradients
+                        | H::GpuCulling
+                )
+                | Item::Vanilla(
+                    Opt::GuiScale
+                        | Opt::Fullscreen
+                        | Opt::ExclusiveFullscreen
+                        | Opt::ExclusiveMode
+                        | Opt::Vsync
+                        | Opt::MaxFps
+                        | Opt::Gamma
+                        | Opt::InactivityFps
+                        | Opt::MenuBlur
+                        | Opt::ChunkFade
+                        | Opt::Vignette
+                        | Opt::Autosave
+                        | Opt::AttackIndicator
+                )
         );
         if !presetless {
             s.horizon.preset = Preset::Custom;
@@ -1224,6 +1275,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_steps(),
             Item::Horizon(h) => h.slider_steps(),
+            Item::Extra(_) => None,
         }
     }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
@@ -1455,8 +1507,10 @@ impl GraphicsUi {
         s.vsync = b.vsync;
         s.max_fps = b.max_fps;
         s.inactivity_fps_limit = b.inactivity_fps_limit.clone();
-        s.fov = b.fov;
-        s.view_bobbing = b.view_bobbing;
+        s.menu_blur = b.menu_blur;
+        s.extras.fullbright = b.extras.fullbright;
+        s.extras.dynamic_lights = b.extras.dynamic_lights;
+        s.extras.hide_block_particles = b.extras.hide_block_particles;
         s.attack_indicator = b.attack_indicator;
         s.autosave_indicator = b.autosave_indicator;
         s.clouds = b.clouds.clone();
@@ -1475,6 +1529,17 @@ impl GraphicsUi {
         s.prioritize_chunk_updates = b.prioritize_chunk_updates;
         // Presets set it beside the options above.
         s.graphics_preset = b.graphics_preset.clone();
+        // The vanilla rows options.txt keeps as it read them.
+        for key in [
+            "exclusiveFullscreen",
+            "textureFiltering",
+            "maxAnisotropyBit",
+        ] {
+            if let Some(value) = b.file.get(key) {
+                s.file.set(key, value.clone());
+            }
+        }
+        s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
         self.changed = false;
     }
 
@@ -2402,19 +2467,58 @@ mod tests {
         assert!(!ui.scroll.held());
     }
 
+    /// The rows only vanilla's Video Settings had work here as they do there: its preset
+    /// applies its distances (`Options.applyGraphicsPreset`), Max Anisotropy waits for
+    /// Anisotropic filtering, Exclusive Fullscreen is a tick box of `options.txt`.
+    #[test]
+    fn vanilla_video_rows_work_on_the_graphics_screen() {
+        let mut s = Settings::default();
+        let preset = Item::Vanilla(Opt::Preset);
+        preset.set_slider(&mut s, 0.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fast", 8, 32)
+        );
+        preset.set_slider(&mut s, 2.0 / 3.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fabulous", 32, 128)
+        );
+        let anisotropy = Item::Vanilla(Opt::MaxAnisotropy);
+        let filtering = Item::Vanilla(Opt::TextureFiltering);
+        while s.file.int("textureFiltering") == 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_some());
+        while s.file.int("textureFiltering") != 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_none());
+        let exclusive = Item::Vanilla(Opt::ExclusiveFullscreen);
+        assert_eq!(exclusive.switch(&s), Some(false));
+        exclusive.cycle(&mut s, false, FB);
+        assert_eq!(exclusive.switch(&s), Some(true));
+        assert!(s.file.bool("exclusiveFullscreen"));
+        // The graphics extras switch their own setting.
+        let lights = Item::Extra(crate::extras::Item::DynamicLights);
+        lights.cycle(&mut s, false, FB);
+        assert!(s.extras.dynamic_lights);
+        assert_eq!(lights.switch(&s), Some(true));
+    }
+
     #[test]
     fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        s.fov = 90.0;
-        let fov = row(&mut ui, &s, Item::Vanilla(Opt::Fov));
+        s.gamma = 0.25;
+        let gamma = row(&mut ui, &s, Item::Vanilla(Opt::Gamma));
         // A slider being changed doesn't take the wheel either: a controller scrolls with it.
-        press(&mut ui, &mut s, (fov[0] + 4.0, fov[1] + 4.0));
+        press(&mut ui, &mut s, (gamma[0] + 4.0, gamma[1] + 4.0));
         assert!(ui.can_change_value);
         let before = ui.scroll.amount;
         ui.scroll(&s, SIZE, -1.0);
         assert_eq!(ui.scroll.amount, before + 18.0);
-        assert_eq!(s.fov, 90.0);
+        assert_eq!(s.gamma, 0.25);
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         ui.scroll(&s, SIZE, -1000.0);
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
