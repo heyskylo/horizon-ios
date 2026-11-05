@@ -47,19 +47,20 @@ public final class VanillaTickScript {
     private static final Map<String, Integer> KEYS = new HashMap<>();
 
     static {
-        KEYS.put("w", 87);
-        KEYS.put("a", 65);
-        KEYS.put("s", 83);
-        KEYS.put("d", 68);
-        KEYS.put("space", 32);
-        KEYS.put("shift", 340);
-        KEYS.put("ctrl", 341);
-        KEYS.put("e", 69);
-        KEYS.put("q", 81);
-        KEYS.put("f", 70);
-        KEYS.put("esc", 256);
+        // SDL scancodes (InputConstants' names), as the default key mappings use them.
+        KEYS.put("w", InputConstants.KEY_W);
+        KEYS.put("a", InputConstants.KEY_A);
+        KEYS.put("s", InputConstants.KEY_S);
+        KEYS.put("d", InputConstants.KEY_D);
+        KEYS.put("space", InputConstants.KEY_SPACE);
+        KEYS.put("shift", InputConstants.KEY_LSHIFT);
+        KEYS.put("ctrl", InputConstants.KEY_LCONTROL);
+        KEYS.put("e", InputConstants.KEY_E);
+        KEYS.put("q", InputConstants.KEY_Q);
+        KEYS.put("f", InputConstants.KEY_F);
+        KEYS.put("esc", InputConstants.KEY_ESCAPE);
         for (int i = 1; i <= 9; i++) {
-            KEYS.put(Integer.toString(i), 48 + i);
+            KEYS.put(Integer.toString(i), InputConstants.KEY_1 + i - 1);
         }
     }
 
@@ -186,7 +187,7 @@ public final class VanillaTickScript {
         Screen screen = mc.gui.screen();
         switch (w[0]) {
             case "key" -> {
-                InputConstants.Key key = InputConstants.Type.KEYSYM.getOrCreate(KEYS.get(w[1]));
+                InputConstants.Key key = InputConstants.Type.KEYBOARD.getOrCreate(KEYS.get(w[1]));
                 boolean down = !w[2].equals("up");
                 if (screen != null) {
                     // KeyboardHandler.keyPress hands the open screen the press: the inventory key and
@@ -205,7 +206,7 @@ public final class VanillaTickScript {
                 }
             }
             case "mouse" -> {
-                InputConstants.Key key = InputConstants.Type.MOUSE.getOrCreate(w[1].equals("left") ? 0 : 1);
+                InputConstants.Key key = InputConstants.Type.MOUSE.getOrCreate(w[1].equals("left") ? InputConstants.MOUSE_BUTTON_LEFT : InputConstants.MOUSE_BUTTON_RIGHT);
                 if (screen != null) {
                     return;
                 }
