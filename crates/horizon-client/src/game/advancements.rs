@@ -10,6 +10,7 @@ use horizon_client::{
     toasts::Slide,
 };
 use horizon_core::geometry::Vec3;
+use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::Clientbound as C;
 use serde_json::Value;
 use std::{
@@ -856,6 +857,20 @@ impl Game<'_> {
             }
         }
     }
+    /// `AdvancementRewards.grant`'s pickup: volume 0.2 at the player's feet,
+    /// pitch `(nextFloat - nextFloat) * 0.7 + 1`, times 2. `playSound(null, …)`
+    /// so the player hears it. The draws are the level random, which is the
+    /// stream item pickup already uses for this pitch.
+    fn advancement_pickup_sound(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let at = [p.position.x, p.position.y, p.position.z];
+        let pitch =
+            ((self.world.random.next_float() - self.world.random.next_float()) * 0.7 + 1.0) * 2.0;
+        self.audio
+            .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
+    }
     /// `PlayerAdvancements.award` once done: `AdvancementRewards.grant`,
     /// then toast and announcement.
     fn award(&mut self, index: usize) {
@@ -868,7 +883,10 @@ impl Game<'_> {
         if a.rewards.experience > 0 {
             let old_level = self.experience.level;
             let points = self.xp_change(a.rewards.experience).map_or(0, |p| p.max(0));
-            self.experience.give(points);
+            let gained_level = self.experience.give(points);
+            if let Some(level) = gained_level {
+                self.play_level_up(1, level);
+            }
             self.native_player_level_changed(old_level);
         }
         // ServerPlayer.awardRecipesByKey: the rewards that name a recipe.
@@ -886,10 +904,16 @@ impl Game<'_> {
         for table in &a.rewards.loot {
             let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
             for s in items {
-                if let Some(rest) = self.give(s)
-                    && let Some(eye) = self.eye_position()
-                {
-                    self.spawn_item(rest, eye, [0.0; 3], 0);
+                // Inventory.add returns false when anything is left, and
+                // AdvancementRewards then drops that remainder with no
+                // pickup sound. A stack the inventory takes whole plays
+                // entity.item.pickup at the player's feet.
+                if let Some(rest) = self.give(s) {
+                    if let Some(eye) = self.eye_position() {
+                        self.spawn_item(rest, eye, [0.0; 3], 0);
+                    }
+                } else {
+                    self.advancement_pickup_sound();
                 }
             }
         }
@@ -898,7 +922,11 @@ impl Game<'_> {
         }
         if let Some(d) = &a.display {
             // A network player's client shows its own toast.
-            if d.show_toast && !self.adv.quiet && self.lan_acting.is_none() {
+            if d.show_toast
+                && !self.adv.quiet
+                && self.lan_acting.is_none()
+                && self.toast_allowed("advancement", &a.id)
+            {
                 self.adv.toasts.push_back(Toast {
                     icon: d.icon.clone(),
                     frame: d.frame,
@@ -2036,6 +2064,14 @@ impl Game<'_> {
             .chain(self.narrator_toast.as_ref().and_then(|t| t.slot))
             .fold(self.tutorial_toast_slots(), |used, slot| used | 1 << slot)
     }
+    /// `ToastManager.addToast`'s `ToastAddEvent`: whether a new toast of
+    /// `kind` (`id` within it) may be queued; false when a mod cancelled it.
+    /// Always asked: a bundle injected at the hook point is not in `mods()`.
+    pub(super) fn toast_allowed(&mut self, kind: &str, id: &str) -> bool {
+        let mut cancel = false;
+        self.native_toast_add(kind, id, &mut cancel);
+        !cancel
+    }
     /// The `AdvancementToast` or `RecipeToast` at `index` in its slot at `y`.
     fn draw_toast(&mut self, batch: &mut HudBatch, index: usize, y: f32, multiplier: f64) {
         let t = &self.adv.toasts[index];
@@ -2291,6 +2327,7 @@ impl Game<'_> {
                 && p.show
                 && self.adv.progress.done(a)
                 && let Some(d) = a.display.as_ref().filter(|d| d.show_toast)
+                && self.toast_allowed("advancement", &a.id)
             {
                 self.adv.toasts.push_back(Toast {
                     icon: d.icon.clone(),

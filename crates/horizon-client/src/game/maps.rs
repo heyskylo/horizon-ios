@@ -549,7 +549,7 @@ impl MapData {
         })
     }
     /// `MapItemSavedData.<clinit>`: the CODEC save arm omits optional defaults.
-    fn to_nbt(&self) -> Tag {
+    pub(super) fn to_nbt(&self) -> Tag {
         let mut data = vec![
             ("dimension", Tag::String(self.dimension.as_str().into())),
             ("xCenter", Tag::Int(self.center[0])),
@@ -1898,6 +1898,8 @@ impl Game<'_> {
     }
 }
 
+#[cfg(test)]
+mod live_frame_tests;
 #[cfg(test)]
 mod save_tests;
 

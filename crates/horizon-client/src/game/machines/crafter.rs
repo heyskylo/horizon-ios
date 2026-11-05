@@ -181,10 +181,17 @@ impl Game<'_> {
             return;
         }
         self.spawn_dispensed(pos, facing, rest, 6);
-        // CrafterRecipeCraftedTrigger for players within the 17-block box.
-        let near = self.eye_position().is_some_and(|e| {
+        // CrafterRecipeCraftedTrigger: every player whose box meets the 17-block
+        // box around the crafter's centre (8.5 from the centre to a face: the
+        // player's own width and height reach into it, not its eye point).
+        // `AABB.intersects` is strict: a box that only touches a face is out.
+        let near = self.player.as_ref().is_some_and(|p| {
             let c = center(pos);
-            (0..3).all(|i| (e[i] - c[i]).abs() <= 8.5 + 1.0)
+            let b = p.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            (lo.x < c[0] + 8.5 && hi.x > c[0] - 8.5)
+                && (lo.y < c[1] + 8.5 && hi.y > c[1] - 8.5)
+                && (lo.z < c[2] + 8.5 && hi.z > c[2] - 8.5)
         });
         if near {
             let id = horizon_client::crafting::qualified(recipe);
