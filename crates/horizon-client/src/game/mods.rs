@@ -550,8 +550,6 @@ impl Game<'_> {
                 return;
             }
             g.reload_datapacks(true);
-            // Commands parse the new tags and ids.
-            g.build_registries();
             log::info!(
                 "Horizon: content mods switched live: server data reloaded in {} ms",
                 at.elapsed().as_millis()

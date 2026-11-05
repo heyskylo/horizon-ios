@@ -595,18 +595,6 @@ impl Game<'_> {
         .iter()
         .map(|a| format!("minecraft:{a}"))
         .collect();
-        // The world's tags: its data packs' and a live mod switch's too.
-        fn tag_ids<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<String> {
-            let mut ids: Vec<String> = keys
-                .map(|k| horizon_client::command::args::normalize(k))
-                .collect();
-            ids.sort();
-            ids
-        }
-        let (item_tags, block_tags) = (
-            tag_ids(self.items().item_tags.keys()),
-            tag_ids(self.items().block_tags.keys()),
-        );
         let reg = &mut self.ui.registries;
         let mut items: Vec<String> = self
             .res
@@ -617,8 +605,22 @@ impl Game<'_> {
             .collect();
         items.sort();
         reg.items = items;
-        reg.item_tags = item_tags;
-        reg.block_tags = block_tags;
+        reg.item_tags = self
+            .res
+            .items()
+            .item_tags
+            .keys()
+            .map(|k| horizon_client::command::args::normalize(k))
+            .collect();
+        reg.item_tags.sort();
+        reg.block_tags = self
+            .res
+            .items()
+            .block_tags
+            .keys()
+            .map(|k| horizon_client::command::args::normalize(k))
+            .collect();
+        reg.block_tags.sort();
         reg.blocks = BlockProperties::clone(&block_properties(self.pack.assets.registry));
         reg.summonable = summonable_entities(&ids.entity_types, self.res.mob_types().keys());
         let mut types = ids.entity_types.clone();
