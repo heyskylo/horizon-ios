@@ -205,15 +205,9 @@ impl adv::World for View<'_, '_> {
         let l = self.0.world.light(p[0], p[1], p[2]);
         i32::from((l >> 4).max(l & 15))
     }
+    /// `CampfireBlock.isSmokeyPos`: share the beehive smoke test.
     fn smokey(&self, p: [i32; 3]) -> bool {
-        (1..=5).any(|d| {
-            self.0
-                .res
-                .facts()
-                .get(self.0.world.block(p[0], p[1] - d, p[2]))
-                .name
-                .ends_with("campfire")
-        })
+        horizon_client::beehive::smokey(&self.0.mob_world_base(&[]), p)
     }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
         let items = &self.0.res.items();
