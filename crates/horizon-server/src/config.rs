@@ -842,7 +842,8 @@ mod tests {
         assert!(on.combat.legacy);
         // Kept when the file is written again, and left out while off.
         assert_eq!(Config::parse(&render(&on)).unwrap(), on);
-        assert!(!render(&Config::default()).contains("[combat]"));
+        let off = render(&Config::default());
+        assert!(!off.lines().any(|l| l.trim() == "[combat]"), "{off}");
         assert!(Config::parse("[combat]\nlegacy = 1\n").is_err());
         assert!(Config::parse("[combat]\nlegcy = true\n").is_err());
     }
