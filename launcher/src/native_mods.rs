@@ -1696,7 +1696,7 @@ fn run_with_compiler(
     let mut child = cmd
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Could not start {what}: {e}"))?;
+        .map_err(|e| app_control(format!("Could not start {what}: {e}")))?;
     std::thread::scope(|scope| {
         let messages = compiler.zip(stdout).map(|(compiler, log)| {
             let input = BufReader::new(child.stdout.take().expect("piped"));
@@ -1704,6 +1704,7 @@ fn run_with_compiler(
         });
         let mut tail = std::collections::VecDeque::new();
         let mut errors = Vec::new();
+        let mut blocked = false;
         for text in BufReader::new(child.stderr.take().expect("piped"))
             .lines()
             .map_while(Result::ok)
@@ -1712,6 +1713,7 @@ fn run_with_compiler(
                 let _ = writeln!(log, "{kept}");
             }
             line(&text);
+            blocked |= rust_toolchain::blocked_by_app_control(&text);
             if text.starts_with("error") && errors.len() < 4 {
                 errors.push(text.clone());
             }
@@ -1728,8 +1730,25 @@ fn run_with_compiler(
             return Ok(());
         }
         let tail: Vec<String> = tail.into();
-        Err(messages.explain(failure(what, &status.to_string(), &errors, &tail)))
+        let error = messages.explain(failure(what, &status.to_string(), &errors, &tail));
+        Err(match blocked {
+            true => with_app_control(error),
+            false => app_control(error),
+        })
     })
+}
+
+/// `error` led by what to do when Windows' Smart App Control refused one of the build's
+/// programs (#5911): cargo's own lines only say a build script was "never executed".
+fn app_control(error: String) -> String {
+    match rust_toolchain::blocked_by_app_control(&error) {
+        true => with_app_control(error),
+        false => error,
+    }
+}
+
+fn with_app_control(error: String) -> String {
+    format!("{}\n\n{error}", rust_toolchain::smart_app_control())
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -2865,6 +2884,40 @@ mod tests {
         d
     }
 
+    /// The launcher's toolchain in `dir` for every host it ships one for: the build commands are
+    /// checked for each host on whichever machine runs the tests, not only for its own.
+    fn toolchains(dir: impl Into<PathBuf>) -> Vec<Toolchain> {
+        let dir = dir.into();
+        rust_toolchain::hosts()
+            .iter()
+            .map(|host| Toolchain {
+                dir: dir.clone(),
+                host,
+            })
+            .collect()
+    }
+
+    /// What `rust`'s host puts before cargo's subcommand ([`Toolchain::configure_cargo`]): the
+    /// ARM64 target's rustflags, nothing on the other hosts.
+    fn host_args(rust: &Toolchain) -> Vec<String> {
+        let mut cmd = Command::new("cargo");
+        rust.configure_cargo(&mut cmd);
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// `cmd`'s arguments after its host's own ([`host_args`]), which must come first.
+    fn args_after_host(rust: &Toolchain, cmd: &Command) -> Vec<String> {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let host = host_args(rust);
+        assert_eq!(args[..host.len()], host, "{}", rust.host.target);
+        args[host.len()..].to_vec()
+    }
+
     fn write_bundle(at: &Path, id: &str, helper: &str) {
         fs::create_dir_all(at).unwrap();
         let manifest = format!("[mod]\nid = \"{id}\"\nversion = \"0.1.0\"\n");
@@ -2874,12 +2927,14 @@ mod tests {
 
     #[test]
     fn horizon_mixins_finds_the_launchers_cargo() {
-        let rust = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: rust_toolchain::host().unwrap(),
-        };
+        for rust in toolchains("/rust/1.99.1-x") {
+            horizon_mixins_finds(&rust);
+        }
+    }
+
+    fn horizon_mixins_finds(rust: &Toolchain) {
         let cmd = apply(
-            &rust,
+            rust,
             Path::new("/tools/horizon-mixins"),
             Path::new("/src"),
             Path::new("/mods"),
@@ -3890,15 +3945,20 @@ mod tests {
             "[package]\nname = 'horizon-client'\nversion = '0.1.0'\n[build-dependencies]\nhorizon-mod-api-gen = { path = '../horizon-mod-api-gen' }\n",
         )
         .unwrap();
-        let rust = Toolchain {
-            dir: d.join("rust"),
-            host: rust_toolchain::host().unwrap(),
-        };
+        let rusts = toolchains(d.join("rust"));
+        // The same for every host.
         let env = |dir: &Path| {
-            cargo(&rust, dir, "build")
-                .get_envs()
-                .find(|(key, _)| *key == inject::ENV)
-                .map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+            let each: Vec<_> = rusts
+                .iter()
+                .map(|rust| {
+                    cargo(rust, dir, "build")
+                        .get_envs()
+                        .find(|(key, _)| *key == inject::ENV)
+                        .map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+                })
+                .collect();
+            assert!(each.windows(2).all(|w| w[0] == w[1]), "{each:?}");
+            each[0].clone()
         };
         assert_eq!(env(&stage), Some(None));
         inject::stage(&fresh, &[]).unwrap();
@@ -3935,22 +3995,25 @@ mod tests {
             version_for(A, B, Profile::Release, Target::Server, None, &found).unwrap(),
             "the profile is still in the server key"
         );
-        let rust = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: rust_toolchain::host().unwrap(),
-        };
+        let rusts = toolchains("/rust/1.99.1-x");
+        // The same after each host's own arguments.
         let flags = |stage: &Path, target: Target| {
-            compile(
-                &rust,
-                stage,
-                target,
-                Path::new("/native/target"),
-                Profile::Performance,
-                "horizon-client",
-            )
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect::<Vec<String>>()
+            let each: Vec<Vec<String>> = rusts
+                .iter()
+                .map(|rust| {
+                    let cmd = compile(
+                        rust,
+                        stage,
+                        target,
+                        Path::new("/native/target"),
+                        Profile::Performance,
+                        "horizon-client",
+                    );
+                    args_after_host(rust, &cmd)
+                })
+                .collect();
+            assert!(each.windows(2).all(|w| w[0] == w[1]), "{each:?}");
+            each[0].clone()
         };
         let server = flags(&d, Target::Server);
         assert!(server.contains(&"--no-default-features".into()));
@@ -4441,23 +4504,27 @@ mod tests {
 
     #[test]
     fn the_game_compiles_outside_the_players_cargo_configuration() {
-        let rust = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: rust_toolchain::host().unwrap(),
-        };
-        let stage = dir("stage-config");
+        for rust in toolchains("/rust/1.99.1-x") {
+            assert_eq!(
+                host_args(&rust).is_empty(),
+                rust.host.target != rust_toolchain::WINDOWS_ARM64_TARGET,
+                "only the ARM64 host adds its target's rustflags"
+            );
+            compiles_outside_the_players_cargo_configuration(&rust);
+        }
+    }
+
+    fn compiles_outside_the_players_cargo_configuration(rust: &Toolchain) {
+        let stage = dir(&format!("stage-config-{}", rust.host.target));
         let cmd = compile(
-            &rust,
+            rust,
             &stage,
             Target::Client,
             Path::new("/native/target"),
             Profile::Performance,
             "horizon-client",
         );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let args = args_after_host(rust, &cmd);
         assert_eq!(
             args[..3],
             [
@@ -4479,16 +4546,17 @@ mod tests {
         fs::create_dir_all(stage.join(".cargo")).unwrap();
         fs::write(stage.join(".cargo/config.toml"), "").unwrap();
         let cmd = compile(
-            &rust,
+            rust,
             &stage,
             Target::Client,
             Path::new("/native/target"),
             Profile::Performance,
             "horizon-client",
         );
-        let args: Vec<_> = cmd.get_args().collect();
+        let args = args_after_host(rust, &cmd);
         assert_eq!(args[1], "--config");
-        assert_eq!(args[2], stage.join(".cargo/config.toml"));
+        assert_eq!(PathBuf::from(&args[2]), stage.join(".cargo/config.toml"));
+        let _ = fs::remove_dir_all(stage);
     }
 
     #[test]
@@ -4508,22 +4576,25 @@ mod tests {
             Profile::Release,
             "the player's choice of release stays"
         );
-        let rust = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: rust_toolchain::host().unwrap(),
-        };
+        let rusts = toolchains("/rust/1.99.1-x");
+        // The same after each host's own arguments.
         let args = |profile| -> Vec<String> {
-            compile(
-                &rust,
-                &d,
-                Target::Client,
-                Path::new("/native/target"),
-                profile,
-                "horizon-client",
-            )
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
+            let each: Vec<Vec<String>> = rusts
+                .iter()
+                .map(|rust| {
+                    let cmd = compile(
+                        rust,
+                        &d,
+                        Target::Client,
+                        Path::new("/native/target"),
+                        profile,
+                        "horizon-client",
+                    );
+                    args_after_host(rust, &cmd)
+                })
+                .collect();
+            assert!(each.windows(2).all(|w| w[0] == w[1]), "{each:?}");
+            each[0].clone()
         };
         let performance = args(Profile::Performance);
         assert!(performance.windows(2).any(|w| w == ["--profile", "fast"]));
@@ -4640,5 +4711,36 @@ mod tests {
         // An error still among the last lines isn't said twice.
         let e = failure("horizon-mixins", "exit status: 1", &errors, &errors);
         assert!(e.contains("The end of its output") && e.matches("alsa-sys").count() == 1);
+    }
+
+    /// Smart App Control refusing a build script (#5911): cargo names the crate, Windows' reason
+    /// is only in a `Caused by` line in the middle of its output, so the error leads with what to do.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_smart_app_control_blocked_says_how_to_build() {
+        let _guard = LOG_TEST.lock().unwrap();
+        clear_log().unwrap();
+        // cargo's output on Windows 11 25H2 with Smart App Control on (the report in #5911).
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", r#"
+            echo 'error: failed to run custom build command for `quote v1.0.47`' >&2
+            echo 'Caused by:' >&2
+            echo '  could not execute process `C:\target\build-script-build` (never executed)' >&2
+            echo 'Caused by:' >&2
+            echo '  An Application Control policy has blocked this file. (os error 4551)' >&2
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do echo "warning: build failed, waiting ($i)" >&2; done
+            exit 101
+        "#]);
+        let e = run(cmd, "Building horizon-mixins", |_| {}).unwrap_err();
+        assert!(e.starts_with(&rust_toolchain::smart_app_control()), "{e}");
+        assert!(e.contains("quote v1.0.47"), "{e}");
+        // Another failure says nothing about it.
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "echo 'error: could not compile `horizon-client`' >&2; exit 101",
+        ]);
+        let e = run(cmd, "Compiling the game", |_| {}).unwrap_err();
+        assert!(!e.contains("Smart App Control"), "{e}");
     }
 }

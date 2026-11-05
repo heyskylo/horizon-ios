@@ -41,8 +41,8 @@ y points down, as in vanilla's `ModelPart`s and Blockbench's "Modded Entity" mod
 }
 ```
 
-- `slot`: `head`, `back`, `torso`, `shoulder` or `name_tag`; a player wears at most one item per
-  slot. A `torso` item is hidden under a chestplate (not an elytra).
+- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag` or `emote` (below); a player wears at
+  most one item per slot, and plays emotes. A `torso` item is hidden under a chestplate (not an elytra).
 - `bone`: the player model part the item follows (`head`, `body`, `left_arm`, `right_arm`,
   `left_leg`, `right_leg`; `head` if left out). The item sits at the bone's matrix times `attach` (offset in pixels,
   rotation in degrees, a uniform scale in (0, 2]).
@@ -75,6 +75,103 @@ Limits, checked when an item is read (`Item::parse`); an item past one is refuse
 | Reach | 24 pixels from the bone's pivot, animations included | items stay near their wearer |
 
 Unknown fields are refused, so a file never carries anything the game would silently ignore.
+
+## Emotes (`horizon_cosmetics::Emote`)
+
+An emote is an item of the `emote` slot: a short animation of the player model, owned like any
+item, never worn in a slot. Its `emote` block keyframes the bones; its `parts`, if any, are props
+(boxes on a bone, as any item's, with the item's texture; an emote without props needs no
+`texture`). Purely visual, nothing random, nothing sent to game servers.
+
+```json
+{
+  "format": 1, "id": "example_wave", "slot": "emote", "parts": [],
+  "emote": { "length": 40, "loop": false, "blend": 4, "tracks": [
+    { "part": "right_arm", "keys": [
+      { "t": 0 },
+      { "t": 8, "rotation": [0, 0, 150] },
+      { "t": 16, "rotation": [0, 0, 120], "ease": "linear" },
+      { "t": 40 } ] },
+    { "part": "root", "keys": [ { "t": 0 }, { "t": 6, "offset": [0, -2, 0] }, { "t": 12 } ] }
+  ] }
+}
+```
+
+- `length`: ticks; a one-shot ends there, a loop (`"loop": true`) repeats with that period and
+  wraps from its last key back to its first.
+- `blend`: ticks over which the emote fades in from the pose the player had (and a one-shot out
+  at its end; a cancelled emote fades out from where it was), at most half the length; 4 if left out.
+- `tracks`: one per thing moved. `part` is a bone (`head`, `body`, `right_arm`, `left_arm`,
+  `right_leg`, `left_leg`): the key's `rotation` (degrees) replaces the bone's own and its `offset`
+  (pixels) moves it from its rest; a bone no track names keeps vanilla's animation (the head
+  still looks around). `root` turns (`rotation`) and moves (`offset`) the whole body about the
+  feet. A prop's part name moves that part from its rest (in place of its own loop animations), and only a
+  prop's key may `scale` it (0 to 2: it may pop in from nothing). A missing value is the rest.
+- `ease`, from a key to the next: `smooth` (Catmull-Rom through the neighbouring keys: no corner
+  at a key; the default), `linear`, `in_out` (smoothstep) or `step` (held).
+
+Limits, checked by `Item::parse` with the item's own (vertices, parts, texture):
+
+| Limit | Value |
+|---|---|
+| Length | 4 to 200 ticks (10 s) |
+| Tracks | 16, one per part |
+| Keys | 32 a track, 192 in all, going forward in time within the length |
+| Turns | 360° about an axis (the root: 720°, two spins) |
+| Moves | 8 pixels from the rest (the root: 16, a block's hop) |
+| Props' reach | 24 pixels from their bone, through every key and 32 points of the length |
+
+`Emote::pose_body` poses the six bones at a time and weight (the blend), `Emote::pose_props` the
+props; `Playing` is an emote someone plays (its start, its cancel) and gives its time and weight.
+
+### Playing an emote (`game/emotes.rs`, `game/emote_wheel.rs`)
+
+- **The wheel**: *Emote Wheel* (`key.emote`, **B** by default: no vanilla key uses it; Controls
+  rebinds it, and so does the controller's page, with no button by default: the stick's cursor
+  picks a slice). Up to 8 emotes around the middle of the screen, the game running behind. Hold
+  the key, point at one and let go; or tap the key and click one, or press its number (1–8).
+  Escape or the key again closes it. The wheel lists the emotes the account owns: when it opens,
+  at most every 10 minutes, the game asks the service (`GET /v1/me`'s `emotes`: id, file hash
+  and names, signed in with the session `account::Kept` keeps) and reads the files it lacks
+  (`/v1/items`); `HORIZON_COSMETICS_LOCAL`: the folder's. An offline account has none.
+- **Cancelled** by moving more than a hundredth of a block, attacking or mining, using an item,
+  being hurt, riding, sleeping, gliding, sneaking, swimming or dying: it fades out over its blend.
+  Only a standing player starts one. A loop plays until cancelled.
+- **The camera**: from first person it turns to the front view (third person, facing you) for
+  the emote and eases out from close to its usual distance over a quarter second; when the emote
+  ends it goes back to first person, unless you changed the view meanwhile. From a third person
+  view it stays as it is.
+- **Visual only**: it changes nothing of the game; the game server receives nothing and sees a
+  player standing still. `horizon-ctl emote [ID|stop]` plays one as the wheel does.
+
+### Others' emotes (`horizon_cosmetics::Feed`)
+
+Vanilla servers stay untouched: emotes travel through the cosmetics service only.
+
+- **Mine**: while one plays, the game says so, signed in as for *Show me as Horizon*
+  (`POST /v1/emote {"emote": id}`, `{"emote": null}` when it stops early), with a service
+  session kept for the hour it lives (`account::Kept`: one Mojang `join` an hour, not one per
+  emote). A loop is said again every 30 s (the service keeps one a minute). Only while *Show me
+  as Horizon* is on: playing an emote tells anyone who asks that you play Horizon, so with it off
+  nothing is sent. An offline account sends nothing. The service takes at most 6 at once, then
+  one every 2 s per account, owned emotes only.
+- **Theirs**: each tick the game names the Horizon players in view (the `horizon` list of the
+  `/v1/worn` answers, at most 64) to a thread of its own, which asks
+  `POST /v1/emotes {"players": [...]}` at most once a second, only while someone is named
+  (nobody in view who plays Horizon: no request). The answer gives each player's emote, its
+  file's hash and how long ago it started (`{"playing": {uuid: {"id", "hash", "ms"}}}`), and the
+  game plays it on that player's model from that point; the item file comes once
+  (`/v1/items`). A player who moves ends theirs on this screen at once. A failure waits 15 s,
+  doubling to 10 minutes, and ends the emotes shown.
+- **Switches**: others' emotes follow *Other players' cosmetics*: shown only with *Shown*; with
+  *Name tags only* or *Hidden* nothing is asked and nothing is drawn. Vanilla clients see nothing.
+- **Cost**: per player in view, one cache look a tick (the same lock as what they wear) and,
+  while one plays, the six bones' sampling (a few keys each) after the vanilla animation in the
+  pass that draws them; props are boxes in the item's budget, drawn as cosmetics are (the GPU
+  skin path). Nobody emoting: one `Option` check per player model. Measured (2026-11-05, an
+  i7-7500U laptop, `Playing::at` + `pose_body` + `pose_props` over each emote's length): 0.26 to
+  0.41 µs per emoting player and frame, about 1 µs for one that turns its root (Victory Hop,
+  Harvest Jig); 30 players emoting at once stay under 35 µs a frame.
 
 ## What other players wear (`horizon_cosmetics::Cosmetics`)
 
@@ -128,7 +225,8 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   everything off for one run (no thread, no request, no setting, no drawing), `=1` on;
   `HORIZON_COSMETICS_API=<url>` points the game at another service, and
   `HORIZON_COSMETICS_LOCAL=<folder>` reads items from a folder instead: every player and every
-  mannequin wears its first item of each slot (the art and the bench, without the network).
+  mannequin wears its first item of each slot, and every mannequin plays the folder's first
+  emote over and over (the art and the bench, without the network).
 - **Settings** (Extras, under "Cosmetics", shown only with the flag on), the same three as the
   launcher's Wardrobe (`horizon_cosmetics::prefs`, lines of `horizon-extras.txt`):
   - *My cosmetics: Shown / Hidden* is the account's (`PUT /v1/visible`): hidden, every Horizon
@@ -160,6 +258,13 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
 - **Name tag styles** (`game/names.rs`): the badge, 8 text pixels square, after the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
   (the badge is in the atlas like the other items' textures). Horizon's mark goes before the name.
+- **Over tall items** (`names::cosmetic_lift`, Horizon only): a player wearing an item whose
+  highest point (`Item::top`: pixels above the model's neck with the bones at rest, animations
+  included, found when the item is read) passes the tag's lowest pixel (2.05 blocks up, standing)
+  has the whole tag, mark and badge included, lifted to one text pixel over it. Everyone else's
+  tag stays at vanilla's height, as does the tag of anyone whose items aren't drawn (others'
+  cosmetics on *Name tags only* or *Hidden*, *My cosmetics* hidden, a helmet over a hat). Cost:
+  one max over the worn items per tag drawn, inside the look the mark already does.
 - **Drawing** (`game/cosmetics.rs`): an item's texture takes one of the skin atlas's 64×64 slots
   and its boxes are posed on the wearer's bone each frame, through the same GPU skin path as the
   player model (the CPU path where that is off), lit and culled with the player. A helmet hides a
@@ -169,12 +274,30 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   does no cosmetics work beyond that. The bench scene `stress_avatars` (300 mannequins, 20×15)
   measures the cost with `HORIZON_COSMETICS=1 HORIZON_COSMETICS_LOCAL=…` against the same run off.
 
-## A still picture (`horizon_cosmetics::preview`)
+## The live view (`horizon_cosmetics::preview`, `horizon_cosmetics::viewer`)
 
 The launcher shows items on the player's own skin without the game: `preview::render` draws the
-player model at rest (vanilla's `PlayerModel` boxes on a 64×64 skin, wide or slim arms, the outer
-layers included) and each item on its bone on the CPU, with a depth buffer and cutout alpha, seen
-from any angle.
+player model (vanilla's `PlayerModel` boxes on a 64×64 skin, wide or slim arms, the outer layers
+included) and each item on its bone on the CPU, with a depth buffer and cutout alpha, as the game's
+entity cutout draws them, seen from a `preview::Camera` (turn, tilt, zoom).
+
+- **Camera**: dragging turns the player as if held (0.6° a point; the tilt stays within −30° to
+  60°), the wheel comes up to 3 times closer (×1.15 a step), closing in on the head; *Reset view*
+  goes back to `Camera::HOME` (30° turned, 10° from above, the whole player).
+- **Animations** play on the game's clock (20 ticks a second, the same `Item::animate` as the
+  game), only while the window is in front and not under reduced motion (`HORIZON_LAUNCHER_MOTION`,
+  the system's setting); in the background the clock stops and they go on from there.
+- **Cost**: `viewer::Stage` says when to draw again. Nothing changed (camera, outfit, scale, the
+  clock), nothing is drawn and no timer runs: an unchanged page, an idle view or a window in the
+  background does no work. At most 20 pictures a second while something animates (one a game
+  tick), 60 while dragging or zooming. A picture is drawn at the view's size in points (240×330,
+  each pixel a block of device pixels, as the launcher's pixel art), about 2 ms on the CPU on any
+  screen. The view is its own GPUI view: a new picture rebuilds it alone, the
+  page around it is drawn from the last frame.
+- **Emotes**: `viewer::BodyMotion` is a body animation played once (the parts' poses over its
+  length, on the same clock); `preview::Draw::item_posed` keeps each item on its bone as posed. The
+  launcher's `Viewer::play` takes one: the emote format implements `BodyMotion` and the Wardrobe
+  calls it.
 
 ## The Wardrobe's account check (`launcher/src/wardrobe.rs`)
 
@@ -215,14 +338,19 @@ its last visit, does (a claim, or a preview the service grants that account). Wi
 page stays hidden.
 
 - **A row per slot** (head, back, shirt, shoulder pet, name tag) with what it wears,
-  "Nothing equipped" or "None owned yet"; **your player** in the middle, on your own skin, wearing
-  it, with your name tag over the head as others see it (Horizon's mark unless the game's *Show me
-  as Horizon* is off, your style's badge after the name) (`horizon_cosmetics::preview`); **what you own for the
-  chosen slot**, "Nothing" first. Equipping shows at once.
-- **The shop is on the website**: an *Open the shop* button by the page's title opens
-  `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim, purchases through
-  Paddle). An account that owns nothing yet sees "You don't own any cosmetics yet." with that button
-  instead. **Your purchases** lists the account's orders (date, item, price, state, order number).
+  "Nothing equipped" or "None owned yet"; **your player** in the middle, in 3D on your own skin,
+  wearing it, with your name tag over the head as others see it (Horizon's mark unless the game's
+  *Show me as Horizon* is off, your style's badge after the name): drag to turn, scroll to zoom,
+  *Reset view* (the live view above, `launcher/src/wardrobe_page/viewer.rs`); **what you own for
+  the chosen slot**, "Nothing" first. Hovering a card tries its item on the player (or, for
+  "Nothing", takes the slot's item off) until the pointer leaves; equipping shows at once.
+- **The shop is on the website only** (Ludovic, 2026-11-05): the launcher has no prices, product
+  lists or checkout. One plain button by the page's title, *Get more cosmetics on playhorizon.dev*,
+  opens `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim,
+  purchases through Paddle); no badge, reminder or pop-up points to it. An account that owns
+  nothing yet sees "You don't own any cosmetics yet." with that button instead. The one exception
+  is the founder set's free *Claim for free* where Paddle doesn't sell (`Claim::here`): the site
+  sends those players to the Wardrobe, since only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:

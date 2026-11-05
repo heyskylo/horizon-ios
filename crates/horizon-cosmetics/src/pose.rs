@@ -291,6 +291,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_top_is_the_highest_point_above_the_neck_at_rest() {
+        // The hat's crown: a 4-pixel box on a pivot 10 pixels up, swinging 10° about z. Its top
+        // corners (±2, 4 up from the pivot) rise to 10 + 4 cos 10° + 2 sin 10° at the swing's end.
+        let (s, c) = 10f32.to_radians().sin_cos();
+        let item = Item::parse(hat("").as_bytes()).unwrap();
+        assert!(
+            (item.top - (10.0 + 4.0 * c + 2.0 * s)).abs() < 1e-4,
+            "{}",
+            item.top
+        );
+        // Each root counts from its own bone's rest pivot: a sleeve 2 pixels above the body's
+        // pivot (the neck) reaches 2 up; on the right arm, whose pivot is 2 below, the neck.
+        let on_body = Item::parse(shirt(r#""bone": "body","#).as_bytes()).unwrap();
+        assert!((on_body.top - 2.0).abs() < 1e-5, "{}", on_body.top);
+        let on_arm = Item::parse(shirt(r#""bone": "right_arm","#).as_bytes()).unwrap();
+        assert!(on_arm.top.abs() < 1e-5, "{}", on_arm.top);
+        // A name tag style has no model.
+        assert_eq!(Item::parse(name_tag("").as_bytes()).unwrap().top, 0.0);
+    }
+
+    #[test]
     fn only_a_top_level_part_rides_another_bone() {
         let nested = hat("").replace(
             r#""name": "crown","#,

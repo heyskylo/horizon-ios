@@ -496,10 +496,18 @@ impl Game<'_> {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
-        let Some((pos, stand)) = self.armor_stand_spawn(hit, stack) else {
+        let Some((pos, mut stand)) = self.armor_stand_spawn(hit, stack) else {
             return false;
         };
+        // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
+        // up to two blocks (a bottom slab, the block under replaced grass).
+        let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
+        stand.position.y = f64::from(pos[1]) + drop;
+        stand.previous = stand.position;
         let foot = stand.position;
+        // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
+        // ArmorStandItem.useOn turns the stand to face the player.
+        self.world.random.next_float();
         self.next_entity += 1;
         self.audio.play(
             "minecraft:entity.armor_stand.place",
@@ -507,11 +515,16 @@ impl Game<'_> {
             0.75,
             0.8,
         );
+        // ArmorStandItem.useOn: the stand's ENTITY_PLACE, by the player.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", [foot.x, foot.y, foot.z], ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         self.armor_stands.push(stand);
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         // ArmorStandItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
