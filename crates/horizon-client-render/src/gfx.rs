@@ -11291,18 +11291,26 @@ pub struct ShadowCull {
     pub light: Frustum,
     pub casters: Option<[Frustum; 2]>,
 }
+/// How far past a section's 16 blocks the shadow pass looks for what can shade the view: our
+/// probes' Iris 1.11.7 maps keep the sections whose box, grown by this much on every side, meets
+/// `shadow_casters`' shape. The 31 edge columns of 8 noon scenes allow only a growth of 1.12 to
+/// 1.19 blocks (a fit, not Iris's code); with 1.15, 19 of our 20 scenes hold exactly Iris's
+/// columns. Without it the edges of the wedge lose a column of terrain.
+const SHADOW_CASTER_MARGIN: f32 = 1.15;
 impl Cull for ShadowCull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
         self.light.intersects(min, max)
             && self
                 .casters
-                .is_none_or(|c| c.iter().all(|f| f.intersects(min, max)))
+                .is_none_or(|c| c.iter().all(|f| f.intersects(grown_min, grown_max)))
     }
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
         self.light.contains(min, max)
             && self
                 .casters
-                .is_none_or(|c| c.iter().all(|f| f.contains(min, max)))
+                .is_none_or(|c| c.iter().all(|f| f.contains(grown_min, grown_max)))
     }
     /// Our probe's Iris 1.11.7 maps fit testing the casters' whole sections (a guess that matched).
     fn tight(&self) -> bool {
@@ -13247,6 +13255,33 @@ mod shadow_caster_tests {
         let down = Vec3::new(-20f32.to_radians().cos(), -20f32.to_radians().sin(), 0.0);
         assert!(kept_looking(down, Vec3::Y, [-48.0, 16.0, -8.0]));
         assert!(!kept_looking(down, Vec3::Y, [-32.0, 16.0, -96.0]));
+    }
+
+    /// Our probes' Iris 1.11.7 maps keep the sections whose box, grown by a margin of 1.12 to
+    /// 1.19 blocks, meets the shape (#8464): a camera at (13.5, 69.62, -13.5) under a noon sun with the scenes' flying
+    /// field of view (77°).
+    #[test]
+    fn the_shadow_pass_keeps_a_margin_around_the_view() {
+        let kept = |yaw: f32, column: [f32; 2]| {
+            let camera =
+                world_projection(77.0, 16.0 / 9.0, 1024.0) * crate::camera::view_matrix(yaw, 0.0);
+            let cull = ShadowCull {
+                light: Frustum {
+                    planes: [Vec4::W; 6],
+                },
+                casters: Some(shadow_casters(camera, Vec3::Y)),
+            };
+            let min = Vec3::new(
+                column[0] * 16.0 - 13.5,
+                64.0 - 69.62,
+                column[1] * 16.0 + 13.5,
+            );
+            cull.intersects(min, min + 16.0)
+        };
+        // Looking west, the column at chunk (-2, -6) needs a margin of 0.9 blocks: Iris keeps it.
+        assert!(kept(90.0, [-2.0, -6.0]));
+        // Looking south (yaw 7.5), the one at (3, 0) needs a margin of 1.3 blocks: Iris drops it.
+        assert!(!kept(7.5, [3.0, 0.0]));
     }
 
     /// With the camera looking straight up under a noon sun, our probe's Iris 1.11.7 map holds
