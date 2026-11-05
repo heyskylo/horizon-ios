@@ -713,6 +713,9 @@
       "name": "world_lifecycle",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_world_lifecycle",
+      "neoforge": "ServerStartedEvent / ServerStoppedEvent (also told when a world fails to open or close)",
+      "side": "server",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
@@ -948,6 +951,8 @@
       "name": "block_entity_container",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_container",
+      "neoforge": "Capabilities.Item.BLOCK",
+      "cancellable": false,
       "mod_api": {
         "contract": "replace",
         "out": "container"
@@ -1000,6 +1005,9 @@
       "name": "register_commands",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_register_commands",
+      "neoforge": "RegisterCommandsEvent",
+      "side": "server",
+      "cancellable": false,
       "mod_api": {
         "contract": "collect",
         "out": "commands"
@@ -1034,6 +1042,8 @@
       "name": "tooltip",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_tooltip",
+      "neoforge": "ItemTooltipEvent",
+      "cancellable": false,
       "mod_api": {
         "contract": "collect",
         "out": "lines"
@@ -1117,6 +1127,9 @@
       "name": "explosion_detonate",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_explosion_detonate",
+      "neoforge": "ExplosionEvent.Detonate (blocks only: entities are hurt as before)",
+      "side": "server",
+      "cancellable": false,
       "mod_api": {
         "contract": "collect",
         "out": "blocks"
@@ -1331,6 +1344,8 @@
       "name": "block_entity_fluids",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_fluids",
+      "neoforge": "Capabilities.FluidHandler.BLOCK",
+      "cancellable": false,
       "mod_api": {
         "contract": "replace",
         "out": "fluids"
@@ -1608,6 +1623,9 @@
       "name": "loot_drops",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_loot_drops",
+      "neoforge": "LivingDropsEvent / BlockDropsEvent",
+      "side": "server",
+      "cancellable": false,
       "mod_api": {
         "contract": "collect",
         "out": "drops"
@@ -1688,6 +1706,7 @@
       "name": "block_highlight",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_highlight",
+      "neoforge": "RenderHighlightEvent.Block",
       "side": "client",
       "cancellable": true,
       "mod_api": {
@@ -2033,6 +2052,9 @@
       "name": "living_knockback",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_living_knockback",
+      "neoforge": "LivingKnockBackEvent",
+      "side": "server",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
