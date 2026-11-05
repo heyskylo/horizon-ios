@@ -892,10 +892,20 @@ pub fn client_tick(m: &mut Mob) {
     m.anim.vo = m.anim.v;
     animate(m);
 }
+/// How long a client counts a rear the server's flags say is on. A client
+/// never runs `standCounter` (`standIfPossible` only sets it on the server);
+/// `isStanding` is just the synched flag. The mount a client drives does run
+/// `stand_tick`, so a counter of 1 would end the rear a tick after the flag
+/// arrived, long before the jump lands. The next flags without the bit end it.
+const CLIENT_STANDING: i32 = 1 << 20;
 /// `AbstractHorse.DATA_ID_FLAGS` on a client: eating 16 and standing 32.
 pub fn set_flags(m: &mut Mob, flags: u8) {
     m.extra.flag = flags & 16 != 0;
-    m.extra.counter = i32::from(flags & 32 != 0);
+    if flags & 32 == 0 {
+        m.extra.counter = 0;
+    } else if m.extra.counter == 0 {
+        m.extra.counter = CLIENT_STANDING;
+    }
 }
 /// Whether `ai_step` above runs this species' grazing and rearing, so that
 /// the server's flags 16 and 32 mean eating and standing.
@@ -1115,6 +1125,25 @@ mod tests {
         // AbstractHorse.hurtServer: nextInt(3) == 0 -> standIfPossible (#3432).
         let n = rears(Species::Horse, "minecraft:horse", 300);
         assert!((60..=140).contains(&n), "{n} of 300 hits reared");
+    }
+
+    #[test]
+    fn a_synched_rear_lasts_until_the_flag_goes() {
+        // The mount a client drives ticks `stand_tick` itself; the synched
+        // standing flag, not that counter, decides when the rear is over.
+        let mut m = equine(1, Species::Donkey, "minecraft:donkey");
+        set_flags(&mut m, 32);
+        for _ in 0..25 {
+            stand_tick(&mut m);
+            animate(&mut m);
+        }
+        assert!(m.extra.counter > 0, "still standing");
+        assert_eq!(m.anim.v[STAND], 1.0);
+        set_flags(&mut m, 4);
+        assert_eq!(m.extra.counter, 0);
+        stand_tick(&mut m);
+        animate(&mut m);
+        assert!(m.anim.v[STAND] < 1.0, "falls once the flag is gone");
     }
 
     #[test]
