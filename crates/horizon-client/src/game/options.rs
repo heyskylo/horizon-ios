@@ -690,6 +690,31 @@ fn detected_controller_style(
     })
 }
 
+/// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
+/// monitor's size) is a window again: its border back and, still covering the monitor, the game's
+/// first size (854 x 480) in the middle of it, to be moved and sized.
+fn windowed_again(w: &winit::window::Window) {
+    // Only those: an ordinary window has its border, and its own size comes back by itself.
+    if w.is_decorated() {
+        return;
+    }
+    w.set_decorations(true);
+    let Some(m) = w.current_monitor() else {
+        return;
+    };
+    let (size, screen) = (w.inner_size(), m.size());
+    if size.width >= screen.width && size.height >= screen.height {
+        let scale = m.scale_factor();
+        let small = winit::dpi::LogicalSize::new(854.0, 480.0).to_physical::<u32>(scale);
+        let _ = w.request_inner_size(small);
+        let at = m.position();
+        w.set_outer_position(winit::dpi::PhysicalPosition::new(
+            at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
+            at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
+        ));
+    }
+}
+
 #[cfg(test)]
 mod controller_context_tests {
     use super::detected_controller_style;
@@ -715,30 +740,5 @@ mod controller_context_tests {
             detected_controller_style(None, GlyphStyle::PlayStation),
             GlyphStyle::PlayStation
         );
-    }
-}
-
-/// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
-/// monitor's size) is a window again: its border back and, still covering the monitor, the game's
-/// first size (854 x 480) in the middle of it, to be moved and sized.
-fn windowed_again(w: &winit::window::Window) {
-    // Only those: an ordinary window has its border, and its own size comes back by itself.
-    if w.is_decorated() {
-        return;
-    }
-    w.set_decorations(true);
-    let Some(m) = w.current_monitor() else {
-        return;
-    };
-    let (size, screen) = (w.inner_size(), m.size());
-    if size.width >= screen.width && size.height >= screen.height {
-        let scale = m.scale_factor();
-        let small = winit::dpi::LogicalSize::new(854.0, 480.0).to_physical::<u32>(scale);
-        let _ = w.request_inner_size(small);
-        let at = m.position();
-        w.set_outer_position(winit::dpi::PhysicalPosition::new(
-            at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
-            at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
-        ));
     }
 }
