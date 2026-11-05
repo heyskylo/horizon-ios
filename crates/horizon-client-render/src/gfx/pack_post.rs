@@ -5602,3 +5602,6 @@ mod atlas_name_post_tests;
 
 #[cfg(test)]
 mod unknown_sampler_terrain_tests;
+
+#[cfg(test)]
+mod mipmap_box_tests;
