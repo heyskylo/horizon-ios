@@ -194,7 +194,7 @@ impl Game<'_> {
         horizon_client::controller_ui::Context {
             player,
             device: self.pad.device_or_virtual(),
-            detected: self.pad.style,
+            detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
             style: self.ui.options.pad_style,
             by_letter: self.ui.options.pad_by_letter,
         }
@@ -677,6 +677,44 @@ impl Game<'_> {
                 horizon_client::window::end_frame_on_grid(&mut self.limiter, limit, &mut clock);
             }
         }
+    }
+}
+
+/// The named device can be a connected pad that has not driven the game yet.
+fn detected_controller_style(
+    device: Option<&horizon_client::controller_ui::Device>,
+    fallback: horizon_client::gamepad::GlyphStyle,
+) -> horizon_client::gamepad::GlyphStyle {
+    device.map_or(fallback, |d| {
+        horizon_client::gamepad::GlyphStyle::of_vendor(d.vendor)
+    })
+}
+
+#[cfg(test)]
+mod controller_context_tests {
+    use super::detected_controller_style;
+    use horizon_client::{controller_ui::Device, gamepad::GlyphStyle};
+
+    #[test]
+    fn detected_style_follows_the_named_device_even_before_it_is_used() {
+        let mut device = Device {
+            name: "pad".into(),
+            vendor: Some(0x054c),
+            product: None,
+        };
+        assert_eq!(
+            detected_controller_style(Some(&device), GlyphStyle::Xbox),
+            GlyphStyle::PlayStation
+        );
+        device.vendor = Some(0x057e);
+        assert_eq!(
+            detected_controller_style(Some(&device), GlyphStyle::PlayStation),
+            GlyphStyle::Nintendo
+        );
+        assert_eq!(
+            detected_controller_style(None, GlyphStyle::PlayStation),
+            GlyphStyle::PlayStation
+        );
     }
 }
 
