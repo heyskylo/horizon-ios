@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None):
-    if not predicates and not functions and not advancements and not loot_tables:
+def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None, recipes=None):
+    if not predicates and not functions and not advancements and not loot_tables and not recipes:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -71,6 +71,13 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
         target = pack / 'data' / namespace / 'loot_table' / (path + '.json')
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(table), encoding='utf-8')
+
+
+    for identifier, recipe in (recipes or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'recipe' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(recipe), encoding='utf-8')
 
 
 def main():
@@ -161,6 +168,11 @@ def main():
         groups = [(name, corpus_module.advancement_world_loot_rewards(
             named_table=args.advancement_loot_named_diagnostic, include_missing_ack=True)
                    if name == 'advancement world loot rewards' else ops) for name, ops in groups]
+    # These overlays replace built-in recipes: run each in its own world, never
+    # beside the generic corpus's fixed vanilla recipe-count controls.
+    isolated_recipes = {'crafting recipe priority', 'crafting base recipe control'}
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.loaded_fixture:
         groups = [('setup', corpus_module.group_setup()),
                   ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
@@ -229,6 +241,8 @@ def main():
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
+    if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
+        parser.error('crafting recipe fixtures require --only with one exact group')
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -237,6 +251,7 @@ def main():
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
+    recipes = corpus_module.crafting_priority_recipes([name for name, _ in groups])
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
     loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
     advancements.update(loot_advancements)
@@ -249,7 +264,7 @@ def main():
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables)
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     java_options = []
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
@@ -287,7 +302,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables)
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
