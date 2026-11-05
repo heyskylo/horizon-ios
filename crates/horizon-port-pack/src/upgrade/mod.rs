@@ -550,7 +550,7 @@ mod tests {
         );
         assert_eq!(
             v,
-            json!({"type": "minecraft:disk", "state_provider": "minecraft:clay", "radius": 2})
+            json!({"type": "minecraft:disk", "state_provider": {"id": "minecraft:clay"}, "radius": 2})
         );
         let (v, _) = up(
             "data/x/worldgen/placed_feature/p.json",
