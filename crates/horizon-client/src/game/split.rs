@@ -545,11 +545,22 @@ impl<'a> Split<'a> {
     /// When the windows had presented (before the GPU wait), for the frame-time readout.
     fn present(&mut self) -> Instant {
         let views = self.views();
+        let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
+        // Switching a window's present mode reconfigures its surface, and a reconfigure
+        // waits for the GPU to come idle: a frame submitted on its thread meanwhile breaks
+        // that wait (wgpu's "Failed to wait for GPU to come idle"). Drain before it can.
+        if self
+            .surfaces
+            .iter()
+            .enumerate()
+            .any(|(k, s)| s.compositor.will_reconfigure(vsync && k == paced))
+        {
+            self.wait_queues();
+        }
         let renderers: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
-        let vsync = self.host.settings.vsync;
-        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -560,6 +571,18 @@ impl<'a> Split<'a> {
             surface.compositor.set_vsync(vsync && k == paced);
             surface.compositor.present(&frames);
         }
+        // A texture that came back Outdated or Lost left its surface unconfigured: the
+        // same drain first, then the reconfigure `present` put off.
+        if self
+            .surfaces
+            .iter()
+            .any(|s| s.compositor.reconfigure_pending())
+        {
+            self.wait_queues();
+            for surface in self.surfaces.iter_mut() {
+                surface.compositor.reconfigure();
+            }
+        }
         let presented = Instant::now();
         // One player's CPU work overlapped the GPU drawing another's.
         let renderers = std::iter::once(&mut self.host.renderer)
@@ -569,6 +592,15 @@ impl<'a> Split<'a> {
             renderer.wait_in_flight();
         }
         presented
+    }
+    /// Every player's frame submitted and the device idle: before anything reconfigures a
+    /// surface, whose wait for the GPU breaks on a submission made while it waits.
+    fn wait_queues(&mut self) {
+        let renderers = std::iter::once(&mut self.host.renderer)
+            .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
+        for renderer in renderers.flatten() {
+            renderer.wait_submissions();
+        }
     }
 }
 

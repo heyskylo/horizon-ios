@@ -11142,6 +11142,13 @@ impl Renderer {
         self.land_frame();
         self.wait_frames();
     }
+    /// The frame on the submit thread submitted and the GPU idle: a surface reconfigure
+    /// waits for the device itself, and a submission made while it waits breaks that.
+    pub fn wait_submissions(&mut self) {
+        self.queue.wait();
+        self.in_flight.clear();
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
     fn wait_frames(&mut self) {
         while self.in_flight.len() > 2 {
             let index = self.in_flight.pop_front();
