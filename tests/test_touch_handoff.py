@@ -25,7 +25,7 @@ class TouchHandoffTests(unittest.TestCase):
 use std::time::Instant;
 #[path = "TOUCH_SOURCE"] mod touch;
 #[path = "MODE_SOURCE"] mod input_mode;
-use touch::{Control, Out, Touches};
+use touch::{Control, Out, Touches, MenuGesture, MenuMode};
 type Result<T> = std::result::Result<T, std::convert::Infallible>;
 trait EventLoopCtl {}
 struct ActiveEventLoop; impl EventLoopCtl for ActiveEventLoop {}
@@ -34,7 +34,8 @@ enum TouchPhase { Started, Moved, Ended, Cancelled }
 struct Point { x: f64, y: f64 }
 struct Touch { id: u64, phase: TouchPhase, location: Point }
 struct Batch { scale: f32, width: f32, height: f32 }
-struct MenuFinger { id: u64, pressed: bool, closed: bool }
+#[derive(Clone,Copy,PartialEq,Eq)]enum MenuTarget { Pointer }
+struct MenuFinger { id: u64, gesture: MenuGesture, target: MenuTarget }
 #[derive(Default)]
 struct TouchInput { seen: bool, hardware: input_mode::InputMode,
     menu: Option<MenuFinger>, fingers: Touches }
@@ -44,7 +45,9 @@ struct Game { pad:Pad,touch: TouchInput, last_input: Instant, playing: bool,
 mod horizon_gamecontroller { pub fn keyboard_connected() -> bool { true } }
 impl Game {
     fn new(playing: bool, pressed: bool) -> Self {
-        Self { pad:Pad::default(),touch: TouchInput { menu: Some(MenuFinger { id: 1, pressed, closed: false }),
+        let mut gesture=MenuGesture::new((0.0,0.0),MenuMode::Drag);
+        if pressed { gesture.frame(); gesture.frame(); }
+        Self { pad:Pad::default(),touch: TouchInput { menu: Some(MenuFinger { id: 1, gesture, target: MenuTarget::Pointer }),
             ..TouchInput::default() }, last_input: Instant::now(), playing,
             actions: vec![], buttons: vec![], menu_calls: 0 }
     }

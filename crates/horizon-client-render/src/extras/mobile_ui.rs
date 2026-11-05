@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     PackBrowser,
+    Pregen,
     /// Shared PvP & HUD page options, with their upstream translations.
     Pvp(crate::pvp::Opt),
     CosmeticsAuras,
@@ -94,6 +95,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(UiSoundReserve),
         Ok(MusicPage),
         Ok(PackBrowser),
+        Ok(Pregen),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
         Ok(WheelCyclesSettings),
@@ -131,6 +133,7 @@ impl Item {
         Some(match self {
             Self::Pvp(option) => super::desktop_ui::Item::Pvp(option),
             Self::PackBrowser => super::desktop_ui::Item::PackBrowser,
+            Self::Pregen => super::desktop_ui::Item::Pregen,
             Self::CosmeticsAuras => super::desktop_ui::Item::CosmeticsAuras,
             Self::MusicPage => super::desktop_ui::Item::MusicPage,
             Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
@@ -172,6 +175,7 @@ impl Item {
         match self {
             Item::Pvp(_)
             | Item::PackBrowser
+            | Item::Pregen
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -221,8 +225,10 @@ impl Item {
             Pvp(option) => return option.parent().map(Pvp),
             ChatIndicator => ChatAnimation,
             HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | PackBrowser
-            | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers | CosmeticsSolo
-            | HorizonMarks | HorizonMe | ReproKeys | WheelCyclesSettings => return None,
+            | Pregen | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers
+            | CosmeticsSolo | HorizonMarks | HorizonMe | ReproKeys | WheelCyclesSettings => {
+                return None;
+            }
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -240,6 +246,7 @@ impl Item {
         match self {
             Item::Pvp(_)
             | Item::PackBrowser
+            | Item::Pregen
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -320,6 +327,7 @@ impl Item {
         Some(match self {
             Item::Pvp(_)
             | Item::PackBrowser
+            | Item::Pregen
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -389,6 +397,7 @@ impl Item {
         match self {
             Item::Pvp(_)
             | Item::PackBrowser
+            | Item::Pregen
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine

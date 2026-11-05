@@ -22,6 +22,7 @@ def program():
     data=(ROOT/'crates/horizon-client/src/game/commands/data.rs').read_text()
     carts=(ROOT/'crates/horizon-client/src/game/minecarts.rs').read_text()
     persist=(ROOT/'crates/horizon-client/src/game/persist.rs').read_text()
+    actions=(ROOT/'crates/horizon-client/src/game/lan_actions.rs').read_text()
     getter=method(data,'entity_nbt_in_level');setter=method(data,'apply_entity_nbt')
     get='fn get(&mut self,t:Target)->Option<Tag>{Some(match t{'+','.join(arm(getter,n) for n in ('Boat','Cart'))+',_=>return None})}'
     tail=setter[setter.index('        if let Target::Mob(id)'):setter.rindex('        Ok(())')]
@@ -31,6 +32,7 @@ def program():
     methods='\n'.join(method(carts,n) for n in ('vehicle_slots','store_cart_items','close_cart_container'))
     for name in ('open_vehicle_items','sync_open_vehicle_items'):
         if 'fn '+name+'(' in carts:methods+='\n'+method(carts,name)
+    methods+='\n'+method(actions,'vehicle_has_other_viewers')
     methods+='\n'+method(persist,'join_saved_team')
     free=method(persist[persist.index('fn join_saved_team(board:'):],'join_saved_team')
     return STUBS+free+'\nimpl Game{'+get+put+methods+'}\n'+CASES
@@ -39,6 +41,7 @@ def program():
 STUBS=r'''
 #![allow(dead_code)]
 extern crate self as log;
+extern crate self as horizon_client;
 #[macro_export]macro_rules!warn{($($t:tt)*)=>{{}}}
 use std::collections::{HashMap,HashSet};
 type ItemStack=String;const CART_KEY_Y:i32=-100_000;
@@ -58,9 +61,14 @@ enum BlockEntity{Chest(Vec<Option<ItemStack>>)}struct World{block_entities:HashM
 #[derive(Clone,Copy)]enum Target{Boat(u32),Cart(u32),Mob(u32),Item(u32),Stand(u32),Frame(u32),Other(u32),Fangs(u32),Player}
 struct Persist{raw:HashMap<u32,Tag>}
 #[derive(Default)]struct Scoreboard{teams:HashSet<String>,members:HashMap<String,String>}impl Scoreboard{fn team(&self,t:&str)->Option<()>{self.teams.contains(t).then_some(())}fn add_to_team(&mut self,n:&str,t:&str){self.members.insert(n.into(),t.into());}}
-struct Score{board:Scoreboard}struct Game{carts:Vec<Cart>,boats:Vec<Boat>,world:World,persist:Persist,score:Score}
+#[derive(Clone,Copy,PartialEq)]pub enum Slots{Block((i32,i32,i32))}
+pub struct Menu{pub slots:Slots}
+pub mod lan{pub mod guest{pub struct Guest{pub conn:u32,pub placed:bool,pub dimension:String,pub menu:Option<crate::Menu>}}}
+struct Hub{guests:Vec<lan::guest::Guest>}struct Host{hub:Hub}
+struct Dim;impl Dim{fn id(&self)->&str{"minecraft:overworld"}}
+struct Score{board:Scoreboard}struct Game{lan:Option<Host>,dim:Dim,carts:Vec<Cart>,boats:Vec<Boat>,world:World,persist:Persist,score:Score}
 impl Game{fn uuid_for(&mut self,id:u32)->[i32;4]{[id as i32,0,0,0]}fn state_from_nbt(&self,_:&Tag)->Option<()>{Some(())}fn roll_cart_loot(&self,_:&mut Cart,_:&Tag){}
- fn new()->Self{Self{carts:vec![Cart{id:7,items:vec![Some("diamond:3".into())],loot:Some(())}],boats:vec![Boat{id:8,chest:true,items:vec![Some("gold:3".into())],position:[0.;3],previous:[0.;3],velocity:[0.;3],yaw:0.,previous_yaw:0.,pitch:0.,no_gravity:false}],world:World{block_entities:HashMap::new()},persist:Persist{raw:HashMap::new()},score:Score{board:Scoreboard::default()}}}
+ fn new()->Self{Self{lan:None,dim:Dim,carts:vec![Cart{id:7,items:vec![Some("diamond:3".into())],loot:Some(())}],boats:vec![Boat{id:8,chest:true,items:vec![Some("gold:3".into())],position:[0.;3],previous:[0.;3],velocity:[0.;3],yaw:0.,previous_yaw:0.,pitch:0.,no_gravity:false}],world:World{block_entities:HashMap::new()},persist:Persist{raw:HashMap::new()},score:Score{board:Scoreboard::default()}}}
 }
 '''
 CASES=r'''

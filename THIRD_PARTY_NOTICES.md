@@ -1,5 +1,35 @@
 # Third-party notices
 
+## ureq Realms TLS connector defaults
+
+`crates/horizon-client/src/realms/transport.rs` adapts the TLS configuration defaults from
+[ureq 2.12.1, `src/rtls.rs`](https://github.com/algesten/ureq/blob/ba4555d54fd72e16fc737f7e8fcc812efb131260/src/rtls.rs).
+It retains certificate verification, WebPKI roots, ring, and TLS 1.2/1.3 while adding original
+close-only socket ownership for cancellation. No ureq transport implementation is vendored.
+The public `TlsConnector`/`ReadWrite` APIs were also consulted at that revision.
+
+MIT License
+
+Copyright (c) 2019 Martin Algesten
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## winit
 
 `third_party/winit` is [winit](https://github.com/rust-windowing/winit) 0.30.13 with a local
@@ -197,6 +227,11 @@ library vanilla 26.3 uses, so that shader packs get the same matrices to the las
 ported to Rust; the pack_uniforms.rs functions drop JOML's property flags, and
 `pack_projection` works the formula in doubles. The copyright line and license notice also head
 both files.
+
+`camera.rs` also adapts `Quaternionf.rotationX`, `rotationY` and `rotationZ`,
+`Matrix4f.rotateAffine` and `Vector4f.mulAffine` (`joml::Quat::rotation_x`/`_y`/`_z`,
+`joml::Mat4::rotate_affine`, `transform_affine`), for the sky's positions shader packs read.
+Changes: ported to Rust; `rotate_affine` keeps only the affine case.
 
 ```
 The MIT License

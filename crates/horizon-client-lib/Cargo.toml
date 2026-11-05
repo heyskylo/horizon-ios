@@ -86,6 +86,9 @@ gilrs = { version = "0.11", optional = true }
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# The same already-linked roots as ureq; Realms wraps its TLS connector with
+# close-only socket ownership so Quit can interrupt a stalled HTTPS request.
+webpki-roots = "0.26"
 unicode-bidi = "0.3.18"
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }

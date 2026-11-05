@@ -244,6 +244,7 @@ fn quads_keep_the_state_of_their_block() {
         leaf_culling: Default::default(),
         shader_pack_lighting: false,
         separate_ao: false,
+        shader_pack: false,
         translucent_layers: &[],
     };
     let mut mesh = mesher.mesh(&region, 8);

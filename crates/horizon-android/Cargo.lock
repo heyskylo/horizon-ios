@@ -1272,6 +1272,7 @@ dependencies = [
  "unicode-bidi",
  "unicode_names2",
  "ureq",
+ "webpki-roots 0.26.11",
  "wgpu",
  "winit",
  "xxhash-rust",

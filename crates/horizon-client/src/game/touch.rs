@@ -8,7 +8,7 @@ use horizon_client::{
     Result,
     held::Source,
     hud::{HudBatch, rgba},
-    touch::{self, Control, Out, Touches},
+    touch::{self, Control, MenuAction, MenuGesture, MenuMode, Out, Touches},
 };
 use std::time::Instant;
 use winit::{
@@ -19,9 +19,6 @@ use winit::{
     keyboard::KeyCode,
     window::WindowId,
 };
-
-/// GUI pixels a finger drags over a menu for one line of scrolling.
-const SCROLL_LINE: f32 = 12.0;
 
 #[derive(Default)]
 pub(super) struct TouchInput {
@@ -49,14 +46,17 @@ pub(super) struct TouchInput {
 /// pressed in one go would press whatever was under the old position (or nothing).
 struct MenuFinger {
     id: u64,
-    /// Where the scrolling last caught up with the finger (GUI pixels).
-    scrolled: (f32, f32),
-    /// Loop iterations since it went down.
-    frames: u8,
-    pressed: bool,
-    lifted: bool,
-    /// It went down on the close button, which already acted: the rest of it is ignored.
-    closed: bool,
+    gesture: MenuGesture,
+    target: MenuTarget,
+    at: (f32, f32),
+    guard: Option<horizon_client::widgets::PointerGuard>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuTarget {
+    Pointer,
+    Close,
+    Keyboard,
 }
 
 /// The key a button stands for: the vanilla default of its mapping.
@@ -395,6 +395,17 @@ impl Game<'_> {
         phase: TouchPhase,
         at: (f32, f32),
     ) {
+        if !at.0.is_finite() || !at.1.is_finite() {
+            if self
+                .touch
+                .menu
+                .as_ref()
+                .is_some_and(|finger| finger.id == id)
+            {
+                self.touch_release_menu(event_loop);
+            }
+            return;
+        }
         match phase {
             TouchPhase::Started => {
                 if self.touch.menu.is_some() {
@@ -410,17 +421,19 @@ impl Game<'_> {
                     && self.touch_batch().is_some_and(|b| {
                         touch::hit_rect(touch::keyboard_rect(b.width, b.height), at)
                     });
-                if on_close {
-                    // What Escape does where the finger is (the pad's B).
-                    if let Err(e) = self.pad_back() {
-                        log::warn!("Horizon: touch close: {e}");
-                    }
+                let target = if on_close {
+                    MenuTarget::Close
                 } else if on_keyboard {
-                    self.toggle_system_keyboard();
+                    MenuTarget::Keyboard
                 } else {
-                    // A finger outside the field the keyboard belongs to puts the system's keyboard away, as
-                    // it would on any phone (and one on the field brings it back after the button hid it);
-                    // the tap still does what it was on.
+                    MenuTarget::Pointer
+                };
+                let mode = if target == MenuTarget::Pointer {
+                    self.touch_menu_mode(at)
+                } else {
+                    MenuMode::Tap
+                };
+                if target == MenuTarget::Pointer {
                     match self.focused_field_rect() {
                         Some(rect) if touch::hit_rect(rect, self.screen_point(at)) => {
                             if self.system_keyboard_hidden() {
@@ -434,39 +447,86 @@ impl Game<'_> {
                 }
                 self.touch.menu = Some(MenuFinger {
                     id,
-                    scrolled: at,
-                    frames: 0,
-                    pressed: false,
-                    lifted: false,
-                    closed: on_close || on_keyboard,
+                    gesture: MenuGesture::new(at, mode),
+                    target,
+                    at,
+                    guard: (mode == MenuMode::Tap)
+                        .then(|| horizon_client::widgets::capture_pointer(self.screen_point(at))),
                 });
             }
-            TouchPhase::Moved => {
-                let Some(finger) = self.touch.menu.as_ref().filter(|f| f.id == id && !f.closed)
-                else {
+            TouchPhase::Moved | TouchPhase::Ended => {
+                let Some(finger) = self.touch.menu.as_mut().filter(|finger| finger.id == id) else {
                     return;
                 };
-                let last = finger.scrolled;
-                self.touch_pointer(event_loop, at);
-                // A drag scrolls lists as a wheel would, the content following the finger. Not in an
-                // inventory, where a drag carries the item it pressed on.
-                let lines = ((at.1 - last.1) / SCROLL_LINE).trunc();
-                let scrolls = self.screen != Screen::Inventory;
-                if let Some(f) = self.touch.menu.as_mut() {
-                    f.scrolled = (at.0, last.1 + lines * SCROLL_LINE);
-                }
-                if scrolls && lines != 0.0 {
-                    self.touch_wheel(event_loop, lines);
-                }
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                let Some(finger) = self.touch.menu.as_mut().filter(|f| f.id == id) else {
-                    return;
+                let target = finger.target;
+                finger.at = at;
+                let action = if phase == TouchPhase::Ended {
+                    finger.gesture.end(at)
+                } else {
+                    finger.gesture.moved(at)
                 };
-                finger.lifted = true;
-                if !finger.closed {
+                if target == MenuTarget::Pointer {
                     self.touch_pointer(event_loop, at);
                 }
+                self.touch_menu_action(event_loop, target, action);
+            }
+            TouchPhase::Cancelled => {
+                if self
+                    .touch
+                    .menu
+                    .as_ref()
+                    .is_some_and(|finger| finger.id == id)
+                {
+                    self.touch_release_menu(event_loop);
+                }
+            }
+        }
+    }
+
+    /// The same drawn targets the controller uses distinguish direct manipulation
+    /// from a tap. Fields retain selection dragging; sliders and slots retain holds.
+    fn touch_menu_mode(&self, at: (f32, f32)) -> MenuMode {
+        if self.screen == Screen::Inventory
+            || horizon_client::widgets::last_targets()
+                .iter()
+                .rev()
+                .any(|target| {
+                    matches!(
+                        target.kind,
+                        horizon_client::widgets::Kind::Slider { .. }
+                            | horizon_client::widgets::Kind::Field
+                            | horizon_client::widgets::Kind::Slot
+                    ) && touch::hit_rect(target.rect, self.screen_point(at))
+                })
+        {
+            MenuMode::Drag
+        } else {
+            MenuMode::Tap
+        }
+    }
+
+    fn touch_menu_action(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        target: MenuTarget,
+        action: MenuAction,
+    ) {
+        if action.finished {
+            self.touch.menu = None;
+        }
+        if action.scroll != 0.0 && target == MenuTarget::Pointer {
+            self.touch_wheel(event_loop, action.scroll);
+        }
+        if let Some(pressed) = action.button {
+            match (target, pressed) {
+                (MenuTarget::Pointer, _) => self.touch_button(event_loop, pressed),
+                (MenuTarget::Close, true) => {
+                    if let Err(error) = self.pad_back() {
+                        log::warn!("Horizon: touch close: {error}");
+                    }
+                }
+                (MenuTarget::Keyboard, true) => self.toggle_system_keyboard(),
+                _ => {}
             }
         }
     }
@@ -474,9 +534,9 @@ impl Game<'_> {
     /// Abandon a menu gesture when another input device or the world takes over.
     /// A missing UIKit end event must neither latch all later fingers nor create a click.
     fn touch_release_menu(&mut self, event_loop: &dyn EventLoopCtl) {
-        if let Some(finger) = self.touch.menu.take()
-            && finger.pressed
-            && !finger.closed
+        if let Some(mut finger) = self.touch.menu.take()
+            && finger.gesture.cancel().button == Some(false)
+            && finger.target == MenuTarget::Pointer
         {
             self.touch_button(event_loop, false);
         }
@@ -487,20 +547,24 @@ impl Game<'_> {
         let Some(finger) = self.touch.menu.as_mut() else {
             return;
         };
-        finger.frames = finger.frames.saturating_add(1);
-        if finger.closed {
-            if finger.lifted {
-                self.touch.menu = None;
-            }
-        } else if !finger.pressed {
-            if finger.frames >= 2 {
-                finger.pressed = true;
-                self.touch_button(event_loop, true);
-            }
-        } else if finger.lifted {
+        let target = finger.target;
+        let at = finger.at;
+        let action = finger.gesture.frame();
+        if action.button == Some(true)
+            && self
+                .touch
+                .menu
+                .as_ref()
+                .and_then(|finger| finger.guard.as_ref())
+                .is_some_and(|guard| {
+                    *guard != horizon_client::widgets::capture_pointer(self.screen_point(at))
+                })
+        {
+            // No press was dispatched yet: suppress it without inventing a release.
             self.touch.menu = None;
-            self.touch_button(event_loop, false);
+            return;
         }
+        self.touch_menu_action(event_loop, target, action);
     }
 
     pub(super) fn touch_synthetic_input(&self) -> bool {
@@ -601,7 +665,11 @@ impl Game<'_> {
         if self.hardware_hides_touch() || self.touch_on_phone() {
             return;
         }
-        let held = self.touch.menu.as_ref().is_some_and(|f| f.closed);
+        let held = self
+            .touch
+            .menu
+            .as_ref()
+            .is_some_and(|finger| finger.target == MenuTarget::Close);
         let keyboard = self.touch_shown() && self.field_focused();
         let atlas = &self.gui.atlas;
         if self.touch_close_shown() {
@@ -620,7 +688,15 @@ impl Game<'_> {
         }
         if keyboard {
             let r = touch::keyboard_rect(batch.width, batch.height);
-            touch_button(batch, atlas, r, false);
+            touch_button(
+                batch,
+                atlas,
+                r,
+                self.touch
+                    .menu
+                    .as_ref()
+                    .is_some_and(|finger| finger.target == MenuTarget::Keyboard),
+            );
             shadowed(r, |r, color| {
                 // A keyboard: two rows of keys over a space bar.
                 let u = cell_size(r) * 0.75;
@@ -674,14 +750,22 @@ impl Game<'_> {
                 buttons.push(horizon_airplay::Button {
                     label: "✕".to_owned(),
                     rect: px(touch::close_rect(batch.width, batch.height)),
-                    held: self.touch.menu.as_ref().is_some_and(|f| f.closed),
+                    held: self
+                        .touch
+                        .menu
+                        .as_ref()
+                        .is_some_and(|finger| finger.target == MenuTarget::Close),
                 });
             }
             if focused {
                 buttons.push(horizon_airplay::Button {
                     label: "⌨".to_owned(),
                     rect: px(touch::keyboard_rect(batch.width, batch.height)),
-                    held: false,
+                    held: self
+                        .touch
+                        .menu
+                        .as_ref()
+                        .is_some_and(|finger| finger.target == MenuTarget::Keyboard),
                 });
             }
         }

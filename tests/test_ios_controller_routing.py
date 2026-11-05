@@ -26,7 +26,20 @@ def program():
     begin = gamepad.index('/// How a bindable action reaches the game:')
     end = gamepad.index("/// An action's name in the binds list:", begin)
     code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[end:] + '\n}\n'
-    code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\n#[derive(Clone,Debug,Default,PartialEq)]struct Device{name:String,vendor:Option<u16>,product:Option<u16>}\nstruct Pads;\n'
+    code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\n#[derive(Clone,Debug,Default,PartialEq)]struct Device{name:String,vendor:Option<u16>,product:Option<u16>}\n'
+    code += source[source.index('#[derive(Default)]'):source.index('/// The glyphs')].replace('pub(super)', 'pub(crate)')
+    code += r'''
+#[derive(Default)]struct Menu { armed:Option<Button> }
+#[derive(Default)]struct Pads {
+ devices:Devices,feed_source:Option<PadId>,device:Option<Device>,style:GlyphStyle,
+ menu:Menu,connections:Vec<Connection>,
+}
+#[derive(Debug,PartialEq)]enum Connection {Connected(GlyphStyle),Disconnected{active:bool}}
+// The production native poll only logs names. Keep logging out of this standalone fixture.
+mod log { pub(crate) use crate::info; }
+#[macro_export]macro_rules! info {($($arg:tt)*)=>{let _=format!($($arg)*);};}
+'''
+    code += 'impl Pads {\n' + method(source, 'read_snapshots') + '\n' + method(source, 'release_hardware') + '\n}\n'
     code += '#[derive(Debug,PartialEq)]enum PadEvent{Press(PadId,Button),Gone(PadId),Back(PadId)}\n'
     return code + method(source, 'style') + '\n' + method(source, 'device_of') + '\n' + router + '\n' + CASES
 
@@ -53,6 +66,54 @@ fn main(){
  assert_eq!(router.update(vec![two.clone(),reconnected]),vec![PadEvent::Back(3),PadEvent::Press(3,Button::South)]);
  assert_eq!(router.uuid(3),[0;16]);assert!(!router.connected(1));
  assert_eq!(router.update(vec![]),vec![PadEvent::Gone(2),PadEvent::Gone(3)]);
+ handoffs();
+}
+fn handoffs(){
+ let mut pads=Pads::default();let mut router=PadRouter::default();
+ let one=snapshot(41,true,false,[0.5,-0.3],0.8);
+ let two=snapshot(42,false,true,[-0.4,0.2],0.);
+ assert!(pads.read_snapshots(vec![one.clone(),two.clone()],Some(one.clone())).held(Button::South));
+ pads.menu.armed=Some(Button::South);
+ // An undelivered notice and the menu's press belong to P1, not to routing.
+ pads.connections.push(Connection::Connected(GlyphStyle::Nintendo));
+ router.adopt(&mut pads);
+ assert_eq!(router.state(41).left,[0.5,-0.3]);
+ assert_eq!(router.device(41),Some(Device{name:"pad41".into(),vendor:Some(0x054c),product:None}));
+ assert_eq!(pads.menu.armed,Some(Button::South));
+ assert_eq!(pads.connections,vec![Connection::Connected(GlyphStyle::Nintendo)]);
+ // The existing A and trigger hold cannot create a new join offer on adoption.
+ assert!(router.update(vec![two.clone(),one.clone()]).is_empty());
+ // Split routing releases the normal poll cache every frame; adopting again must not
+ // erase connected identities or turn that unchanged hold into another press.
+ pads.release_hardware();router.adopt(&mut pads);
+ assert!(router.update(vec![one.clone(),two.clone()]).is_empty());
+ let released=snapshot(41,false,false,[0.,0.],0.);
+ assert!(router.update(vec![released.clone(),two.clone()]).is_empty());
+ assert_eq!(router.update(vec![one.clone(),two.clone()]),vec![PadEvent::Press(41,Button::South),PadEvent::Press(41,Button::LeftTrigger)]);
+ // P1 was assigned pad 42 while routing. Its metadata and connection baseline return
+ // together, and pad 41's armed confirm cannot fire on pad 42's eventual release.
+ pads.feed_source=Some(42);router.hand_back(&mut pads);
+ assert_eq!(pads.devices.active,Some(42));assert!(pads.devices.started);
+ assert_eq!(pads.device.as_ref().map(|device|device.name.as_str()),Some("pad42"));
+ assert_eq!(pads.style,GlyphStyle::PlayStation);assert_eq!(pads.menu.armed,None);
+ assert_eq!(pads.connections,vec![Connection::Connected(GlyphStyle::Nintendo)]);
+ assert!(pads.read_snapshots(vec![two.clone(),one.clone()],Some(two.clone())).held(Button::East));
+ assert_eq!(pads.connections,vec![Connection::Connected(GlyphStyle::Nintendo)]);
+ // Repeated hand-back is inert; a later adopt uses the returned snapshots to
+ // suppress held inputs again, while new devices still announce and press.
+ router.hand_back(&mut pads);router.adopt(&mut pads);
+ assert!(router.update(vec![two.clone(),one.clone()]).is_empty());
+ let three=snapshot(43,true,false,[0.,0.],0.);
+ assert_eq!(router.update(vec![two.clone(),three.clone()]),vec![PadEvent::Gone(41),PadEvent::Back(43),PadEvent::Press(43,Button::South)]);
+ pads.release_hardware();router.hand_back(&mut pads);
+ pads.connections.clear();
+ assert!(pads.read_snapshots(vec![three.clone()],Some(three.clone())).held(Button::South));
+ assert_eq!(pads.connections,vec![Connection::Disconnected{active:true}]);
+ // A disappearance while routed must not leave P1's device descriptor behind.
+ router.adopt(&mut pads);assert_eq!(router.update(vec![]),vec![PadEvent::Gone(43)]);
+ pads.release_hardware();router.hand_back(&mut pads);
+ assert_eq!(pads.device,None);assert_eq!(pads.devices.active,None);
+ pads.connections.clear();pads.read_snapshots(vec![],None);assert!(pads.connections.is_empty());
 }
 '''
 

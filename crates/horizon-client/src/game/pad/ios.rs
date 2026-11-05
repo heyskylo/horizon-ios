@@ -13,6 +13,7 @@ pub(super) struct Devices {
     active: Option<PadId>,
     known: Vec<PadId>,
     started: bool,
+    snapshots: Vec<horizon_gamecontroller::ConnectedController>,
 }
 
 /// The glyphs to draw, from the product category iOS reports, through the vendor ids gilrs' pads are
@@ -49,6 +50,15 @@ impl Pads {
     /// Read the active pad.
     pub(super) fn read(&mut self) -> PadState {
         let controllers = horizon_gamecontroller::snapshots();
+        let selected = horizon_gamecontroller::active_controller();
+        self.read_snapshots(controllers, selected)
+    }
+
+    fn read_snapshots(
+        &mut self,
+        controllers: Vec<horizon_gamecontroller::ConnectedController>,
+        selected: Option<horizon_gamecontroller::ConnectedController>,
+    ) -> PadState {
         let known: Vec<_> = controllers.iter().map(|controller| controller.id).collect();
         if self.devices.started {
             for &id in &self.devices.known {
@@ -79,7 +89,7 @@ impl Pads {
             }
             self.devices.connected = controllers.len();
         }
-        let selected = horizon_gamecontroller::active_controller();
+        self.devices.snapshots = controllers.clone();
         self.device = selected
             .as_ref()
             .or_else(|| controllers.first())
@@ -140,9 +150,50 @@ struct RoutedPad {
 #[derive(Default)]
 pub(in crate::game) struct PadRouter {
     pads: std::collections::BTreeMap<PadId, RoutedPad>,
+    routing: bool,
+    active: Option<PadId>,
 }
 
 impl PadRouter {
+    /// GameController has no exclusive reader or event queue: reads copy current properties.
+    /// Transfer the last normal poll instead, so a held button is not a fresh join press.
+    pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) {
+        if self.routing {
+            return;
+        }
+        self.routing = true;
+        self.active = pads.devices.active;
+        self.pads.clear();
+        self.update(std::mem::take(&mut pads.devices.snapshots));
+    }
+
+    /// Return the connection baseline too: the next normal poll must report changes since
+    /// routing stopped, without announcing every already-connected pad as newly attached.
+    pub(in crate::game) fn hand_back(&mut self, pads: &mut Pads) {
+        if !self.routing {
+            return;
+        }
+        self.routing = false;
+        let active = pads
+            .feed_source
+            .or(self.active)
+            .filter(|id| self.connected(*id));
+        if active != self.active {
+            pads.menu.armed = None;
+        }
+        pads.devices = Devices {
+            connected: self.pads.len(),
+            active,
+            known: self.pads.keys().copied().collect(),
+            started: true,
+            snapshots: self.pads.values().map(|pad| pad.snapshot.clone()).collect(),
+        };
+        pads.device = active.and_then(|id| self.device(id));
+        if let Some(id) = active {
+            pads.style = self.style(id);
+        }
+    }
+
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         self.update(horizon_gamecontroller::snapshots())
     }

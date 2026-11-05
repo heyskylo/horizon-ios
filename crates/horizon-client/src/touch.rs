@@ -6,6 +6,10 @@
 //! This module is the layout and the fingers' state: positions in GUI pixels in, [`Out`]s for the game to act
 //! on out. game/touch.rs feeds it winit's touches and acts on what comes back.
 
+#[path = "touch/menu.rs"]
+mod menu;
+pub use menu::{MenuAction, MenuGesture, MenuMode};
+
 /// A button of the layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {

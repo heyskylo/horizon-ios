@@ -2636,6 +2636,7 @@ fn the_multiplayer_screens_have_their_own_ids() {
         M::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         }
         .id(),
         "disconnected"
@@ -2694,4 +2695,157 @@ fn a_realms_click_targets_the_painted_uuid_when_title_rechecks_hitboxes() {
         "a hit query retargeted an action after the roster refreshed: {:?}",
         f.title.mode,
     );
+}
+
+#[test]
+fn realms_https_workers_stay_owned_after_title_release_and_cancel_stalled_tls() {
+    use std::{
+        io::Read,
+        net::{Shutdown, TcpListener},
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("https://{}", listener.local_addr().unwrap());
+    let (entered, ready) = mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = [0; 8192];
+        let n = socket.read(&mut bytes).unwrap();
+        entered.send((socket.try_clone().unwrap(), n)).unwrap();
+        // A genuine TLS handshake read waits here: no ServerHello is sent.
+        // The test owns this peer too, so a failed assertion cannot leave it
+        // parked indefinitely on another process or a production endpoint.
+        let mut rest = Vec::new();
+        let _ = socket.read_to_end(&mut rest);
+    });
+    let mut f = Fixture::new();
+    let handle = f.title.realms_workers.work_handle();
+    let cancellation = f.title.realms_workers.cancellation();
+    let session =
+        horizon_client_render::auth::AuthSession::new("Fixture", 7, "controlled-realms-token");
+    let client = crate::realms::client::RealmsClient::new(&base, &base, &session)
+        .with_cancellation(cancellation.clone());
+    let job = f.title.realms_workers.spawn(move || client.list_worlds());
+    f.title.mode = Mode::Realms(crate::realms::Screen::with_workers(
+        f.title.realms_workers.clone(),
+    ));
+    let Mode::Realms(screen) = &mut f.title.mode else {
+        unreachable!()
+    };
+    screen.state = crate::realms::FetchState::Loading(job.clone());
+    let (cleanup, hello_bytes) = ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(hello_bytes > 0);
+    assert_eq!(cancellation.attached_sockets(), 1);
+    let start = Instant::now();
+    drop(f);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "title release blocked on HTTPS"
+    );
+    assert!(
+        !cancellation.cancelled(),
+        "normal title retirement must preserve an operation already requested"
+    );
+    assert!(
+        !handle.poll(),
+        "a dropped UI future does not mean its IO producer stopped"
+    );
+    assert!(job.lock().unwrap().is_none());
+
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(2);
+    let mut stopped = handle.shutdown();
+    while !stopped && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+        stopped = handle.shutdown();
+    }
+    let latency = start.elapsed();
+    // Always clean up the controlled peer, even if cancellation regresses.
+    // This cleanup is deliberately after recording the shutdown result.
+    let _ = cleanup.shutdown(Shutdown::Both);
+    peer.join().unwrap();
+    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+    while !handle.shutdown() && Instant::now() < cleanup_deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        stopped,
+        "stalled TLS was not interrupted before peer cleanup"
+    );
+    assert!(latency < Duration::from_secs(2));
+    assert_eq!(cancellation.attached_sockets(), 0);
+    assert!(matches!(
+        job.lock().unwrap().take(),
+        Some(Err(crate::realms::client::RealmsError::Cancelled))
+    ));
+    eprintln!(
+        "managed Realms stalled-TLS shutdown: {} ms",
+        latency.as_millis()
+    );
+}
+
+#[test]
+fn leaving_realms_normally_preserves_a_requested_controlled_http_operation() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (entered, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut bytes = [0; 4096];
+            let n = socket.read(&mut bytes).unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&bytes[..n]);
+        }
+        entered.send(()).unwrap();
+        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"servers\":[{\"id\":7,\"name\":\"Controlled\"}]}").unwrap();
+    });
+    let mut f = Fixture::new();
+    let handle = f.title.realms_workers.work_handle();
+    let cancellation = f.title.realms_workers.cancellation();
+    let session =
+        horizon_client_render::auth::AuthSession::new("Fixture", 7, "controlled-realms-token");
+    let client = crate::realms::client::RealmsClient::new(&base, &base, &session)
+        .with_cancellation(cancellation.clone());
+    let job = f.title.realms_workers.spawn(move || client.list_worlds());
+    f.title.mode = Mode::Realms(crate::realms::Screen::with_workers(
+        f.title.realms_workers.clone(),
+    ));
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    f.title.mode = Mode::Main;
+    assert!(!cancellation.cancelled());
+    assert!(job.lock().unwrap().is_none());
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while job.lock().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let result = job.lock().unwrap().take().unwrap().unwrap();
+    assert_eq!(result[0].id, 7);
+    peer.join().unwrap();
+    drop(f);
+    while !handle.poll() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!cancellation.cancelled());
 }

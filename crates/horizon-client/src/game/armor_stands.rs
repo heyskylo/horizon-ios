@@ -981,7 +981,9 @@ impl Game<'_> {
             }
             self.armor_stand_turtle_eggs(i, landed)?;
             if landed {
-                self.post_landing_event(self.armor_stands[i].position, true);
+                let stand = &self.armor_stands[i];
+                let (position, bounds) = (stand.position, stand.bounds());
+                self.post_landing_event(position, bounds, true);
             }
             self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
             let a = &self.armor_stands[i];

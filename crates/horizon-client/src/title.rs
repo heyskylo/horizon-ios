@@ -448,6 +448,8 @@ pub struct Title {
     open_request: Option<String>,
     /// A Realm's checked address, once the Realms screen's join came back.
     connect_request: Option<String>,
+    /// Survives navigation out of Realms so confirmed operations may finish.
+    realms_workers: crate::realms::Workers,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
     toast: Option<(crate::toasts::Slide, WorldToast)>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
@@ -831,6 +833,7 @@ impl Title {
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
             connect_request: None,
+            realms_workers: crate::realms::Workers::new(),
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(&splashes, seed, (today.month(), today.day())),
@@ -3666,7 +3669,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Main, Some(8)) => {
-                self.mode = Mode::Realms(crate::realms::Screen::new());
+                if self.realms_workers.closed() {
+                    self.realms_workers = crate::realms::Workers::new();
+                }
+                self.mode = Mode::Realms(crate::realms::Screen::with_workers(
+                    self.realms_workers.clone(),
+                ));
                 Action::None
             }
             (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {

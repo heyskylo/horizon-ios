@@ -2265,7 +2265,12 @@ impl Game<'_> {
             return;
         }
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        let guest_viewers = self.lan.as_ref().is_some_and(|host| {
+            Self::vehicle_has_other_viewers(None, &host.hub.guests, None, key, self.dim.id())
+        });
+        if !guest_viewers {
+            self.world.block_entities.remove(&key);
+        }
     }
     /// A chest or hopper minecart or a chest boat is about to be removed
     /// (`Containers.dropContents` / `AbstractChestBoat.remove`): what an open

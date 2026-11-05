@@ -274,3 +274,78 @@ fn rolling_into_a_live_boat_preserves_other_viewers_edited_slots() {
     assert_eq!(contents(&game, &host, 1), second);
     game.guest_close_all(&mut host, 1);
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn owner_and_guest_vehicle_viewers_keep_the_same_live_inventory_until_last_close() {
+    for owner_closes_first in [false, true] {
+        let (mut game, mut host) = fixture();
+        game.boats[0].items[3] = Some(ItemStack::new("minecraft:diamond", 7));
+        game.open_chest_boat_container(0);
+        assert_eq!(game.container, Some(KEY));
+        open(&mut game, &mut host, 1);
+        let edited = Some(ItemStack::new("minecraft:emerald", 9));
+        let mut live = contents(&game, &host, 1);
+        live[3] = edited.clone();
+        Slots::Block(KEY).write(&mut game.world, &mut host.hub.guests[0], live.clone());
+        if owner_closes_first {
+            game.lan = Some(host);
+            let key = game.container.take().unwrap();
+            game.close_cart_container(key);
+            host = game.lan.take().unwrap();
+            assert_eq!(
+                contents(&game, &host, 1),
+                live,
+                "owner close erased the guest's live slots"
+            );
+            game.guest_close_all(&mut host, 1);
+        } else {
+            game.guest_close_all(&mut host, 1);
+            assert!(
+                game.world.block_entities.get(&KEY).is_some(),
+                "guest close erased the owner's live inventory"
+            );
+            assert_eq!(game.container, Some(KEY));
+            assert_eq!(game.boats[0].items[3], edited);
+            let key = game.container.take().unwrap();
+            game.close_cart_container(key);
+        }
+        assert!(
+            game.world.block_entities.get(&KEY).is_none(),
+            "last close releases the shared placeholder"
+        );
+        assert_eq!(game.boats[0].items, live);
+        open(&mut game, &mut host, 2);
+        assert_eq!(
+            contents(&game, &host, 2),
+            live,
+            "reopen must retain both viewers' edits"
+        );
+        game.guest_close_all(&mut host, 2);
+    }
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn foreign_or_unplaced_vehicle_menus_cannot_pin_this_levels_live_inventory() {
+    for foreign_dimension in [false, true] {
+        let (mut game, mut host) = fixture();
+        game.boats[0].items[3] = Some(ItemStack::new("minecraft:diamond", 7));
+        game.open_chest_boat_container(0);
+        open(&mut game, &mut host, 1);
+        let live = contents(&game, &host, 1);
+        if foreign_dimension {
+            host.hub.guests[0].dimension = "minecraft:the_nether".into();
+        } else {
+            host.hub.guests[0].placed = false;
+        }
+        game.lan = Some(host);
+        let key = game.container.take().unwrap();
+        game.close_cart_container(key);
+        assert!(
+            game.world.block_entities.get(&KEY).is_none(),
+            "another level or an unplaced body must not count as a viewer here"
+        );
+        assert_eq!(game.boats[0].items, live);
+    }
+}

@@ -215,18 +215,52 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::rename(&fresh, link)
 }
 
-/// Makes `link` a junction to `target` (install.ps1's links: they need no admin rights).
+/// Makes `link` a junction to `target` (install.ps1's links: they need no admin rights). The new
+/// junction is made first, beside it, so a failure leaves `current` as it was; it then takes the old
+/// one's place, and if that last step fails the old junction is put back.
 #[cfg(windows)]
 fn point(link: &Path, target: &Path) -> std::io::Result<()> {
-    if link.exists() || link.symlink_metadata().is_ok() {
-        std::fs::remove_dir(link)?;
+    let fresh = link.with_extension("switching");
+    if fresh.symlink_metadata().is_ok() {
+        std::fs::remove_dir(&fresh)?;
     }
+    junction(&fresh, target)?;
+    let old = std::fs::read_link(link).ok();
+    if link.symlink_metadata().is_ok() {
+        // A junction: removing it removes the link, never the release it points at.
+        if let Err(e) = std::fs::remove_dir(link) {
+            let _ = std::fs::remove_dir(&fresh);
+            return Err(e);
+        }
+    }
+    std::fs::rename(&fresh, link).inspect_err(|_| {
+        let _ = std::fs::remove_dir(&fresh);
+        if let Some(old) = &old {
+            let _ = junction(link, old);
+        }
+    })
+}
+
+/// `mklink /J link target` through cmd, with both paths quoted as cmd reads them: unquoted, a folder
+/// named with `&` or `^` (and no space, so std doesn't quote it) would split the command. `%` and `"`
+/// keep a meaning inside quotes, so paths holding them are refused.
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let quoted = |p: &Path| -> std::io::Result<String> {
+        let text = p.to_str().ok_or_else(|| {
+            std::io::Error::other(format!("{}: not a path cmd can take", p.display()))
+        })?;
+        if text.contains(['%', '"']) {
+            return Err(std::io::Error::other(format!(
+                "{text}: a folder whose path holds % or \" can't be linked; move the server elsewhere"
+            )));
+        }
+        Ok(format!("\"{text}\""))
+    };
+    let line = mklink_line(&quoted(link)?, &quoted(target)?);
     let status = crate::process::command("cmd")
-        .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
+        .raw_arg(line)
         .stdout(std::process::Stdio::null())
         .status()?;
     if status.success() {
@@ -236,6 +270,13 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
             "mklink /J failed ({status})"
         )))
     }
+}
+
+/// cmd's arguments for a junction, both paths already quoted: `/D` skips AutoRun, and `/S /C "..."`
+/// makes cmd take the outer quotes off and run the rest as written.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mklink_line(link: &str, target: &str) -> String {
+    format!("/D /S /C \"mklink /J {link} {target}\"")
 }
 
 /// A release on GitHub: its name here and the archive for this computer.
@@ -906,6 +947,47 @@ mod tests {
         std::os::unix::fs::symlink(root.join("releases").join(tags[0]), root.join("current"))
             .unwrap();
         Install { root }
+    }
+
+    /// Real junctions, in a folder whose name cmd would split on unquoted (`&`, no space so std doesn't
+    /// quote it): `current` moves from one release to the other and nothing else changes.
+    #[cfg(windows)]
+    #[test]
+    fn junctions_switch_in_a_folder_cmd_would_split() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-server-junction-mc&co-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for tag in ["v1", "v2", "v%3"] {
+            let release = root.join("releases").join(tag);
+            std::fs::create_dir_all(&release).unwrap();
+            std::fs::write(release.join(exe("horizon-server")), tag).unwrap();
+        }
+        let install = Install { root: root.clone() };
+        let running = root.join("current").join(exe("horizon-server"));
+        install.switch("v1").unwrap();
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v1");
+        install.switch("v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v2");
+        assert!(root.join("current.switching").symlink_metadata().is_err());
+        // Replacing the junction never touched the release it pointed at.
+        let v1 = root.join("releases").join("v1").join(exe("horizon-server"));
+        assert_eq!(std::fs::read_to_string(v1).unwrap(), "v1");
+        // `%` keeps a meaning inside cmd's quotes: refused, and `current` stays where it was.
+        let refused = install.switch("v%3").unwrap_err();
+        assert!(refused.contains('%'), "{refused}");
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "v2");
+        assert!(root.join("current.switching").symlink_metadata().is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_junctions_paths_are_quoted_for_cmd() {
+        assert_eq!(
+            mklink_line(r#""D:\mc&co\current""#, r#""D:\mc&co\releases\v0.2.95""#),
+            r#"/D /S /C "mklink /J "D:\mc&co\current" "D:\mc&co\releases\v0.2.95"""#
+        );
     }
 
     #[test]

@@ -15,10 +15,18 @@ def program(source=None):
     menu=(ROOT/'crates/horizon-client/src/game/pad_menu.rs').read_text()
     release=method(menu,'pad_menu_button')
     release=block(release,release.index('        if !down {'))
-    code=routing_program().replace('mod horizon_gamecontroller;', 'mod native_bridge;').replace('struct Pads;', TYPES)
+    code=routing_program().replace('mod horizon_gamecontroller;', 'mod native_bridge;')
+    # Reuse production snapshot/router methods, with a real menu rectangle and
+    # controllable native bridge for this fixture. Routing's standalone cases
+    # have their own menu stub and run in test_ios_controller_routing instead.
+    snapshot=method(code,'snapshot')
+    code=code[:code.index('\nfn snapshot(')]
+    begin=code.index('#[derive(Default)]struct Menu')
+    end=code.index('impl Pads {',begin)
+    code=code[:begin]+TYPES+code[end:]
     code += '\nimpl Pads{'+method(source,'read')+'}\n'+method(menu,'armed_click')
     code += '\nimpl Game{fn release(&mut self,button:Button)->Result<(),()>{let down=false;let event_loop=&();'+release+'Ok(())}}\n'
-    return code.replace('fn main(){','fn main(){\n device_handoff_does_not_click();')+CASES
+    return code+'\n'+snapshot+'\nfn main(){device_handoff_does_not_click();}\n'+CASES
 
 
 TYPES=r'''
@@ -34,9 +42,8 @@ mod horizon_gamecontroller{
 }
 type Rect=[f32;4];
 #[derive(Clone,Copy)]struct Target{rect:Rect}impl Target{fn center(&self)->(f32,f32){(self.rect[0]+self.rect[2]/2.,self.rect[1]+self.rect[3]/2.)}}
-#[derive(Default)]struct Devices{connected:usize,active:Option<u64>,known:Vec<u64>,started:bool}
 #[derive(Default)]struct Menu{armed:Option<Rect>,focus:Option<Target>,held:[bool;2],repeat:Option<(Button,usize,bool)>}
-#[derive(Default)]struct Pads{devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>}
+#[derive(Default)]struct Pads{devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>,feed_source:Option<PadId>}
 #[derive(Debug,PartialEq)]enum Connection{Connected(GlyphStyle),Disconnected{active:bool}}
 #[derive(Default)]struct Game{pad:Pads,clicks:usize}
 impl Game{fn pad_click_at(&mut self,_:&(),_:(f32,f32),_:bool){self.clicks+=1;}fn pad_pointer_button(&mut self,_:&(),_:bool,_:bool){}}
@@ -51,6 +58,20 @@ fn device_handoff_does_not_click(){
  choose(None,false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"disconnect is not a release-click");assert!(g.pad.device.is_none());assert_eq!(g.pad.connections,vec![Connection::Disconnected{active:true}]);
  choose(Some(2),true);g.pad.read();arm(&mut g);
  choose(Some(3),false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"same-model controller switch is not a release-click");assert_eq!(g.pad.device.as_ref().map(|d|d.name.as_str()),Some("pad3"));
+ // Routing adopts the normal poll's held A, then hands P1 a different pad.
+ // Exercise the real transfer methods and the actual menu release branch together.
+ choose(Some(3),true);g.pad.read();arm(&mut g);
+ let mut router=PadRouter::default();router.adopt(&mut g.pad);
+ assert!(router.update(vec![snapshot(3,true,false,[0.,0.],0.)]).is_empty());
+ assert_eq!(router.update(vec![snapshot(4,false,false,[0.,0.],0.)]),vec![PadEvent::Gone(3),PadEvent::Back(4)]);
+ g.pad.feed_source=Some(4);g.pad.release_hardware();router.hand_back(&mut g.pad);
+ g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"routed device handoff is not a release-click");
+ assert_eq!(g.pad.device.as_ref().map(|d|d.name.as_str()),Some("pad4"));
+ // Keeping the same controller across routing still permits its legitimate release.
+ choose(Some(4),true);g.pad.read();arm(&mut g);router.adopt(&mut g.pad);
+ assert!(router.update(vec![snapshot(4,false,false,[0.,0.],0.)]).is_empty());
+ g.pad.release_hardware();router.hand_back(&mut g.pad);
+ g.release(Button::South).unwrap();assert_eq!(g.clicks,2,"same-pad release after routing activates");
 }
 '''
 
