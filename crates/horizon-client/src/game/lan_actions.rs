@@ -4892,6 +4892,11 @@ impl Game<'_> {
                     }
                     self.drown_particles(at, [0.0; 3]);
                 }
+                // ServerPlayer.onInsideBlock: the enter_block trigger, for the
+                // player who moved.
+                MotionEvent::EnterBlock { state } => {
+                    self.as_guest(host, conn, |game| game.trigger_enter_block(state));
+                }
                 // HoneyBlock.maybeDoSlideEffects: the sound reaches the
                 // others (Player.playSound excludes the player, whose client
                 // plays it), the entity event 53 everyone around.
