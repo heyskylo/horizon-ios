@@ -803,6 +803,7 @@ impl Game<'_> {
                                 hurt_at = Some([m.position.x, m.position.y, m.position.z]);
                             }
                         }
+                        self.settle_dealt_absorbed(true);
                         // ThrownTrident.onHitEntity on a boat or minecart:
                         // VehicleEntity.hurtServer takes the damage.
                         let creative = t.guest.is_none() && self.creative;
