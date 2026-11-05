@@ -2745,6 +2745,9 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
     if m.species() == Species::Turtle {
         return super::turtle::travel(m, w, input, events);
     }
+    if m.species() == Species::Frog {
+        return super::frog::travel(m, w, input, events);
+    }
     match family(m.species()) {
         Family::Aquatic => aquatic::travel(m, w, input, events),
         Family::Guardian => super::guardian::travel(m, w, input, events),
@@ -4820,5 +4823,61 @@ mod ravager_noai_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+
+    /// A mob of `kind` in a pool, its eyes under, after `ticks` base ticks.
+    fn air_after(kind: &str, air: i32, ticks: u32) -> Option<i32> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let water = registry.default_state("minecraft:water").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    for y in 0..=8 {
+                        world.set(x, y, z, water).unwrap();
+                    }
+                }
+            }
+        };
+        let mut out = None;
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types[kind].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            m.air = air;
+            let mut events = Vec::new();
+            for _ in 0..ticks {
+                base_tick(&mut m, w, &mut events);
+            }
+            out = Some(m.air);
+        });
+        out
+    }
+
+    /// `Dolphin.handleAirSupply` is empty and the dolphin isn't in
+    /// `#can_breathe_under_water`: under water it loses a breath a tick from
+    /// its 4800, as `LivingEntity.baseTick` takes it, so it must surface.
+    #[test]
+    fn a_dolphin_holds_its_breath_under_water() {
+        let Some(air) = air_after("minecraft:dolphin", 4800, 10) else {
+            return;
+        };
+        assert_eq!(air, 4790);
+    }
+
+    /// A copper golem is in `#can_breathe_under_water`: its air stays full.
+    #[test]
+    fn a_copper_golem_breathes_under_water() {
+        let Some(air) = air_after("minecraft:copper_golem", 300, 10) else {
+            return;
+        };
+        assert_eq!(air, 300);
     }
 }

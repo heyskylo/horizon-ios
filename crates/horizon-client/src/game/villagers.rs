@@ -519,3 +519,18 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod entity_event_particle_tests {
+    /// The raid sweat (42) and the dolphin's treasure hearts (38) are in the
+    /// table that now decides which entity events draw particles.
+    #[test]
+    fn the_table_draws_the_raid_sweat_and_the_dolphin_event() {
+        let kind = |entity, event| {
+            horizon_client::particles::entity_event_burst(entity, event).map(|(k, _)| k)
+        };
+        assert_eq!(kind("villager", 42), Some("splash"));
+        assert_eq!(kind("dolphin", 38), Some("happy_villager"));
+        assert_eq!(kind("villager", 2), None);
+    }
+}

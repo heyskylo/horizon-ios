@@ -579,6 +579,13 @@ fn mob_meta(
     }
     let e = &m.extra;
     let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
+    // Pig.DATA_BOOST_TIME and Strider.DATA_BOOST_TIME (18, the first entry
+    // after AgeableMob's two). The total `boost()` stored in `counter2`.
+    // The default 0 is not registered: vanilla never writes it back, and the
+    // rider's client finishes the timer `onSynced` started.
+    if matches!(kind, "minecraft:pig" | "minecraft:strider") && e.counter2 > 0 {
+        meta.push((18, serializer::INT, Value::Int(e.counter2)));
+    }
     mob_variant_meta(m, hub, meta, defaults);
     mob_raider_meta(m, meta, defaults);
     match kind {
@@ -2829,10 +2836,13 @@ impl Game<'_> {
         if event == 21 && self.options.execution_role.is_client() {
             self.start_guardian_sound(id as u32);
         }
-        // Event 53: a mob sliding down a honey block sheds honey particles
-        // (HoneyBlock.showSlideParticles), drawn by the client that runs the world.
-        if event == 53 && self.options.execution_role.is_client() {
-            self.honey_slide_particles(at);
+        // Events 53 and 54: honey crumbs while sliding, and the landing burst
+        // (`HoneyBlock.showSlideParticles` / `showJumpParticles`), drawn by the
+        // client that runs the world.
+        if self.options.execution_role.is_client()
+            && horizon_client::landing::honey_particle_count(event).is_some()
+        {
+            self.honey_entity_particles(at, event);
         }
         // Event 2: a mob's spear hit felt; the same window hears its own mob's hit.
         if event == 2 && self.options.execution_role.is_client() {

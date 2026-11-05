@@ -119,6 +119,8 @@ impl Config {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub hosts: usize,
+    /// Bridges open, and joins matched with a host and waiting for its attach (each holds one of
+    /// `max_bridges` from the match on).
     pub bridges: usize,
     pub registrations: u64,
     pub joins: u64,
@@ -502,8 +504,28 @@ fn serve_host(
     Ok(())
 }
 
-enum Lookup {
-    Found(Sender<Out>),
+/// One of `max_bridges`, reserved when a guest is matched with its host and given back when it drops:
+/// on every way out of the join (no attach, a refusal, an error, a panic) and at the bridge's end. A
+/// reservation counts from the match, not from the bridge, so joins waiting for their host's attach
+/// can't add up past the cap.
+struct BridgeSlot<'a>(&'a AtomicUsize);
+impl<'a> BridgeSlot<'a> {
+    fn take(count: &'a AtomicUsize, max: usize) -> Option<Self> {
+        if count.fetch_add(1, Ordering::AcqRel) >= max {
+            count.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(count))
+    }
+}
+impl Drop for BridgeSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+enum Lookup<'a> {
+    Found(Sender<Out>, BridgeSlot<'a>),
     Unknown,
     Ended,
     Version(String),
@@ -538,18 +560,20 @@ fn join(
             .ended
             .get(&nameplate)
             .is_some_and(|t| now.saturating_duration_since(*t) < state.config.ended_kept);
-        let busy = state.bridges.load(Ordering::Relaxed) >= state.config.max_bridges;
         let lookup = match inner.hosts.get_mut(&nameplate) {
             None if ended => Lookup::Ended,
             None => Lookup::Unknown,
             Some(h) if h.protocol != protocol => Lookup::Version(h.game.clone()),
-            Some(h) if busy || h.pending >= state.config.max_pending_per_host => Lookup::Full,
-            Some(h) => {
-                h.pending += 1;
-                Lookup::Found(h.to_host.clone())
-            }
+            Some(h) if h.pending >= state.config.max_pending_per_host => Lookup::Full,
+            Some(h) => match BridgeSlot::take(&state.bridges, state.config.max_bridges) {
+                Some(slot) => {
+                    h.pending += 1;
+                    Lookup::Found(h.to_host.clone(), slot)
+                }
+                None => Lookup::Full,
+            },
         };
-        if matches!(lookup, Lookup::Found(_)) {
+        if matches!(lookup, Lookup::Found(..)) {
             inner.pending.insert(
                 session,
                 Pending {
@@ -560,8 +584,8 @@ fn join(
         }
         lookup
     };
-    let to_host = match lookup {
-        Lookup::Found(tx) => tx,
+    let (to_host, slot) = match lookup {
+        Lookup::Found(tx, slot) => (tx, slot),
         Lookup::Unknown => {
             state.unknown.fetch_add(1, Ordering::Relaxed);
             locked(&state.limiter).unknown(peer.ip(), now);
@@ -590,8 +614,11 @@ fn join(
         }
     }
     match attached {
-        Ok((host, host_peer)) => bridge(state, stream, peer, host, host_peer, session),
-        Err(_) => refuse(&mut stream, ErrorCode::HostUnreachable),
+        Ok((host, host_peer)) => bridge(state, stream, peer, host, host_peer, session, slot),
+        Err(_) => {
+            drop(slot);
+            refuse(&mut stream, ErrorCode::HostUnreachable)
+        }
     }
 }
 
@@ -627,7 +654,8 @@ fn attach(
     }
 }
 
-/// Tell both ends they are bridged, then copy each way until either ends.
+/// Tell both ends they are bridged, then copy each way until either ends. `_slot` (the guest's
+/// reservation of one of `max_bridges`) is given back when this returns, however it returns.
 fn bridge(
     state: &Arc<State>,
     mut guest: TcpStream,
@@ -635,9 +663,9 @@ fn bridge(
     mut host: TcpStream,
     host_peer: SocketAddr,
     session: u64,
+    _slot: BridgeSlot<'_>,
 ) -> io::Result<()> {
-    state.bridges.fetch_add(1, Ordering::Relaxed);
-    let result = (|| -> io::Result<()> {
+    (|| -> io::Result<()> {
         wire::send(
             &mut guest,
             &FromRelay::Bridged {
@@ -663,9 +691,7 @@ fn bridge(
         copy(state, host, guest);
         let _ = up.join();
         Ok(())
-    })();
-    state.bridges.fetch_sub(1, Ordering::Relaxed);
-    result
+    })()
 }
 
 fn copy(state: &State, mut from: TcpStream, mut to: TcpStream) {

@@ -158,7 +158,7 @@ jobs:
         run: |
           cargo +stable fmt --check
           cargo +stable clippy --all-targets --locked -- -D warnings
-          cargo +stable test --locked --lib
+          cargo +stable test --locked --lib --bins
   # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
   # (`gh workflow run checks --ref <branch>`): GitHub's runner queue is the bottleneck, and main's runs gate the
   # releases (tools/release_train.py waits for them), so neither pull requests nor main's pushes start this

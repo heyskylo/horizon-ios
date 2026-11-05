@@ -709,15 +709,24 @@ pub fn lookup(
     ];
     for (kind, url) in urls {
         let Some(url) = url else { continue };
-        // registerTexture computes the hash first; a bad URL fails the lookup.
-        let hash = texture_hash(url)?;
+        // registerTexture computes the hash first. A cape or elytra URL the
+        // hash cannot take is that texture's problem alone: vanilla's lookup
+        // goes on to the next, and only the skin texture decides the default.
+        let Some(hash) = texture_hash(url) else {
+            if kind == Kind::Skin {
+                return None;
+            }
+            continue;
+        };
         if kind == Kind::Skin {
             skin = Some(skin_location(&hash));
         }
         match download(kind, url) {
-            Download::Failed => return None,
+            // A cape or elytra that cannot be fetched is simply not drawn; only
+            // the skin itself falls back to the default one (`SkinManager.get`).
+            Download::Failed if kind == Kind::Skin => return None,
+            Download::Failed | Download::Ready => {}
             Download::Pending => state = Download::Pending,
-            Download::Ready => {}
         }
     }
     if state != Download::Ready || require_secure && !textures.signed {
@@ -809,6 +818,12 @@ pub struct Downloader {
     resource_root: std::path::PathBuf,
     /// How each `patch/` texture of the resource packs loaded, by location.
     resources: std::collections::HashMap<String, Download>,
+    /// When each failed texture download was last tried, so it can be retried:
+    /// a transient network error must not pin a player to the default skin for
+    /// the rest of the session.
+    failed: std::collections::HashMap<(Kind, String), std::time::Instant>,
+    /// How long a failed texture download waits before it is tried again.
+    retry_after: std::time::Duration,
 }
 /// `images` is bounded only so a long session on a busy server does not grow
 /// without end; the disk cache holds everything it drops.
@@ -839,6 +854,8 @@ impl Downloader {
             drawn: Default::default(),
             resource_root: Default::default(),
             resources: Default::default(),
+            failed: Default::default(),
+            retry_after: std::time::Duration::from_secs(60),
         }
     }
     /// The resource packs changed (or were first loaded) at `root`: patch
@@ -879,7 +896,8 @@ impl Downloader {
         };
         self.resources.insert(location.to_owned(), state);
     }
-    /// How the download of `url` stands, starting it the first time.
+    /// How the download of `url` stands, starting it the first time. A
+    /// failure is permanent for `retry_after`, then tried again.
     pub fn state(&mut self, kind: Kind, url: &str) -> Download {
         while let Ok((key, image)) = self.done.try_recv() {
             let state = match image {
@@ -889,9 +907,13 @@ impl Downloader {
                         Kind::Cape => self.queue(cape_location(&key.1), rgba),
                         Kind::Elytra => {}
                     }
+                    self.failed.remove(&key);
                     Download::Ready
                 }
-                None => Download::Failed,
+                None => {
+                    self.failed.insert(key.clone(), std::time::Instant::now());
+                    Download::Failed
+                }
             };
             self.states.insert(key, state);
         }
@@ -899,33 +921,56 @@ impl Downloader {
             return Download::Failed;
         };
         let key = (kind, hash);
-        if let Some(state) = self.states.get(&key) {
-            return *state;
+        if let Some(state) = self.states.get(&key).copied() {
+            let due = self
+                .failed
+                .get(&key)
+                .is_none_or(|at| at.elapsed() >= self.retry_after);
+            if state != Download::Failed || !due {
+                return state;
+            }
+            self.states.remove(&key);
+            self.failed.remove(&key);
         }
         self.states.insert(key.clone(), Download::Pending);
         let digest: String = skin_location(&key.1)["skins/".len()..].to_owned();
-        let file = self
-            .root
-            .join(if digest.len() > 2 { &digest[..2] } else { "xx" })
-            .join(&digest);
-        let (url, send) = (url.to_owned(), self.send.clone());
+        let (url, send, root) = (url.to_owned(), self.send.clone(), self.root.clone());
         std::thread::spawn(move || {
-            let bytes = std::fs::read(&file).ok().or_else(|| {
-                let body = http_get(&url)?;
-                let _ = std::fs::create_dir_all(file.parent()?);
-                let _ = std::fs::write(&file, &body);
-                Some(body)
-            });
-            let image = bytes
-                .and_then(|b| crate::hud::decode_bytes(&b).ok())
-                .and_then(|(w, h, rgba)| match kind {
-                    Kind::Skin => process_legacy_skin(w, h, &rgba),
-                    Kind::Cape => process_cape(w, h, &rgba),
-                    Kind::Elytra => Some(rgba),
-                });
+            let image = Self::load_texture(&root, kind, &digest, &url, http_get);
             let _ = send.send((key, image));
         });
         Download::Pending
+    }
+    /// One texture's pixels: the disk cache's body if it decodes, else a fetch
+    /// (`SkinTextureDownloader.downloadSkin`). Only a body that decodes is
+    /// written to the cache: an error page or a half image must not be what a
+    /// later start reads instead of fetching again.
+    fn load_texture(
+        root: &std::path::Path,
+        kind: Kind,
+        digest: &str,
+        url: &str,
+        fetch: impl FnOnce(&str) -> Option<Vec<u8>>,
+    ) -> Option<Vec<u8>> {
+        let file = root
+            .join(if digest.len() > 2 { &digest[..2] } else { "xx" })
+            .join(digest);
+        let decode = |bytes: &[u8]| -> Option<Vec<u8>> {
+            let (w, h, rgba) = crate::hud::decode_bytes(bytes).ok()?;
+            match kind {
+                Kind::Skin => process_legacy_skin(w, h, &rgba),
+                Kind::Cape => process_cape(w, h, &rgba),
+                Kind::Elytra => Some(rgba),
+            }
+        };
+        if let Some(image) = std::fs::read(&file).ok().and_then(|b| decode(&b)) {
+            return Some(image);
+        }
+        let body = fetch(url)?;
+        let image = decode(&body)?;
+        let _ = std::fs::create_dir_all(file.parent()?);
+        let _ = std::fs::write(&file, &body);
+        Some(image)
     }
     /// Keeps a decoded skin for `again`, dropping the oldest past the bound.
     fn remember(&mut self, location: String, rgba: Vec<u8>) {
@@ -1515,5 +1560,157 @@ mod tests {
             texture_hash("http://textures.minecraft.net/texture/abc.png?x=1").unwrap(),
             "abc"
         );
+    }
+
+    /// A cape or elytra that cannot be fetched takes only itself out of the
+    /// picture: the player's skin still shows. Only the skin texture's own
+    /// failure is the default skin.
+    #[test]
+    fn a_failed_cape_does_not_hide_the_skin() {
+        let textures = super::Textures {
+            skin: Some("https://textures.minecraft.net/texture/skin1".into()),
+            cape: Some("https://textures.minecraft.net/texture/cape1".into()),
+            elytra: None,
+            signed: true,
+            slim: false,
+        };
+        let skin = super::lookup(&textures, true, |kind, _| match kind {
+            super::Kind::Skin => super::Download::Ready,
+            _ => super::Download::Failed,
+        });
+        assert_eq!(skin, Some(super::skin_location("skin1")));
+        // A cape URL the hash cannot take is the same: the skin shows.
+        let bad_url = super::Textures {
+            cape: Some("no-scheme".into()),
+            ..textures.clone()
+        };
+        assert_eq!(
+            super::lookup(&bad_url, true, |_, _| super::Download::Ready),
+            Some(super::skin_location("skin1"))
+        );
+        // The skin itself failing is still the default skin.
+        assert_eq!(
+            super::lookup(&textures, true, |_, _| super::Download::Failed),
+            None
+        );
+    }
+
+    /// A 1x1 PNG of `rgba`.
+    fn png(rgba: [u8; 4]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&rgba).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    /// A downloaded body reaches the disk cache only if it decodes; a broken
+    /// cached file is fetched again and replaced. A failed fetch writes nothing.
+    #[test]
+    fn the_texture_cache_holds_only_what_decodes() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-test-skin-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let body = png([7, 8, 9, 255]);
+        let file = root.join("ab").join("abcdef");
+        let load = |fetched: Option<&[u8]>| {
+            let fetched = fetched.map(<[u8]>::to_vec);
+            super::Downloader::load_texture(
+                &root,
+                super::Kind::Elytra,
+                "abcdef",
+                "https://example/texture/abc.png",
+                |_| fetched.clone(),
+            )
+        };
+        assert_eq!(load(Some(&body)), Some(vec![7, 8, 9, 255]));
+        assert_eq!(std::fs::read(&file).unwrap(), body);
+        // From then on the cache answers; no fetch is needed.
+        assert_eq!(load(None), Some(vec![7, 8, 9, 255]));
+        // A broken file is fetched again and replaced, not kept.
+        std::fs::write(&file, b"<html>not a png</html>").unwrap();
+        assert_eq!(load(Some(&body)), Some(vec![7, 8, 9, 255]));
+        assert_eq!(std::fs::read(&file).unwrap(), body);
+        // A body that does not decode is not cached at all.
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(load(Some(b"<html>not a png</html>")), None);
+        assert!(!file.exists());
+    }
+
+    fn wait_state(
+        d: &mut super::Downloader,
+        kind: super::Kind,
+        url: &str,
+        want: super::Download,
+    ) -> super::Download {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let state = d.state(kind, url);
+            if state == want || std::time::Instant::now() > deadline {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A texture download that failed is tried again after the wait, instead of
+    /// pinning the player to the default skin for the rest of the session.
+    #[test]
+    fn a_failed_download_is_retried_after_the_wait() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let body = png([1, 2, 3, 4]);
+        let served = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = served.clone();
+        std::thread::spawn(move || {
+            for (i, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut line = String::new();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                reader.read_line(&mut line).unwrap();
+                while reader.read_line(&mut String::new()).unwrap() > 2 {}
+                count.fetch_add(1, Ordering::SeqCst);
+                if i == 0 {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                } else {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(head.as_bytes()).unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            }
+        });
+        let root =
+            std::env::temp_dir().join(format!("horizon-test-skin-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut d = super::Downloader::new(root);
+        let url = format!("{base}/texture/retry.png");
+        assert_eq!(d.state(super::Kind::Elytra, &url), super::Download::Pending);
+        assert_eq!(
+            wait_state(&mut d, super::Kind::Elytra, &url, super::Download::Failed),
+            super::Download::Failed
+        );
+        // Within the wait the failure stands: no request goes out.
+        assert_eq!(d.state(super::Kind::Elytra, &url), super::Download::Failed);
+        assert_eq!(served.load(Ordering::SeqCst), 1);
+        // After it, the download is started again and takes the good answer.
+        d.retry_after = std::time::Duration::ZERO;
+        assert_eq!(d.state(super::Kind::Elytra, &url), super::Download::Pending);
+        assert_eq!(
+            wait_state(&mut d, super::Kind::Elytra, &url, super::Download::Ready),
+            super::Download::Ready
+        );
+        assert_eq!(served.load(Ordering::SeqCst), 2);
     }
 }

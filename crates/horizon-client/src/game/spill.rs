@@ -413,7 +413,18 @@ impl GameLevel<'_> {
             self.pending.record_saved(at, &tag);
         }
         let dynamic = self.pending.dynamic(at);
-        let tool = self.drop_tool.as_ref();
+        // Only the block a machine breaks: a neighbour that pops off with it
+        // drops as with no tool, and pops (`Level.destroyBlock` for it).
+        let machine = self
+            .drop_tool
+            .as_ref()
+            .is_some_and(|(target, _)| *target == key);
+        let tool = self
+            .drop_tool
+            .as_ref()
+            .filter(|_| machine)
+            .and_then(|(_, tool)| tool.as_ref());
+        let silk = tool.is_some_and(|t| t.enchantment_level("minecraft:silk_touch") > 0);
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.seed);
@@ -432,7 +443,7 @@ impl GameLevel<'_> {
             if &*stack.item == "minecraft:air" || stack.count == 0 {
                 continue;
             }
-            match self.drop_into.as_mut() {
+            match self.drop_into.as_mut().filter(|_| machine) {
                 Some(kept) => {
                     self.pending.attach(at, &mut stack);
                     kept.push(stack);
@@ -441,10 +452,15 @@ impl GameLevel<'_> {
             }
         }
         self.pending.clear(at);
-        // BlockBehaviour.spawnAfterBreak with no tool: ores, sculk and spawners
-        // award experience at the block's centre.
+        // BlockBehaviour.spawnAfterBreak: ores, sculk and spawners award
+        // experience at the block's centre, except to a machine's silk touch
+        // tool (`processBlockExperience`; a spawner keeps its own), as the
+        // player's break does.
         let name = self.facts.get(state).name.clone();
-        if let Some(mut xp) = removal::break_experience(&mut self.world.random, &name)
+        // `xpRange.sample` draws before silk touch zeroes it.
+        let xp = removal::break_experience(&mut self.world.random, &name)
+            .filter(|_| !silk || &*name == "minecraft:spawner");
+        if let Some(mut xp) = xp
             && self.rules.block_drops
         {
             if self.native_authoritative {
