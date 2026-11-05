@@ -376,6 +376,7 @@ impl Game<'_> {
         });
         notifiers.append(&mut self.server_packs.notifiers);
         self.server_packs.notifiers = notifiers;
+        self.drive_mod_browser();
         // A reload waits for the world's resources (`reload_packs`).
         if self.rest_loader.is_some() {
             return;
