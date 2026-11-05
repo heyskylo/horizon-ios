@@ -467,6 +467,11 @@ impl Creative {
     pub fn tab(&self) -> &Tab {
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
+    /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
+    /// key opens while another one is shown.
+    pub fn search_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.search)
+    }
     /// selectTab: a different tab empties the search box; the scrollbar goes to the top.
     /// A tab on another page shows that page.
     pub fn select(&mut self, tab: usize) {
