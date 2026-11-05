@@ -1,7 +1,9 @@
 //! Living entities for native server mods, through a `LivingRef`
 //! (docs/native-mods.md, "Entity and level handles", #7387): the equipment
 //! of mobs, players and armor stands. Reads return `None`, writes false, for
-//! a stale handle or on a client.
+//! a stale handle. On a client (API @API:client_entity_refs@) reads give the
+//! equipment the server synced (`ClientboundSetEquipmentPacket`, and this
+//! window's own inventory), and writes are refused.
 use super::Game;
 use super::commands::{Target, items::Owner};
 use horizon_client::first_person::Hand;
@@ -118,13 +120,17 @@ impl Game<'_> {
     /// when the entity has no such slot: a player has no body or saddle
     /// slot, the dragon none. A mob has every slot, head and body apart
     /// (`EntityEquipment`), as `/item` does; Horizon keeps no mob saddle here
-    /// yet. API 382.
+    /// yet. False on a client. API 382.
     pub(super) fn native_living_set_equipment(
         &mut self,
         living: LivingRef,
         slot: EquipmentSlot,
         stack: Option<ItemStack>,
     ) -> bool {
+        // A client's copy changes only when the server says so.
+        if self.remote.is_some() {
+            return false;
+        }
         let Some(t) = self.native_living_target(living) else {
             return false;
         };
