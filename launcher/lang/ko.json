@@ -1169,5 +1169,10 @@
   "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
   "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
   "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "네이티브 모드는 지원되는 Windows 아키텍처가 서로 일치해야 합니다. 게임: {game_arch}; 빌드 도구 체인: {toolchain_arch}."
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "네이티브 모드는 지원되는 Windows 아키텍처가 서로 일치해야 합니다. 게임: {game_arch}; 빌드 도구 체인: {toolchain_arch}.",
+  "Update registry mods automatically": "Update registry mods automatically",
+  "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
+  "Updated automatically: {list}.": "Updated automatically: {list}.",
+  "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
 }
