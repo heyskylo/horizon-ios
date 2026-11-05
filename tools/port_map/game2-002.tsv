@@ -42,7 +42,7 @@ ItemEntity.teleport	inline	crates/horizon-client/src/entities.rs::merge_with_nei
 ItemEntity.getVisualRotationYInDegrees	inline	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	spin is applied in radians there; no degree conversion
 ItemEntity.getSlot	missing		a dropped item is not addressable as an entity slot: `game/commands.rs` has no item entity case
 PrimedTnt.defineSynchedData	skip:other		fuse and block state are struct fields; spawn sets fuse 80; the block is always TNT
-PrimedTnt.explode	inline	crates/horizon-client/src/game/tnt.rs::Game::tick_tnt	the power is the tnt's own field (`explosion_power`, 4 by default); gap: minor: no used-portal damage calculator
+PrimedTnt.explode	inline	crates/horizon-client/src/game/tnt.rs::Game::tick_one_tnt	the power is the tnt's own field (`explosion_power`, 4 by default); gap: minor: no used-portal damage calculator
 PrimedTnt.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::tnt_to_nbt	the fuse and the block state are saved
 PrimedTnt.restoreFrom	missing		`PrimedTnt` has no owner field, so the igniter is not kept through a dimension change
 PrimedTnt.teleport	missing		`PrimedTnt` carries no used-portal flag and the portal damage calculator is not applied to it
