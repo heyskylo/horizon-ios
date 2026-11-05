@@ -23,6 +23,11 @@ pub(super) struct Output {
 }
 
 impl Output {
+    /// The mods the errors were traced to, as `id version`.
+    pub(super) fn owners(&self) -> Vec<String> {
+        self.owners.iter().cloned().collect()
+    }
+
     pub(super) fn explain(self, error: String) -> String {
         let prefix = if self.owners.is_empty() {
             String::new()
@@ -230,7 +235,7 @@ mod tests {
                 .arg(dir.join("Cargo.toml"))
                 .env("CARGO_TARGET_DIR", dir.join("target"));
             let error = super::super::logged(|| {
-                super::super::run_with_compiler(
+                super::super::run_checked(
                     command,
                     "Compiling the fixture",
                     |_| {},
@@ -240,6 +245,7 @@ mod tests {
                         mods: &mods,
                     }),
                 )
+                .map_err(|ran| ran.error)
             })
             .unwrap_err();
             assert!(

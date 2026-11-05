@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Ma jiro koonto Minecraft: Java Edition oo magacaas leh.",
   "That account already owns everything in the basket.": "Koontadaas horey ayay u leedahay wax kasta oo dambiisha ku jira.",
   "The shop isn't selling right now. Nothing was charged.": "Dukaanku hadda wax ma iibinayo. Waxba lagama jarin.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma bilaabi karin lacag bixinta. Waxba lagama jarin."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma bilaabi karin lacag bixinta. Waxba lagama jarin.",
+  "{name} was left out: made for another Horizon version": "{name} waa laga reebay: waxaa loo sameeyay nooc kale oo Horizon ah",
+  "{name} was left out: clashes with {other}": "{name} waa laga reebay: wuxuu ku dhacaa {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} waa laga reebay: wuxuu u baahan yahay {other}, oo laga reebay"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Маннык ааттаах Minecraft: Java Edition аккаунт суох.",
   "That account already owns everything in the basket.": "Бу аккаунтка корзинаҕа баар барыта баар.",
   "The shop isn't selling right now. Nothing was charged.": "Маҕаһыын билигин атыылаабат. Туох да ылыллыбата.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөбүрү саҕалыы барбата. Туох да ылыллыбата."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөбүрү саҕалыы барбата. Туох да ылыллыбата.",
+  "{name} was left out: made for another Horizon version": "{name} киллэриллибэтэ: Horizon атын барылыатыгар оҥоһуллубут",
+  "{name} was left out: clashes with {other}": "{name} киллэриллибэтэ: {other} кытта мөккүһэр",
+  "{name} was left out: it needs {other}, which was left out": "{name} киллэриллибэтэ: кини {other} наада, ол эмиэ киллэриллибэтэ"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "لا يوجد حساب Minecraft: Java Edition بهذا الاسم.",
   "That account already owns everything in the basket.": "هذا الحساب يملك بالفعل كل ما في السلة.",
   "The shop isn't selling right now. Nothing was charged.": "المتجر لا يبيع الآن. لم يُخصم أي مبلغ.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "تعذّر على Paddle بدء الدفع. لم يُخصم أي مبلغ."
+  "Paddle couldn't start the checkout. Nothing was charged.": "تعذّر على Paddle بدء الدفع. لم يُخصم أي مبلغ.",
+  "{name} was left out: made for another Horizon version": "تم استبعاد {name}: صُنع لإصدار آخر من Horizon",
+  "{name} was left out: clashes with {other}": "تم استبعاد {name}: يتعارض مع {other}",
+  "{name} was left out: it needs {other}, which was left out": "تم استبعاد {name}: يحتاج إلى {other}، الذي تم استبعاده"
 }

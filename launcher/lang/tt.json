@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Мондый исемле Minecraft: Java Edition хисабы юк.",
   "That account already owns everything in the basket.": "Бу хисапта кәрзиндәге бар нәрсә дә бар инде.",
   "The shop isn't selling right now. Nothing was charged.": "Кибет хәзер сатмый. Бернәрсә дә алынмады.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle түләүне башлый алмады. Бернәрсә дә алынмады."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle түләүне башлый алмады. Бернәрсә дә алынмады.",
+  "{name} was left out: made for another Horizon version": "{name} төшереп калдырылды: Horizon-ның башка версиясе өчен ясалган",
+  "{name} was left out: clashes with {other}": "{name} төшереп калдырылды: {other} белән бәрелешә",
+  "{name} was left out: it needs {other}, which was left out": "{name} төшереп калдырылды: аңа {other} кирәк, ә ул төшереп калдырылды"
 }

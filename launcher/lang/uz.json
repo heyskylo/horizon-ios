@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Bu nomli Minecraft: Java Edition hisobi yo'q.",
   "That account already owns everything in the basket.": "Bu hisobda savatdagi hamma narsa allaqachon bor.",
   "The shop isn't selling right now. Nothing was charged.": "Do'kon hozir sotmayapti. Hech narsa yechilmadi.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle to'lovni boshlay olmadi. Hech narsa yechilmadi."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle to'lovni boshlay olmadi. Hech narsa yechilmadi.",
+  "{name} was left out: made for another Horizon version": "{name} chiqarib tashlandi: Horizonning boshqa versiyasi uchun yaratilgan",
+  "{name} was left out: clashes with {other}": "{name} chiqarib tashlandi: {other} bilan to'qnashadi",
+  "{name} was left out: it needs {other}, which was left out": "{name} chiqarib tashlandi: unga {other} kerak, u chiqarib tashlandi"
 }

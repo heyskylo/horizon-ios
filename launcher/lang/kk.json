@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Бұл атпен Minecraft: Java Edition тіркелгісі жоқ.",
   "That account already owns everything in the basket.": "Бұл тіркелгіде себеттегінің бәрі бар.",
   "The shop isn't selling right now. Nothing was charged.": "Дүкен қазір сатпайды. Ештеңе алынған жоқ.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлемді бастай алмады. Ештеңе алынған жоқ."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлемді бастай алмады. Ештеңе алынған жоқ.",
+  "{name} was left out: made for another Horizon version": "{name} алынып тасталды: Horizon-ның басқа нұсқасына жасалған",
+  "{name} was left out: clashes with {other}": "{name} алынып тасталды: {other} модымен қайшылықта",
+  "{name} was left out: it needs {other}, which was left out": "{name} алынып тасталды: оған {other} керек, ол алынып тасталды"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Walang Minecraft: Java Edition account na may ganoong pangalan.",
   "That account already owns everything in the basket.": "Pag-aari na ng account na iyon ang lahat ng nasa basket.",
   "The shop isn't selling right now. Nothing was charged.": "Hindi nagbebenta ang shop ngayon. Walang siningil.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Hindi masimulan ng Paddle ang pagbabayad. Walang siningil."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Hindi masimulan ng Paddle ang pagbabayad. Walang siningil.",
+  "{name} was left out: made for another Horizon version": "Hindi isinama ang {name}: ginawa para sa ibang bersyon ng Horizon",
+  "{name} was left out: clashes with {other}": "Hindi isinama ang {name}: sumasalungat sa {other}",
+  "{name} was left out: it needs {other}, which was left out": "Hindi isinama ang {name}: kailangan nito ang {other}, na hindi isinama"
 }

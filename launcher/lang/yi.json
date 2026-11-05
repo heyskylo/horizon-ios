@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "קיין Minecraft: Java Edition חשבון האָט נישט דעם נאָמען.",
   "That account already owns everything in the basket.": "דער חשבון פֿאַרמאָגט שוין אַלץ אין קאָרב.",
   "The shop isn't selling right now. Nothing was charged.": "די קראָם פֿאַרקויפֿט נישט איצט. גאָרנישט איז נישט באַרעכנט געוואָרן.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle האָט נישט געקענט אָנהייבן די צאָלונג. גאָרנישט איז נישט באַרעכנט געוואָרן."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle האָט נישט געקענט אָנהייבן די צאָלונג. גאָרנישט איז נישט באַרעכנט געוואָרן.",
+  "{name} was left out: made for another Horizon version": "{name} איז אויסגעלאָזט געוואָרן: געמאַכט פֿאַר אַן אַנדער ווערסיע פֿון Horizon",
+  "{name} was left out: clashes with {other}": "{name} איז אויסגעלאָזט געוואָרן: שטויסט זיך מיט {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} איז אויסגעלאָזט געוואָרן: עס דאַרף {other}, וואָס איז אויסגעלאָזט געוואָרן"
 }

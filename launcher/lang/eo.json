@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Neniu konto de Minecraft: Java Edition havas tiun nomon.",
   "That account already owns everything in the basket.": "Tiu konto jam posedas ĉion en la korbo.",
   "The shop isn't selling right now. Nothing was charged.": "La butiko nun ne vendas. Nenio estis pagigita.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ne povis komenci la pagon. Nenio estis pagigita."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ne povis komenci la pagon. Nenio estis pagigita.",
+  "{name} was left out: made for another Horizon version": "{name} estis preterlasita: farita por alia versio de Horizon",
+  "{name} was left out: clashes with {other}": "{name} estis preterlasita: konfliktas kun {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} estis preterlasita: ĝi bezonas {other}, kiu estis preterlasita"
 }

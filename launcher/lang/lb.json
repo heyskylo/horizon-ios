@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Kee Minecraft: Java Edition-Kont huet deen Numm.",
   "That account already owns everything in the basket.": "Dee Kont huet schonn alles am Kuerf.",
   "The shop isn't selling right now. Nothing was charged.": "De Shop verkeeft grad net. Et gouf näischt ofgebucht.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle konnt d'Bezuelung net starten. Et gouf näischt ofgebucht."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle konnt d'Bezuelung net starten. Et gouf näischt ofgebucht.",
+  "{name} was left out: made for another Horizon version": "{name} gouf ewechgelooss: fir eng aner Horizon-Versioun gemaach",
+  "{name} was left out: clashes with {other}": "{name} gouf ewechgelooss: kollidéiert mat {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf"
 }

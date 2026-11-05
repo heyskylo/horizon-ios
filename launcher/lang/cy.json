@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Does dim cyfrif Minecraft: Java Edition gyda'r enw hwnnw.",
   "That account already owns everything in the basket.": "Mae'r cyfrif hwnnw eisoes yn berchen ar bopeth yn y fasged.",
   "The shop isn't selling right now. Nothing was charged.": "Dydy'r siop ddim yn gwerthu ar hyn o bryd. Ni chodwyd dim.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Methodd Paddle â dechrau'r talu. Ni chodwyd dim."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Methodd Paddle â dechrau'r talu. Ni chodwyd dim.",
+  "{name} was left out: made for another Horizon version": "Gadawyd {name} allan: wedi'i wneud ar gyfer fersiwn arall o Horizon",
+  "{name} was left out: clashes with {other}": "Gadawyd {name} allan: mae'n gwrthdaro â {other}",
+  "{name} was left out: it needs {other}, which was left out": "Gadawyd {name} allan: mae angen {other} arno, a adawyd allan"
 }

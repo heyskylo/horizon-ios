@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Eingin Minecraft: Java Edition-konta hevur hetta navnið.",
   "That account already owns everything in the basket.": "Henda kontan eigur longu alt í kurvini.",
   "The shop isn't selling right now. Nothing was charged.": "Handilin selur ikki júst nú. Einki varð kravt.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle fekk ikki byrjað gjaldingina. Einki varð kravt."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle fekk ikki byrjað gjaldingina. Einki varð kravt.",
+  "{name} was left out: made for another Horizon version": "{name} varð útihildin: gjørd til eina aðra útgávu av Horizon",
+  "{name} was left out: clashes with {other}": "{name} varð útihildin: stríðist við {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} varð útihildin: hon tørvar {other}, sum varð útihildin"
 }

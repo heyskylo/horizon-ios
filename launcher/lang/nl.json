@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Geen Minecraft: Java Edition-account heeft die naam.",
   "That account already owns everything in the basket.": "Dat account heeft alles in het mandje al.",
   "The shop isn't selling right now. Nothing was charged.": "De winkel verkoopt nu niets. Er is niets afgeschreven.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kon de betaling niet starten. Er is niets afgeschreven."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kon de betaling niet starten. Er is niets afgeschreven.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaten: gemaakt voor een andere Horizon-versie",
+  "{name} was left out: clashes with {other}": "{name} is weggelaten: botst met {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaten: het heeft {other} nodig, dat is weggelaten"
 }

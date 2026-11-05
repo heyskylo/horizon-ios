@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Няма ўліковага запісу Minecraft: Java Edition з такім імем.",
   "That account already owns everything in the basket.": "Гэты ўліковы запіс ужо мае ўсё, што ў кошыку.",
   "The shop isn't selling right now. Nothing was charged.": "Крама зараз не прадае. Нічога не спісана.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не змог пачаць аплату. Нічога не спісана."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не змог пачаць аплату. Нічога не спісана.",
+  "{name} was left out: made for another Horizon version": "{name} прапушчаны: зроблены для іншай версіі Horizon",
+  "{name} was left out: clashes with {other}": "{name} прапушчаны: канфліктуе з {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} прапушчаны: яму патрэбны {other}, які прапушчаны"
 }

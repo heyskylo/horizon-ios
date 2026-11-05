@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Ingen Minecraft: Java Edition-konto har det navn.",
   "That account already owns everything in the basket.": "Den konto ejer allerede alt i kurven.",
   "The shop isn't selling right now. Nothing was charged.": "Butikken sælger ikke lige nu. Intet blev trukket.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kunne ikke starte betalingen. Intet blev trukket."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kunne ikke starte betalingen. Intet blev trukket.",
+  "{name} was left out: made for another Horizon version": "{name} blev udeladt: lavet til en anden Horizon-version",
+  "{name} was left out: clashes with {other}": "{name} blev udeladt: kolliderer med {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} blev udeladt: den kræver {other}, som blev udeladt"
 }

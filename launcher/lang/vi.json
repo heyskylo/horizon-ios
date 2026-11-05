@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Không có tài khoản Minecraft: Java Edition nào mang tên đó.",
   "That account already owns everything in the basket.": "Tài khoản đó đã sở hữu mọi thứ trong giỏ.",
   "The shop isn't selling right now. Nothing was charged.": "Cửa hàng hiện không bán. Không bị trừ tiền.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle không thể bắt đầu thanh toán. Không bị trừ tiền."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle không thể bắt đầu thanh toán. Không bị trừ tiền.",
+  "{name} was left out: made for another Horizon version": "Đã bỏ qua {name}: được làm cho phiên bản Horizon khác",
+  "{name} was left out: clashes with {other}": "Đã bỏ qua {name}: xung đột với {other}",
+  "{name} was left out: it needs {other}, which was left out": "Đã bỏ qua {name}: cần {other}, mà {other} đã bị bỏ qua"
 }

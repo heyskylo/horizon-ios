@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Ningunha conta de Minecraft: Java Edition ten ese nome.",
   "That account already owns everything in the basket.": "Esa conta xa ten todo o que hai na cesta.",
   "The shop isn't selling right now. Nothing was charged.": "A tenda non está a vender agora. Non se cobrou nada.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle non puido iniciar o pagamento. Non se cobrou nada."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle non puido iniciar o pagamento. Non se cobrou nada.",
+  "{name} was left out: made for another Horizon version": "Deixouse fóra {name}: feito para outra versión de Horizon",
+  "{name} was left out: clashes with {other}": "Deixouse fóra {name}: choca con {other}",
+  "{name} was left out: it needs {other}, which was left out": "Deixouse fóra {name}: precisa de {other}, que se deixou fóra"
 }

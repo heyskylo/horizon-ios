@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Այդ անունով Minecraft: Java Edition հաշիվ չկա։",
   "That account already owns everything in the basket.": "Այդ հաշիվն արդեն ունի զամբյուղի ամեն ինչ։",
   "The shop isn't selling right now. Nothing was charged.": "Խանութը հիմա չի վաճառում։ Ոչինչ չի գանձվել։",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-ը չկարողացավ սկսել վճարումը։ Ոչինչ չի գանձվել։"
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-ը չկարողացավ սկսել վճարումը։ Ոչինչ չի գանձվել։",
+  "{name} was left out: made for another Horizon version": "{name}-ը բաց թողնվեց. ստեղծված է Horizon-ի այլ տարբերակի համար",
+  "{name} was left out: clashes with {other}": "{name}-ը բաց թողնվեց. բախվում է {other}-ի հետ",
+  "{name} was left out: it needs {other}, which was left out": "{name}-ը բաց թողնվեց. նրան պետք է {other}-ը, որը բաց թողնվեց"
 }

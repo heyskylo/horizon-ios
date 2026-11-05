@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Nissun account de Minecraft: Java Edition el gh'ha quel nom lì.",
   "That account already owns everything in the basket.": "Quell account lì el gh'ha giamò tutt quell che gh'è in del cavagn.",
   "The shop isn't selling right now. Nothing was charged.": "La botega la vend nagott adess. L'è minga staa addebitaa nagott.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle l'ha minga poduu comenzà el pagament. L'è minga staa addebitaa nagott."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle l'ha minga poduu comenzà el pagament. L'è minga staa addebitaa nagott.",
+  "{name} was left out: made for another Horizon version": "{name} l'è staa lassaa foeura: faa per un'altra version de Horizon",
+  "{name} was left out: clashes with {other}": "{name} l'è staa lassaa foeura: el va in conflit con {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} l'è staa lassaa foeura: el gh'ha bisogn de {other}, che l'è staa lassaa foeura"
 }

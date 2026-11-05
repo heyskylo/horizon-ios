@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Sellise nimega Minecraft: Java Editioni kontot pole.",
   "That account already owns everything in the basket.": "Sellel kontol on juba kõik korvis olev olemas.",
   "The shop isn't selling right now. Nothing was charged.": "Pood praegu ei müü. Midagi ei võetud.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei saanud makset alustada. Midagi ei võetud."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei saanud makset alustada. Midagi ei võetud.",
+  "{name} was left out: made for another Horizon version": "{name} jäeti välja: tehtud teise Horizoni versiooni jaoks",
+  "{name} was left out: clashes with {other}": "{name} jäeti välja: on vastuolus modiga {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} jäeti välja: vajab modi {other}, mis jäeti välja"
 }

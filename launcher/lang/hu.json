@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Nincs ilyen nevű Minecraft: Java Edition-fiók.",
   "That account already owns everything in the basket.": "Ez a fiók már mindent birtokol, ami a kosárban van.",
   "The shop isn't selling right now. Nothing was charged.": "A bolt most nem árul. Semmit sem terheltünk.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "A Paddle nem tudta elindítani a fizetést. Semmit sem terheltünk."
+  "Paddle couldn't start the checkout. Nothing was charged.": "A Paddle nem tudta elindítani a fizetést. Semmit sem terheltünk.",
+  "{name} was left out: made for another Horizon version": "{name} kimaradt: a Horizon egy másik verziójához készült",
+  "{name} was left out: clashes with {other}": "{name} kimaradt: ütközik ezzel: {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} kimaradt: szüksége van erre: {other}, ami kimaradt"
 }

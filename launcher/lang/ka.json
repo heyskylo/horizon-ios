@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "ამ სახელით Minecraft: Java Edition ანგარიში არ არსებობს.",
   "That account already owns everything in the basket.": "ამ ანგარიშს უკვე აქვს ყველაფერი, რაც კალათაშია.",
   "The shop isn't selling right now. Nothing was charged.": "მაღაზია ახლა არ ყიდის. არაფერი ჩამოგეჭრათ.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-მა გადახდა ვერ დაიწყო. არაფერი ჩამოგეჭრათ."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-მა გადახდა ვერ დაიწყო. არაფერი ჩამოგეჭრათ.",
+  "{name} was left out: made for another Horizon version": "{name} გამოტოვებულია: შექმნილია Horizon-ის სხვა ვერსიისთვის",
+  "{name} was left out: clashes with {other}": "{name} გამოტოვებულია: კონფლიქტშია {other}-თან",
+  "{name} was left out: it needs {other}, which was left out": "{name} გამოტოვებულია: მას სჭირდება {other}, რომელიც გამოტოვებულია"
 }

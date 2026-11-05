@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Żodne kōnto Minecraft: Java Edition niy mo tego miana.",
   "That account already owns everything in the basket.": "To kōnto mo już wszyjsko, co je we koszyku.",
   "The shop isn't selling right now. Nothing was charged.": "Sklep terŏz nic niy przedŏwŏ. Nic niy ôstało pobrane.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle niy poradziył zaczōnć płacynio. Nic niy ôstało pobrane."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle niy poradziył zaczōnć płacynio. Nic niy ôstało pobrane.",
+  "{name} was left out: made for another Horizon version": "{name} zostoł pominiynty: zrobiōny do inkszyj wersyje Horizona",
+  "{name} was left out: clashes with {other}": "{name} zostoł pominiynty: koliduje ze {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} zostoł pominiynty: potrzebuje {other}, kery zostoł pominiynty"
 }

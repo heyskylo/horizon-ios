@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Chan eil an t-ainm sin air cunntas Minecraft: Java Edition sam bith.",
   "That account already owns everything in the basket.": "Tha a h-uile càil sa bhasgaid aig a' chunntas sin mu thràth.",
   "The shop isn't selling right now. Nothing was charged.": "Chan eil a' bhùth a' reic an-dràsta. Cha deach dad a thogail.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Cha b' urrainn do Paddle am pàigheadh a thòiseachadh. Cha deach dad a thogail."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Cha b' urrainn do Paddle am pàigheadh a thòiseachadh. Cha deach dad a thogail.",
+  "{name} was left out: made for another Horizon version": "Chaidh {name} fhàgail às: air a dhèanamh airson tionndadh eile de Horizon",
+  "{name} was left out: clashes with {other}": "Chaidh {name} fhàgail às: tha e a' bualadh air {other}",
+  "{name} was left out: it needs {other}, which was left out": "Chaidh {name} fhàgail às: feumaidh e {other}, a chaidh fhàgail às"
 }

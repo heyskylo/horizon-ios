@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Tiada akaun Minecraft: Java Edition dengan nama itu.",
   "That account already owns everything in the basket.": "Akaun itu sudah memiliki semua yang ada dalam bakul.",
   "The shop isn't selling right now. Nothing was charged.": "Kedai tidak menjual sekarang. Tiada apa-apa dicaj.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle tidak dapat memulakan pembayaran. Tiada apa-apa dicaj."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle tidak dapat memulakan pembayaran. Tiada apa-apa dicaj.",
+  "{name} was left out: made for another Horizon version": "{name} ditinggalkan: dibuat untuk versi Horizon lain",
+  "{name} was left out: clashes with {other}": "{name} ditinggalkan: bercanggah dengan {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} ditinggalkan: ia memerlukan {other}, yang ditinggalkan"
 }

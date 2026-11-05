@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Nėra Minecraft: Java Edition paskyros tokiu vardu.",
   "That account already owns everything in the basket.": "Ši paskyra jau turi viską, kas yra krepšelyje.",
   "The shop isn't selling right now. Nothing was charged.": "Parduotuvė dabar neparduoda. Nieko nenuskaičiuota.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nepavyko pradėti mokėjimo. Nieko nenuskaičiuota."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nepavyko pradėti mokėjimo. Nieko nenuskaičiuota.",
+  "{name} was left out: made for another Horizon version": "{name} praleistas: sukurtas kitai Horizon versijai",
+  "{name} was left out: clashes with {other}": "{name} praleistas: konfliktuoja su {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} praleistas: jam reikia {other}, kuris praleistas"
 }

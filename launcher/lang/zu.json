@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Ayikho i-akhawunti ye-Minecraft: Java Edition enalelo gama.",
   "That account already owns everything in the basket.": "Leyo akhawunti isivele inakho konke okusebhasikidini.",
   "The shop isn't selling right now. Nothing was charged.": "Isitolo asidayisi njengamanje. Akukho okukhokhisiwe.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "I-Paddle ayikwazanga ukuqala inkokhelo. Akukho okukhokhisiwe."
+  "Paddle couldn't start the checkout. Nothing was charged.": "I-Paddle ayikwazanga ukuqala inkokhelo. Akukho okukhokhisiwe.",
+  "{name} was left out: made for another Horizon version": "I-{name} ishiywe ngaphandle: yenzelwe enye inguqulo ye-Horizon",
+  "{name} was left out: clashes with {other}": "I-{name} ishiywe ngaphandle: ingqubuzana ne-{other}",
+  "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle"
 }

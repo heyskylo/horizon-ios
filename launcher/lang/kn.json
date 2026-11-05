@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "ಆ ಹೆಸರಿನ Minecraft: Java Edition ಖಾತೆ ಇಲ್ಲ.",
   "That account already owns everything in the basket.": "ಆ ಖಾತೆಯ ಬಳಿ ಬುಟ್ಟಿಯಲ್ಲಿರುವ ಎಲ್ಲವೂ ಈಗಾಗಲೇ ಇದೆ.",
   "The shop isn't selling right now. Nothing was charged.": "ಅಂಗಡಿ ಈಗ ಮಾರಾಟ ಮಾಡುತ್ತಿಲ್ಲ. ಏನನ್ನೂ ಕಡಿತಗೊಳಿಸಿಲ್ಲ.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ಪಾವತಿಯನ್ನು ಆರಂಭಿಸಲು ಆಗಲಿಲ್ಲ. ಏನನ್ನೂ ಕಡಿತಗೊಳಿಸಿಲ್ಲ."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ಪಾವತಿಯನ್ನು ಆರಂಭಿಸಲು ಆಗಲಿಲ್ಲ. ಏನನ್ನೂ ಕಡಿತಗೊಳಿಸಿಲ್ಲ.",
+  "{name} was left out: made for another Horizon version": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: Horizon ನ ಬೇರೆ ಆವೃತ್ತಿಗಾಗಿ ಮಾಡಲಾಗಿದೆ",
+  "{name} was left out: clashes with {other}": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: {other} ಜೊತೆ ಘರ್ಷಿಸುತ್ತದೆ",
+  "{name} was left out: it needs {other}, which was left out": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: ಇದಕ್ಕೆ {other} ಬೇಕು, ಅದನ್ನು ಬಿಡಲಾಗಿದೆ"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Мындай аттагы Minecraft: Java Edition аккаунту жок.",
   "That account already owns everything in the basket.": "Бул аккаунтта себеттегинин баары бар.",
   "The shop isn't selling right now. Nothing was charged.": "Дүкөн азыр сатпайт. Эч нерсе алынган жок.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөмдү баштай алган жок. Эч нерсе алынган жок."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөмдү баштай алган жок. Эч нерсе алынган жок.",
+  "{name} was left out: made for another Horizon version": "{name} чыгарылып калды: Horizon'дун башка версиясы үчүн жасалган",
+  "{name} was left out: clashes with {other}": "{name} чыгарылып калды: {other} менен кагылышат",
+  "{name} was left out: it needs {other}, which was left out": "{name} чыгарылып калды: ага {other} керек, ал чыгарылып калды"
 }

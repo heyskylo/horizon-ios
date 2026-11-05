@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Нет учётной записи Minecraft: Java Edition с таким именем.",
   "That account already owns everything in the basket.": "У этой учётной записи уже есть всё, что в корзине.",
   "The shop isn't selling right now. Nothing was charged.": "Магазин сейчас не продаёт. Ничего не списано.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не смог начать оплату. Ничего не списано."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не смог начать оплату. Ничего не списано.",
+  "{name} was left out: made for another Horizon version": "{name} пропущен: сделан для другой версии Horizon",
+  "{name} was left out: clashes with {other}": "{name} пропущен: конфликтует с {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} пропущен: ему нужен {other}, который пропущен"
 }

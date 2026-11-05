@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "N'eus kont Minecraft: Java Edition ebet gant an anv-se.",
   "That account already owns everything in the basket.": "Ar gont-se he deus dija pep tra a zo er boutailh.",
   "The shop isn't selling right now. Nothing was charged.": "Ne werzh ket ar stal bremañ. N'eus bet paet netra.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Ne c'hallas ket Paddle kregiñ gant ar paeamant. N'eus bet paet netra."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Ne c'hallas ket Paddle kregiñ gant ar paeamant. N'eus bet paet netra.",
+  "{name} was left out: made for another Horizon version": "{name} a zo bet lezet a-gostez: graet evit ur stumm all eus Horizon",
+  "{name} was left out: clashes with {other}": "{name} a zo bet lezet a-gostez: en em stok a ra gant {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} a zo bet lezet a-gostez: ezhomm en deus eus {other}, a zo bet lezet a-gostez"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Nav neviena Minecraft: Java Edition konta ar šādu vārdu.",
   "That account already owns everything in the basket.": "Šim kontam jau pieder viss, kas ir grozā.",
   "The shop isn't selling right now. Nothing was charged.": "Veikals pašlaik nepārdod. Nekas netika iekasēts.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nevarēja sākt maksājumu. Nekas netika iekasēts."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nevarēja sākt maksājumu. Nekas netika iekasēts.",
+  "{name} was left out: made for another Horizon version": "{name} tika izlaists: veidots citai Horizon versijai",
+  "{name} was left out: clashes with {other}": "{name} tika izlaists: konfliktē ar {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} tika izlaists: tam vajag {other}, kas tika izlaists"
 }

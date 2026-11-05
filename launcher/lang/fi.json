@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Millään Minecraft: Java Edition -tilillä ei ole tuota nimeä.",
   "That account already owns everything in the basket.": "Tili omistaa jo kaiken korissa olevan.",
   "The shop isn't selling right now. Nothing was charged.": "Kauppa ei myy juuri nyt. Mitään ei veloitettu.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei voinut aloittaa maksua. Mitään ei veloitettu."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei voinut aloittaa maksua. Mitään ei veloitettu.",
+  "{name} was left out: made for another Horizon version": "{name} jätettiin pois: tehty toiselle Horizon-versiolle",
+  "{name} was left out: clashes with {other}": "{name} jätettiin pois: törmää modin {other} kanssa",
+  "{name} was left out: it needs {other}, which was left out": "{name} jätettiin pois: se tarvitsee modin {other}, joka jätettiin pois"
 }

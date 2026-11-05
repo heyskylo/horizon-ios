@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Nijedan Minecraft: Java Edition račun nema to ime.",
   "That account already owns everything in the basket.": "Taj račun već posjeduje sve u košarici.",
   "The shop isn't selling right now. Nothing was charged.": "Trgovina trenutačno ne prodaje. Ništa nije naplaćeno.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nije mogao pokrenuti plaćanje. Ništa nije naplaćeno."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nije mogao pokrenuti plaćanje. Ništa nije naplaćeno.",
+  "{name} was left out: made for another Horizon version": "{name} je izostavljen: napravljen za drugu verziju Horizona",
+  "{name} was left out: clashes with {other}": "{name} je izostavljen: sukobljava se s {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} je izostavljen: treba mu {other}, koji je izostavljen"
 }

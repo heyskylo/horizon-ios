@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Niciun cont Minecraft: Java Edition nu are acest nume.",
   "That account already owns everything in the basket.": "Acest cont deține deja tot ce este în coș.",
   "The shop isn't selling right now. Nothing was charged.": "Magazinul nu vinde acum. Nu s-a încasat nimic.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nu a putut porni plata. Nu s-a încasat nimic."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nu a putut porni plata. Nu s-a încasat nimic.",
+  "{name} was left out: made for another Horizon version": "{name} a fost omis: făcut pentru altă versiune de Horizon",
+  "{name} was left out: clashes with {other}": "{name} a fost omis: intră în conflict cu {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} a fost omis: are nevoie de {other}, care a fost omis"
 }

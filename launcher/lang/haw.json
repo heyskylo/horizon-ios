@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "ʻAʻohe moʻokāki Minecraft: Java Edition me kēlā inoa.",
   "That account already owns everything in the basket.": "Ua loaʻa mua i kēlā moʻokāki nā mea a pau o ka hīnaʻi.",
   "The shop isn't selling right now. Nothing was charged.": "ʻAʻole kūʻai aku ka hale kūʻai i kēia manawa. ʻAʻohe mea i uku ʻia.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "ʻAʻole hiki iā Paddle ke hoʻomaka i ka uku. ʻAʻohe mea i uku ʻia."
+  "Paddle couldn't start the checkout. Nothing was charged.": "ʻAʻole hiki iā Paddle ke hoʻomaka i ka uku. ʻAʻohe mea i uku ʻia.",
+  "{name} was left out: made for another Horizon version": "Ua waiho ʻia ʻo {name}: hana ʻia no kekahi mana ʻē aʻe o Horizon",
+  "{name} was left out: clashes with {other}": "Ua waiho ʻia ʻo {name}: kūʻē ia me {other}",
+  "{name} was left out: it needs {other}, which was left out": "Ua waiho ʻia ʻo {name}: pono iā ia ʻo {other}, i waiho ʻia"
 }

@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Cap de compte Minecraft: Java Edition a pas aquel nom.",
   "That account already owns everything in the basket.": "Aquel compte a ja tot çò qu'es dins lo panièr.",
   "The shop isn't selling right now. Nothing was charged.": "La botiga vend pas pel moment. Res es pas estat debitat.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle a pas pogut dobrir lo pagament. Res es pas estat debitat."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle a pas pogut dobrir lo pagament. Res es pas estat debitat.",
+  "{name} was left out: made for another Horizon version": "{name} es estat daissat de caire: fach per una autra version d'Horizon",
+  "{name} was left out: clashes with {other}": "{name} es estat daissat de caire: en conflicte amb {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire"
 }

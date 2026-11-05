@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Κανένας λογαριασμός Minecraft: Java Edition δεν έχει αυτό το όνομα.",
   "That account already owns everything in the basket.": "Αυτός ο λογαριασμός έχει ήδη όλα όσα είναι στο καλάθι.",
   "The shop isn't selling right now. Nothing was charged.": "Το κατάστημα δεν πουλάει αυτή τη στιγμή. Δεν χρεώθηκε τίποτα.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Το Paddle δεν μπόρεσε να ξεκινήσει την πληρωμή. Δεν χρεώθηκε τίποτα."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Το Paddle δεν μπόρεσε να ξεκινήσει την πληρωμή. Δεν χρεώθηκε τίποτα.",
+  "{name} was left out: made for another Horizon version": "Το {name} παραλείφθηκε: φτιάχτηκε για άλλη έκδοση του Horizon",
+  "{name} was left out: clashes with {other}": "Το {name} παραλείφθηκε: συγκρούεται με το {other}",
+  "{name} was left out: it needs {other}, which was left out": "Το {name} παραλείφθηκε: χρειάζεται το {other}, που παραλείφθηκε"
 }

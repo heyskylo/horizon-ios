@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "Ọ dịghị akaụntụ Minecraft: Java Edition nwere aha ahụ.",
   "That account already owns everything in the basket.": "Akaụntụ ahụ enweelarị ihe niile dị na nkata.",
   "The shop isn't selling right now. Nothing was charged.": "Ụlọ ahịa anaghị ere ugbu a. Ọ dịghị ihe a nara.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle enweghị ike ịmalite ịkwụ ụgwọ. Ọ dịghị ihe a nara."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle enweghị ike ịmalite ịkwụ ụgwọ. Ọ dịghị ihe a nara.",
+  "{name} was left out: made for another Horizon version": "A hapụrụ {name}: e mere ya maka ụdị Horizon ọzọ",
+  "{name} was left out: clashes with {other}": "A hapụrụ {name}: ọ na-emegide {other}",
+  "{name} was left out: it needs {other}, which was left out": "A hapụrụ {name}: ọ chọrọ {other}, nke a hapụrụ"
 }

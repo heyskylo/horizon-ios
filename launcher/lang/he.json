@@ -1187,5 +1187,8 @@
   "No Minecraft: Java Edition account has that name.": "אין חשבון Minecraft: Java Edition בשם הזה.",
   "That account already owns everything in the basket.": "החשבון הזה כבר מחזיק בכל מה שבסל.",
   "The shop isn't selling right now. Nothing was charged.": "החנות לא מוכרת כרגע. שום דבר לא חויב.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle לא הצליח להתחיל את התשלום. שום דבר לא חויב."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle לא הצליח להתחיל את התשלום. שום דבר לא חויב.",
+  "{name} was left out: made for another Horizon version": "{name} הושמט: נוצר לגרסה אחרת של Horizon",
+  "{name} was left out: clashes with {other}": "{name} הושמט: מתנגש עם {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} הושמט: הוא צריך את {other}, שהושמט"
 }
