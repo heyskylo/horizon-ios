@@ -440,7 +440,7 @@ public final class VanillaCommandExecOracle {
                             results.add(r);
                         });
                         this.getCommands().performPrefixedCommand(source, command);
-                        if (!op.has("record") || op.get("record").getAsBoolean()) {
+                        if (!op.has("record") || op.get("record").getAsBoolean() || (op.has("trace") && op.get("trace").getAsBoolean())) {
                             JsonObject record = new JsonObject();
                             record.addProperty("cmd", command);
                             JsonArray m = new JsonArray();
@@ -449,7 +449,8 @@ public final class VanillaCommandExecOracle {
                             JsonArray r = new JsonArray();
                             results.forEach(r::add);
                             record.add("results", r);
-                            out.append(gson.toJson(record)).append('\n');
+                            if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
+                            if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
                     }
                     case "mob_anger" -> {
