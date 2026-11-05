@@ -90,6 +90,8 @@ def main():
     parser.add_argument('--mob-quad-raw-diagnostic', action='store_true', help='retain full-precision leash diagnostic')
     parser.add_argument('--item-merge-diagnostic', action='store_true',
                         help='retain the original two-tag and spectator-selector item-merge diagnostic')
+    parser.add_argument('--orb-water-fixture', action='store_true', help='guarded orb water/air scene')
+    parser.add_argument('--orb-water-raw-diagnostic', action='store_true', help='add whole Pos/Motion records')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -142,6 +144,12 @@ def main():
         groups = [('setup', corpus_module.group_setup()),
                   ('item stack-size override merges',
                    stack_limit_merges(corpus_module.cmd, corpus_module.setup, diagnostic=True))]
+    if args.orb_water_fixture:
+        try:
+            from .orb_water_corpus import orb_water, arithmetic_inputs
+        except ImportError:
+            from orb_water_corpus import orb_water, arithmetic_inputs
+        groups = [('setup', corpus_module.group_setup()), ('orb underwater arithmetic', orb_water(args.orb_water_raw_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -162,8 +170,21 @@ def main():
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
-    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
+    java_options = []
+    if args.orb_water_fixture:
+        (build / 'orb-water-reference.json').unlink(missing_ok=True)
+        direct_input = build / 'orb-water-inputs.json'
+        direct_input.write_text(json.dumps(arithmetic_inputs()), encoding='utf-8')
+        java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
+    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
+
+    if args.orb_water_fixture:
+        direct = json.loads((build / 'orb-water-reference.json').read_text())
+        if ([r.get('input') for r in direct] != arithmetic_inputs() or
+                any(len(r.get('bits', [])) != 3 or
+                    any(re.fullmatch(r'[0-9a-f]{1,16}', b) is None for b in r['bits']) for r in direct)):
+            sys.exit('Java direct underwater reference prerequisite failed')
 
     if args.binary:
         binary = args.binary.resolve(strict=True)
