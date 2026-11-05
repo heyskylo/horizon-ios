@@ -128,6 +128,8 @@ def main():
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
+    parser.add_argument("--map-decoration-namespace-fixture", action="store_true")
+    parser.add_argument("--map-decoration-empty-diagnostic", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -192,6 +194,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.map_decoration_namespace_fixture:
+        try:
+            from .map_decoration_namespace_corpus import map_decoration_namespaces
+        except ImportError:
+            from map_decoration_namespace_corpus import map_decoration_namespaces
+        groups = [("setup", corpus_module.group_setup()), ("map decoration namespaces", map_decoration_namespaces(args.map_decoration_empty_diagnostic))]
     if args.mob_quad_fixture:
         try:
             from .mob_quad_leash_corpus import mob_quad_leash
