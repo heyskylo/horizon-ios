@@ -101,11 +101,24 @@ pub fn parse_date(s: &str) -> Option<i64> {
     }
     let offset =
         sign * (digits[..2].parse::<i64>().ok()? * 60 + digits[2..].parse::<i64>().ok()?);
-    // Lenient month and day arithmetic.
-    let months = y * 12 + (mo - 1);
+    // Lenient month and day arithmetic, checked: the file is edited by hand, and a value past what
+    // milliseconds since 1970 hold is no date (None, as an unparsable one) rather than a wrapped one.
+    let months = y.checked_mul(12)?.checked_add(mo.checked_sub(1)?)?;
     let (year, month) = (months.div_euclid(12), months.rem_euclid(12) + 1);
-    let days = days_from_civil(year, month as u32, 1) + da - 1;
-    Some(((days * 86_400 + h * 3600 + mi * 60 + se) - offset * 60) * 1000)
+    // Far beyond any i64 of milliseconds, and small enough for days_from_civil's own arithmetic.
+    if !(-300_000_000..=300_000_000).contains(&year) {
+        return None;
+    }
+    let days = days_from_civil(year, month as u32, 1)
+        .checked_add(da)?
+        .checked_sub(1)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(h.checked_mul(3600)?)?
+        .checked_add(mi.checked_mul(60)?)?
+        .checked_add(se)?
+        .checked_sub(offset * 60)?;
+    seconds.checked_mul(1000)
 }
 
 /// One list entry kind.
@@ -475,6 +488,29 @@ mod tests {
             "2026-10-12 08:00:00 +0000"
         );
         assert_eq!(parse_date("forever"), None);
+    }
+
+    #[test]
+    fn dates_too_far_out_are_none_not_wrapped() {
+        // Lenient overflow still works within range: month 13 is January of the next year.
+        assert_eq!(
+            parse_date("2026-13-01 00:00:00 +0000"),
+            parse_date("2027-01-01 00:00:00 +0000")
+        );
+        for text in [
+            "9223372036854775807-01-01 00:00:00 +0000",
+            "2026-9223372036854775807-01 00:00:00 +0000",
+            "2026-01-9223372036854775807 00:00:00 +0000",
+            "2026-01-01 9223372036854775807:00:00 +0000",
+            "2026-01-01 00:00:9223372036854775807 +0000",
+            "-9223372036854775808-01-01 00:00:00 +0000",
+            "300000001-01-01 00:00:00 +0000",
+            "2026--9223372036854775808-01 00:00:00 +0000",
+        ] {
+            assert_eq!(parse_date(text), None, "{text}");
+        }
+        // The far end of what milliseconds hold still parses (year 292 million).
+        assert!(parse_date("292000000-01-01 00:00:00 +0000").is_some());
     }
 
     #[test]

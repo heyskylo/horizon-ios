@@ -9272,10 +9272,11 @@ impl Game<'_> {
     pub(super) fn native_chat(&mut self, text: &str) {
         let focused = self.screen == Screen::Chat;
         let line = Text::literal(text);
+        let ticks = self.visual_ticks();
         let atlas = &self.gui.atlas;
         self.ui
             .chat
-            .add(atlas, line, None, ChatSource::Client, self.ticks, focused);
+            .add(atlas, line, None, ChatSource::Client, ticks, focused);
     }
     /// The instance (game) folder, which its players share: `saves/`,
     /// `resourcepacks/`, `shaderpacks/` and `horizon-mods/` are in it, and the

@@ -475,7 +475,8 @@ impl<T> Resident<T> {
                     }
                     let oy = f64::from(self.min_y + y * 16) - camera.y;
                     let min = Vec3::new(min_x, oy as f32, min_z);
-                    let (bmin, bmax) = section_box(min, self.bounds[slot as usize]);
+                    let bounds = self.bounds[slot as usize].filter(|_| frustum.tight());
+                    let (bmin, bmax) = section_box(min, bounds);
                     if !frustum.intersects(bmin, bmax) {
                         continue;
                     }

@@ -1717,6 +1717,14 @@ impl Recipes {
                 crafting.push((name, recipe));
             }
         }
+        // ResourceManagerRegistryLoadTask registers resource-file Identifiers by
+        // path, then namespace; RecipeMap preserves that first-match order.
+        // Include .json: the resource file, rather than the bare recipe id, is sorted.
+        // Other recipe types retain their existing table order.
+        crafting.sort_by_cached_key(|(name, _)| {
+            let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name.as_str()));
+            (format!("{path}.json"), namespace.to_owned())
+        });
         let facts = items
             .items
             .iter()
@@ -2309,6 +2317,58 @@ mod tests {
         let grid = [Some(ItemStack::new("minecraft:flint", 1)), None, None, None];
         let (_, made) = recipes.find(&grid, 2).unwrap();
         assert_eq!((&*made.item, made.count), ("minecraft:stick", 1));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// ResourceManagerRegistryLoadTask registers by resource-file Identifier,
+    /// and RecipeMap keeps that order when taking the first matching recipe.
+    #[test]
+    fn crafting_selection_follows_resource_file_order() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-recipe-order-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        let items = Items::for_tests(HashMap::new());
+        let recipe = |item: &str| {
+            serde_json::json!({
+                "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:flint"],
+                "result": {"id": item}
+            })
+        };
+        let cases = [
+            (vec!["minecraft:z_pick", "parity:a_pick"], "parity:a_pick"),
+            (
+                vec!["a_priority:z_pick", "z_priority:a_pick"],
+                "z_priority:a_pick",
+            ),
+            (
+                vec!["z_priority:equal", "a_priority:equal"],
+                "a_priority:equal",
+            ),
+            // File names include .json: '-' sorts before the parent's '.'.
+            (
+                vec!["parity:prefix", "parity:prefix-early"],
+                "parity:prefix-early",
+            ),
+            (vec!["z_pick", "parity:a_pick"], "parity:a_pick"),
+        ];
+        for (ids, expected) in cases {
+            for reverse in [false, true] {
+                let mut sources: Vec<_> = ids
+                    .iter()
+                    .map(|id| (id.to_string(), recipe("minecraft:stick")))
+                    .collect();
+                if reverse {
+                    sources.reverse();
+                }
+                let recipes =
+                    Recipes::from_sources(&root, &items, &PackOverlay::NONE, sources).unwrap();
+                let (id, result) = recipes
+                    .find(&[Some(ItemStack::new("minecraft:flint", 1))], 1)
+                    .unwrap();
+                assert_eq!(id, expected, "input order: {ids:?}, reversed={reverse}");
+                assert_eq!(&*result.item, "minecraft:stick");
+            }
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
