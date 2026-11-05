@@ -23,7 +23,7 @@ pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeFluidTank;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
-    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+    NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
 };
 pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
