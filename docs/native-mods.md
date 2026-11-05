@@ -2811,6 +2811,26 @@ a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws 
 cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
 mod's fluid yet, and no buckets of one.
 
+A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
+`IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
+passes (same fluid first, then empty), and before `native_move_fluids` counts a tank's room. Set `cancel` to refuse the
+fluid there, so a water tank takes no `create:chocolate` and a mod removed later leaves no fluid id the tank cannot use.
+Every tank takes every fluid unless a mod says otherwise, and a cauldron, which holds only water and lava, never asks:
+
+```rust,ignore
+fn block_entity_accepts_fluid(
+    &self,
+    _host: &dyn Host,
+    event: &mut BlockEntityAcceptsFluidEvent<'_>,
+) -> Flow {
+    if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+        Flow::Cancel
+    } else {
+        Flow::Continue
+    }
+}
+```
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
