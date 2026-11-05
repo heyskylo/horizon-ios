@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 411 adds client Host services, GUI painting, model-head snapshots and client lifecycle notifications.
+//!
+//! API 410 adds a final foreground GUI overlay (`native_gui_render_post`) and the current frame's camera during GUI rendering.
+//!
 //! API 409 adds a client mod's play packet to the server, as it is (`native_send_packet`).
 //!
 //! API 408 adds reading the server's play packets on the client (`native_client_packet`).
@@ -1160,7 +1164,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 409;
+pub(crate) const NATIVE_HOOKS_API: u32 = 411;
 
 impl GameLevel<'_> {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
@@ -2510,7 +2514,7 @@ impl Game<'_> {
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
     /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
-    /// Client only; the host is read-only. API @API:gui_render_post@.
+    /// Client only; the host is read-only. API 410.
     pub(super) fn native_gui_render_post(
         &self,
         batch: &mut HudBatch,
