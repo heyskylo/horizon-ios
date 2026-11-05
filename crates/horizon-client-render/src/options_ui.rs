@@ -2167,7 +2167,10 @@ impl OptionsUi {
     }
     fn settings_search_active(&self) -> bool {
         self.settings_search.focused
-            && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser)
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
     }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
@@ -2308,7 +2311,10 @@ impl OptionsUi {
         self.focus = None;
         self.focus_from_keyboard = false;
         self.can_change_value = false;
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.set_value("");
             self.settings_search.focused = false;
         }
@@ -2538,19 +2544,44 @@ impl OptionsUi {
             l.license.clone(),
             l.published.clone(),
         ];
-        let by: Vec<&str> = by.iter().map(String::as_str).filter(|t| !t.is_empty()).collect();
+        let by: Vec<&str> = by
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !t.is_empty())
+            .collect();
         rows.push(Row::Note(by.join(" · ")));
-        let labels: Vec<&str> = l.categories.iter().chain(&l.tags).map(String::as_str).collect();
+        let labels: Vec<&str> = l
+            .categories
+            .iter()
+            .chain(&l.tags)
+            .map(String::as_str)
+            .collect();
         if !labels.is_empty() {
             rows.push(Row::Note(labels.join(", ")));
         }
         let installing = b.installing.as_deref() == Some(l.id.as_str());
         let install = match (&l.installed, installing) {
-            (_, true) => inactive(button(0.0, 0.0, 150.0, tr("horizon.mods.browse.installing"), Act::None)),
-            (None, false) => button(0.0, 0.0, 150.0, tr("horizon.mods.browse.install"), Act::InstallMod),
-            (Some(_), false) if l.has_update() => {
-                button(0.0, 0.0, 150.0, tr("horizon.mods.browse.update"), Act::InstallMod)
-            }
+            (_, true) => inactive(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.installing"),
+                Act::None,
+            )),
+            (None, false) => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.install"),
+                Act::InstallMod,
+            ),
+            (Some(_), false) if l.has_update() => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.update"),
+                Act::InstallMod,
+            ),
             (Some(_), false) => inactive(button(
                 0.0,
                 0.0,
@@ -2559,12 +2590,19 @@ impl OptionsUi {
                 Act::None,
             )),
         };
-        let page = button(0.0, 0.0, 150.0, tr("horizon.mods.browse.open_page"), Act::OpenModPage);
+        let page = button(
+            0.0,
+            0.0,
+            150.0,
+            tr("horizon.mods.browse.open_page"),
+            Act::OpenModPage,
+        );
         let row = s.mods.installed.iter().position(|m| m.id == l.id && !m.dev);
         match row.filter(|_| l.installed.is_some()) {
             Some(i) => {
-                let label = Text::literal(format!("{}: ", lang::get("horizon.mods.browse.enabled")))
-                    .append(on_off(s.mods.is_on(i)));
+                let label =
+                    Text::literal(format!("{}: ", lang::get("horizon.mods.browse.enabled")))
+                        .append(on_off(s.mods.is_on(i)));
                 let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
                 rows.push(Row::Buttons(install, Some(toggle)));
                 rows.push(Row::Buttons(page, None));
@@ -2579,11 +2617,21 @@ impl OptionsUi {
         } else {
             &l.description
         });
-        rows.extend(description.iter().flat_map(|line| wrap(line, 64)).map(Row::Note));
+        rows.extend(
+            description
+                .iter()
+                .flat_map(|line| wrap(line, 64))
+                .map(Row::Note),
+        );
         let changelog = crate::mod_browser::plain_lines(&l.changelog);
         if !changelog.is_empty() {
             rows.push(Row::Heading("horizon.mods.browse.changelog".into()));
-            rows.extend(changelog.iter().flat_map(|line| wrap(line, 64)).map(Row::Note));
+            rows.extend(
+                changelog
+                    .iter()
+                    .flat_map(|line| wrap(line, 64))
+                    .map(Row::Note),
+            );
         }
         rows
     }
@@ -3001,56 +3049,48 @@ impl OptionsUi {
                     rows.push(Row::Header("horizon.mods.empty"));
                     return rows;
                 }
-                rows.extend(s.mods
-                    .installed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, installed)| {
-                        let mut label = Text::option_name_value(
-                            Text::literal(installed.title.clone()),
-                            on_off(s.mods.is_on(i)),
+                rows.extend(s.mods.installed.iter().enumerate().map(|(i, installed)| {
+                    let mut label = Text::option_name_value(
+                        Text::literal(installed.title.clone()),
+                        on_off(s.mods.is_on(i)),
+                    );
+                    if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
+                        label = label.append(tr("horizon.mods.not_built"));
+                    } else if installed.problem.is_some() {
+                        label = label.append(tr("horizon.mods.stopped"));
+                    } else if installed.dev {
+                        label = label.append(tr("horizon.mods.dev"));
+                    }
+                    // A content mod's set feeds the block-state tables the
+                    // open world's chunks were decoded with: changing it
+                    // mid-world remaps their ids (Forge/Fabric freeze the
+                    // registry before a world opens). A native mod toggles
+                    // live through `native_on`, so it stays available.
+                    let content = installed.native.is_none();
+                    if self.in_world && content {
+                        label = label.append(tr("horizon.mods.in_world"));
+                    }
+                    let dead = installed.dev || installed.id.is_empty() || self.in_world && content;
+                    // Only native mods with actual settings need a second button.
+                    if installed
+                        .native
+                        .as_ref()
+                        .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
+                    {
+                        let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                        let settings = button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.mods.settings"),
+                            Act::ModSettings(i),
                         );
-                        if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
-                            label = label.append(tr("horizon.mods.not_built"));
-                        } else if installed.problem.is_some() {
-                            label = label.append(tr("horizon.mods.stopped"));
-                        } else if installed.dev {
-                            label = label.append(tr("horizon.mods.dev"));
-                        }
-                        // A content mod's set feeds the block-state tables the
-                        // open world's chunks were decoded with: changing it
-                        // mid-world remaps their ids (Forge/Fabric freeze the
-                        // registry before a world opens). A native mod toggles
-                        // live through `native_on`, so it stays available.
-                        let content = installed.native.is_none();
-                        if self.in_world && content {
-                            label = label.append(tr("horizon.mods.in_world"));
-                        }
-                        let dead =
-                            installed.dev || installed.id.is_empty() || self.in_world && content;
-                        // Only native mods with actual settings need a second button.
-                        if installed
-                            .native
-                            .as_ref()
-                            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
-                        {
-                            let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
-                            let settings = button(
-                                0.0,
-                                0.0,
-                                150.0,
-                                tr("horizon.mods.settings"),
-                                Act::ModSettings(i),
-                            );
-                            Row::Buttons(
-                                if dead { inactive(toggle) } else { toggle },
-                                Some(settings),
-                            )
-                        } else {
-                            let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
-                            Row::Buttons(if dead { inactive(widget) } else { widget }, None)
-                        }
-                    }));
+                        Row::Buttons(if dead { inactive(toggle) } else { toggle }, Some(settings))
+                    } else {
+                        let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
+                        Row::Buttons(if dead { inactive(widget) } else { widget }, None)
+                    }
+                }));
                 rows
             }
             Page::ModBrowser => self.mod_browser_rows(),
@@ -3132,7 +3172,10 @@ impl OptionsUi {
         let mut rows = ListRows::default();
         let page = self.page();
         let cx = (w / 2.0).floor();
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.x = cx - 100.0;
             self.settings_search.y = 17.0;
         }
@@ -4053,7 +4096,10 @@ impl OptionsUi {
             }
             self.language_search = search;
         }
-        if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser) {
+        if matches!(
+            self.page(),
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             let mut search = self.settings_search.clone();
             if self.focus == Some(FocusId::Search) {
                 search.focused = true;
@@ -4229,7 +4275,12 @@ impl OptionsUi {
         self.size = size;
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
-        if !drag && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser) {
+        if !drag
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
+        {
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {

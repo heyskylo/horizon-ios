@@ -20,7 +20,10 @@ fn ruby(version: &str) -> Vec<u8> {
     horizon_mods::Package::write_files(
         &manifest,
         None,
-        &[("assets/ruby/lang/en_us.json", br#"{"item.ruby.ruby": "Ruby"}"#)],
+        &[(
+            "assets/ruby/lang/en_us.json",
+            br#"{"item.ruby.ruby": "Ruby"}"#,
+        )],
     )
     .unwrap()
 }
@@ -29,9 +32,7 @@ fn ruby(version: &str) -> Vec<u8> {
 /// `url`), and a native mod and a mod for another Minecraft version that the
 /// game doesn't offer.
 fn registry(version: &str, bytes: &[u8], url: &str) -> Index {
-    let file = |name: &str, size: usize, sha: String| {
-        serde_json::json!({ "name": name, "url": url, "size": size, "sha256": sha })
-    };
+    let file = |name: &str, size: usize, sha: String| serde_json::json!({ "name": name, "url": url, "size": size, "sha256": sha });
     let ruby = serde_json::json!({
         "id": "ruby", "kind": "mod", "name": "Ruby", "summary": "Rubies",
         "description": "# Ruby\nGems.", "authors": ["someone"], "license": "MIT",
