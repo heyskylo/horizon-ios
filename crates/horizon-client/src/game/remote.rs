@@ -6007,9 +6007,9 @@ impl Game<'_> {
         // the time only while the level runs normally.
         let running = self.clock.world_runs();
         self.boss_overlay.tick_darken(running);
-        // Under `HORIZON_STILL` the frame's countdowns (this one, the hotbar's pop, the
-        // border's size change, the HUD's below) wait for the world: a frozen client keeps
-        // ticking, as many ticks as the run took.
+        // Under `HORIZON_STILL` the frame's countdowns (this one, the hotbar's pop, the HUD's
+        // below) wait for the world, as the border's size change does in any frozen level: a
+        // frozen client keeps ticking, as many ticks as the run took.
         let hold = !running && self.clock.still();
         if !hold {
             self.tick_item_activation();
