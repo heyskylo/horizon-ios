@@ -135,10 +135,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                 ),
                 (
                     "Play",
-                    vec![option(
-                        Opt::PadTriggerThreshold,
-                        "How far a trigger is pulled before it counts as pressed.",
-                    )],
+                    vec![
+                        option(
+                            Opt::PadGameplayGuide,
+                            "Show the buttons for what you can do, while you play with a controller.",
+                        ),
+                        option(
+                            Opt::PadTriggerThreshold,
+                            "How far a trigger is pulled before it counts as pressed.",
+                        ),
+                    ],
                 ),
                 (
                     "Menus",

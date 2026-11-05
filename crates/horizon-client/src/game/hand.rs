@@ -607,9 +607,10 @@ impl Game<'_> {
         {
             return menu;
         }
-        let Some(hit) = self.pick() else {
-            return false;
-        };
+        self.pick().is_some_and(|hit| self.block_opens_menu(&hit))
+    }
+    /// `BlockState.getMenuProvider`, or a portal: the block's use opens a screen.
+    pub(super) fn block_opens_menu(&self, hit: &super::Hit) -> bool {
         let id = &*self
             .res
             .facts()

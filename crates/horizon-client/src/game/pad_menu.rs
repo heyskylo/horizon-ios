@@ -820,7 +820,15 @@ impl Game<'_> {
                 return Ok(());
             }
         }
+        // The book's controls take A alone; X, Y and the throws are for slots and recipes.
+        let book_control = !prompt
+            && self.screen == Screen::Inventory
+            && self.title.is_none()
+            && self.recipe_book_under_pointer();
+        let on_recipe = book_control && self.recipe_under_pointer().is_some();
         match button {
+            Button::West | Button::North if book_control && !on_recipe => {}
+            Button::Select | Button::LeftStick if book_control => {}
             Button::East | Button::Start => return self.pad_back(),
             Button::South if self.pad_focusing() => {
                 let focus = self.pad.menu.focus.expect("focusing");
@@ -1211,7 +1219,7 @@ impl Game<'_> {
 
     /// An inventory with its recipe book open and nothing over it: the book's tabs are targets
     /// only then (`recipe_book_targets`).
-    fn pad_recipe_book_showing(&self) -> bool {
+    pub(super) fn pad_recipe_book_showing(&self) -> bool {
         self.title.is_none()
             && self.screen == Screen::Inventory
             && self

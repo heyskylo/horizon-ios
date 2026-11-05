@@ -308,6 +308,7 @@ impl Opt {
             Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
+            Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
             Opt::ModelPart(i) => [
                 "options.modelPart.cape",
                 "options.modelPart.jacket",
@@ -829,6 +830,7 @@ impl Opt {
             Opt::PadEnabled => on_off(s.controller.enabled),
             Opt::PadVibration => on_off(s.controller.vibration),
             Opt::PadAdaptiveTriggers => on_off(s.controller.adaptive_triggers),
+            Opt::PadGameplayGuide => on_off(s.controller.gameplay_guide),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
@@ -1128,6 +1130,7 @@ impl Opt {
             Opt::PadAdaptiveTriggers => {
                 s.controller.adaptive_triggers = !s.controller.adaptive_triggers
             }
+            Opt::PadGameplayGuide => s.controller.gameplay_guide = !s.controller.gameplay_guide,
             Opt::PadInvertX => s.controller.invert_x = !s.controller.invert_x,
             Opt::PadInvertY => s.controller.invert_y = !s.controller.invert_y,
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,

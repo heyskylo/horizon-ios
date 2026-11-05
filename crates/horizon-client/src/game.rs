@@ -8788,6 +8788,7 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
+        self.pad.guide_shown.clear();
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -8878,8 +8879,11 @@ impl Game<'_> {
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
+        // What the gameplay guide keeps off starts after the view's full overlays.
+        let mut guide_from = 0;
         if show_hud {
             self.draw_spyglass(&mut batch);
+            guide_from = batch.vertices.len();
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             let indicator = self.settings.attack_indicator;
@@ -9169,11 +9173,15 @@ impl Game<'_> {
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
+                let from = batch.vertices.len();
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Creative => {
+                let from = batch.vertices.len();
                 self.draw_creative(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
@@ -9193,6 +9201,9 @@ impl Game<'_> {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
+        }
+        if show_hud {
+            self.draw_pad_guide(&mut batch, guide_from);
         }
         batch
     }

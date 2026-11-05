@@ -8158,6 +8158,19 @@ impl Game<'_> {
         }
     }
 
+    /// Another player of this level, whose copy passes every click (`Player.interactOn`).
+    pub(super) fn is_level_player(&self, id: i32) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(|r| r.level_players.contains_key(&id))
+    }
+
+    /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
+    /// guide: what `remote_block_reacts` answers on its dry level.
+    pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
+        self.remote_block_reacts(hit, held).0.consumes_action()
+    }
+
     /// Whether the block hit takes a main-hand right click with `held`
     /// (`BlockState.useItemOn`, then `useWithoutItem`): a door, a button, a
     /// container, and the blocks it changed. Vanilla's client runs it on its
@@ -8336,7 +8349,11 @@ impl Game<'_> {
     /// blocks it set. The real level supplies collision shapes and
     /// building-blocking entities; random draws, scheduled ticks and events
     /// stay in the preview.
-    fn remote_can_place(&mut self, hit: &super::Hit, stack: &ItemStack) -> Option<DryPlace> {
+    pub(super) fn remote_can_place(
+        &mut self,
+        hit: &super::Hit,
+        stack: &ItemStack,
+    ) -> Option<DryPlace> {
         if !self.may_build() {
             return None;
         }
@@ -10633,7 +10650,7 @@ fn boat_interact_passes(chest: bool, sneaking: bool, out_of_control: bool, has_r
 /// server decides; this is the client's guess of whether to go on. A carrot or warped fungus
 /// on a stick is not here: `FoodOnAStickItem.use` passes on a client, and only the server's
 /// answer to a boost that can run swings the hand.
-fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
+pub(super) fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
     let id = info.id.trim_start_matches("minecraft:");
     id.ends_with("_spear")
         || info.consumable.is_some()

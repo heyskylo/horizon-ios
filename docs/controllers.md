@@ -408,8 +408,8 @@ The picture's texture is 32 pixels tall, drawn 16 GUI pixels tall with a clear e
 glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or trigger 20. A declared
 button's label leaves room for it.
 
-Art shows on declared buttons and a focused field's A, in notices and splitscreen's strips. What runs
-inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
+Art shows on declared buttons and a focused field's A, in notices, the gameplay guide and splitscreen's
+strips. What runs inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
 the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
 
 The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
@@ -427,7 +427,7 @@ Controller settings are Horizon's own: **Options → Controls → Controller
 Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
 a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
 is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
-Reset. General's Play group has **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+Reset. General's Play group has the **Gameplay Guide** switch and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
 0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
 product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
@@ -449,6 +449,7 @@ triggerThreshold:0.4
 toggleSneak:true
 glyphs:auto
 bind_key.jump:south
+gameplayGuide:true
 bind_pad.hotbarNext:rb
 bindLayout:1
 ```
@@ -460,6 +461,25 @@ Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise
 aim near the centre, up to 200°/s yaw and 140°/s pitch at the default
 sensitivity, slower while scoping with a spyglass.
+
+## Gameplay guide
+
+While the pad plays, the HUD's top corners say what its buttons do now: break, use and pick block
+at the top right when there is something to do them to, movement and the player's own actions at
+the top left. The rows follow the bindings, the game mode, what the crosshair is on, the held
+items, riding, swimming and flying, and an item in use; an action that would do nothing, or has no
+button, has no row. The mouse or keyboard taking over hides them, as do a menu, F1, F3 and the
+Gameplay Guide option. They read what a click would do from the client's own answers
+(`remote_block_reacts`, `remote_mob_takes`), and a use only a fluid ray or the server can tell (an
+empty bucket) shows nothing. The rows step around what the HUD drew (effect icons, boss bars, the
+sidebar, chat, toasts, splitscreen's badge), and in a small view the last rows drop.
+
+An inventory or creative screen the pad drives has rows of its own, from its bottom corners, under
+the same option, and what's under the crosshair decides them: a slot, by whether it holds anything
+and what's carried; a recipe; another of the book's controls. Bottom right, what one face button
+does: Close, always the lowest row, then Take, Put Down, Quick Move, Place Recipe and so on. Bottom
+left, the rest: View and the left stick's drops, the recipe book's pages and categories, and creative's
+tabs. The creative grid's items aren't slots, so creative has only Close and its tabs.
 
 ## Rumble
 

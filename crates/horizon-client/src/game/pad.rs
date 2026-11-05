@@ -78,6 +78,10 @@ pub(super) struct Pads {
     pub(super) drop_stack: bool,
     /// The player's health between polls (a drop is damage taken).
     health: HealthWatch,
+    /// The gameplay guide's facts and the tick they were read in.
+    guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
+    /// The guide's rows as last drawn.
+    pub(super) guide_shown: Vec<guide::Shown>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +94,7 @@ struct Context {
     enabled: bool,
 }
 
+mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
 #[cfg(test)]
@@ -732,6 +737,7 @@ impl Game<'_> {
                         json!({ "title": title, "body": body })
                     }),
                     "menu": self.pad_menu_status(),
+                    "guide": self.pad_guide_status(),
                     "held": held,
                     "left": s.left,
                     "right": s.right,

@@ -556,6 +556,8 @@ pub struct PadSettings {
     /// by default on the Switch only.
     pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// The gameplay guide: what the buttons do now, in the HUD's top corners while the pad plays.
+    pub gameplay_guide: bool,
     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
     pub pointer_speed: f32,
     pub scroll_speed: f32,
@@ -581,6 +583,7 @@ impl Default for PadSettings {
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            gameplay_guide: true,
             pointer_speed: 1.0,
             scroll_speed: 12.0,
             repeat_delay: 0.35,
@@ -649,6 +652,7 @@ impl PadSettings {
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "gameplayGuide" => s.gameplay_guide = flag(s.gameplay_guide),
                 "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
@@ -706,7 +710,8 @@ impl PadSettings {
             self.keyboard.name(),
         );
         text.push_str(&format!(
-            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            "gameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            bool_text(self.gameplay_guide),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
         for (action, button) in &self.bindings {
@@ -1793,6 +1798,7 @@ bind_key.hotbar.2:north
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
         s.nintendo_letters = !s.nintendo_letters;
+        s.gameplay_guide = false;
         let text = s.serialize();
         assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));

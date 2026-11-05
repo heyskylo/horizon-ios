@@ -1916,6 +1916,10 @@ def glyph_art_world(args, name):
     for style in ('xbox', 'playstation'):
         game = Game(args, f'{name}-{style}', world=True, seed=seed_controller(f'glyphs:{style}\nbindLayout:1\n'))
         try:
+            game.pad('lb')
+            left, right = guide(game)
+            check(left or right, f'{style}: no gameplay guide rows')
+            shot(game, f'glyph_art_{style}_guide')
             game.ctl('key', 'e', 'tap')
             time.sleep(SETTLE)
             game.wait_targets()
@@ -1946,6 +1950,120 @@ def controller_trigger_threshold(args, name):
         check('40%' not in (game.focused_label() or ''), f'right left it on {game.focused_label()}')
         saved = next((line for line in controller_saved(game).splitlines() if line.startswith('triggerThreshold:')), '')
         check(saved and float(saved.split(':')[1]) > 0.4, f'not saved: {saved}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+
+def guide(game):
+    """Each column of the gameplay guide as last drawn, as (button, caption without its prefix)."""
+    time.sleep(SETTLE)
+    shown = game.ctl('pad', 'status')['guide']
+    return tuple([(r['button'], r['caption'].replace('horizon.controller.guide.', '')) for r in shown[side]]
+                 for side in ('left', 'right'))
+
+
+def gameplay_guide(args, name):
+    # Attack moved to Y, Pick Block unbound: the rows must follow.
+    game = Game(args, name, world=True, seed=seed_controller('bind_key.attack:north\nbind_key.pickItem:none\n'))
+    check = Check()
+    try:
+        check(guide(game) == ([], []), f'guide before the pad did anything: {guide(game)}')
+        game.pad('lb')
+        left, right = guide(game)
+        check(('south', 'key.jump') in left and ('north', 'key.inventory') in left, f'left column: {left}')
+
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', 'gamerule randomTickSpeed 0')
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 4} air')
+        at = (x, y + 1, z + 3)
+        place = lambda block: game.ctl('command', f'setblock {at[0]} {at[1]} {at[2]} {block}')
+        slot = game.ctl('state')['selected'] - 1
+        give = lambda item: game.ctl('command', f'item replace entity @s hotbar.{slot} with {item}')
+        place('stone')
+        game.ctl('look-at', 'block', *at)
+        give('stone')
+        _, right = guide(game)
+        check(right == [('north', 'break'), ('lt', 'place')], f'creative on stone with stone: {right}')
+
+        place('chest')
+        _, right = guide(game)
+        check(('lt', 'open') in right and ('lt', 'place') not in right, f'on a chest: {right}')
+
+        game.ctl('command', 'gamemode survival')
+        place('bedrock')
+        give('air')
+        _, right = guide(game)
+        check(right == [], f'survival with an empty hand on bedrock: {right}')
+        place('stone')
+        _, right = guide(game)
+        check(right == [('north', 'break')], f'survival with an empty hand on stone: {right}')
+        game.ctl('command', 'gamemode creative')
+
+        # The item in use.
+        give('bow')
+        # Nothing in reach to break, whatever this world grew here.
+        game.ctl('command', f'fill {x - 6} {y + 2} {z - 6} {x + 6} {y + 7} {z + 6} air')
+        game.ctl('look-at', x + 40, y + 20, z)
+        _, right = guide(game)
+        check(right == [('lt', 'shoot')], f'creative bow at nothing: {right}')
+        game.ctl('pad', 'trigger', 'left', 1)
+        _, right = guide(game)
+        check(right == [('lt', 'release_shoot')], f'drawing it: {right}')
+        game.ctl('pad', 'trigger', 'left', 0)
+        give('air')
+
+        # A screen takes the input, and F1 hides it.
+        game.pad('north')
+        rows = guide(game)
+        check(('south', 'key.jump') not in rows[0] and ('north', 'key.inventory') not in rows[0],
+              f'the gameplay rows over the inventory: {rows}')
+        game.pad('start')
+        game.ctl('pad', 'release')
+        time.sleep(SETTLE)
+        game.pad('lb')
+        check(guide(game) != ([], []), 'the guide did not come back')
+        game.ctl('key', 'f1', 'tap')
+        check(guide(game) == ([], []), 'the guide with the HUD hidden')
+        game.ctl('key', 'f1', 'tap')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_mobs(args, name):
+    # An allay's answer to a click is the interaction itself: the guide showing it must not do it.
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('lb')
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 4} air')
+        slot = game.ctl('state')['selected'] - 1
+        game.ctl('command', f'item replace entity @s hotbar.{slot} with diamond 8')
+        game.ctl('command', f'summon allay {x} {y + 1} {z + 3} {{NoAI:1b}}')
+        time.sleep(SETTLE)
+        allay = game.ctl('entities', 8, 'allay')['entities'][0]
+        game.ctl('look-at', 'entity', allay['id'])
+        for _ in range(3):
+            _, right = guide(game)
+        check(any(button == 'lt' for button, _ in right), f'no use row on the allay: {right}')
+        held = game.ctl('state')['held']
+        check(held == {'item': 'minecraft:diamond', 'count': 8}, f'the guide gave the allay an item: {held}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_off(args, name):
+    game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:false\n'))
+    check = Check()
+    try:
+        game.pad('lb')
+        check(game.ctl('pad', 'status')['in_use'], 'the pad is not in use')
+        check(guide(game) == ([], []), f'the guide with its setting off: {guide(game)}')
     finally:
         game.quit()
     return check.failures
@@ -1997,7 +2115,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,
-         'controller_trigger_threshold': controller_trigger_threshold}
+         'controller_trigger_threshold': controller_trigger_threshold,
+         'gameplay_guide': gameplay_guide,
+         'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs}
 
 
 def main():
