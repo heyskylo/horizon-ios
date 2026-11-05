@@ -176,6 +176,7 @@
   "Your GPU or graphics API doesn't support it.": "Your GPU or graphics API doesn't support it.",
   "Not with software rendering, which runs it on the CPU.": "Not with software rendering, which runs it on the CPU.",
   "Out of video memory: off until the next start.": "Out of video memory: off until the next start.",
+  "The graphics device was lost: off until the next start.": "The graphics device was lost: off until the next start.",
   "Not on DirectX 12 yet: try the Vulkan graphics API.": "Not on DirectX 12 yet: try the Vulkan graphics API.",
   "%s chunks": "%s chunks",
   "%s per frame": "%s per frame",
