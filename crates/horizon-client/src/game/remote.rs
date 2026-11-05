@@ -9209,6 +9209,9 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
+            if self.studio_command(command) {
+                return;
+            }
             self.send_command(command);
         } else {
             self.send_signed_chat(message);

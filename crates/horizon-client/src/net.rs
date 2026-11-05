@@ -7,6 +7,7 @@
 //! (crate::auth): the login joins the server through the session service and
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
 use crate::auth::AuthSession;
+use crate::studio::{Metadata, RecorderStatus, StudioRecorder};
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnReader, ConnWriter, Connection, Counters},
@@ -114,6 +115,8 @@ pub struct Session {
     debug: bool,
     /// The far terrain requests waiting for the server (`lod_net`).
     far: Arc<crate::lod_net::Inbox>,
+    /// Active packet recorder for Studio replay recordings.
+    pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
 }
 impl Session {
     /// Start connecting in the background, as `auth`'s account when there is one.
@@ -209,6 +212,8 @@ impl Session {
         let thread_configuring = configuring.clone();
         let far = Arc::new(crate::lod_net::Inbox::default());
         let thread_far = far.clone();
+        let recorder = Arc::new(Mutex::new(None));
+        let thread_recorder = recorder.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
@@ -229,6 +234,7 @@ impl Session {
                     transferred,
                     &resources,
                     lan,
+                    &thread_recorder,
                 );
                 thread_far.cancel();
                 let from_server = result.is_ok();
@@ -255,11 +261,39 @@ impl Session {
             cookies,
             debug,
             far,
+            recorder,
         }
     }
     /// Everything received since the last poll.
     pub fn poll(&self) -> Vec<Event> {
         self.events.try_iter().collect()
+    }
+    /// Start recording network packets to `.mcpr` format at `path`.
+    pub fn start_recording(
+        &self,
+        path: impl Into<PathBuf>,
+        metadata: Metadata,
+    ) -> std::io::Result<()> {
+        let rec = StudioRecorder::start(path.into(), metadata)?;
+        *self.recorder.lock().unwrap() = Some(rec);
+        Ok(())
+    }
+    /// Stop recording and finalize the `.mcpr` archive.
+    pub fn stop_recording(&self) -> Option<std::io::Result<PathBuf>> {
+        let rec = self.recorder.lock().unwrap().take()?;
+        Some(rec.stop())
+    }
+    /// Whether recording is currently active.
+    pub fn is_recording(&self) -> bool {
+        self.recorder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| r.is_active())
+    }
+    /// Status of the active recording, if any.
+    pub fn recorder_status(&self) -> Option<RecorderStatus> {
+        self.recorder.lock().unwrap().as_ref().map(|r| r.status())
     }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
@@ -616,6 +650,7 @@ fn run(
     transferred: bool,
     resources: &Path,
     lan: bool,
+    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -795,6 +830,7 @@ fn run(
         cookies,
         far,
         resources,
+        recorder,
     )
 }
 
@@ -807,6 +843,7 @@ fn receive_play(
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
     resources: &Path,
+    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
     loop {
         let (id, payload) = reader
@@ -825,6 +862,25 @@ fn receive_play(
                 continue;
             }
         };
+        // Keep private messages, account data, custom payloads, and external
+        // URLs out of player-created recordings.
+        let recordable = !matches!(
+            &packet,
+            play::Clientbound::CookieRequest(_)
+                | play::Clientbound::CustomPayload(_)
+                | play::Clientbound::DisguisedChat(_)
+                | play::Clientbound::PlayerChat(_)
+                | play::Clientbound::PlayerInfoRemove(_)
+                | play::Clientbound::PlayerInfoUpdate(_)
+                | play::Clientbound::ResourcePackPush(_)
+                | play::Clientbound::ServerLinks(_)
+                | play::Clientbound::StoreCookie(_)
+                | play::Clientbound::SystemChat(_)
+                | play::Clientbound::Transfer(_)
+        );
+        if recordable && let Some(rec) = recorder.lock().unwrap().as_ref() {
+            rec.record_packet(id, &payload);
+        }
         let reply = |p: play::Serverbound| {
             if let Some(w) = shared_writer.lock().unwrap().as_mut() {
                 let _ = w.send(&p.encode());
@@ -1425,6 +1481,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             ));
         });
         let ended = result
@@ -1544,6 +1601,7 @@ mod tests {
                 cookies: Cookies::default(),
                 debug: false,
                 far: Arc::default(),
+                recorder: Arc::new(Mutex::new(None)),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1593,6 +1651,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             )
         });
         let mut server = Connection::local(server);
@@ -1645,9 +1704,13 @@ mod tests {
             cookies: Cookies::default(),
             debug: false,
             far: Arc::default(),
+            recorder: Arc::new(Mutex::new(None)),
         };
-        let (thread_writer, thread_configuring) =
-            (session.writer.clone(), session.configuring.clone());
+        let (thread_writer, thread_configuring, thread_recorder) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.recorder.clone(),
+        );
         let thread = std::thread::spawn(move || {
             receive_play(
                 &mut reader,
@@ -1658,6 +1721,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &thread_recorder,
             )
         });
         let mut server = Connection::local(server);
@@ -1706,6 +1770,7 @@ mod tests {
                 &thread_cookies,
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             )
         });
         let mut server = Connection::local(server);
@@ -1867,5 +1932,101 @@ mod tests {
                 !goes_on
             );
         }
+    }
+
+    #[test]
+    fn session_studio_recording_tap_records_packets_to_mcpr() {
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let (send, events) = channel();
+        let session = Session {
+            events,
+            writer: Arc::new(Mutex::new(Some(writer))),
+            configuring: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            address: "local".into(),
+            name: "StudioTester".into(),
+            counters: Arc::new(Mutex::new(None)),
+            cookies: Cookies::default(),
+            debug: false,
+            far: Arc::default(),
+            recorder: Arc::new(Mutex::new(None)),
+        };
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "horizon-studio-test-{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_tap.mcpr");
+
+        let meta = Metadata::new("local".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        let (thread_writer, thread_configuring, thread_recorder) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.recorder.clone(),
+        );
+        let thread = std::thread::spawn(move || {
+            receive_play(
+                &mut reader,
+                &thread_writer,
+                &thread_configuring,
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+                &crate::lod_net::Inbox::default(),
+                Path::new("."),
+                &thread_recorder,
+            )
+        });
+
+        let mut server = Connection::local(server);
+        let pos_pkt = play::Clientbound::PlayerPosition(play::PlayerPosition {
+            teleport: 1,
+            position: [100.0, 64.0, -200.0],
+            delta: [0.0; 3],
+            yaw: 45.0,
+            pitch: 10.0,
+            relatives: 0,
+        });
+        server.send(&pos_pkt.encode()).unwrap();
+
+        // Disconnect ends receive_play loop
+        let disc_pkt = play::Clientbound::Disconnect(cfg::Disconnect {
+            reason: Tag::String("Replay tap test completed".into()),
+        });
+        server.send(&disc_pkt.encode()).unwrap();
+
+        let _ = thread.join().unwrap();
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+        assert!(mcpr_path.exists());
+
+        // Verify that the recording archive contains the clientbound packets.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 2);
+        assert_eq!(recording.metadata.server_name, "local");
+        assert!(recording.metadata.singleplayer);
+
+        let packet1 = recording.next_packet().unwrap().unwrap();
+        let packet2 = recording.next_packet().unwrap().unwrap();
+        assert!(recording.next_packet().unwrap().is_none());
+
+        let decoded1 = play::Clientbound::decode(packet1.id, &packet1.payload).unwrap();
+        assert_eq!(decoded1, pos_pkt);
+
+        let decoded2 = play::Clientbound::decode(packet2.id, &packet2.payload).unwrap();
+        assert_eq!(decoded2, disc_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
