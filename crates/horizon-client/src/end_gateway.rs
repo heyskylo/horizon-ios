@@ -193,9 +193,6 @@ mod tests {
         fn targets(&self) -> &[(crate::mobs::Who, horizon_core::geometry::Aabb)] {
             &[]
         }
-        fn no_block_collision(&self, _: horizon_core::geometry::Aabb) -> bool {
-            true
-        }
     }
 
     /// The ticks a projectile flies, thrown east at the gateway, until its

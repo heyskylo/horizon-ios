@@ -478,7 +478,7 @@ pub fn blocks_inside(from: Vec3, to: Vec3) -> Vec<BlockPos> {
     inside
 }
 /// `Projectile.lerpRotation`.
-pub fn lerp_rotation(mut old: f32, new: f32) -> f32 {
+fn lerp_rotation(mut old: f32, new: f32) -> f32 {
     while new - old < -180.0 {
         old -= 360.0;
     }
@@ -719,8 +719,8 @@ impl Ticker<'_, '_, '_, '_> {
             degrees(-movement.x, -movement.z)
         };
         let x_rot = degrees(movement.y, movement.horizontal_distance());
-        self.p.pitch = crate::projectiles::lerp_rotation(self.p.pitch, x_rot, 0.2);
-        self.p.yaw = crate::projectiles::lerp_rotation(self.p.yaw, y_rot, 0.2);
+        self.p.pitch = lerp_rotation(self.p.pitch, x_rot);
+        self.p.yaw = lerp_rotation(self.p.yaw, y_rot);
         self.check_left_owner(targets);
         let mut hit = Hit::None;
         let end = Vec3::new(

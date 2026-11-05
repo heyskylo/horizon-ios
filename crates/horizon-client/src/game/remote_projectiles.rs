@@ -112,7 +112,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
 fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    p.begin_tick();
+    p.previous = p.position;
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
     // the ticks in a block.
@@ -134,7 +134,6 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if let Some(a) = p.arrow.as_mut() {
         a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
-    horizon_client::projectiles::update_arrow_rotation(&mut p.yaw, &mut p.pitch, p.velocity, false);
     let water = w.in_water(p.bounds());
     if water {
         p.velocity = p.velocity.scale(0.6);
@@ -412,8 +411,6 @@ impl Game<'_> {
                 p.velocity = velocity;
                 p.yaw = yaw;
                 p.pitch = pitch;
-                p.previous_yaw = yaw;
-                p.previous_pitch = pitch;
                 self.add_projectile(p);
             }
         }
@@ -631,7 +628,7 @@ impl Game<'_> {
                     ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
-                        p.begin_tick();
+                        p.previous = p.position;
                         p.age += 1;
                         p.position = p.position.add_vector(p.velocity);
                     }
@@ -888,41 +885,6 @@ mod tests {
         }
     }
 
-    /// `Entity.setOldPosAndRot`: what the renderer interpolates a projectile's
-    /// rotation from is the rotation the last tick ended with. An arrow shot
-    /// straight up at the lowest power a bow fires turns over within a few
-    /// ticks, so every tick has to carry the value of the one before it.
-    #[test]
-    fn a_remote_arrow_keeps_the_rotation_the_last_tick_drew() {
-        let mut p = Projectile::new(
-            ProjectileKind::Arrow {
-                base_damage: 2.0,
-                critical: false,
-                effect: None,
-            },
-            Vec3::new(0.0, 100.0, 0.0),
-            None,
-        );
-        let mut random = horizon_core::random::LegacyRandom::new(7);
-        p.shoot(&mut random, [0.0, 1.0, 0.0], 0.3, 0.0);
-        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`.
-        assert_eq!(p.previous_pitch, p.pitch);
-        assert_eq!(p.previous_yaw, p.yaw);
-        assert!((p.pitch - 90.0).abs() < 1.0e-4, "aimed up: {}", p.pitch);
-        let (mut yaw, mut pitch) = (p.yaw, p.pitch);
-        for _ in 0..30 {
-            remote_arrow_tick(&mut p, &Empty);
-            assert_eq!(p.previous_pitch, pitch);
-            assert_eq!(p.previous_yaw, yaw);
-            (yaw, pitch) = (p.yaw, p.pitch);
-        }
-        assert!(
-            p.pitch < 0.0,
-            "the arrow turned over as it fell: {}",
-            p.pitch
-        );
-    }
-
     #[test]
     fn a_thrown_item_flies_on_between_the_server_updates() {
         // A thrown egg, an ender pearl and a wind charge (#1762): the server
@@ -1024,7 +986,6 @@ mod tests {
         remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
         assert!(p.position.y < 100.0);
     }
-
     #[test]
     fn a_slime_piston_bounce_releases_a_stuck_arrow_into_flight() {
         let mut p = Projectile::new(
@@ -1054,22 +1015,5 @@ mod tests {
         assert_eq!(p.position.y, 101.0);
         assert!((p.velocity.y - 0.94).abs() < 1e-9);
         assert!(p.needs_sync);
-    }
-
-    #[test]
-    fn a_remote_arrow_eases_its_rotation_towards_its_flight() {
-        let mut p = thrown(ProjectileKind::Arrow {
-            base_damage: 2.0,
-            critical: false,
-            effect: None,
-        });
-        p.velocity = Vec3::new(1.0, -1.0, 0.0);
-
-        remote_arrow_tick(&mut p, &Empty);
-
-        assert!((p.yaw - 18.0).abs() < 1e-5);
-        assert!((p.pitch - (-9.0)).abs() < 1e-5);
-        assert_eq!(p.previous_yaw, 0.0);
-        assert_eq!(p.previous_pitch, 0.0);
     }
 }

@@ -6378,10 +6378,6 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
-            let yaw =
-                horizon_client::projectiles::lerp_rotation(a.previous_yaw, a.yaw, alpha as f32);
-            let pitch =
-                horizon_client::projectiles::lerp_rotation(a.previous_pitch, a.pitch, alpha as f32);
             let light = self.world.light(
                 a.position.x.floor() as i32,
                 a.position.y.floor() as i32,
@@ -6406,15 +6402,9 @@ impl Game<'_> {
                 let Some(r) = atlas.sprites.get(texture).copied() else {
                     continue;
                 };
-                // ArrowRenderer: `Mth.lerp(partialTick, state.yRotO, state.yRot)`
-                // and the same for the pitch, so a turning arrow is drawn
-                // between the two ticks it turned over.
-                let alpha32 = alpha as f32;
-                let yaw = a.previous_yaw + alpha32 * (a.yaw - a.previous_yaw);
-                let pitch = a.previous_pitch + alpha32 * (a.pitch - a.previous_pitch);
                 let m = glam::Mat4::from_translation(c)
-                    * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
-                    * glam::Mat4::from_rotation_z(pitch.to_radians());
+                    * glam::Mat4::from_rotation_y((a.yaw - 90.0).to_radians())
+                    * glam::Mat4::from_rotation_z(a.pitch.to_radians());
                 // ArrowRenderer: `state.shake = shakeTime - partialTicks`; ArrowModel.setupAnim
                 // rolls the root while the shake timer runs.
                 let shake = a
@@ -6456,8 +6446,8 @@ impl Game<'_> {
                     continue;
                 };
                 let m = glam::Mat4::from_translation(c)
-                    * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
-                    * glam::Mat4::from_rotation_z((pitch + 90.0).to_radians());
+                    * glam::Mat4::from_rotation_y((a.yaw - 90.0).to_radians())
+                    * glam::Mat4::from_rotation_z((a.pitch + 90.0).to_radians());
                 let poses = horizon_client::mobs::anim::Poses::new(model);
                 horizon_client::mobs::render::draw(
                     model,
