@@ -253,7 +253,7 @@ pub fn run(home: &Path, ctx: &Context, progress: &dyn Fn(&str, f32)) -> Option<R
     // The start's run and Play's never touch a folder at once.
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-    let _lock = crate::browser::lock_home(home);
+    // The index comes first: the folder stays free while it downloads.
     let index = super::index().ok()?;
     Some(run_with(&index, super::local(), home, ctx, progress))
 }
