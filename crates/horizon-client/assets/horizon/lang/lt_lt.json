@@ -323,7 +323,6 @@
   "horizon.osk.close": "Uždaryti",
   "horizon.extras.chat_animation.tooltip": "Nauja pokalbio linija slenka iš kairės, kol ji išnyksta, o ne atrodo visa.",
   "horizon.extras.chat_indicator.tooltip": "Spalvota juosta pokalbio linijos kairėje.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Slinkties ratukas virš mygtuko nustatymuose keičia jo reikšmę, kaip ir vanilės atveju. Išjungtas, ratas tik slenka sąrašu.",
   "horizon.extras.pack_browser.tooltip": "Pasirinkite Išteklių paketai gauna mygtuką Pridėti, kuris ieško Modrinth ir įdiegia paketą į jūsų paketų aplanką. Išjungtas, žaidimas niekada nesusisiekia su Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Pasaulyje kitas valdiklis gali prisijungti kaip naujas žaidėjas: paspauskite A, kai jis paprašys, tada pasirinkite profilį ir kur žaisti.",
   "horizon.splitscreen.setup.monitor": "Monitorius %s",
@@ -467,8 +466,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Paslėpta: kiekvienas „Horizon“ žaidėjas mato jus be jūsų kosmetikos, įskaitant jus. Tas pats jungiklis kaip ir paleidimo priemonės drabužių spinta.",
   "horizon.extras.cosmetics_others": "Kitų žaidėjų kosmetika",
   "horizon.extras.cosmetics_others.tooltip": "Ką dėvi kiti „Horizon“ žaidėjai: viskas, tik jų vardų etiketės arba nieko. Paslėptas, žaidimas niekada neklausia, ką jie dėvi.",
-  "horizon.extras.cosmetics_auras": "Kitų auros ir takai",
-  "horizon.extras.cosmetics_auras.tooltip": "Auros ir takai, kuriuos nešioja kiti žaidėjai. Išjungta pagal numatytuosius nustatymus.",
+  "horizon.extras.cosmetics_hide_fx": "Slėpti kitų žaidėjų pėdsakus ir auras",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Kitų žaidėjų pėdsakai ir auros lieka paslėpti; kita jų kosmetika vis dar matoma. Numatytai išjungta.",
   "horizon.extras.cosmetics.shown": "Parodyta",
   "horizon.extras.cosmetics.hidden": "Paslėpta",
   "horizon.extras.cosmetics.name_tags": "Tik vardų žymos"

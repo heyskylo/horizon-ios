@@ -1,7 +1,8 @@
 //! What the game asks the service about its own account: whether it owns a cosmetic (`GET
 //! /v1/me`: no other player's cosmetics show for one that owns none, unless the player asks), and
 //! the settings it changes itself, "Show my cosmetics" (`PUT /v1/visible`) and "Show me as a
-//! Horizon player" (`POST /v1/presence`, also sent every `PRESENCE_EVERY` while on).
+//! Horizon player" (`POST /v1/presence`, also sent every `PRESENCE_EVERY` while on), and the
+//! emote its player plays (`POST /v1/emote`, with a session kept for it: `Kept`).
 //!
 //! The game signs in the way an online-mode server checks a player: the service hands out a
 //! one-time server id, the game tells Mojang's session server it joins it (`join`, with the
@@ -69,6 +70,19 @@ fn sign_in(
     name: &str,
     join: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<String, String> {
+    let mut join = Some(join);
+    sign_in_for(service, name, &mut |id: &str| {
+        join.take().ok_or("joined twice")?(id)
+    })
+    .map(|(session, _)| session)
+}
+
+/// `sign_in`, with how long the session lives (seconds; an hour if the service didn't say).
+fn sign_in_for(
+    service: &impl Call,
+    name: &str,
+    join: &mut impl FnMut(&str) -> Result<(), String>,
+) -> Result<(String, u64), String> {
     let start = service.call("POST", "/v1/auth/start", None, &json!({}))?;
     let server_id = start["server_id"].as_str().ok_or("no server id")?;
     join(server_id)?;
@@ -78,7 +92,108 @@ fn sign_in(
         None,
         &json!({ "server_id": server_id, "name": name }),
     )?;
-    Ok(finish["session"].as_str().ok_or("no session")?.to_owned())
+    let session = finish["session"].as_str().ok_or("no session")?.to_owned();
+    Ok((session, finish["expires_in"].as_u64().unwrap_or(3600)))
+}
+
+/// The service's session for an emote's start and stop, kept for the time the service gave less a
+/// minute: emotes come often, Mojang's `join` shouldn't each time.
+#[derive(Default)]
+pub struct Kept {
+    session: Option<(String, std::time::Instant)>,
+}
+
+impl Kept {
+    /// `method` on `path` with `body` as the account `name`, signing in first if no session is
+    /// kept; a session the service no longer knows (401) is dropped and the call made once more
+    /// after a sign-in.
+    pub fn call(
+        &mut self,
+        service: &impl Call,
+        name: &str,
+        mut join: impl FnMut(&str) -> Result<(), String>,
+        method: &str,
+        path: &str,
+        body: &Value,
+    ) -> Result<Value, String> {
+        for attempt in 0..2 {
+            let fresh = self
+                .session
+                .as_ref()
+                .filter(|(_, until)| std::time::Instant::now() < *until);
+            let session = match fresh {
+                Some((s, _)) => s.clone(),
+                None => {
+                    let (session, seconds) = sign_in_for(service, name, &mut join)?;
+                    let keep = std::time::Duration::from_secs(seconds.saturating_sub(60));
+                    self.session = Some((session.clone(), std::time::Instant::now() + keep));
+                    session
+                }
+            };
+            match service.call(method, path, Some(&session), body) {
+                Err(e) if e == "HTTP 401" && attempt == 0 => self.session = None,
+                answer => return answer,
+            }
+        }
+        Err("HTTP 401".into())
+    }
+}
+
+/// Tells the service the player plays the owned emote `emote` now (`None`: stopped); only while
+/// they show themselves as a Horizon player (else the service answers 409).
+pub fn play_emote(
+    kept: &mut Kept,
+    service: &impl Call,
+    name: &str,
+    join: impl FnMut(&str) -> Result<(), String>,
+    emote: Option<&str>,
+) -> Result<(), String> {
+    kept.call(
+        service,
+        name,
+        join,
+        "POST",
+        "/v1/emote",
+        &json!({ "emote": emote }),
+    )
+    .map(|_| ())
+}
+
+/// An emote the account owns: its item and its names by locale (`en_us`, `fr_fr`...).
+pub type OwnedEmote = (crate::Item, std::collections::BTreeMap<String, String>);
+
+/// The emotes the account `name` owns (`GET /v1/me`'s `emotes`: id, file hash, names), their
+/// files read with `get` (`/v1/items/<id>?hash=`). A file that fails to come or to parse, or
+/// isn't the emote it says, is left out.
+pub fn owned_emotes(
+    kept: &mut Kept,
+    service: &impl Call,
+    name: &str,
+    join: impl FnMut(&str) -> Result<(), String>,
+    get: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<OwnedEmote>, String> {
+    let me = kept.call(service, name, join, "GET", "/v1/me", &Value::Null)?;
+    let mut emotes = Vec::new();
+    for e in me["emotes"].as_array().into_iter().flatten() {
+        let (Some(id), Some(hash)) = (e["id"].as_str(), e["hash"].as_str()) else {
+            continue;
+        };
+        let item = get(&format!("/v1/items/{id}?hash={hash}"))
+            .ok()
+            .and_then(|bytes| crate::Item::parse(&bytes).ok())
+            .filter(|i| i.slot == crate::Slot::Emote && i.id == id);
+        let Some(item) = item else {
+            continue;
+        };
+        let names = e["names"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+            .collect();
+        emotes.push((item, names));
+    }
+    Ok(emotes)
 }
 
 /// Whether the account `name` owns at least one cosmetic (signed in as `set_visible` does).
@@ -147,8 +262,16 @@ mod tests {
                 }
                 "/v1/auth/finish" => Err("HTTP 401".into()),
                 "/v1/visible" if s == Some("svc") => Ok(json!({"visible": body["visible"]})),
-                "/v1/me" if s == Some("svc") => Ok(json!({"owned": self.owned})),
+                "/v1/me" if s == Some("svc") => Ok(json!({
+                    "owned": self.owned,
+                    "emotes": [
+                        {"id": "wave", "hash": "h1", "names": {"en_us": "Wave", "fr_fr": "Coucou"}},
+                        {"id": "gone", "hash": "h1", "names": {}},
+                        {"id": "hat", "hash": "h1", "names": {}},
+                    ],
+                })),
                 "/v1/presence" if s == Some("svc") => Ok(json!({"listed": body["listed"]})),
+                "/v1/emote" if s == Some("svc") => Ok(json!({"emote": body["emote"]})),
                 _ => Err("HTTP 401".into()),
             }
         }
@@ -210,6 +333,75 @@ mod tests {
         assert_eq!(service.sent.borrow().len(), 1);
         // A join Mojang never saw: the service refuses the id.
         assert!(set_visible(&service, "Alex", |_| Ok(()), false).is_err());
+    }
+
+    #[test]
+    fn emotes_sign_in_once_and_again_only_when_the_session_is_gone() {
+        let service = Service::default();
+        let joins = std::cell::Cell::new(0);
+        let join = |id: &str| {
+            joins.set(joins.get() + 1);
+            *service.joined.borrow_mut() = Some(id.to_owned());
+            Ok(())
+        };
+        let mut kept = Kept::default();
+        for emote in [Some("wave_hello"), None, Some("wave_hello")] {
+            play_emote(&mut kept, &service, "Alex", join, emote).unwrap();
+        }
+        assert_eq!(joins.get(), 1);
+        let sent = service.sent.borrow();
+        let emotes: Vec<(&str, Option<&str>, &Value)> = sent
+            .iter()
+            .filter(|c| c.1 == "/v1/emote")
+            .map(|c| (c.0.as_str(), c.2.as_deref(), &c.3))
+            .collect();
+        assert_eq!(emotes.len(), 3);
+        assert_eq!(
+            emotes[0],
+            ("POST", Some("svc"), &json!({"emote": "wave_hello"}))
+        );
+        assert_eq!(emotes[1].2, &json!({"emote": null}));
+        drop(sent);
+        // The service forgot the session (a restart): one more sign-in, then the call.
+        kept.session = Some((
+            "stale".into(),
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        ));
+        play_emote(&mut kept, &service, "Alex", join, Some("wave_hello")).unwrap();
+        assert_eq!(joins.get(), 2);
+    }
+
+    #[test]
+    fn the_wheel_gets_the_owned_emotes_files_and_names() {
+        let service = Service::default();
+        let join = |id: &str| {
+            *service.joined.borrow_mut() = Some(id.to_owned());
+            Ok(())
+        };
+        let emote = r#"{"format": 1, "id": "wave", "slot": "emote", "parts": [],
+            "emote": {"length": 20, "tracks": [{"part": "right_arm", "keys": [{"t": 0}, {"t": 10, "rotation": [0, 0, 90]}]}]}}"#;
+        let asked = RefCell::new(Vec::new());
+        let get = |path: &str| {
+            asked.borrow_mut().push(path.to_owned());
+            match path {
+                "/v1/items/wave?hash=h1" => Ok(emote.as_bytes().to_vec()),
+                // A file that says it is the emote `wave`, asked for as `hat`.
+                "/v1/items/hat?hash=h1" => Ok(emote.as_bytes().to_vec()),
+                _ => Err("HTTP 404".to_owned()),
+            }
+        };
+        let mut kept = Kept::default();
+        let owned = owned_emotes(&mut kept, &service, "Alex", join, get).unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].0.id, "wave");
+        assert_eq!(owned[0].1["fr_fr"], "Coucou");
+        assert_eq!(asked.borrow().len(), 3);
+        let sent = service.sent.borrow();
+        assert_eq!(
+            sent.last()
+                .map(|c| (c.0.as_str(), c.1.as_str(), c.2.as_deref())),
+            Some(("GET", "/v1/me", Some("svc")))
+        );
     }
 
     #[test]

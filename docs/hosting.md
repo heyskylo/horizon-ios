@@ -345,8 +345,13 @@ Tiles are sampled again for each player who asks (there is no cache yet). Vanill
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
 sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
-can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
+settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
+share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
+tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
+a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
+hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
+`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
+it is. Nothing restarts: the report runs beside the game.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than

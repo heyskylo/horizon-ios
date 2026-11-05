@@ -313,7 +313,6 @@
   "horizon.osk.close": "Aizvērt",
   "horizon.extras.chat_animation.tooltip": "Jauna tērzēšanas līnija ieslīd no kreisās puses, kamēr tā pazūd, nevis tiek rādīta vesela.",
   "horizon.extras.chat_indicator.tooltip": "Krāsaina josla pa kreisi no tērzēšanas līnijas.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ritināšanas ritenītis virs pogas iestatījumos maina tās vērtību, tāpat kā vaniļas gadījumā. Izslēgts, ritenis tikai ritina sarakstu.",
   "horizon.extras.pack_browser.tooltip": "Atlasīt Resursu pakotnes saņem pogu Pievienot, kas meklē Modrinth un instalē pakotni jūsu pakotņu mapē. Izslēgts, spēle nekad nesazinās ar Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Pasaulē cits kontrolieris var pievienoties kā jauns spēlētājs: nospiediet A, kad tas jautā, pēc tam izvēlieties profilu un vietu, kur spēlēt.",
   "horizon.splitscreen.setup.monitor": "Monitors %s",
@@ -456,8 +455,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Slēpts: katrs Horizon spēlētājs redz jūs bez jūsu kosmētikas, ieskaitot jūs. Tas pats slēdzis kā palaišanas ierīces Garderobe.",
   "horizon.extras.cosmetics_others": "Pārējo spēlētāju kosmētika",
   "horizon.extras.cosmetics_others.tooltip": "Ko valkā citi Horizon spēlētāji: viss, tikai viņu vārda birku stili vai nekas. Slēpts, spēle nekad nejautā, ko viņi valkā.",
-  "horizon.extras.cosmetics_auras": "Citu auras un takas",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras un takas, ko valkā citi spēlētāji. Pēc noklusējuma izslēgts.",
+  "horizon.extras.cosmetics_hide_fx": "Slēpt citu spēlētāju pēdas un auras",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Citu spēlētāju pēdas un auras paliek paslēptas; viņu pārējā kosmētika joprojām redzama. Pēc noklusējuma izslēgts.",
   "horizon.extras.cosmetics.shown": "Parādīts",
   "horizon.extras.cosmetics.hidden": "Slēpts",
   "horizon.extras.cosmetics.name_tags": "Tikai vārdu birkas"

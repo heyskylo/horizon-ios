@@ -1778,6 +1778,11 @@ trusting native code is the player's decision, never an agent's.
    and `libudev` and names what is missing, with the install command for the distribution in `/etc/os-release`
    (Debian, Ubuntu and Mint: `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has
    GCC without the C library's headers, and a read-only system: native builds don't work there yet.
+   On Windows, Smart App Control lets only signed programs run, and a build runs programs it has just compiled
+   (build scripts, horizon-mixins, the game) and some of the toolchain's own (`dlltool.exe`), which Windows refuses
+   with os error 4551 (#5911). No build setting avoids it. A build that hits os error 4551 leads its error with what
+   to do: turn it off in Windows Security > App & browser control > Smart App Control settings. Nothing is checked
+   before the build: with Smart App Control on, a build whose programs already ran before it was turned on succeeds.
    `horizon-launcher rust status|install|remove`.
 2. **horizon-mixins**, at the commit the mods name (their `.hnmod`'s `mixins`), else `native_mods::MIXINS_REV`,
    built once with that cargo (`cargo install --locked --git … --rev …`) into `native/tools/<commit>/`.
@@ -2959,6 +2964,26 @@ a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws 
 cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
 mod's fluid yet, and no buckets of one.
 
+A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
+`IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
+passes (same fluid first, then empty), and before `native_move_fluids` counts a tank's room. Set `cancel` to refuse the
+fluid there, so a water tank takes no `create:chocolate` and a mod removed later leaves no fluid id the tank cannot use.
+Every tank takes every fluid unless a mod says otherwise, and a cauldron, which holds only water and lava, never asks:
+
+```rust,ignore
+fn block_entity_accepts_fluid(
+    &self,
+    _host: &dyn Host,
+    event: &mut BlockEntityAcceptsFluidEvent<'_>,
+) -> Flow {
+    if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+        Flow::Cancel
+    } else {
+        Flow::Continue
+    }
+}
+```
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
@@ -3360,6 +3385,12 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
+on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
+the build. It stays loaded and keeps what it holds; what it registered at start (blocks, items, component types)
+stays registered, and its `RenderHooks` keep drawing until a restart. Mixin code is not switched: it checks
+`native_on` itself, as before ([design/mod-hotload.md](design/mod-hotload.md)).
 
 ### Dependencies between trait mods
 

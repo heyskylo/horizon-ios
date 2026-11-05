@@ -147,6 +147,7 @@ mod player_hurt_fixture;
 mod player_inventory_fixture;
 mod player_travel_fixture;
 mod portal_travel_fixture;
+mod redstone_catalog_fixture;
 mod registered_player_combat_fixture;
 mod registry_collision_scan_fixture;
 mod registry_fall_ray_fixture;
@@ -320,6 +321,7 @@ probes! {
     player_inventory_fixture,
     player_travel_fixture,
     portal_travel_fixture,
+    redstone_catalog_fixture,
     registered_player_combat_fixture,
     registry_collision_scan_fixture,
     registry_fall_ray_fixture,

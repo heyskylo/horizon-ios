@@ -30,6 +30,7 @@ impl Screen {
             | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
+            | Self::EmoteWheel
             | Self::Chat
             | Self::Creative
             | Self::Inventory
@@ -270,6 +271,7 @@ impl Game<'_> {
             };
             let action = match id {
                 0 => Some(horizon_client::widgets::Action::Back),
+                1 => Some(horizon_client::widgets::Action::Options),
                 2 => Some(horizon_client::widgets::Action::Exit),
                 _ => None,
             };
