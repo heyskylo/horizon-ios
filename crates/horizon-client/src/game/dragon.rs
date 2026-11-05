@@ -4177,18 +4177,25 @@ impl Game<'_> {
         true
     }
 
-    /// Create an Ender Dragon for a scripted spawn such as a spawn egg or a
-    /// dispenser.  Unlike the End fight's dragon, this one is not assigned to
-    /// the fight UUID and can therefore be summoned in any dimension.
+    /// `EntityType.create` for an Ender Dragon from a spawn egg, by hand or from a dispenser
+    /// (`SpawnEggItem.spawnMob`, `SpawnEggItemBehavior`). Unlike the End fight's dragon, this
+    /// one is not the fight's (`EnderDragon.aiStep` adopts it only when its UUID is the fight's),
+    /// so it can be spawned in any dimension. Horizon keeps one dragon per level, as `/summon`
+    /// and loading do: with one already there, nothing spawns and the egg stays.
     pub(super) fn spawn_dragon_spawned(&mut self, at: [f64; 3]) -> Option<u32> {
-        // Horizon currently keeps one simulated dragon per level, matching
-        // the existing `/summon`/save representation.
         if self.dragon.is_some() {
             return None;
         }
         let position = Vec3::new(at[0], at[1], at[2]);
-        let yaw = self.world.random.next_float() * 360.0;
-        let seed = self.world.random.next_long();
+        // EntityType.create: `snapTo(.., Mth.wrapDegrees(level.getRandom().nextFloat() * 360))`.
+        let yaw = horizon_client::camera::wrap_degrees(self.world.random.next_float() * 360.0);
+        // Mob.finalizeSpawn (EnderDragon keeps it): the follow range's
+        // `random.triangle(0, 0.11485)`, then `setLeftHanded(nextFloat() < 0.05)`, from the
+        // level's random. Neither changes how the dragon flies.
+        let _ = self.world.random.triangle(0.0, 0.114_850_000_000_000_01);
+        let _ = self.world.random.next_float();
+        // The dragon's own random (`Entity.random`), not the level's.
+        let seed = super::dispenser::entity_random().next_long();
         let mut dragon = Dragon::new(position, yaw, seed);
         dragon.id = self.next_entity + 1;
         self.next_entity += 9;
