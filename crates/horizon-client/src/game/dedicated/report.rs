@@ -214,18 +214,17 @@ fn worker_jobs(jobs: &[(&'static str, u64, u64)], window_s: f64) -> Value {
 /// The players' network use over the window, from the wire bytes of the players on at both ends
 /// (in KiB a second: average, P50, P95, max), and what all players on at the end sent since the
 /// start (or since they joined).
-fn network(
-    start: &BTreeMap<u32, (u64, u64)>,
-    end: &[(u32, (u64, u64))],
-    window_s: f64,
-) -> Value {
+fn network(start: &BTreeMap<u32, (u64, u64)>, end: &[(u32, (u64, u64))], window_s: f64) -> Value {
     let kib_s = |bytes: u64| bytes as f64 / 1024.0 / window_s.max(1e-9);
     let mut out = Vec::new();
     let mut inn = Vec::new();
     let (mut total_out, mut total_in) = (0u64, 0u64);
     for (conn, (now_in, now_out)) in end {
         let (was_in, was_out) = start.get(conn).copied().unwrap_or((0, 0));
-        let (d_in, d_out) = (now_in.saturating_sub(was_in), now_out.saturating_sub(was_out));
+        let (d_in, d_out) = (
+            now_in.saturating_sub(was_in),
+            now_out.saturating_sub(was_out),
+        );
         total_in += d_in;
         total_out += d_out;
         if start.contains_key(conn) {
@@ -317,7 +316,17 @@ impl Game<'_> {
             if let (Some(world), Some(mobs)) =
                 (self.levels.parked_world(dim), self.levels.parked_mobs(dim))
             {
-                levels.push(here(dim, world, mobs));
+                let mut level = here(dim, world, mobs);
+                if let Some([items, orbs, projectiles, carts, boats]) =
+                    self.levels.parked_entity_counts(dim)
+                {
+                    level["item_entities"] = json!(items);
+                    level["experience_orbs"] = json!(orbs);
+                    level["projectiles"] = json!(projectiles);
+                    level["minecarts"] = json!(carts);
+                    level["boats"] = json!(boats);
+                }
+                levels.push(level);
             }
         }
         Value::Array(levels)
@@ -735,10 +744,27 @@ mod tests {
         });
         let text = summary(&r);
         assert!(text.contains("per tick: tick_mobs 20.0 ms\n"), "{text}");
-        assert!(text.contains("levels: level_overworld 30.0 ms, level_the_end 9.0 ms\n"), "{text}");
-        assert!(text.contains("mobs: minecraft:villager 5.0 ms (200.0 x 25.0 us)\n"), "{text}");
-        assert!(text.contains("chunk workers: generate 100.0/s 0.5 cores\n"), "{text}");
-        assert!(text.contains("network: 1000.0 KiB/s out in all, 200.0 KiB/s a player (P95 300.0, max 300.0)"), "{text}");
-        assert!(text.contains("recording cost 0.07 ms a tick (0.0014 of MSPT)"), "{text}");
+        assert!(
+            text.contains("levels: level_overworld 30.0 ms, level_the_end 9.0 ms\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mobs: minecraft:villager 5.0 ms (200.0 x 25.0 us)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("chunk workers: generate 100.0/s 0.5 cores\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "network: 1000.0 KiB/s out in all, 200.0 KiB/s a player (P95 300.0, max 300.0)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("recording cost 0.07 ms a tick (0.0014 of MSPT)"),
+            "{text}"
+        );
     }
 }

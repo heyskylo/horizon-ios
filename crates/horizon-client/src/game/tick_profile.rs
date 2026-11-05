@@ -45,13 +45,11 @@ fn add_kind(dim: &'static str, key: usize, id: &str, started: Instant) {
     let nanos = started.elapsed().as_nanos() as u64;
     COSTS.with(|c| {
         let mut costs = c.borrow_mut();
-        let cost = costs
-            .entry((dim, key))
-            .or_insert_with(|| Cost {
-                kind: id.to_owned(),
-                nanos: 0,
-                mob_ticks: 0,
-            });
+        let cost = costs.entry((dim, key)).or_insert_with(|| Cost {
+            kind: id.to_owned(),
+            nanos: 0,
+            mob_ticks: 0,
+        });
         cost.nanos += nanos;
         cost.mob_ticks += 1;
     });
@@ -134,7 +132,10 @@ mod tests {
             .iter()
             .find(|c| c.dimension == "minecraft:the_nether")
             .unwrap();
-        assert_eq!((nether.kind.as_str(), nether.mob_ticks), ("minecraft:zombie", 1));
+        assert_eq!(
+            (nether.kind.as_str(), nether.mob_ticks),
+            ("minecraft:zombie", 1)
+        );
         assert!(take().is_empty());
     }
 

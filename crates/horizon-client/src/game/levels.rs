@@ -181,6 +181,20 @@ impl Levels {
         self.parked.get(&dim).map(|level| level.mobs.as_slice())
     }
 
+    /// A parked level's loose entities, for `horizon-report`: items, experience orbs,
+    /// projectiles, minecarts and boats.
+    pub(super) fn parked_entity_counts(&self, dim: Dim) -> Option<[usize; 5]> {
+        self.parked.get(&dim).map(|l| {
+            [
+                l.dropped.as_slice().len(),
+                l.orbs.as_slice().len(),
+                l.projectiles.as_slice().len(),
+                l.carts.as_slice().len(),
+                l.boats.as_slice().len(),
+            ]
+        })
+    }
+
     /// The levels that are not in place, by dimension.
     /// The forced chunks of every level not in place, released.
     pub(super) fn release_parked_forced_chunks(&mut self) {
