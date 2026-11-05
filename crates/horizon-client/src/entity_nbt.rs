@@ -6512,7 +6512,10 @@ mod neutral_anger_tests {
         let back = mob_from_nbt(&raw, &types, 5, None).unwrap();
         assert_eq!(back.extra.angry_at, Some(crate::mobs::Who::Mob(0)));
         let again = mob_to_nbt(&back, [1, 2, 3, 6], Some(&raw), None);
-        assert_eq!(crate::save::uuid_from_tag(again.get("angry_at")), Some([9, 8, 7, 6]));
+        assert_eq!(
+            crate::save::uuid_from_tag(again.get("angry_at")),
+            Some([9, 8, 7, 6])
+        );
         // Once the anger is over (`stopBeingAngry`), the loaded target goes.
         let mut calm = back.clone();
         calm.extra.angry_at = None;
