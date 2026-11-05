@@ -1,9 +1,9 @@
 //! The selected instance's screenshots on Home (`horizon_launcher::screenshots`): the newest as
 //! thumbnails, all of them on request, and a viewer (← and → step through) with Copy, Open,
-//! Show in folder and Delete (to the trash, after a confirmation). Pictures are drawn at their
+//! Show in folder and Delete (to the trash, after a confirmation). Pictures are made at their
 //! shown size (`picture_cache`), never decoded whole.
 use super::*;
-use crate::picture_cache::{self, Look};
+use crate::picture_cache::Look;
 use gpui::{ClipboardItem, Image, ImageFormat};
 use horizon_launcher::screenshots::{self, Shot};
 use std::path::PathBuf;
@@ -148,10 +148,11 @@ impl Launcher {
             tab_action("screenshots-folder", "Open folder", &t)
                 .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
         );
+        let thumb = Look::Fit(self.thumb_side());
         let pictures: Vec<_> = list
             .iter()
             .take(shown)
-            .map(|shot| self.picture(&shot.path, Look::Fit(picture_cache::THUMB), cx))
+            .map(|shot| self.picture(&shot.path, thumb, cx))
             .collect();
         let grid =
             div()
@@ -196,13 +197,11 @@ impl Launcher {
         let i = self.screenshots.viewing?;
         let shot = self.screenshots.list.get(i)?.clone();
         let count = self.screenshots.list.len();
-        // Fitted to a 4K screen; its tile stands in while it is made.
+        // Every pixel the window can show; its tile stands in while it is made.
+        let (full, thumb) = (Look::Fit(self.window_side()), Look::Fit(self.thumb_side()));
         let picture = self
-            .picture(&shot.path, Look::Fit(picture_cache::FULL), cx)
-            .or_else(|| {
-                self.pictures
-                    .made(&shot.path, Look::Fit(picture_cache::THUMB))
-            });
+            .picture(&shot.path, full, cx)
+            .or_else(|| self.pictures.made(&shot.path, thumb));
         let taken: chrono::DateTime<chrono::Local> = shot.taken.into();
         let step = |id: &'static str, label: &'static str, older: bool, can: bool| {
             let b = button(id, label, Kind::Ghost, &t);
