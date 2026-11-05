@@ -3,7 +3,10 @@
 //! Trait mods are process-wide, like mixin module statics.
 //! Hooks use `&self + Send + Sync` for shared and reentrant calls; see `docs/native-mods.md`.
 //! Cargo generates the trait and dispatch from the catalog and source signatures into OUT_DIR.
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub use crate::biome::{BiomeColors, SpawnEntry};
 pub use crate::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
@@ -606,7 +609,44 @@ static MOD_IDS: OnceLock<&'static [&'static str]> = OnceLock::new();
 pub fn name_mods(ids: &'static [&'static str]) {
     if MOD_IDS.set(ids).is_err() {
         log::warn!("Trait mods already named; ignoring the second list");
+        return;
     }
+    let _ = OFF.set(ids.iter().map(|_| AtomicBool::new(false)).collect());
+}
+
+/// One flag per entry of [`mods`]: the player turned that mod off on the
+/// Mods page of the options. Its hooks are skipped from the next dispatch on (its `RenderHooks`,
+/// installed apart at start, keep drawing until a restart); it stays loaded,
+/// and what it keeps stays, so turning it on again resumes it at once
+/// (docs/design/mod-hotload.md). Registration hooks run at start, before the
+/// game reads the player's choice, so every mod's content stays registered.
+static OFF: OnceLock<Box<[AtomicBool]>> = OnceLock::new();
+
+/// Turns the trait mod named `id` ([`name_mods`]) on or off for the
+/// following dispatches. False when no mod has that id: a mixin-only mod,
+/// whose code checks `native_on` itself.
+pub fn set_mod_on(id: &str, on: bool) -> bool {
+    let (Some(ids), Some(flags)) = (MOD_IDS.get(), OFF.get()) else {
+        return false;
+    };
+    let mut found = false;
+    for (flag, _) in flags.iter().zip(ids.iter()).filter(|(_, m)| **m == id) {
+        flag.store(!on, Ordering::Relaxed);
+        found = true;
+    }
+    found
+}
+
+/// The ids [`name_mods`] gave the entries of [`mods`].
+pub fn mod_ids() -> &'static [&'static str] {
+    MOD_IDS.get().copied().unwrap_or(&[])
+}
+
+/// Whether entry `index` of [`mods`] is turned off.
+fn is_off(index: usize) -> bool {
+    OFF.get()
+        .and_then(|flags| flags.get(index))
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
@@ -621,19 +661,18 @@ fn entered<'a>(mods: &'a [Box<dyn Hooks>], hook: &'static str) -> Entered<'a> {
     }
 }
 
-/// Where `part` starts in `all`, 0 when it is not a part of it.
-fn place_in<T>(all: &[T], part: &[T]) -> usize {
+/// Where `part` starts in `all`, None when it is not a part of it (a test's
+/// own list).
+fn place_in<T>(all: &[T], part: &[T]) -> Option<usize> {
     let range = all.as_ptr_range();
-    if range.contains(&part.as_ptr()) {
-        (part.as_ptr().addr() - range.start.addr()) / size_of::<T>().max(1)
-    } else {
-        0
-    }
+    range
+        .contains(&part.as_ptr())
+        .then(|| (part.as_ptr().addr() - range.start.addr()) / size_of::<T>().max(1))
 }
 
 struct Entered<'a> {
-    /// Where `mods` starts in [`mods`].
-    first: usize,
+    /// Where `mods` starts in [`mods`]; None for a list of its own.
+    first: Option<usize>,
     mods: std::iter::Enumerate<std::slice::Iter<'a, Box<dyn Hooks>>>,
     hook: &'static str,
     guard: Option<crate::crash::NativeModGuard>,
@@ -645,8 +684,14 @@ impl<'a> Iterator for Entered<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         // The last mod's mark goes first, so the next one's puts back what was there before.
         drop(self.guard.take());
-        let (index, hooks) = self.mods.next()?;
-        let index = self.first + index;
+        let (index, hooks) = loop {
+            let (index, hooks) = self.mods.next()?;
+            match self.first {
+                Some(first) if is_off(first + index) => continue,
+                Some(first) => break (first + index, hooks),
+                None => break (index, hooks),
+            }
+        };
         self.guard = Some(crate::crash::enter_native_mod(
             crate::crash::NativeModCall {
                 id: MOD_IDS.get().and_then(|ids| ids.get(index)).copied(),
@@ -763,12 +808,35 @@ mod tests {
     struct Quiet;
     impl Hooks for Quiet {}
 
+    /// A mod turned off is skipped in the game's list from the next dispatch, and resumes when
+    /// turned on; a test's own list is never switched.
+    #[test]
+    fn a_mod_turned_off_is_skipped_until_turned_on() {
+        name_mods(&["quiet", "broken"]);
+        let _ = MODS.set(Arc::from(vec![
+            Box::new(Quiet) as Box<dyn Hooks>,
+            Box::new(Quiet),
+        ]));
+        let ids = mod_ids().to_vec();
+        let called = || entered(mods(), "test").count();
+        assert_eq!(called(), 2);
+        assert!(set_mod_on(ids[1], false));
+        assert_eq!(called(), 1);
+        // Dispatched alone, it is still off.
+        assert_eq!(entered(&mods()[1..], "test").count(), 0);
+        let own: Vec<Box<dyn Hooks>> = vec![Box::new(Quiet), Box::new(Quiet)];
+        assert_eq!(entered(&own, "test").count(), 2);
+        assert!(set_mod_on(ids[1], true));
+        assert_eq!(called(), 2);
+        assert!(!set_mod_on("not_a_mod", false));
+    }
+
     #[test]
     fn one_mod_dispatched_alone_keeps_its_place() {
         let all = [10, 11, 12, 13];
-        assert_eq!(place_in(&all, &all[2..=2]), 2);
-        assert_eq!(place_in(&all, &all), 0);
-        assert_eq!(place_in(&all, &[12]), 0);
+        assert_eq!(place_in(&all, &all[2..=2]), Some(2));
+        assert_eq!(place_in(&all, &all), Some(0));
+        assert_eq!(place_in(&all, &[12]), None);
     }
 
     struct Broken;

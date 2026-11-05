@@ -456,8 +456,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Slēpts: katrs Horizon spēlētājs redz jūs bez jūsu kosmētikas, ieskaitot jūs. Tas pats slēdzis kā palaišanas ierīces Garderobe.",
   "horizon.extras.cosmetics_others": "Pārējo spēlētāju kosmētika",
   "horizon.extras.cosmetics_others.tooltip": "Ko valkā citi Horizon spēlētāji: viss, tikai viņu vārda birku stili vai nekas. Slēpts, spēle nekad nejautā, ko viņi valkā.",
-  "horizon.extras.cosmetics_auras": "Citu auras un takas",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras un takas, ko valkā citi spēlētāji. Pēc noklusējuma izslēgts.",
+  "horizon.extras.cosmetics_hide_fx": "Slēpt citu spēlētāju pēdas un auras",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Citu spēlētāju pēdas un auras paliek paslēptas; viņu pārējā kosmētika joprojām redzama. Pēc noklusējuma izslēgts.",
   "horizon.extras.cosmetics.shown": "Parādīts",
   "horizon.extras.cosmetics.hidden": "Slēpts",
   "horizon.extras.cosmetics.name_tags": "Tikai vārdu birkas"

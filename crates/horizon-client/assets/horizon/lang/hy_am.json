@@ -464,8 +464,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Թաքնված. յուրաքանչյուր Horizon խաղացող ձեզ տեսնում է առանց ձեր կոսմետիկայի, այդ թվում՝ դուք: Նույն անջատիչը, ինչ գործարկիչի զգեստապահարան:",
   "horizon.extras.cosmetics_others": "Այլ խաղացողների կոսմետիկա",
   "horizon.extras.cosmetics_others.tooltip": "Ինչ են հագնում մյուս Horizon խաղացողները. ամեն ինչ, միայն նրանց անվան պիտակի ոճերը, կամ ոչինչ: Թաքնված, խաղը երբեք չի հարցնում, թե ինչ են նրանք հագնում:",
-  "horizon.extras.cosmetics_auras": "Ուրիշների աուրաներն ու արահետները",
-  "horizon.extras.cosmetics_auras.tooltip": "Աուրաները և արահետները կրում են այլ խաղացողներ: Լռելյայն անջատված է:",
+  "horizon.extras.cosmetics_hide_fx": "Թաքցնել այլ խաղացողների հետքերն ու աուրաները",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Այլ խաղացողների հետքերն ու աուրաները մնում են թաքնված. նրանց մյուս կոսմետիկան դեռ երևում է։ Լռելյայն անջատված է։",
   "horizon.extras.cosmetics.shown": "Ցուցադրված է",
   "horizon.extras.cosmetics.hidden": "Թաքնված",
   "horizon.extras.cosmetics.name_tags": "Միայն անունների պիտակներ"

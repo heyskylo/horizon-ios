@@ -467,8 +467,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Verborgen: elke Horizon-speler ziet je zonder je cosmetica, inclusief jij. Dezelfde schakelaar als de kledingkast van de draagraket.",
   "horizon.extras.cosmetics_others": "Cosmetica van andere spelers",
   "horizon.extras.cosmetics_others.tooltip": "Wat andere Horizon-spelers dragen: alles, alleen hun naamplaatjestijlen, of niets. Verborgen vraagt het spel nooit wat ze dragen.",
-  "horizon.extras.cosmetics_auras": "De aura's en sporen van anderen",
-  "horizon.extras.cosmetics_auras.tooltip": "Aura's en sporen die andere spelers dragen. Standaard uitgeschakeld.",
+  "horizon.extras.cosmetics_hide_fx": "Sporen en aura's van andere spelers verbergen",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Sporen en aura's van andere spelers blijven verborgen; hun andere cosmetica blijven zichtbaar. Standaard uit.",
   "horizon.extras.cosmetics.shown": "Getoond",
   "horizon.extras.cosmetics.hidden": "Verborgen",
   "horizon.extras.cosmetics.name_tags": "Alleen naamplaatjes"

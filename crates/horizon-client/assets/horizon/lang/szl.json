@@ -480,8 +480,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Skryte: kożdy grocz Horizon widzi ci bez kosmetyki, w tym ty. Tyn sōm przełōncznik jak Garderoba ôd ôdpalacza.",
   "horizon.extras.cosmetics_others": "Kosmetyka ôd inkszych groczy",
   "horizon.extras.cosmetics_others.tooltip": "Co inksi grocze Horizon noszōm: wszysko, ino jejich style znakōw, abo nic. Skryte, gra nikej niy pyto, co ôni noszōm.",
-  "horizon.extras.cosmetics_auras": "Aury i szlaki inkszych",
-  "horizon.extras.cosmetics_auras.tooltip": "Aury i szlaki noszōm inksi grocze. Wyłōnczōne domyślnie.",
+  "horizon.extras.cosmetics_hide_fx": "Skryj ślady i aury inszych grŏczy",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Ślady i aury inszych grŏczy ôstŏwajōm skryte; jejich inksze kosmetyki sōm dalij widoczne. Wychodnie zastawiōne.",
   "horizon.extras.cosmetics.shown": "Pokazano",
   "horizon.extras.cosmetics.hidden": "Skryte",
   "horizon.extras.cosmetics.name_tags": "Ino znaczniki mian"

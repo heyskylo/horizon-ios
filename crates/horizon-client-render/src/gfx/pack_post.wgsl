@@ -9,7 +9,9 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var world_depth: texture_depth_2d;
+// A depth view read as an unfilterable float: naga's GLSL backend cannot
+// `textureLoad` a depth texture, and the texel is the same either way.
+@group(0) @binding(1) var world_depth: texture_2d<f32>;
 
 struct World {
     @location(0) color: vec4<f32>,
@@ -24,7 +26,7 @@ fn fs_blit(@builtin(position) p: vec4<f32>) -> World {
     let at = vec2<i32>(i32(p.x), size.y - 1 - i32(p.y));
     var out: World;
     out.color = textureLoad(source, at, 0);
-    out.depth = 1.0 - textureLoad(world_depth, at, 0);
+    out.depth = 1.0 - textureLoad(world_depth, at, 0).r;
     return out;
 }
 
@@ -47,6 +49,13 @@ fn vs_uv(@builtin(vertex_index) i: u32) -> Full {
     let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     // Screen top (uv.y = 0 in wgpu) shows the buffer's top row, GL's last.
     return Full(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), vec2<f32>(uv.x, 1.0 - uv.y));
+}
+
+// The screen's own rows: a picture a shader pack's `final` drew (not a GL-rows buffer).
+@vertex
+fn vs_screen(@builtin(vertex_index) i: u32) -> Full {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return Full(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), uv);
 }
 
 @fragment

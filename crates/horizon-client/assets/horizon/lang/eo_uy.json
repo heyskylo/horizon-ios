@@ -468,8 +468,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Kaŝita: ĉiu Horizon-ludanto vidas vin sen viaj kosmetikaĵoj, vi inkluzivis. La sama ŝaltilo kiel la Vestoŝranko de la lanĉilo.",
   "horizon.extras.cosmetics_others": "Kosmetikaĵoj de aliaj ludantoj",
   "horizon.extras.cosmetics_others.tooltip": "Kion aliaj Horizon ludantoj portas: ĉion, nur siajn nometikedstilojn, aŭ nenion. Kaŝita, la ludo neniam demandas kion ili portas.",
-  "horizon.extras.cosmetics_auras": "Aŭroj kaj spuroj de aliaj",
-  "horizon.extras.cosmetics_auras.tooltip": "Aŭroj kaj spuroj kiujn aliaj ludantoj portas. Malŝaltita defaŭlte.",
+  "horizon.extras.cosmetics_hide_fx": "Kaŝi spurojn kaj aŭrojn de aliaj ludantoj",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spuroj kaj aŭroj de aliaj ludantoj restas kaŝitaj; iliaj aliaj kosmetikaĵoj ankoraŭ montriĝas. Defaŭlte malŝaltita.",
   "horizon.extras.cosmetics.shown": "Montrita",
   "horizon.extras.cosmetics.hidden": "Kaŝita",
   "horizon.extras.cosmetics.name_tags": "Nomaj etikedoj nur"

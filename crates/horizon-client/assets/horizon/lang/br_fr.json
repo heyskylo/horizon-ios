@@ -474,8 +474,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Kuzhet : pep c'hoarier Horizon a wel ac'hanoc'h hep ho kosmetikoù, c'hwi en o zouez. Ar memes treuzfurmadur hag armel al lañser.",
   "horizon.extras.cosmetics_others": "Kosmetikoù ar c'hoarierien all",
   "horizon.extras.cosmetics_others.tooltip": "Ar pezh a vez gwisket gant ar c'hoarierien Horizon all : pep tra, o doareoù tikedenn anv hepken, pe netra. Kuzhet, ar c'hoari ne c'houlenn ket biskoazh petra a wiskont.",
-  "horizon.extras.cosmetics_auras": "Auraoù ha roudoù tud all",
-  "horizon.extras.cosmetics_auras.tooltip": "Auraoù ha roudoù a vez gwisket gant c'hoarierien all. Diweredekaet dre ziouer.",
+  "horizon.extras.cosmetics_hide_fx": "Kuzhat roudoù hag aouraoù ar c'hoarierien all",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Kuzhet e chom roudoù hag aouraoù ar c'hoarierien all; diskouezet e vez o c'hinkladurioù all. Diweredekaet dre ziouer.",
   "horizon.extras.cosmetics.shown": "Diskouezet",
   "horizon.extras.cosmetics.hidden": "Kuzhet",
   "horizon.extras.cosmetics.name_tags": "Tikedennoù anvioù hepken"

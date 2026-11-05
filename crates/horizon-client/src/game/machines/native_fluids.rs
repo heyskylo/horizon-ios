@@ -88,7 +88,11 @@ fn drain_take(level: u8, amount: i32) -> (i32, u8) {
 /// (`CauldronFluids`). An empty cauldron is fillable; powder snow is not a
 /// fluid (`FluidKind` has none), so a powder snow cauldron holds none.
 enum FluidAt {
-    Mod(Arc<ModFluidTanks>),
+    /// A mod block's tanks, and its block id (`mymod:tank`).
+    Mod {
+        tanks: Arc<ModFluidTanks>,
+        block: String,
+    },
     Cauldron(CauldronFluids),
 }
 #[derive(Clone, Copy)]
@@ -153,6 +157,61 @@ fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
     nbt.insert(JavaString::from("fluids"), Tag::List(list));
 }
 
+/// Fills `state` from `amount` of `fluid`: first the tanks holding it, then
+/// empty ones, by the side `reached` and only where `accepts` lets it in
+/// (`native_block_entity_accepts_fluid`); what did not fit. The choice is
+/// made again in both passes, as `HopperBlockEntity.addItem` tries its slots.
+fn fill_tanks(
+    tanks: &ModFluidTanks,
+    state: &mut [Tank],
+    reached: &[usize],
+    fluid: &str,
+    amount: i32,
+    accepts: impl Fn(usize) -> bool,
+) -> i32 {
+    let n = tanks.tanks.len();
+    let mut left = amount.max(0);
+    for pass in 0..2 {
+        for &tank in reached {
+            if left == 0 || !tanks.inputs.contains(&tank) || tank >= n {
+                continue;
+            }
+            if !accepts(tank) {
+                continue;
+            }
+            let entry = &mut state[tank];
+            let fits = match pass {
+                0 => entry.0.as_deref() == Some(fluid),
+                _ => entry.0.is_none(),
+            };
+            if !fits {
+                continue;
+            }
+            let room = tanks.tanks[tank] - entry.1;
+            if room <= 0 {
+                continue;
+            }
+            let add = room.min(left);
+            entry.1 += add;
+            left -= add;
+            entry.0 = Some(fluid.to_owned());
+        }
+    }
+    left
+}
+
+/// How much of `fluid` the side `tanks` names has room for: the fillable
+/// tanks holding it or none, and only where `accepts` lets it in
+/// (`native_block_entity_accepts_fluid`).
+fn tank_room(tanks: &[NativeFluidTank], fluid: &str, accepts: impl Fn(usize) -> bool) -> i32 {
+    tanks
+        .iter()
+        .filter(|t| t.can_fill && t.fluid.as_deref().is_none_or(|f| f == fluid) && accepts(t.tank))
+        .fold(0_i32, |room, t| {
+            room.saturating_add((t.capacity - t.amount).max(0))
+        })
+}
+
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
@@ -166,12 +225,16 @@ impl Game<'_> {
         let key = (pos[0], pos[1], pos[2]);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(tanks) = self.world.block_entities.mod_fluids(state.0) {
+            let block = self.pack.assets.registry.state(state)?.name.to_string();
             // The block entity is out of the world while it ticks.
             return matches!(
                 self.world.block_entities.get(&key),
                 Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id.is_empty()
             )
-            .then(|| FluidAt::Mod(Arc::clone(tanks)));
+            .then(|| FluidAt::Mod {
+                tanks: Arc::clone(tanks),
+                block,
+            });
         }
         let info = self.pack.assets.registry.state(state)?;
         match &*info.name {
@@ -211,13 +274,23 @@ impl Game<'_> {
             Err(_) => false,
         }
     }
+    /// Whether tank `tank` of the mod block `block` takes `fluid`: a mod's
+    /// answer to `native_block_entity_accepts_fluid`, true where none
+    /// refuses it.
+    fn native_fluid_accepts(&self, block: &str, tank: usize, fluid: &str) -> bool {
+        let mut cancel = false;
+        self.native_block_entity_accepts_fluid(block, tank, fluid, &mut cancel);
+        !cancel
+    }
     /// `native_fluid_insert`: up to `amount` millibuckets of `fluid`
     /// (`minecraft:water`, `minecraft:lava`, or since API
     /// @API:mod_fluids@ a mod's own, `create:chocolate`) into the block at
     /// `pos`, through its side `face`, in the level in place: a mod block's
     /// tanks first those with the same fluid, then empty ones, by the sides
-    /// and tanks its table gave; a cauldron by thirds of a bucket, a lava one
-    /// only whole, and none of a mod's fluid. What did not fit. API 54.
+    /// and tanks its table gave and every fillable tank that accepts the
+    /// fluid (`native_block_entity_accepts_fluid`); a cauldron by thirds of a
+    /// bucket, a lava one only whole, and none of a mod's fluid. What did not
+    /// fit. API 54.
     pub(in crate::game) fn native_fluid_insert(
         &mut self,
         pos: [i32; 3],
@@ -232,7 +305,7 @@ impl Game<'_> {
             return amount;
         }
         match self.native_fluid_at(self.dim.id(), pos) {
-            Some(FluidAt::Mod(tanks)) => {
+            Some(FluidAt::Mod { tanks, block }) => {
                 let key = (pos[0], pos[1], pos[2]);
                 let n = tanks.tanks.len();
                 let reached = tanks.faces[face as usize].clone();
@@ -244,32 +317,9 @@ impl Game<'_> {
                     };
                     read_tanks(&m.nbt, n)
                 };
-                let mut left = amount.max(0);
-                // First into tanks holding the same fluid, then into empty
-                // ones, as `HopperBlockEntity.addItem` tries its slots.
-                for pass in 0..2 {
-                    for &tank in &reached {
-                        if left == 0 || !tanks.inputs.contains(&tank) || tank >= n {
-                            continue;
-                        }
-                        let entry = &mut state[tank];
-                        let fits = match pass {
-                            0 => entry.0.as_deref() == Some(fluid),
-                            _ => entry.0.is_none(),
-                        };
-                        if !fits {
-                            continue;
-                        }
-                        let room = tanks.tanks[tank] - entry.1;
-                        if room <= 0 {
-                            continue;
-                        }
-                        let add = room.min(left);
-                        entry.1 += add;
-                        left -= add;
-                        entry.0 = Some(fluid.to_owned());
-                    }
-                }
+                let left = fill_tanks(&tanks, &mut state, &reached, fluid, amount, |tank| {
+                    self.native_fluid_accepts(&block, tank, fluid)
+                });
                 if left < amount {
                     let Some(horizon_client::containers::BlockEntity::Mod(m)) =
                         self.world.block_entities.get_mut(&key)
@@ -323,7 +373,7 @@ impl Game<'_> {
         face: Direction,
     ) -> Option<Vec<NativeFluidTank>> {
         match self.native_fluid_at(dimension, pos)? {
-            FluidAt::Mod(tanks) => {
+            FluidAt::Mod { tanks, .. } => {
                 let key = (pos[0], pos[1], pos[2]);
                 let state = {
                     let Some(horizon_client::containers::BlockEntity::Mod(m)) =
@@ -399,7 +449,7 @@ impl Game<'_> {
             return None;
         }
         match self.native_fluid_at(dimension, pos)? {
-            FluidAt::Mod(tanks) => {
+            FluidAt::Mod { tanks, .. } => {
                 let key = (pos[0], pos[1], pos[2]);
                 let n = tanks.tanks.len();
                 let mut state = {
@@ -469,8 +519,9 @@ impl Game<'_> {
     /// into the source, so none is lost — a cauldron's whole thirds included.
     /// The fluid and how much moved; none where `native_fluid_tanks` is none
     /// at `from`, where nothing drainable is, where no block holds fluids at
-    /// `to` or it has no room for that fluid, and within one block. The
-    /// source is asked for no more than the target's room. API 55.
+    /// `to` or it has no room for that fluid (a tank that refuses it,
+    /// `native_block_entity_accepts_fluid`, has none), and within one block.
+    /// The source is asked for no more than the target's room. API 55.
     pub(in crate::game) fn native_move_fluids(
         &mut self,
         dimension: &str,
@@ -523,23 +574,25 @@ impl Game<'_> {
             .into_iter()
             .find(|t| t.can_drain && t.amount > 0)?
             .fluid?;
+        let block = match self.native_fluid_at(dimension, to)? {
+            FluidAt::Mod { block, .. } => Some(block),
+            FluidAt::Cauldron(_) => None,
+        };
         // A cauldron reports itself fillable, but holds only vanilla's fluids:
         // no room for a mod's, so a move answers none rather than draining
         // and putting it all back.
-        if matches!(
-            self.native_fluid_at(dimension, to),
-            Some(FluidAt::Cauldron(_))
-        ) && !matches!(fluid.as_str(), "minecraft:water" | "minecraft:lava")
-        {
+        if block.is_none() && !matches!(fluid.as_str(), "minecraft:water" | "minecraft:lava") {
             return Some(0);
         }
-        let room = self
-            .native_fluid_tanks(dimension, to, to_face)?
-            .iter()
-            .filter(|t| t.can_fill && t.fluid.as_deref().is_none_or(|f| f == fluid))
-            .fold(0_i32, |room, t| {
-                room.saturating_add((t.capacity - t.amount).max(0))
-            });
+        let room = tank_room(
+            &self.native_fluid_tanks(dimension, to, to_face)?,
+            &fluid,
+            |tank| {
+                block
+                    .as_deref()
+                    .is_none_or(|block| self.native_fluid_accepts(block, tank, &fluid))
+            },
+        );
         Some(room)
     }
     /// Puts `amount` of `fluid` back into the tanks `receipt` names, drained
@@ -553,7 +606,7 @@ impl Game<'_> {
         mut amount: i32,
         receipt: &[(usize, i32)],
     ) -> bool {
-        let Some(FluidAt::Mod(tanks)) = self.native_fluid_at(dimension, pos) else {
+        let Some(FluidAt::Mod { tanks, .. }) = self.native_fluid_at(dimension, pos) else {
             return false;
         };
         let key = (pos[0], pos[1], pos[2]);
@@ -707,6 +760,212 @@ mod tests {
             back[tank].0 = Some("minecraft:water".to_owned());
         }
         assert_eq!(back, held);
+    }
+
+    fn tank_table(capacities: &[i32], inputs: &[usize]) -> ModFluidTanks {
+        ModFluidTanks {
+            tanks: capacities.to_vec(),
+            inputs: inputs.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_refused_tank_takes_no_fluid_in_either_insert_pass() {
+        let table = tank_table(&[4000, 4000], &[0, 1]);
+        // Pass 0 tops up a tank already holding the fluid; refused, it is
+        // left exactly as it was.
+        let mut state = tanks(&[(Some("create:chocolate"), 1000), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[0], "create:chocolate", 500, |_| false),
+            500
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        // Pass 1 fills an empty tank; refused, it stays empty.
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[1], "create:chocolate", 500, |_| false),
+            500
+        );
+        assert_eq!(state[1], (None, 0));
+        // Only the refusing tank is skipped: the other still takes the fluid.
+        let mut state = tanks(&[(Some("create:chocolate"), 1000), (None, 0)]);
+        assert_eq!(
+            fill_tanks(
+                &table,
+                &mut state,
+                &[0, 1],
+                "create:chocolate",
+                500,
+                |tank| { tank == 1 }
+            ),
+            0
+        );
+        assert_eq!(
+            state,
+            tanks(&[
+                (Some("create:chocolate"), 1000),
+                (Some("create:chocolate"), 500),
+            ])
+        );
+    }
+
+    #[test]
+    fn every_tank_takes_every_fluid_unless_it_refuses_it() {
+        let table = tank_table(&[4000, 4000], &[0, 1]);
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(
+                &table,
+                &mut state,
+                &[0, 1],
+                "create:chocolate",
+                1000,
+                |_| true
+            ),
+            0
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        assert_eq!(state[1], (None, 0));
+    }
+
+    #[test]
+    fn a_move_finds_room_only_in_tanks_that_accept_the_fluid() {
+        let tank = NativeFluidTank {
+            tank: 0,
+            fluid: None,
+            amount: 1000,
+            capacity: 4000,
+            can_fill: true,
+            can_drain: true,
+        };
+        // A tank that refuses the fluid has no room, so `native_move_fluids`
+        // asks its source for nothing rather than draining and putting it all
+        // back.
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "create:chocolate", |_| false),
+            0
+        );
+        assert_eq!(tank_room(&[tank], "create:chocolate", |_| true), 3000);
+    }
+
+    /// The hook the game asks (`native_block_entity_accepts_fluid`) through
+    /// the same public dispatch `Game::native_fluid_accepts` calls: a water
+    /// tank refuses a mod's fluid, so neither insert pass fills it and it
+    /// offers no room to `native_move_fluids`; water still goes in, and with
+    /// no mod every tank takes every fluid.
+    #[test]
+    fn a_hook_that_refuses_a_fluid_leaves_both_passes_empty_and_offers_no_room() {
+        use horizon_client::mod_api::{
+            BlockEntityAcceptsFluidEvent, Flow, Hooks, Host, dispatch_block_entity_accepts_fluid,
+        };
+        struct TestHost;
+        impl Host for TestHost {}
+        struct WaterTank;
+        impl Hooks for WaterTank {
+            fn block_entity_accepts_fluid(
+                &self,
+                _host: &dyn Host,
+                event: &mut BlockEntityAcceptsFluidEvent<'_>,
+            ) -> Flow {
+                if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+                    Flow::Cancel
+                } else {
+                    Flow::Continue
+                }
+            }
+        }
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(WaterTank)];
+        let accepts = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &mods,
+                "mymod:water_tank",
+                tank,
+                "create:chocolate",
+                &mut cancel,
+            );
+            !cancel
+        };
+        let table = tank_table(&[4000, 4000], &[0, 1]);
+        // Pass 0 tops up a tank already holding the fluid: refused, it keeps
+        // exactly what it had.
+        let mut state = tanks(&[(Some("create:chocolate"), 1000), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[0], "create:chocolate", 500, accepts),
+            500
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        // Pass 1 fills an empty tank: refused, it stays empty.
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[1], "create:chocolate", 500, accepts),
+            500
+        );
+        assert_eq!(state[1], (None, 0));
+        // `native_move_fluids` counts no room in the tank that refuses it, so
+        // it asks its source for nothing.
+        let tank = NativeFluidTank {
+            tank: 0,
+            fluid: None,
+            amount: 1000,
+            capacity: 4000,
+            can_fill: true,
+            can_drain: true,
+        };
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "create:chocolate", accepts),
+            0
+        );
+        // The same tank takes water (the hook lets it through) and, with no
+        // mod at all, every fluid: existing mods are unchanged.
+        let water = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &mods,
+                "mymod:water_tank",
+                tank,
+                "minecraft:water",
+                &mut cancel,
+            );
+            !cancel
+        };
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "minecraft:water", water),
+            3000
+        );
+        let none: [Box<dyn Hooks>; 0] = [];
+        let no_mod = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &none,
+                "mymod:water_tank",
+                tank,
+                "create:chocolate",
+                &mut cancel,
+            );
+            !cancel
+        };
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(
+                &table,
+                &mut state,
+                &[0, 1],
+                "create:chocolate",
+                1000,
+                no_mod
+            ),
+            0
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "create:chocolate", no_mod),
+            3000
+        );
     }
 
     #[test]
