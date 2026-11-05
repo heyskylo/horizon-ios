@@ -660,7 +660,7 @@ impl Mob {
     /// `effectiveMaxRange` for a mob (`max_reach * mob_factor`), and not
     /// within its `effectiveMinRange` (`min_reach * mob_factor`).
     pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
-        self.melee_reaches(t.bounds)
+        self.melee_reaches(t.hitbox)
     }
     /// [`Self::within_melee_range`] for a target's box (`getHitbox`).
     pub fn melee_reaches(&self, target: Aabb) -> bool {
@@ -668,11 +668,7 @@ impl Mob {
             Some((max, min)) => (f64::from(max), f64::from(min)),
             None => (2.04f32.sqrt() as f64 - 0.6, 0.0),
         };
-        let reaches = |range: f64| {
-            self.bounds()
-                .inflate(Vec3::new(range, 0.0, range))
-                .intersects(target)
-        };
+        let reaches = |range: f64| self.attack_box(range).intersects(target);
         reaches(max) && (min <= 0.0 || !reaches(min))
     }
     /// The active item's `attack_range` for a mob: `effectiveMaxRange` and
@@ -3429,5 +3425,35 @@ mod melee_range_tests {
         );
         assert!(blunt.melee_reaches(target(&blunt, 0.5)));
         assert!(!blunt.melee_reaches(target(&blunt, 2.0)));
+    }
+
+    /// `Mob.getAttackBoundingBox`: a rider's box widened on x and z to its
+    /// vehicle's (a 1.4 wide horse under a 0.6 wide zombie) before the reach
+    /// is added; `LivingEntity.getHitbox`: a rider is hit from its seat up.
+    #[test]
+    fn a_riders_attack_box_takes_its_vehicles_width() {
+        let mut rider = mob_holding("minecraft:iron_sword", None);
+        let at = rider.position;
+        let horse = Aabb::new(
+            Vec3::new(at.x - 0.7, at.y - 1.0, at.z - 0.7),
+            Vec3::new(at.x + 0.7, at.y + 0.6, at.z + 0.7),
+        );
+        // Its near face 0.9 past the zombie's box: past the default reach of
+        // the zombie alone (about 0.83), within it from the horse's side.
+        let target = target(&rider, 0.9);
+        assert!(!rider.melee_reaches(target));
+        rider.extra.mount = Some(9);
+        rider.seated(0.7, horse);
+        assert!(rider.melee_reaches(target));
+        // Its own box keeps its height: the horse's lower box adds nothing.
+        let below = Aabb::new(
+            Vec3::new(at.x + 0.9, at.y - 1.0, at.z),
+            Vec3::new(at.x + 1.1, at.y - 0.5, at.z + 1.0),
+        );
+        assert!(!rider.melee_reaches(below));
+
+        assert_eq!(rider.hitbox().min_position().y, at.y + 0.7);
+        rider.extra.mount = None;
+        assert_eq!(rider.hitbox().min_position().y, at.y);
     }
 }

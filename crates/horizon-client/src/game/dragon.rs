@@ -2355,15 +2355,17 @@ impl Game<'_> {
     pub(super) fn dragon_target(&self) -> Option<(u32, horizon_client::mobs::TargetInfo)> {
         let d = self.dragon.as_ref().filter(|d| d.alive())?;
         let p = d.position;
+        let bounds = Aabb::new(
+            Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
+            Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
+        );
         Some((
             d.id,
             horizon_client::mobs::TargetInfo {
                 position: p,
                 eye_y: p.y + 6.8,
-                bounds: Aabb::new(
-                    Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
-                    Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
-                ),
+                bounds,
+                hitbox: bounds,
                 alive: true,
                 can_be_seen_as_enemy: true,
                 is_player: false,

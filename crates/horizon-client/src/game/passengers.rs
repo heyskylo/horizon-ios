@@ -4,7 +4,10 @@
 //! Saving riders under `Passengers` lives in `persist.rs`.
 use super::Game;
 use horizon_client::mobs::{Species, riders};
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    random::RandomSource,
+};
 use std::collections::HashMap;
 
 /// `Zombie.finalizeSpawn`: a baby zombie takes a chicken one time in twenty,
@@ -144,6 +147,9 @@ impl Game<'_> {
                     let m = &mut self.mobs[i];
                     // EntityType.TEXT_DISPLAY's box is zero wide.
                     let offset = riders::vehicle_attachment(m, 0.0);
+                    // EntityType.TEXT_DISPLAY's box is a point at the seat.
+                    let seat = Vec3::new(at.x, at.y, at.z);
+                    m.seated(offset, Aabb::new(seat, seat));
                     m.position = Vec3::new(at.x, at.y - offset, at.z);
                     m.previous = Vec3::new(before.x, before.y - offset, before.z);
                     m.velocity = Vec3::ZERO;
@@ -183,8 +189,10 @@ impl Game<'_> {
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
                 let vehicle_width = vehicle.width();
+                let vehicle_box = vehicle.bounds();
                 let m = &mut self.mobs[i];
                 let offset = riders::vehicle_attachment(m, vehicle_width);
+                m.seated(offset, vehicle_box);
                 m.position = riders::seat(attach, offset, pos, yaw);
                 m.previous = riders::seat(attach, offset, prev, prev_yaw);
                 m.velocity = Vec3::ZERO;
