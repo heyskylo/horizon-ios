@@ -2871,14 +2871,20 @@ impl<'a> Teams<'a> {
         }
     }
 }
+/// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
+/// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
+pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
+    let mut random = LegacyRandom::new(
+        i64::from(id).wrapping_mul(0x5DEE_CE66D)
+            ^ (position.x.to_bits() as i64)
+            ^ (position.z.to_bits() as i64).rotate_left(17),
+    );
+    let _ = random.next_int();
+    random
+}
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
-        let mut random = LegacyRandom::new(
-            i64::from(id).wrapping_mul(0x5DEE_CE66D)
-                ^ (position.x.to_bits() as i64)
-                ^ (position.z.to_bits() as i64).rotate_left(17),
-        );
-        let _ = random.next_int();
+        let random = entity_random(id, position);
         let mut mob = Self {
             join: Default::default(),
             id,
