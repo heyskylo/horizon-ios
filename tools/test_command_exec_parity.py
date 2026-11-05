@@ -128,6 +128,7 @@ def main():
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
+    parser.add_argument("--selector-bounds-fixture", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -250,6 +251,9 @@ def main():
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('crafting recipe fixtures require --only with one exact group')
+    if args.selector_bounds_fixture:
+        from selector_bounds_corpus import selector_bounds
+        groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
     script = []
     for _, lines in groups:
         script.extend(lines)
