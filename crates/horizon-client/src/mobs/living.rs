@@ -558,6 +558,15 @@ impl Mob {
     pub fn eye_height(&self) -> f64 {
         self.dims().2
     }
+    /// `EntityRenderer.getPackedLightCoords` reads the block
+    /// `Entity.getLightProbePosition(partialTick)` is in, and a living entity
+    /// leaves that as `getEyePosition`: the eye height over
+    /// `getPosition(partialTick)`, the position the frame draws, not this
+    /// tick's. A mob walking across a cell boundary is drawn lit by the cell it
+    /// is drawn in.
+    pub fn light_probe(&self, partial: f64) -> [i32; 3] {
+        eye_probe_cell(self.previous, self.position, self.eye_height(), partial)
+    }
     pub fn width(&self) -> f32 {
         self.dims().0 as f32
     }
@@ -1789,6 +1798,19 @@ impl horizon_world::water_splash::WaterSplashWorld for Splash<'_> {
         });
         Ok(())
     }
+}
+
+/// `Entity.getEyePosition(partialTick)` as the cell the renderer lights an
+/// entity from (`Entity.getLightProbePosition` is that position and
+/// `EntityRenderer.getPackedLightCoords` takes `BlockPos.containing` of it):
+/// `Mth.lerp(partialTick, xo, x)` on each axis, plus `getEyeHeight()` on y.
+pub fn eye_probe_cell(previous: Vec3, position: Vec3, eye_height: f64, partial: f64) -> [i32; 3] {
+    let at = previous.lerp(position, partial);
+    [
+        at.x.floor() as i32,
+        (at.y + eye_height).floor() as i32,
+        at.z.floor() as i32,
+    ]
 }
 
 /// `Entity.doWaterSplashEffect` for a mob this window is drawing.
