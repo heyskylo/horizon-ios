@@ -128,7 +128,7 @@ The water mirror and `shadow_color` draw no blends, so they store linear in both
 **Cost and support.**
 
 - `Rgba16Float` is 8 bytes a pixel, as `Rgba16Unorm` is. HDR on keeps two targets at the frame's size, as today:
-  the frame, and the HUD's target in place of `keep_world`'s copy.
+  the frame, and the HUD's target in place of `keep_world`'s copy, plus the HUD's one-byte coverage.
 - A 0.2 pack in SDR moves the frame from 4 to 8 bytes a pixel (about 15 MB more at 1440p), only while it runs. Its
   post chain already uses `Rgba16Float`.
 - WebGPU renders to, blends and filters `Rgba16Float` without optional features, unlike `Rgba16Unorm`
@@ -175,13 +175,15 @@ With HDR on:
 - **`keep_world` becomes a pass** instead of a copy. The frame keeps the world, light above white included; the pass
   writes it clipped to white, in gamma, with alpha 0, into the HUD's target in today's HDR frame format
   (`Rgba16Unorm` where the device draws it, else 8-bit). That backdrop is what the HUD draws on, so it clips as today.
-- **The HUD and menus keep today's colour blends**, so the crosshair and `GUI_INVERT` (which invert what is under
-  them), the text highlight and the menu blur see what they see today. Only their alpha changes, and only with HDR
-  on: no HUD blend reads the destination's alpha (`hud.rs`), so alpha records coverage, how much of the backdrop is
-  hidden. Blends that lay a layer over what is under it (vanilla's translucent GUI blend, and the depth-tested one)
-  keep vanilla's alpha equation, which is that. Additive draws (the text highlight) leave alpha as it is, since they
-  hide nothing. The rest (the inversion, the End portal fill, CIT glint layers) count as covering what they draw:
-  `One, OneMinusSrcAlpha` on their texel's alpha.
+- **The HUD and menus keep today's blends, alpha included**, so the crosshair and `GUI_INVERT` (which invert what is
+  under them), the text highlight, the menu blur and CIT glint layers (whose blends may read the destination's alpha,
+  `hud/cit_glint.rs`) see what they see today; the backdrop's alpha 0 is the alpha `keep_world` leaves today.
+- **Coverage has a target of its own**, one 8-bit channel at the same size, cleared to 0, which every HUD draw writes
+  as a second output with a blend of its own, only with HDR on: how much of the backdrop is hidden. Draws that lay a
+  layer over what is under it (vanilla's translucent GUI blend, and the depth-tested one) add their alpha over it
+  (`One, OneMinusSrc` on their alpha); additive draws (the text highlight) leave it, since they hide nothing; the rest
+  (the inversion, the End portal fill, CIT glint layers) count as covering what they draw, by their texel's alpha,
+  the same way.
 - **The display pass composites in gamma**, the space the HUD blends in. With `c` the coverage, `B` the backdrop and
   `P` the HUD's target, the HUD's own part is `H = P - (1 - c) * B`, exact for the layering blends. The output is `H`
   at UI Brightness (`H * ui^(1/2.2)`, so a fully covered pixel is today's covered pixel, scaled by UI Brightness in
