@@ -368,7 +368,13 @@ fn remove_all(path: &Path, left: &mut Vec<String>) {
 /// The ids of the other launchers running now (this process is a launcher too).
 fn running_launchers() -> Vec<u32> {
     let out = crate::process::command("tasklist")
-        .args(["/FO", "CSV", "/NH", "/FI", "IMAGENAME eq horizon-launcher.exe"])
+        .args([
+            "/FO",
+            "CSV",
+            "/NH",
+            "/FI",
+            "IMAGENAME eq horizon-launcher.exe",
+        ])
         .output();
     out.map(|o| {
         crate::setup_args::other_launcher_pids(

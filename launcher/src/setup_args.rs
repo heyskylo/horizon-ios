@@ -120,7 +120,11 @@ mod tests {
             &["--quiet"],
             &["setup"],
         ] {
-            assert_eq!(classify(&args(line), false), Invocation::Launcher, "{line:?}");
+            assert_eq!(
+                classify(&args(line), false),
+                Invocation::Launcher,
+                "{line:?}"
+            );
         }
     }
 
