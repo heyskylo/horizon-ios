@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Read,
     path::Path,
 };
 
@@ -669,6 +668,7 @@ fn extra_namespaces(
     }
     // The JSON files that could be the mod's, by namespace ("" for tag additions).
     let mut texts: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut budget = crate::entry::Budget::archive();
     for i in 0..zip.len() {
         let Ok(mut entry) = zip.by_index(i) else {
             continue;
@@ -684,8 +684,12 @@ fn extra_namespaces(
             _ if ns == id || candidates.contains(ns) => ns.to_owned(),
             _ => continue,
         };
-        let mut bytes = Vec::new();
-        if name.ends_with(".json") && entry.read_to_end(&mut bytes).is_ok() {
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let declared = entry.size();
+        // Too large or past the jar's ceiling: left out, as an unreadable file is.
+        if let Ok(bytes) = budget.read(&mut entry, declared, crate::entry::MAX_TEXT) {
             texts.push((ns, bytes));
         }
     }
@@ -881,6 +885,7 @@ pub fn carry(
     let owned: Vec<&str> = std::iter::once(id.as_str())
         .chain(report.namespaces.iter().map(String::as_str))
         .collect();
+    let mut budget = crate::entry::Budget::archive();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().map_err(|e| e.to_string())?.into_owned();
@@ -892,9 +897,9 @@ pub fn carry(
         if name.split('/').any(|p| p == ".." || p.is_empty()) || name.contains(['\\', ':']) {
             continue;
         }
-        let mut bytes = Vec::new();
-        entry
-            .read_to_end(&mut bytes)
+        let declared = entry.size();
+        let mut bytes = budget
+            .read(&mut entry, declared, crate::entry::MAX_FILE)
             .map_err(|e| format!("{name}: {e}"))?;
         let unreadable = if keep {
             unreadable(&name, &mut bytes)
