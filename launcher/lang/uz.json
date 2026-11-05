@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle to'lovni boshlay olmadi. Hech narsa yechilmadi.",
   "{name} was left out: made for another Horizon version": "{name} chiqarib tashlandi: Horizonning boshqa versiyasi uchun yaratilgan",
   "{name} was left out: clashes with {other}": "{name} chiqarib tashlandi: {other} bilan to'qnashadi",
-  "{name} was left out: it needs {other}, which was left out": "{name} chiqarib tashlandi: unga {other} kerak, u chiqarib tashlandi"
+  "{name} was left out: it needs {other}, which was left out": "{name} chiqarib tashlandi: unga {other} kerak, u chiqarib tashlandi",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Siz o'ynaydigan Horizonda yig'ilmaydi ({code}): muallifi yangilamaguncha yig'ish uni chiqarib tashlaydi"
 }

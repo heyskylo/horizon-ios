@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөмдү баштай алган жок. Эч нерсе алынган жок.",
   "{name} was left out: made for another Horizon version": "{name} чыгарылып калды: Horizon'дун башка версиясы үчүн жасалган",
   "{name} was left out: clashes with {other}": "{name} чыгарылып калды: {other} менен кагылышат",
-  "{name} was left out: it needs {other}, which was left out": "{name} чыгарылып калды: ага {other} керек, ал чыгарылып калды"
+  "{name} was left out: it needs {other}, which was left out": "{name} чыгарылып калды: ага {other} керек, ал чыгарылып калды",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Сен ойногон Horizon'до курулбайт ({code}): автору жаңыртмайынча курулуш аны чыгарып салат"
 }

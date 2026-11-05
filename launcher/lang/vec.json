@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle no'l ga podesto tacar el pagamento. No xe sta adebità gnente.",
   "{name} was left out: made for another Horizon version": "{name} el xe stà lasà fora: fato par n'altra version de Horizon",
   "{name} was left out: clashes with {other}": "{name} el xe stà lasà fora: el va in conflito co {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} el xe stà lasà fora: el ga bisogno de {other}, che el xe stà lasà fora"
+  "{name} was left out: it needs {other}, which was left out": "{name} el xe stà lasà fora: el ga bisogno de {other}, che el xe stà lasà fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No'l se compila sul Horizon che te zughi ({code}): na compilazion lo lasa fora fin che el so autor no lo ajorna"
 }

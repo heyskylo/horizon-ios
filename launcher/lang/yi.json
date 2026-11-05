@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle האָט נישט געקענט אָנהייבן די צאָלונג. גאָרנישט איז נישט באַרעכנט געוואָרן.",
   "{name} was left out: made for another Horizon version": "{name} איז אויסגעלאָזט געוואָרן: געמאַכט פֿאַר אַן אַנדער ווערסיע פֿון Horizon",
   "{name} was left out: clashes with {other}": "{name} איז אויסגעלאָזט געוואָרן: שטויסט זיך מיט {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} איז אויסגעלאָזט געוואָרן: עס דאַרף {other}, וואָס איז אויסגעלאָזט געוואָרן"
+  "{name} was left out: it needs {other}, which was left out": "{name} איז אויסגעלאָזט געוואָרן: עס דאַרף {other}, וואָס איז אויסגעלאָזט געוואָרן",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "בויט זיך נישט אויף דעם Horizon וואָס דו שפּילסט ({code}): אַ בוי לאָזט עס אויס ביז דער מחבר דערהייַנטיקט עס"
 }

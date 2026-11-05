@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nemohol spustiť platbu. Nič nebolo účtované.",
   "{name} was left out: made for another Horizon version": "{name} bol vynechaný: vytvorený pre inú verziu Horizonu",
   "{name} was left out: clashes with {other}": "{name} bol vynechaný: koliduje s {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} bol vynechaný: potrebuje {other}, ktorý bol vynechaný"
+  "{name} was left out: it needs {other}, which was left out": "{name} bol vynechaný: potrebuje {other}, ktorý bol vynechaný",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nezostaví sa na Horizone, ktorý hráš ({code}): zostavenie ho vynechá, kým ho autor neaktualizuje"
 }

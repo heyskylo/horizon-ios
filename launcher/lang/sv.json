@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kunde inte starta betalningen. Inget drogs.",
   "{name} was left out: made for another Horizon version": "{name} utelämnades: gjord för en annan Horizon-version",
   "{name} was left out: clashes with {other}": "{name} utelämnades: krockar med {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} utelämnades: den behöver {other}, som utelämnades"
+  "{name} was left out: it needs {other}, which was left out": "{name} utelämnades: den behöver {other}, som utelämnades",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger inte på den Horizon du spelar ({code}): ett bygge utelämnar den tills författaren uppdaterar den"
 }

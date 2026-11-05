@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kon nie die betaling begin nie. Niks is gehef nie.",
   "{name} was left out: made for another Horizon version": "{name} is weggelaat: gemaak vir 'n ander Horizon-weergawe",
   "{name} was left out: clashes with {other}": "{name} is weggelaat: bots met {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaat: dit het {other} nodig, wat weggelaat is"
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaat: dit het {other} nodig, wat weggelaat is",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bou nie op die Horizon wat jy speel nie ({code}): 'n bou laat dit weg totdat die outeur dit bywerk"
 }

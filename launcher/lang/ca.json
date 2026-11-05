@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle no ha pogut començar el pagament. No s'ha cobrat res.",
   "{name} was left out: made for another Horizon version": "S'ha deixat fora {name}: fet per a una altra versió d'Horizon",
   "{name} was left out: clashes with {other}": "S'ha deixat fora {name}: entra en conflicte amb {other}",
-  "{name} was left out: it needs {other}, which was left out": "S'ha deixat fora {name}: necessita {other}, que s'ha deixat fora"
+  "{name} was left out: it needs {other}, which was left out": "S'ha deixat fora {name}: necessita {other}, que s'ha deixat fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No es compila a l'Horizon que jugues ({code}): la compilació el deixa fora fins que el seu autor l'actualitzi"
 }

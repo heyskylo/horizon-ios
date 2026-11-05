@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma setax jibda l-ħlas. Ma ġie ċċarġjat xejn.",
   "{name} was left out: made for another Horizon version": "{name} tħalla barra: magħmul għal verżjoni oħra ta' Horizon",
   "{name} was left out: clashes with {other}": "{name} tħalla barra: jaħbat ma' {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} tħalla barra: jeħtieġ {other}, li tħalla barra"
+  "{name} was left out: it needs {other}, which was left out": "{name} tħalla barra: jeħtieġ {other}, li tħalla barra",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ma jinbeniex fuq il-Horizon li qed tilgħab ({code}): bini jħallih barra sakemm l-awtur jaġġornah"
 }

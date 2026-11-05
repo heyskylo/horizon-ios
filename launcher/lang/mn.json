@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлбөрийг эхлүүлж чадсангүй. Юу ч суутгаагүй.",
   "{name} was left out: made for another Horizon version": "{name}-г хассан: Horizon-ын өөр хувилбарт зориулагдсан",
   "{name} was left out: clashes with {other}": "{name}-г хассан: {other}-тэй зөрчилддөг",
-  "{name} was left out: it needs {other}, which was left out": "{name}-г хассан: түүнд {other} хэрэгтэй, тэр нь хасагдсан"
+  "{name} was left out: it needs {other}, which was left out": "{name}-г хассан: түүнд {other} хэрэгтэй, тэр нь хасагдсан",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Таны тоглодог Horizon дээр бүтэхгүй ({code}): зохиогч нь шинэчлэх хүртэл бүтээлт үүнийг хасна"
 }

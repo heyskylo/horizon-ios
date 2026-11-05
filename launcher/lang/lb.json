@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle konnt d'Bezuelung net starten. Et gouf näischt ofgebucht.",
   "{name} was left out: made for another Horizon version": "{name} gouf ewechgelooss: fir eng aner Horizon-Versioun gemaach",
   "{name} was left out: clashes with {other}": "{name} gouf ewechgelooss: kollidéiert mat {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf"
+  "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Baut net op dem Horizon, deen s du spills ({code}): e Build léisst et ewech, bis säin Auteur et aktualiséiert"
 }

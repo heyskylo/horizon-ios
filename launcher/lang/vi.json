@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle không thể bắt đầu thanh toán. Không bị trừ tiền.",
   "{name} was left out: made for another Horizon version": "Đã bỏ qua {name}: được làm cho phiên bản Horizon khác",
   "{name} was left out: clashes with {other}": "Đã bỏ qua {name}: xung đột với {other}",
-  "{name} was left out: it needs {other}, which was left out": "Đã bỏ qua {name}: cần {other}, mà {other} đã bị bỏ qua"
+  "{name} was left out: it needs {other}, which was left out": "Đã bỏ qua {name}: cần {other}, mà {other} đã bị bỏ qua",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Không build được trên Horizon bạn đang chơi ({code}): bản build sẽ bỏ qua nó cho đến khi tác giả cập nhật"
 }

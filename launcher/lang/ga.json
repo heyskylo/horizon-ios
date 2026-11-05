@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Níorbh fhéidir le Paddle an íocaíocht a thosú. Níor gearradh aon rud.",
   "{name} was left out: made for another Horizon version": "Fágadh {name} amach: déanta do leagan eile de Horizon",
   "{name} was left out: clashes with {other}": "Fágadh {name} amach: tagann sé salach ar {other}",
-  "{name} was left out: it needs {other}, which was left out": "Fágadh {name} amach: tá {other} ag teastáil uaidh, agus fágadh é sin amach"
+  "{name} was left out: it needs {other}, which was left out": "Fágadh {name} amach: tá {other} ag teastáil uaidh, agus fágadh é sin amach",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ní thógtar é ar an Horizon a imríonn tú ({code}): fágann tógáil amach é go dtí go nuashonraíonn a údar é"
 }

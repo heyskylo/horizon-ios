@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nepavyko pradėti mokėjimo. Nieko nenuskaičiuota.",
   "{name} was left out: made for another Horizon version": "{name} praleistas: sukurtas kitai Horizon versijai",
   "{name} was left out: clashes with {other}": "{name} praleistas: konfliktuoja su {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} praleistas: jam reikia {other}, kuris praleistas"
+  "{name} was left out: it needs {other}, which was left out": "{name} praleistas: jam reikia {other}, kuris praleistas",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesukompiliuojamas tavo žaidžiamame Horizon ({code}): kompiliavimas jį praleidžia, kol autorius jo neatnaujins"
 }

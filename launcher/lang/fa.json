@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle نتوانست پرداخت را شروع کند. هیچ مبلغی کسر نشد.",
   "{name} was left out: made for another Horizon version": "{name} کنار گذاشته شد: برای نسخهٔ دیگری از Horizon ساخته شده",
   "{name} was left out: clashes with {other}": "{name} کنار گذاشته شد: با {other} تداخل دارد",
-  "{name} was left out: it needs {other}, which was left out": "{name} کنار گذاشته شد: به {other} نیاز دارد که کنار گذاشته شد"
+  "{name} was left out: it needs {other}, which was left out": "{name} کنار گذاشته شد: به {other} نیاز دارد که کنار گذاشته شد",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "روی Horizonی که بازی می‌کنی ساخته نمی‌شود ({code}): ساخت آن را کنار می‌گذارد تا سازنده‌اش به‌روزش کند"
 }

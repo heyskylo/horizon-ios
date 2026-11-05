@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle не смог начать оплату. Ничего не списано.",
   "{name} was left out: made for another Horizon version": "{name} пропущен: сделан для другой версии Horizon",
   "{name} was left out: clashes with {other}": "{name} пропущен: конфликтует с {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} пропущен: ему нужен {other}, который пропущен"
+  "{name} was left out: it needs {other}, which was left out": "{name} пропущен: ему нужен {other}, который пропущен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не собирается на Horizon, в который вы играете ({code}): сборка пропустит его, пока автор не обновит"
 }

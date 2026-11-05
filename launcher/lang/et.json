@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei saanud makset alustada. Midagi ei võetud.",
   "{name} was left out: made for another Horizon version": "{name} jäeti välja: tehtud teise Horizoni versiooni jaoks",
   "{name} was left out: clashes with {other}": "{name} jäeti välja: on vastuolus modiga {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} jäeti välja: vajab modi {other}, mis jäeti välja"
+  "{name} was left out: it needs {other}, which was left out": "{name} jäeti välja: vajab modi {other}, mis jäeti välja",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei ehitu Horizonil, mida mängid ({code}): ehitus jätab selle välja, kuni autor seda uuendab"
 }

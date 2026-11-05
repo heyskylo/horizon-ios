@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle เริ่มการชำระเงินไม่ได้ ไม่มีการเรียกเก็บเงิน",
   "{name} was left out: made for another Horizon version": "ไม่ได้รวม {name}: สร้างมาสำหรับ Horizon เวอร์ชันอื่น",
   "{name} was left out: clashes with {other}": "ไม่ได้รวม {name}: ขัดแย้งกับ {other}",
-  "{name} was left out: it needs {other}, which was left out": "ไม่ได้รวม {name}: ต้องใช้ {other} ซึ่งไม่ได้รวมไว้"
+  "{name} was left out: it needs {other}, which was left out": "ไม่ได้รวม {name}: ต้องใช้ {other} ซึ่งไม่ได้รวมไว้",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "สร้างบน Horizon ที่คุณเล่นไม่ได้ ({code}): การสร้างจะไม่รวมไว้จนกว่าผู้สร้างจะอัปเดต"
 }

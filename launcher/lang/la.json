@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle solutionem incipere non potuit. Nihil exactum est.",
   "{name} was left out: made for another Horizon version": "{name} omissus est: factus ad aliam versionem Horizontis",
   "{name} was left out: clashes with {other}": "{name} omissus est: cum {other} confligit",
-  "{name} was left out: it needs {other}, which was left out": "{name} omissus est: {other} eget, qui omissus est"
+  "{name} was left out: it needs {other}, which was left out": "{name} omissus est: {other} eget, qui omissus est",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "In Horizonte quo ludis non construitur ({code}): constructio eum omittit donec auctor eum renovet"
 }

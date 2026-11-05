@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ಪಾವತಿಯನ್ನು ಆರಂಭಿಸಲು ಆಗಲಿಲ್ಲ. ಏನನ್ನೂ ಕಡಿತಗೊಳಿಸಿಲ್ಲ.",
   "{name} was left out: made for another Horizon version": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: Horizon ನ ಬೇರೆ ಆವೃತ್ತಿಗಾಗಿ ಮಾಡಲಾಗಿದೆ",
   "{name} was left out: clashes with {other}": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: {other} ಜೊತೆ ಘರ್ಷಿಸುತ್ತದೆ",
-  "{name} was left out: it needs {other}, which was left out": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: ಇದಕ್ಕೆ {other} ಬೇಕು, ಅದನ್ನು ಬಿಡಲಾಗಿದೆ"
+  "{name} was left out: it needs {other}, which was left out": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: ಇದಕ್ಕೆ {other} ಬೇಕು, ಅದನ್ನು ಬಿಡಲಾಗಿದೆ",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "ನೀವು ಆಡುವ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಆಗುವುದಿಲ್ಲ ({code}): ಅದರ ಲೇಖಕರು ನವೀಕರಿಸುವವರೆಗೆ ಬಿಲ್ಡ್ ಅದನ್ನು ಬಿಡುತ್ತದೆ"
 }

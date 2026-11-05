@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle 无法开始结账。未扣任何费用。",
   "{name} was left out: made for another Horizon version": "已略过 {name}：它是为其他版本的 Horizon 制作的",
   "{name} was left out: clashes with {other}": "已略过 {name}：与 {other} 冲突",
-  "{name} was left out: it needs {other}, which was left out": "已略过 {name}：它需要 {other}，而后者已被略过"
+  "{name} was left out: it needs {other}, which was left out": "已略过 {name}：它需要 {other}，而后者已被略过",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "无法在你玩的 Horizon 上构建（{code}）：在作者更新之前，构建会略过它"
 }

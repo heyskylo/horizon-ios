@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Το Paddle δεν μπόρεσε να ξεκινήσει την πληρωμή. Δεν χρεώθηκε τίποτα.",
   "{name} was left out: made for another Horizon version": "Το {name} παραλείφθηκε: φτιάχτηκε για άλλη έκδοση του Horizon",
   "{name} was left out: clashes with {other}": "Το {name} παραλείφθηκε: συγκρούεται με το {other}",
-  "{name} was left out: it needs {other}, which was left out": "Το {name} παραλείφθηκε: χρειάζεται το {other}, που παραλείφθηκε"
+  "{name} was left out: it needs {other}, which was left out": "Το {name} παραλείφθηκε: χρειάζεται το {other}, που παραλείφθηκε",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Δεν χτίζεται στο Horizon που παίζεις ({code}): ένα χτίσιμο το παραλείπει μέχρι να το ενημερώσει ο δημιουργός του"
 }

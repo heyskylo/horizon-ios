@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle enweghị ike ịmalite ịkwụ ụgwọ. Ọ dịghị ihe a nara.",
   "{name} was left out: made for another Horizon version": "A hapụrụ {name}: e mere ya maka ụdị Horizon ọzọ",
   "{name} was left out: clashes with {other}": "A hapụrụ {name}: ọ na-emegide {other}",
-  "{name} was left out: it needs {other}, which was left out": "A hapụrụ {name}: ọ chọrọ {other}, nke a hapụrụ"
+  "{name} was left out: it needs {other}, which was left out": "A hapụrụ {name}: ọ chọrọ {other}, nke a hapụrụ",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Anaghị ewu na Horizon ị na-egwu ({code}): owuwu na-ahapụ ya ruo mgbe onye dere ya ga-emelite ya"
 }

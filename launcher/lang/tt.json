@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle түләүне башлый алмады. Бернәрсә дә алынмады.",
   "{name} was left out: made for another Horizon version": "{name} төшереп калдырылды: Horizon-ның башка версиясе өчен ясалган",
   "{name} was left out: clashes with {other}": "{name} төшереп калдырылды: {other} белән бәрелешә",
-  "{name} was left out: it needs {other}, which was left out": "{name} төшереп калдырылды: аңа {other} кирәк, ә ул төшереп калдырылды"
+  "{name} was left out: it needs {other}, which was left out": "{name} төшереп калдырылды: аңа {other} кирәк, ә ул төшереп калдырылды",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Син уйнаган Horizon'да җыелмый ({code}): авторы яңартмыйча, җыю аны төшереп калдыра"
 }

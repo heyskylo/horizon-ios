@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle が支払いを開始できませんでした。請求はされていません。",
   "{name} was left out: made for another Horizon version": "{name} は除外されました: 別のバージョンの Horizon 向けです",
   "{name} was left out: clashes with {other}": "{name} は除外されました: {other} と競合します",
-  "{name} was left out: it needs {other}, which was left out": "{name} は除外されました: 除外された {other} が必要です"
+  "{name} was left out: it needs {other}, which was left out": "{name} は除外されました: 除外された {other} が必要です",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "プレイ中の Horizon ではビルドできません ({code}): 作者が更新するまでビルドから除外されます"
 }

@@ -329,7 +329,7 @@ pub fn trust_and_capabilities(
             let pin = v.api.split('/').nth(1).unwrap_or_default();
             lines.push(
                 instance
-                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin))
+                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin, &v.broken_on))
                     .unwrap_or_else(|| {
                         format!(
                             "Built by the launcher on Horizon {}",

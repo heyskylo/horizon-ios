@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle gat ekki hafið greiðsluna. Ekkert var rukkað.",
   "{name} was left out: made for another Horizon version": "{name} var sleppt: gert fyrir aðra útgáfu af Horizon",
   "{name} was left out: clashes with {other}": "{name} var sleppt: rekst á {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} var sleppt: það þarf {other}, sem var sleppt"
+  "{name} was left out: it needs {other}, which was left out": "{name} var sleppt: það þarf {other}, sem var sleppt",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggist ekki á þeirri Horizon sem þú spilar ({code}): smíði sleppir því þar til höfundurinn uppfærir það"
 }

@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle கட்டணத்தைத் தொடங்க முடியவில்லை. எதுவும் வசூலிக்கப்படவில்லை.",
   "{name} was left out: made for another Horizon version": "{name} விடப்பட்டது: Horizon இன் வேறு பதிப்புக்காக உருவாக்கப்பட்டது",
   "{name} was left out: clashes with {other}": "{name} விடப்பட்டது: {other} உடன் முரண்படுகிறது",
-  "{name} was left out: it needs {other}, which was left out": "{name} விடப்பட்டது: இதற்கு {other} தேவை, அது விடப்பட்டது"
+  "{name} was left out: it needs {other}, which was left out": "{name} விடப்பட்டது: இதற்கு {other} தேவை, அது விடப்பட்டது",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "நீங்கள் விளையாடும் Horizon இல் உருவாகாது ({code}): அதன் ஆசிரியர் புதுப்பிக்கும் வரை உருவாக்கம் அதை விடுகிறது"
 }

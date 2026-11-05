@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle koe de betelling net begjinne. Der is neat yn rekken brocht.",
   "{name} was left out: made for another Horizon version": "{name} is weilitten: makke foar in oare Horizon-ferzje",
   "{name} was left out: clashes with {other}": "{name} is weilitten: botst mei {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} is weilitten: it hat {other} nedich, dat weilitten is"
+  "{name} was left out: it needs {other}, which was left out": "{name} is weilitten: it hat {other} nedich, dat weilitten is",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bout net op de Horizon dy't do spilest ({code}): in bou lit it fuort oant de makker it bywurket"
 }

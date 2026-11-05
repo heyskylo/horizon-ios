@@ -1190,5 +1190,6 @@
   "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nuk mundi të fillonte pagesën. Nuk u tarifua asgjë.",
   "{name} was left out: made for another Horizon version": "{name} u la jashtë: bërë për një version tjetër të Horizon",
   "{name} was left out: clashes with {other}": "{name} u la jashtë: përplaset me {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} u la jashtë: i duhet {other}, që u la jashtë"
+  "{name} was left out: it needs {other}, which was left out": "{name} u la jashtë: i duhet {other}, që u la jashtë",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nuk ndërtohet në Horizon-in që luan ({code}): ndërtimi e lë jashtë derisa autori ta përditësojë"
 }
