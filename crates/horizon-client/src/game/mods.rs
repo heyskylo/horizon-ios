@@ -27,6 +27,10 @@ pub(super) struct ModsState {
     /// data (`mod_content::live_switch`): they switch with a world open.
     content_ids: std::collections::BTreeSet<String>,
     live_ids: std::collections::BTreeSet<String>,
+    /// The server's data comes from a root a live switch built, not the one
+    /// `res` was loaded from: the world tables are built from it even with no
+    /// data pack (`build_world_tables`).
+    pub(super) data_switched: bool,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
@@ -541,6 +545,7 @@ impl Game<'_> {
             g.options.resources = root;
             g.settings.mods.enabled = enabled.clone();
             g.mods.applied = Some(enabled);
+            g.mods.data_switched = true;
             if g.world_root.as_os_str().is_empty() {
                 return;
             }
