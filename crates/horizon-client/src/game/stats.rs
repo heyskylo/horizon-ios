@@ -231,6 +231,15 @@ impl Game<'_> {
     /// The per-tick counters (`Player.tick`/`ServerPlayer.tick` awardStat).
     pub(super) fn tick_stats(&mut self) {
         self.load_stats();
+        // LivingEntity.actuallyHurt: absorbed damage a mob soaked from the player.
+        let dealt: i32 = self
+            .mobs
+            .iter_mut()
+            .map(|m| std::mem::take(&mut m.dealt_absorbed))
+            .fold(0, i32::saturating_add);
+        if dealt > 0 {
+            self.award_custom_stat("damage_dealt_absorbed", dealt);
+        }
         self.count_tick_stats(self.sleeping.is_some());
         self.tick_movement_stats();
     }
