@@ -3152,7 +3152,7 @@ impl Game<'_> {
         let quiet = index.is_none();
         // AdvancementCommands.perform: Action.perform for each selected player.
         let results = self.advancement_turns(&targets, |g| {
-            g.adv.quiet = quiet;
+            let was_quiet = std::mem::replace(&mut g.adv.quiet, quiet);
             let mut count = 0;
             for &i in &list {
                 let changed = if grant {
@@ -3162,7 +3162,7 @@ impl Game<'_> {
                 };
                 count += i32::from(changed);
             }
-            g.adv.quiet = false;
+            g.adv.quiet = was_quiet;
             count
         });
         let total: i32 = results.iter().map(|r| r.1).sum();
@@ -3186,7 +3186,8 @@ impl Game<'_> {
         ));
         Ok(total)
     }
-    /// Run `f` as each selected player's own turn and collect what it changed.
+    /// Run `f` as each selected player's own turn and collect what it changed;
+    /// a target without a turn counts as unchanged, like in `cmd_clear`.
     fn advancement_turns(
         &mut self,
         targets: &[Target],
@@ -3194,7 +3195,7 @@ impl Game<'_> {
     ) -> Vec<(Target, i32)> {
         targets
             .iter()
-            .filter_map(|&t| self.for_player(t, &f).map(|n| (t, n)))
+            .map(|&t| (t, self.for_player(t, &f).unwrap_or(0)))
             .collect()
     }
     /// The player argument of the advancement feedback: with the tracker's
