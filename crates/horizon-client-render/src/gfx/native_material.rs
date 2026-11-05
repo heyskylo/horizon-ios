@@ -727,7 +727,7 @@ mod tests {
         else {
             return;
         };
-        // 🤖 Agent: The entries' call of `material`, with a 16×16 grid of colours.
+        // The entries' call of `material`, with a 16×16 grid of colours.
         let entry = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
 }

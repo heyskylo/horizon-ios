@@ -384,7 +384,7 @@ fn copy_target(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        // 🤖 Agent: RENDER_ATTACHMENT: 0.2 draws `opaque_color` decoded rather than copying it.
+        // RENDER_ATTACHMENT: 0.2 draws `opaque_color` decoded rather than copying it.
         usage: wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1218,7 +1218,7 @@ impl NativePost {
         }
         .create_view(&Default::default());
         let blank = self.history_blank.create_view(&Default::default());
-        // 🤖 Agent: Under 0.2 the passes read the world decoded.
+        // Under 0.2 the passes read the world decoded.
         let scene = self
             .display
             .as_ref()
@@ -1306,7 +1306,7 @@ impl NativePost {
                 group(previous, Some(self.plan[i].writes))
             })
             .collect();
-        // 🤖 Agent: The tonemap's, last: the chain's picture, else the decoded world.
+        // The tonemap's, last: the chain's picture, else the decoded world.
         if let Some(d) = &self.display {
             groups.push(group(d.picture.as_ref().map_or(scene, |p| &p.1), None));
         }
@@ -2266,7 +2266,7 @@ file = \"b.wgsl\"
         };
         let post = "[[post]]\nfile = \"a.wgsl\"\n[[post]]\nfile = \"b.wgsl\"\n";
         let curve = "[tonemap]\nfile = \"t.wgsl\"\n";
-        // 🤖 Agent: A pack needs a stage: the first has only a sky, and no chain or tonemap.
+        // A pack needs a stage: the first has only a sky, and no chain or tonemap.
         let sky = "[sky]\nfile = \"s.wgsl\"\n";
         for extra in [
             sky.into(),

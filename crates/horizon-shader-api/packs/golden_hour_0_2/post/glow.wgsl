@@ -1,4 +1,4 @@
-// 🤖 Agent: A soft halo around the brightest pixels, as the 0.1 pack's: its threshold, 0.8 to 1 in gamma, is
+// A soft halo around the brightest pixels, as the 0.1 pack's: its threshold, 0.8 to 1 in gamma, is
 // about 0.6 to 1 in linear light, and light above white glows the more.
 override glow: f32 = 0.35;
 

@@ -1,4 +1,4 @@
-// 🤖 Agent: Golden light when the sun is low, the 0.1 pack's soft shoulder and saturation, and a light vignette.
+// Golden light when the sun is low, the 0.1 pack's soft shoulder and saturation, and a light vignette.
 // Light is tinted and darkened in linear light. The shoulder and saturation are a look, written for display
 // values, so they run on the encoded picture. Light above white stays above white, and Horizon's tone curve maps
 // it to the display.

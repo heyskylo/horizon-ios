@@ -230,7 +230,7 @@ impl NativePack {
                 )
             })
             .transpose()?;
-        // 🤖 Agent: A 0.2 pack always has one: its decode and tonemap run without a chain too.
+        // A 0.2 pack always has one: its decode and tonemap run without a chain too.
         let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
         let post = (!post.is_empty() || api == horizon_shader_api::Api::V0_2)
             .then(|| {

@@ -10597,7 +10597,7 @@ impl Renderer {
         {
             self.readback.present(&self.device, &mut encoder, image);
         }
-        // 🤖 Agent: A 0.2 pack is shown at paper white: HDR output lifts nothing of its world.
+        // A 0.2 pack is shown at paper white: HDR output lifts nothing of its world.
         let lifts_world = !frame.title
             && self
                 .native
@@ -12068,7 +12068,7 @@ mod tests {
     fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
         use super::frame_format;
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
-        // 🤖 Agent: No 0.2 pack (or a device without the float frame) leaves it as before.
+        // No 0.2 pack (or a device without the float frame) leaves it as before.
         for linear in [(false, false), (false, true), (true, false)] {
             assert_eq!(
                 frame_format(true, true, true, Bgra8Unorm, linear),

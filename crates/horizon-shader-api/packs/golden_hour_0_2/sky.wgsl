@@ -1,4 +1,4 @@
-// 🤖 Agent: Golden Hour's sky in linear light: the 0.1 pack's warm halo colour and its darker zenith, decoded
+// Golden Hour's sky in linear light: the 0.1 pack's warm halo colour and its darker zenith, decoded
 // (a gamma factor k is k^2.2 in linear light).
 override sun_glow: f32 = 0.6;
 
