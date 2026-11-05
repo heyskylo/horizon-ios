@@ -80,6 +80,26 @@ const MUTE_LEVEL: u8 = 3;
 /// The commands of `mute_command`.
 pub(super) const MUTE_COMMANDS: [&str; 4] = ["mute", "tempmute", "mutelist", "unmute"];
 
+/// The mute commands as operators' clients get them in the command tree (`command_tree`'s usages).
+pub(super) const MUTE_USAGES: [&str; 4] = [
+    "mute <player:player> [duration_and_reason:text]",
+    "tempmute <player:player> <duration:word> [reason:text]",
+    "mutelist",
+    "unmute <player:player>",
+];
+
+/// `/mute <player> [duration] [reason]` (`words`, the command first): how long, when the word after
+/// the name is a duration (`10m`, `2h`, `1d`; none: until `/unmute`), and the index the reason starts at.
+fn mute_time(words: &[&str]) -> (Option<i64>, usize) {
+    match words
+        .get(2)
+        .and_then(|w| horizon_chat_filter::parse_duration(w))
+    {
+        Some(ms) => (Some(ms), 3),
+        None => (None, 2),
+    }
+}
+
 /// The reason a temporary ban gives at login.
 const BAN_REASON: &str = "Hate speech in chat (Horizon chat filter)";
 
@@ -295,7 +315,10 @@ impl Game<'_> {
                 lines
             }
             ["unmute", name] => vec![self.unmute(host, name, by)],
-            ["mute", name, ..] => vec![self.mute(host, name, None, reason(2), by)],
+            ["mute", name, ..] => {
+                let (time, from) = mute_time(words);
+                vec![self.mute(host, name, time, reason(from), by)]
+            }
             ["tempmute", name, time, ..] => match horizon_chat_filter::parse_duration(time) {
                 Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
                 None => vec![Reply::translated(
@@ -497,5 +520,18 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn mute_takes_a_duration_after_the_name_or_mutes_until_unmuted() {
+        assert_eq!(mute_time(&["mute", "Steve"]), (None, 2));
+        assert_eq!(mute_time(&["mute", "Steve", "spamming", "chat"]), (None, 2));
+        assert_eq!(
+            mute_time(&["mute", "Steve", "1h", "spam"]),
+            (Some(3_600_000), 3)
+        );
+        assert_eq!(mute_time(&["mute", "Steve", "30m"]), (Some(1_800_000), 3));
+        // Not a duration: the word starts the reason.
+        assert_eq!(mute_time(&["mute", "Steve", "0m", "spam"]), (None, 2));
     }
 }
