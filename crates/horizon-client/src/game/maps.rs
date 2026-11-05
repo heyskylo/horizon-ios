@@ -7,7 +7,7 @@
 use super::{Game, lan::LanHost};
 use horizon_client::{
     blocks::{Fluid, MAP_COLORS},
-    hud::{MAP_SLOTS, Rect, map_slot_sprite},
+    hud::{HudBatch, MAP_SLOTS, Rect, map_slot_sprite},
     items::ItemStack,
     mesher::Vertex,
 };
@@ -549,7 +549,7 @@ impl MapData {
         })
     }
     /// `MapItemSavedData.<clinit>`: the CODEC save arm omits optional defaults.
-    fn to_nbt(&self) -> Tag {
+    pub(super) fn to_nbt(&self) -> Tag {
         let mut data = vec![
             ("dimension", Tag::String(self.dimension.as_str().into())),
             ("xCenter", Tag::Int(self.center[0])),
@@ -1140,6 +1140,8 @@ impl Game<'_> {
             self.consume_held();
             self.give_or_drop_stack(filled);
         }
+        // EmptyMapItem.use: consumed, then counted.
+        self.award_stat("used", "minecraft:map", 1);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_map_filled(player, &name, id);
         }
@@ -1783,6 +1785,42 @@ impl Game<'_> {
                 [p(-1.0, 1.0), p(1.0, 1.0), p(1.0, -1.0), p(-1.0, -1.0)],
                 [[s.u0, s.v0], [s.u1, s.v0], [s.u1, s.v1], [s.u0, s.v1]],
             );
+            if let Some(name) = &d.name {
+                let text = horizon_client::text::Text::literal(name);
+                let f = self.gui.atlas.font.width_text(&text);
+                if f > 0.0 {
+                    let f1 = (25.0 / f).clamp(0.0, 6.0 / 9.0);
+                    let mut text_batch = HudBatch::new([1, 1]);
+                    let behind =
+                        text_batch.name_tag(&self.gui.atlas, &text, 0.0, 0xFFFF_FFFF, 0x8000_0000);
+                    self.map_patches.append(&mut text_batch.patches);
+                    let tm = glam::Mat4::from_translation(glam::Vec3::new(
+                        f32::from(d.x) / 2.0 + 64.0,
+                        f32::from(d.y) / 2.0 + 64.0 + 4.0,
+                        // MapRenderer translates by -0.025, then flips Z and
+                        // translates by 0.1 in text space: -0.025 - 0.1.
+                        -0.125,
+                    )) * glam::Mat4::from_scale(glam::Vec3::new(f1, f1, 1.0));
+                    for (i, quad) in text_batch.vertices.as_chunks::<6>().0.iter().enumerate() {
+                        let z_shift = if i * 6 < behind { 0.0005 } else { -0.0005 };
+                        for v in [quad[5], quad[2], quad[1], quad[0]] {
+                            out.push(Vertex {
+                                normal: [0; 4],
+                                pos: m
+                                    .transform_point3(tm.transform_point3(glam::Vec3::new(
+                                        v.pos[0], v.pos[1], z_shift,
+                                    )))
+                                    .to_array(),
+                                uv: v.uv,
+                                layer: 0,
+                                color: v.color,
+                                light,
+                                glint_uv: [0.0, 0.0],
+                            });
+                        }
+                    }
+                }
+            }
             count += 1;
         }
         // A native mod's own icons, over the vanilla ones.
@@ -1896,6 +1934,8 @@ impl Game<'_> {
     }
 }
 
+#[cfg(test)]
+mod live_frame_tests;
 #[cfg(test)]
 mod save_tests;
 

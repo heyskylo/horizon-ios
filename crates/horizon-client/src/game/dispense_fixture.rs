@@ -156,12 +156,16 @@ impl Game<'_> {
         self.tick_chunks.clear();
         self.sync_tick_chunks();
         self.mobs.clear();
+        self.dragon = None;
         self.dropped.clear();
         self.creatures.projectiles.clear();
         self.tnts.clear();
         self.boats.clear();
         self.carts.clear();
         self.armor_stands.clear();
+        self.crystals.clear();
+        self.paintings.clear();
+        self.item_frames.clear();
         self.rockets.clear();
         self.potions.clear_thrown();
         self.level_events.clear();
@@ -334,6 +338,8 @@ impl Game<'_> {
                 ),
                 None => "respawn none".to_owned(),
             });
+        } else if let Some(op) = case.get("wake") {
+            used.push(self.fixture_wake(origin, op)?);
         } else if let Some(op) = case.get("attack") {
             used = self.fixture_attack(op, &targets)?;
         } else if case.get("hopper").is_some() {
@@ -551,6 +557,8 @@ impl Game<'_> {
             self.keys.insert(KeyCode::ShiftLeft);
         }
         self.using = None;
+        // The oracle's player wears nothing: no armor left on from an earlier case.
+        self.armor = Default::default();
         self.inventory[self.selected] = stack.clone();
         self.offhand = parse_stack(op["offhand"].as_str().unwrap_or("-"))?;
         // The used statistic of each item held, once.
@@ -920,6 +928,37 @@ impl Game<'_> {
         Ok(out)
     }
 
+    /// A villager lying in the bed at `origin` with `yaw` wakes up
+    /// (`Villager.stopSleeping`): where it stands and the yaw it turns to.
+    fn fixture_wake(&mut self, origin: BlockPos, op: &Value) -> Result<String> {
+        let kind = self
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .cloned()
+            .ok_or("no mob type minecraft:villager")?;
+        let bed = [origin.x, origin.y, origin.z];
+        let lying = horizon_core::geometry::Vec3::new(
+            f64::from(bed[0]) + 0.5,
+            f64::from(bed[1]) + 0.6875,
+            f64::from(bed[2]) + 0.5,
+        );
+        let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+        let mut villager = Mob::new(1, kind, lying, yaw);
+        horizon_client::mobs::villager::ext_mut(&mut villager).sleeping_pos = Some(bed);
+        let mut events = Vec::new();
+        let w = self.mob_world_base(&[]);
+        horizon_client::mobs::villager::stop_sleeping(&mut villager, &w, &mut events);
+        let p = villager.position;
+        Ok(format!(
+            "wake {} {} {} {}",
+            num(p.x),
+            num(p.y),
+            num(p.z),
+            villager.yaw.to_bits() as i32
+        ))
+    }
+
     /// `EntityType.create` and `snapTo` for one target: no spawn finalization.
     fn fixture_target(&mut self, e: &Value) -> Result<Target> {
         let kind = e["type"].as_str().unwrap_or("minecraft:pig");
@@ -1111,6 +1150,15 @@ impl Game<'_> {
             let (p, v) = (m.position, m.velocity);
             out.push(line(&m.kind.id, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
+        if let Some(d) = &self.dragon {
+            let p = d.position;
+            out.push(line(
+                "minecraft:ender_dragon",
+                [p.x, p.y, p.z],
+                [0.0; 3],
+                "",
+            ));
+        }
         for s in self
             .armor_stands
             .iter()
@@ -1190,6 +1238,24 @@ impl Game<'_> {
         for c in &self.carts {
             let (p, v) = (c.position, c.velocity);
             out.push(line(c.kind.id(), [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
+        }
+        for c in &self.crystals {
+            let p = c.position;
+            out.push(line("minecraft:end_crystal", [p.x, p.y, p.z], [0.0; 3], ""));
+        }
+        // A hanging entity's position is its box's centre (HangingEntity.recalculateBoundingBox).
+        let centre =
+            |(lo, hi): ([f64; 3], [f64; 3])| std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0);
+        for p in &self.paintings {
+            out.push(line("minecraft:painting", centre(p.bounds()), [0.0; 3], ""));
+        }
+        for f in &self.item_frames {
+            let kind = if f.glow {
+                "minecraft:glow_item_frame"
+            } else {
+                "minecraft:item_frame"
+            };
+            out.push(line(kind, centre(f.bounds()), [0.0; 3], ""));
         }
     }
 }

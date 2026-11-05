@@ -153,11 +153,24 @@ def zoo_cases(rng):
                    seed=rng.randrange(-2 ** 63, 2 ** 63))
 
 
+def wither_rose_cases(rng):
+    """WitherRoseBlock.animateTick: three smoke puffs about the centre of the
+    block's pick shape, which the flower's `OffsetType.XZ` moves with the column,
+    from a world that is all wither rose. Every case carries that offset: a
+    flower always has one, so a run without it would compare a shifted shape."""
+    for seed in SEEDS:
+        yield dict(kind='tick', state='minecraft:wither_rose', seed=seed, offset='xz')
+    for _ in range(24):
+        yield dict(kind='tick', state='minecraft:wither_rose',
+                   seed=rng.randrange(-2 ** 63, 2 ** 63), offset='xz')
+
+
 def make_input(build):
     rng = random.Random(0x43414d50)
     cases = (marker_cases() + list(campfire_cases(rng)) + list(puff_cases(rng))
              + list(tick_cases(random.Random(0x414e494d)))
-             + list(zoo_cases(random.Random(0x5a4f4f))))
+             + list(zoo_cases(random.Random(0x5a4f4f)))
+             + list(wither_rose_cases(random.Random(0x524f5345))))
     path = build / 'cases.jsonl'
     path.write_text(''.join(json.dumps(case) + '\n' for case in cases))
     return path, len(cases)
@@ -178,6 +191,8 @@ def main():
         'facings, the ender chest, the spore blossom, the mycelium, one to four candles and the candle cake, the '
         'brewing stand, six leaf blocks, three redstone wire states, two repeaters, two levers, fire, soul fire, a '
         'blinking sculk sensor and a charged respawn anchor, each at two seeds and forty of them at a random one, '
+        'and the wither rose, whose three smoke puffs sit about the centre of the pick shape the flower\'s '
+        'model offset moves with the column, at three seeds and twenty-four more at random ones, '
         'and the campfire block entity: the real '
         'CampfireBlockEntity.particleTick for both campfire blocks, lit and unlit, signal '
         'fire on and off, all four facings and every one of the four cooking slots held or empty, ticked six times '
@@ -193,11 +208,11 @@ def main():
         'all-one-state world cannot give it are not here: a falling block wants air below it, a drip wants a face '
         'that is not solid, the firefly bush wants a light level, the end gateway counts its visible faces and the '
         'lightning rod the level height, the pointed dripstone and the potent sulfur want water above, the bubble '
-        'column and the fluid drips want a fluid, the dried ghast, the wither rose, the redstone ore and the beehive '
-        'read a shape or a neighbour that embedding takes away, and the enchanting table needs air between itself and '
+        'column and the fluid drips want a fluid, the dried ghast, the redstone ore and the beehive read a shape or a '
+        'neighbour that embedding takes away, and the enchanting table needs air between itself and '
         'its power providers.',
         sources=[lab.ROOT / 'tools/test_marker_particles_parity.py',
-                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=402440)
+                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=456747)
 
 
 if __name__ == '__main__':

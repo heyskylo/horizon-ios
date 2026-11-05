@@ -60,6 +60,19 @@ impl Bone {
             Bone::RightLeg => "right_leg",
         }
     }
+
+    /// The part's pivot in the player model at rest (pixels, y down): vanilla `PlayerModel`'s,
+    /// with the wide arms (a slim skin's sit half a pixel lower).
+    pub fn rest(self) -> glam::Vec3 {
+        let [x, y, z] = match self {
+            Bone::Head | Bone::Body => [0.0, 0.0, 0.0],
+            Bone::LeftArm => [5.0, 2.0, 0.0],
+            Bone::RightArm => [-5.0, 2.0, 0.0],
+            Bone::LeftLeg => [1.9, 12.0, 0.0],
+            Bone::RightLeg => [-1.9, 12.0, 0.0],
+        };
+        glam::Vec3::new(x, y, z)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -145,6 +158,10 @@ pub struct Item {
     pub limbs: Vec<(Bone, Part)>,
     /// A name tag's line (`Slot::NameTag` only; it has no parts).
     pub tag: Option<Tag>,
+    /// How high the item gets above the player model's neck (the head's and body's pivot), in
+    /// pixels: its highest vertex with every bone at rest (`Bone::rest`), animations included.
+    /// The game lifts its wearer's name tag over it. 0 for a name tag style (no model).
+    pub top: f32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -399,12 +416,13 @@ impl Item {
             vertices,
             limbs,
             tag,
+            top: 0.0,
         };
-        let reach = item.reach();
+        let (reach, top) = item.extent();
         if reach > MAX_REACH {
             return Err(Error::TooFar(reach));
         }
-        Ok(item)
+        Ok(Item { top, ..item })
     }
 
     /// The item's roots and the bone each rides: `root` on `bone`, then the `limbs`.
@@ -412,27 +430,31 @@ impl Item {
         std::iter::once((self.bone, &self.root)).chain(self.limbs.iter().map(|(b, p)| (*b, p)))
     }
 
-    /// The farthest any vertex gets from the bone's pivot (pixels): at rest,
-    /// and at 32 points of each animation's period.
-    fn reach(&self) -> f32 {
+    /// The farthest any vertex gets from its bone's pivot, and the highest above the neck with
+    /// the bones at rest (pixels, `top`): at rest, and at 32 points of each animation's period.
+    fn extent(&self) -> (f32, f32) {
         let mut times = vec![0.0];
         for anim in &self.animations {
             times.extend((0..32).map(|k| anim.period * k as f32 / 32.0));
         }
         let mut far = 0.0_f32;
+        let mut top = 0.0_f32;
         let mut poses = std::collections::HashMap::new();
         for ticks in times {
             poses.clear();
             self.animate(ticks, |name, pose| {
                 poses.insert(name.to_owned(), pose);
             });
-            for (_, root) in self.roots() {
+            for (bone, root) in self.roots() {
+                let pivot = bone.rest();
                 walk(root, glam::Mat4::IDENTITY, &poses, &mut |p| {
                     far = far.max(p.length() * 16.0);
+                    // y points down.
+                    top = top.max(-(pivot.y + p.y * 16.0));
                 });
             }
         }
-        far
+        (far, top)
     }
 
     /// The animated parts' poses at `ticks` (game ticks, any start): each

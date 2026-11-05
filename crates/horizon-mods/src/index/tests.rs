@@ -90,6 +90,11 @@ fn a_changed_file_key_or_manifest_is_refused() {
     let mut no_level = index.clone();
     no_level.projects[0].versions[0].api_level = None;
     assert_eq!(check(&no_level, "coords_hud", &hmod), Ok(Trust::Verified));
+    // A native mod's hook points version is listed too: a file naming another is refused.
+    let mut other_hooks = index.clone();
+    other_hooks.projects[0].versions[0].hooks = Some(3);
+    let e = check(&other_hooks, "coords_hud", &hmod).unwrap_err();
+    assert!(e.contains("isn't what the index lists"), "{e}");
 
     let mut revoked = index.clone();
     revoked.revoked.push(Revoked {
@@ -179,6 +184,62 @@ fn resource_packs_need_a_pack_mcmeta() {
     assert!(e.contains("\"pack\""), "{e}");
     let e = check_resource_pack(&pack(&[("pack.mcmeta", meta), ("../x", "")])).unwrap_err();
     assert!(e.contains("plain path"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn data_packs_and_shader_folder_packs_are_read_by_their_content() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("horizon-index-dp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut n = 0;
+    let mut pack = |files: &[&str]| {
+        n += 1;
+        let path = dir.join(format!("{n}.zip"));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for name in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            let text = if *name == "pack.mcmeta" {
+                r#"{"pack": {"description": "D", "pack_format": 94}}"#
+            } else {
+                ""
+            };
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    };
+    let data = pack(&["pack.mcmeta", "data/x/function/a.mcfunction"]);
+    assert_eq!(inspect(&Kind::DataPack, &data).unwrap().api, "94");
+    assert_eq!(zip_kind(&data), Kind::DataPack);
+    let looks = pack(&["pack.mcmeta", "assets/x/textures/a.png"]);
+    let e = inspect(&Kind::DataPack, &looks).unwrap_err();
+    assert!(e.contains("data/"), "{e}");
+    assert_eq!(zip_kind(&looks), Kind::ResourcePack);
+    let no_meta = pack(&["data/x/function/a.mcfunction"]);
+    assert!(
+        inspect(&Kind::DataPack, &no_meta)
+            .unwrap_err()
+            .contains("missing")
+    );
+    let shaders = pack(&["shaders/composite.fsh", "shaders/lang/en_us.lang"]);
+    assert_eq!(inspect(&Kind::ShaderPack, &shaders).unwrap().api, "");
+    assert_eq!(zip_kind(&shaders), Kind::ShaderPack);
+    let e = inspect(&Kind::ShaderPack, &looks).unwrap_err();
+    assert!(e.contains("shaders/"), "{e}");
+    let sneaky = pack(&["shaders/a.fsh", "../../x"]);
+    assert!(
+        inspect(&Kind::ShaderPack, &sneaky)
+            .unwrap_err()
+            .contains("plain path")
+    );
+    // Both are zips, and a reader from before them keeps them as unknown kinds.
+    for kind in [Kind::DataPack, Kind::ShaderPack] {
+        assert_eq!(kind.extension(), Some("zip"));
+        assert!(open(&kind).is_ok());
+        assert_eq!(Kind::from(kind.name().to_owned()), kind);
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

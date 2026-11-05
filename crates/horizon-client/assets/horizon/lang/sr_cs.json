@@ -426,6 +426,7 @@
   "Frame Generation": "Generacija okvira",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Prikazuje napravljeni okvir između svaka dva stvarna: glatkiji, malo više zaostajanja.",
   "Shadow Cache": "Shadov Cache",
+  "Shader Packs...": "Shader paketi...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ponovo koristi mapu senki paketa kada se poklope sunce, pogled i svet. Podrazumevano isključeno.",
   "Find BlueMap": "Pronađite BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na serverima pronalazi njihovu BlueMap veb mapu za daleki teren. Sledeće pridruživanje.",

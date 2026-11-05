@@ -174,14 +174,20 @@ BlueMap is licensed under the MIT license:
 ## JOML
 
 `crates/horizon-client-render/src/camera.rs` (`joml::Mat4::rotation`, `invert_orthonormal`) and
-`crates/horizon-client-render/src/gfx/pack_uniforms.rs` (`invert_generic`, the formula of
-`pack_projection`) adapt the float arithmetic of `Matrix4f.rotation(Quaternionfc)`,
-`invertOrthonormal`, `invertGenericNonThis` and `setPerspective` from
+`crates/horizon-client-render/src/gfx/pack_uniforms.rs` (`invert_generic`, `invert_affine`, the
+formulas of `pack_projection` and `shadow_ortho`) adapt the float arithmetic of
+`Matrix4f.rotation(Quaternionfc)`, `invertOrthonormal`, `invertGenericNonThis`, `invertAffine`,
+`setPerspective` and `setOrtho` from
 [JOML](https://github.com/JOML-CI/JOML/tree/faf9eef2511242122beb6055fe3da92daed214c5) 1.10.9, the
 library vanilla 26.3 uses, so that shader packs get the same matrices to the last bit. Changes:
-ported to Rust; `invert_generic` and `pack_projection` drop JOML's property flags, and
+ported to Rust; the pack_uniforms.rs functions drop JOML's property flags, and
 `pack_projection` works the formula in doubles. The copyright line and license notice also head
 both files.
+
+`camera.rs` also adapts `Quaternionf.rotationX`, `rotationY` and `rotationZ`,
+`Matrix4f.rotateAffine` and `Vector4f.mulAffine` (`joml::Quat::rotation_x`/`_y`/`_z`,
+`joml::Mat4::rotate_affine`, `transform_affine`), for the sky's positions shader packs read.
+Changes: ported to Rust; `rotate_affine` keeps only the affine case.
 
 ```
 The MIT License

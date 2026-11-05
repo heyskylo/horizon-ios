@@ -1,5 +1,6 @@
-// `invert_generic` and the formula of `pack_projection` in this file are adapted from JOML
-// 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+// `invert_generic`, `invert_affine` and the formulas of `pack_projection` and `shadow_ortho` in
+// this file are adapted from JOML 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see
+// THIRD_PARTY_NOTICES.md).
 //
 // Copyright (c) 2015-2026 Richard Greenlees
 //
@@ -95,15 +96,12 @@ pub struct PackInputs {
     pub still_ticks: Option<u64>,
 }
 
-/// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
-/// has alpha (`LevelExtractor`); a dimension without clouds has no height, which the uniform
-/// reports as NaN. NaN is not vanilla's own value: packs map it to "no clouds".
-pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
-    if crate::clouds::has_color(cloud_color_alpha) {
-        height
-    } else {
-        f32::NAN
-    }
+/// The `cloudHeight` uniform: the dimension's `visual/cloud_height`
+/// (`EnvironmentAttributes.CLOUD_HEIGHT`, 192.33 where the dimension doesn't set it), whether or
+/// not it has clouds. ShaderDoc says NaN for a dimension without clouds, but Iris 1.11.7 reads
+/// 192.33 in the Nether and the End, in every program kind our probe packs read it from.
+pub fn cloud_height(sky: &crate::environment::Sky) -> f32 {
+    sky.cloud_height
 }
 
 /// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
@@ -152,6 +150,31 @@ impl Value {
         let mut a = [0; 3];
         a[..v.len()].copy_from_slice(v);
         Value::I(a)
+    }
+
+    /// Whether a program that declares the built-in `name` as `ty` reads this value. Iris 1.11.7
+    /// disables a built-in declared with another GLSL type than the one it gives ("Wrong uniform
+    /// type ... Disabling that uniform"), and the program reads 0. Our probe packs saw it for a
+    /// float declared `int` or `vec2`, an int `float`, an `ivec2` `vec2`, `int` or `ivec3`, a
+    /// `vec3` `vec2` or `vec4`, a `mat4` `mat3`, and any `uint`; an int or a bool built-in
+    /// declared `bool` or `int` was kept. A float declared `bool` is left as it was: Iris warned,
+    /// but our probe read true.
+    pub fn read_as(&self, name: &str, ty: &str) -> bool {
+        let int = matches!(self, Value::I(_));
+        let (declared_int, size) = match ty {
+            "float" => (false, 1),
+            "bool" if !int => return true,
+            "int" | "bool" => (true, 1),
+            "mat2" => (false, 4),
+            "mat3" => (false, 9),
+            "mat4" => (false, 16),
+            t if t.starts_with('u') => return false,
+            t if let Some(n) = t.strip_prefix("ivec") => (true, n.parse().unwrap_or(0)),
+            t if let Some(n) = t.strip_prefix("vec") => (false, n.parse().unwrap_or(0)),
+            _ => return true,
+        };
+        let name = name.strip_prefix("gbuffers.").unwrap_or(name);
+        declared_int == int && size == components(name)
     }
 
     /// Writes the value as the type the pack declared, at `offset` of a std140 block.
@@ -366,6 +389,25 @@ fn body(angle: f32, tilt: f32) -> Vec3 {
     .transform_vector3(Vec3::new(0.0, 100.0, 0.0))
 }
 
+/// `sunPosition` and `moonPosition` (`angle`: the body's sky angle in degrees) and `upPosition`
+/// (`angle` none) to the last bit, as Iris 1.11.7 gives them: our probes' readings (50: 25 ticks
+/// of day and night, `sunPathRotation` 0 and 30, four view directions) fit `(0, 100, 0, 0)`
+/// times `gbufferModelView` turned by JOML quaternions, in floats: `rotate(rotationY(-90°))`,
+/// then for a body `rotate(rotationZ(sunPathRotation))` and `rotate(rotationX(angle))`. Turned
+/// by matrices instead, as `body` and vanilla 26.3's sky do, 4e-6 stands where Iris has an exact
+/// 0, and the rest differs by 1 to 2 ulps (#8464).
+fn celestial(view: Mat4, tilt: f32, angle: Option<f32>) -> Vec3 {
+    use crate::camera::joml::{Mat4 as Joml, Quat};
+    use horizon_core::geometry::trig::DEG_TO_RAD;
+    let mut m = Joml::affine(view);
+    m.rotate_affine(Quat::rotation_y(-90.0 * DEG_TO_RAD));
+    if let Some(angle) = angle {
+        m.rotate_affine(Quat::rotation_z(tilt * DEG_TO_RAD));
+        m.rotate_affine(Quat::rotation_x(angle * DEG_TO_RAD));
+    }
+    Vec3::from_array(m.transform_affine([0.0, 100.0, 0.0, 0.0]))
+}
+
 /// `sunPathRotation`'s turn of the sky's bodies: `tilt` degrees about the world's X axis, so a
 /// positive angle moves the noon sun toward -Z (north), as Iris does.
 pub fn tilt_matrix(tilt: f32) -> Mat4 {
@@ -390,28 +432,43 @@ fn day_fraction(degrees: f32) -> f32 {
     (degrees + 90.0) % 360.0 / 360.0
 }
 
-/// The sky angle in degrees of the body that casts the shadows: the sun by day, the moon at
-/// night (taken below 360).
-fn shadow_light_degrees(frame: &Frame) -> f32 {
-    if day_fraction(frame.sky.sun_angle) < 0.5 {
-        frame.sky.sun_angle
+/// `shadowAngle`: the day fraction of the body that casts the shadows, the sun by day and the
+/// moon (taken below 360) at night.
+fn shadow_angle(frame: &Frame) -> f32 {
+    let sun = day_fraction(frame.sky.sun_angle);
+    if sun < 0.5 {
+        sun
     } else {
-        frame.sky.moon_angle % 360.0
+        day_fraction(frame.sky.moon_angle % 360.0)
+    }
+}
+
+/// The angle in degrees `shadowModelView` turns the light's path by, from `shadowAngle`:
+/// `(shadowAngle - 0.25) * 360` in floats, plus 360 when that is negative. Our probes' readings
+/// of Iris 1.11.7 (50: 25 ticks of day and night, among them 7295 to 7305 one by one, with
+/// `sunPathRotation` 0 and 30) fit this to the last bit; the body's own sky angle, which the
+/// fraction is made from, misses 16 of them by 1 to 6 ulps (#8464).
+fn shadow_matrix_degrees(frame: &Frame) -> f32 {
+    let degrees = (shadow_angle(frame) - 0.25) * 360.0;
+    if degrees < 0.0 {
+        degrees + 360.0
+    } else {
+        degrees
     }
 }
 
 /// `shadowModelView` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
-/// readings (20 scenes: times of day and night, `sunPathRotation` 0 and 30, cameras off the
-/// block grid) fit these JOML float operations, in this order: `rotateX(90°)`, `rotateZ(-angle)`
-/// with the light body's sky angle, `rotateX(sunPathRotation)`, then `translate` by minus the
-/// origin `shadow_camera` describes, from the camera's position as a float; and JOML's
-/// `invert()`. `shadow_camera`'s view, built in doubles, differs in the last bits (6e-17 for
-/// 0), and on a texel boundary of the map that is enough to read the other texel (#8464).
+/// readings (times of day and night, `sunPathRotation` 0 and 30, cameras off the block grid)
+/// fit these JOML float operations, in this order: `rotateX(90°)`, `rotateZ(-angle)` with
+/// `shadow_matrix_degrees`, `rotateX(sunPathRotation)`, then `translate` by minus the origin
+/// `shadow_camera` describes, from the camera's position as a float; and JOML's `invert()`.
+/// `shadow_camera`'s view, built in doubles, differs in the last bits (6e-17 for 0), and on a
+/// texel boundary of the map that is enough to read the other texel (#8464).
 pub fn shadow_model_view(frame: &Frame, shadow: &Shadow) -> (Mat4, Mat4) {
     use horizon_core::geometry::trig::DEG_TO_RAD;
     let mut m = crate::camera::joml::Mat4::IDENTITY;
     m.rotate_x(90.0 * DEG_TO_RAD);
-    m.rotate_z(-(shadow_light_degrees(frame) * DEG_TO_RAD));
+    m.rotate_z(-(shadow_matrix_degrees(frame) * DEG_TO_RAD));
     m.rotate_x(shadow.sun_path_rotation * DEG_TO_RAD);
     let step = shadow.interval;
     if step > 0.0 {
@@ -506,18 +563,80 @@ pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
     depth * gl * view
 }
 
-/// How far toward the light the shadow projection starts, in blocks: part of the projection,
-/// not of `shadowModelView` (Iris's matrices, measured).
-pub const SHADOW_EYE: f32 = 100.0;
+/// How far toward the light a `shadowMapFov` projection starts, in blocks.
+const SHADOW_EYE: f32 = 100.0;
+
+/// The orthographic shadow projection's planes when the pack sets none, as JOML's `zNear` and
+/// `zFar`: Iris 1.11.7's, measured with a probe pack (each unset plane on its own).
+const SHADOW_NEAR: f32 = -100.05;
+const SHADOW_FAR: f32 = 156.0;
+
+/// `shadowProjection` and its inverse to the last bit, as Iris 1.11.7 gives them: our probes'
+/// readings (13 settings of `shadowDistance`, `shadowNearPlane` and `shadowFarPlane`, each
+/// plane set or not) fit JOML's `setOrtho` over `shadowDistance` each side with `zZeroToOne`,
+/// its depth terms then taken to GL's -1..1 (`m22 * 2`, `m32 * 2 - 1`), in floats; and JOML's
+/// `invertAffine` of that. The planes are the pack's, or `SHADOW_NEAR`/`SHADOW_FAR`: a pack
+/// that sets one gets it as it is, with no 100-block offset (#8464).
+fn shadow_ortho(shadow: &Shadow) -> (Mat4, Mat4) {
+    let d = shadow.distance;
+    let near = shadow.near.unwrap_or(SHADOW_NEAR);
+    let far = shadow.far.unwrap_or(SHADOW_FAR);
+    let side = 2.0 / (d - -d);
+    let projection = Mat4::from_cols(
+        Vec4::new(side, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, side, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0 / (near - far) * 2.0, 0.0),
+        Vec4::new(0.0, 0.0, near / (near - far) * 2.0 - 1.0, 1.0),
+    );
+    (projection, invert_affine(projection))
+}
+
+/// JOML's `Matrix4f.invertAffine()`, operation by operation.
+fn invert_affine(m: Mat4) -> Mat4 {
+    let g = |c: usize, r: usize| m.col(c)[r];
+    let (m00, m01, m02) = (g(0, 0), g(0, 1), g(0, 2));
+    let (m10, m11, m12) = (g(1, 0), g(1, 1), g(1, 2));
+    let (m20, m21, m22) = (g(2, 0), g(2, 1), g(2, 2));
+    let (m30, m31, m32) = (g(3, 0), g(3, 1), g(3, 2));
+    let (m11m00, m10m01, m10m02) = (m00 * m11, m01 * m10, m02 * m10);
+    let (m12m00, m12m01, m11m02) = (m00 * m12, m01 * m12, m02 * m11);
+    let det = (m11m00 - m10m01) * m22 + (m10m02 - m12m00) * m21 + (m12m01 - m11m02) * m20;
+    let s = 1.0 / det;
+    let (m10m22, m10m21, m11m22) = (m10 * m22, m10 * m21, m11 * m22);
+    let (m11m20, m12m21, m12m20) = (m11 * m20, m12 * m21, m12 * m20);
+    let (m20m02, m20m01, m21m02) = (m20 * m02, m20 * m01, m21 * m02);
+    let (m21m00, m22m01, m22m00) = (m21 * m00, m22 * m01, m22 * m00);
+    Mat4::from_cols_array(&[
+        (m11m22 - m12m21) * s,
+        (m21m02 - m22m01) * s,
+        (m12m01 - m11m02) * s,
+        0.0,
+        (m12m20 - m10m22) * s,
+        (m22m00 - m20m02) * s,
+        (m10m02 - m12m00) * s,
+        0.0,
+        (m10m21 - m11m20) * s,
+        (m20m01 - m21m00) * s,
+        (m11m00 - m10m01) * s,
+        0.0,
+        (m10m22 * m31 - m10m21 * m32 + m11m20 * m32 - m11m22 * m30 + m12m21 * m30 - m12m20 * m31)
+            * s,
+        (m20m02 * m31 - m20m01 * m32 + m21m00 * m32 - m21m02 * m30 + m22m01 * m30 - m22m00 * m31)
+            * s,
+        (m11m02 * m30 - m12m01 * m30 + m12m00 * m31 - m10m02 * m31 + m10m01 * m32 - m11m00 * m32)
+            * s,
+        1.0,
+    ])
+}
 
 /// The shadow camera as Iris places it (7.1; measured from the outside): its view (player
 /// space to shadow view space) and GL projection. The view undoes `sunPathRotation`, turns the
 /// light's path about Z by the light's angle from the zenith, then X by 90 degrees, so the
 /// light lies on the view's +Z. Its origin is `shadowIntervalSize / 2 - camera % interval`
 /// (the remainder takes the camera's sign) from the player on each world axis, so the map moves
-/// in whole steps. The orthographic projection covers `shadowDistance` each side and depths
-/// from `-near` to `far`, counted from `SHADOW_EYE` blocks toward the light; or perspective
-/// with `shadowMapFov`.
+/// in whole steps. The orthographic projection is `shadow_ortho`'s; or perspective with
+/// `shadowMapFov`, from `shadowNearPlane` (0.05) to `shadowFarPlane` (256) counted from
+/// `SHADOW_EYE` blocks toward the light.
 pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4) {
     let tilt = f64::from(shadow.sun_path_rotation).to_radians();
     let untilted = DMat4::from_rotation_x(tilt).transform_vector3(light.as_dvec3());
@@ -537,14 +656,13 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
         DVec3::ZERO
     };
     let view = (rotation * DMat4::from_translation(-origin)).as_mat4();
-    let (near, far) = (shadow.near, shadow.far);
-    let eye = Mat4::from_translation(Vec3::new(0.0, 0.0, -SHADOW_EYE));
     let projection = match shadow.fov {
-        Some(fov) => Mat4::perspective_rh_gl(fov.to_radians(), 1.0, near, far) * eye,
-        None => {
-            let d = shadow.distance;
-            Mat4::orthographic_rh_gl(-d, d, -d, d, -near, far) * eye
+        Some(fov) => {
+            let (near, far) = (shadow.near.unwrap_or(0.05), shadow.far.unwrap_or(256.0));
+            let eye = Mat4::from_translation(Vec3::new(0.0, 0.0, -SHADOW_EYE));
+            Mat4::perspective_rh_gl(fov.to_radians(), 1.0, near, far) * eye
         }
+        None => shadow_ortho(shadow).0,
     };
     (view, projection)
 }
@@ -606,8 +724,8 @@ impl FrameUniforms {
         let sun_angle = day_fraction(frame.sky.sun_angle);
         let day = sun_angle < 0.5;
         let tilt = self.shadow.sun_path_rotation;
-        let sun = to_view(body(frame.sky.sun_angle, tilt));
-        let moon = to_view(body(frame.sky.moon_angle, tilt));
+        let sun = celestial(view, tilt, Some(frame.sky.sun_angle));
+        let moon = celestial(view, tilt, Some(frame.sky.moon_angle));
         // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26), at
         // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
         // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
@@ -648,7 +766,13 @@ impl FrameUniforms {
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
-        let (_, shadow_projection) = shadow_camera(light, frame.camera, &self.shadow);
+        let (shadow_projection, shadow_projection_inverse) = match self.shadow.fov {
+            Some(_) => {
+                let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
+                (projection, projection.inverse())
+            }
+            None => shadow_ortho(&self.shadow),
+        };
         let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
@@ -688,18 +812,14 @@ impl FrameUniforms {
                 "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
                 "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
-                "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
+                "upPosition" => v3(celestial(view, tilt, None)),
                 "sunPosition" => v3(sun),
                 "endFlashPosition" => v3(to_view(inputs.end_flash_direction)),
                 "centerDepthSmooth" => Value::f(&[center_depth]),
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
                 "sunAngle" => Value::f(&[sun_angle]),
-                "shadowAngle" => Value::f(&[if day {
-                    sun_angle
-                } else {
-                    day_fraction(frame.sky.moon_angle % 360.0)
-                }]),
+                "shadowAngle" => Value::f(&[shadow_angle(frame)]),
                 "worldTime" => Value::i(&[day_time]),
                 "worldDay" => Value::i(&[world_day as i32]),
                 "moonPhase" => Value::i(&[world_day.rem_euclid(8) as i32]),
@@ -707,7 +827,7 @@ impl FrameUniforms {
                 "shadowModelView" => m4(shadow_view),
                 "shadowModelViewInverse" => m4(shadow_view_inverse),
                 "shadowProjection" => m4(shadow_projection),
-                "shadowProjectionInverse" => m4(shadow_projection.inverse()),
+                "shadowProjectionInverse" => m4(shadow_projection_inverse),
                 "atlasSize" => Value::i(&[self.atlas[0] as i32, self.atlas[1] as i32]),
                 "frameTime" => Value::f(&[frame_time]),
                 "frameTimeCounter" => Value::f(&[seconds]),
@@ -935,6 +1055,36 @@ mod tests {
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
     }
 
+    /// The declarations our probe packs (#9307) ran in Iris 1.11.7: kept, or read as 0.
+    #[test]
+    fn built_ins_are_read_only_as_iris_gives_them() {
+        let int = Value::i(&[1]);
+        let float = Value::f(&[0.25]);
+        let matrix = Value::f(&[1.0; 16]);
+        for (value, name, ty, kept) in [
+            (&int, "isSpectator", "bool", true),
+            (&int, "isSpectator", "int", true),
+            (&int, "worldTime", "bool", true),
+            (&int, "worldTime", "uint", false),
+            (&int, "worldTime", "float", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "ivec2", true),
+            (&Value::i(&[2048, 2048]), "atlasSize", "vec2", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "int", false),
+            (&Value::i(&[2048, 2048]), "atlasSize", "ivec3", false),
+            (&float, "sunAngle", "float", true),
+            (&float, "sunAngle", "vec2", false),
+            (&float, "viewWidth", "int", false),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec3", true),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec4", false),
+            (&Value::f(&[1.0, 2.0, 3.0]), "cameraPosition", "vec2", false),
+            (&matrix, "gbufferModelView", "mat4", true),
+            (&matrix, "gbufferModelView", "mat3", false),
+            (&Value::i(&[1]), GBUFFERS_FOG_MODE, "int", true),
+        ] {
+            assert_eq!(value.read_as(name, ty), kept, "{ty} {name}");
+        }
+    }
+
     /// The load-time run of custom uniforms sees each built-in at its size: Iris 1.11.7 reads 2
     /// for the first line of our probes K and X (#9086) and 0 for the others.
     #[test]
@@ -1022,11 +1172,40 @@ mod tests {
         );
     }
 
+    /// A dimension type of `attributes` (JSON), loaded as the game loads one and sampled at noon.
+    fn sky_of(name: &str, attributes: &str) -> crate::environment::Sky {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cloud-height-{}-{name}",
+            std::process::id()
+        ));
+        let dir = root.join("data/minecraft/dimension_type");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            format!(r#"{{"attributes": {attributes}}}"#),
+        )
+        .unwrap();
+        let environment =
+            crate::environment::Environment::load_dimension(&root, name, false).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        environment.sample(6000, None, None)
+    }
+
     #[test]
-    fn cloud_height_needs_a_cloud_color() {
-        assert_eq!(cloud_height(0.8, 192.33), 192.33);
-        assert_eq!(cloud_height(0.8, 120.0), 120.0);
-        assert!(cloud_height(0.0, 192.33).is_nan());
+    fn cloud_height_is_the_dimensions_with_or_without_clouds() {
+        // Our probe packs read 192.33 in Iris 1.11.7's Nether and End, whose dimension types
+        // set neither a cloud colour nor a cloud height.
+        let nether = sky_of(
+            "nether_like",
+            r##"{"minecraft:visual/fog_start_distance": 10.0, "minecraft:visual/fog_end_distance": 96.0}"##,
+        );
+        assert_eq!(nether.cloud_color[3], 0.0, "no clouds");
+        assert_eq!(cloud_height(&nether), 192.33);
+        let cloudy = sky_of(
+            "cloudy",
+            r##"{"minecraft:visual/cloud_color": "#ccffffff", "minecraft:visual/cloud_height": 120.0}"##,
+        );
+        assert_eq!(cloud_height(&cloudy), 120.0);
     }
 
     #[test]
@@ -1128,6 +1307,80 @@ mod initial_history_tests {
         float(u, name).map(f32::to_bits)
     }
 
+    /// `shadowProjection` and its inverse to the last bit, as a probe pack of ours read them
+    /// back in Iris 1.11.7, for `shadowDistance`, `shadowNearPlane` and `shadowFarPlane` (none
+    /// meaning the pack doesn't set it): a plane the pack sets is taken as it is, with no
+    /// 100-block offset; one it doesn't set is -100.05 (near) or 156 (far).
+    #[test]
+    fn the_shadow_projection_is_iris_s_for_the_pack_s_planes() {
+        let hud = HudBatch::new([1280, 720]);
+        let f = frame(&hud);
+        let (o, z, one) = (0, 0x80000000, 0x3f800000);
+        type Case = (f32, Option<f32>, Option<f32>, [u32; 4], [u32; 4]);
+        // (distance, near, far, [side, m22, m32, -], [inverse side, m22, m32, -])
+        let cases: [Case; 5] = [
+            (
+                100.0,
+                None,
+                None,
+                [0x3c23d70a, 0xbbfff335, 0xbe5fc198, 0],
+                [0x42c80001, 0xc3000666, 0xc1dfccc8, 0],
+            ),
+            (
+                100.0,
+                Some(0.5),
+                Some(128.0),
+                [0x3c23d70a, 0xbc808081, 0xbf810101, 0],
+                [0x42c80000, 0xc27f0000, 0xc2808000, 0],
+            ),
+            (
+                100.0,
+                None,
+                Some(128.0),
+                [0x3c23d70a, 0xbc0fb013, 0xbdfb0128, 0],
+                [0x42c80000, 0xc2e40ccc, 0xc15f9994, 0],
+            ),
+            (
+                100.0,
+                Some(0.05),
+                None,
+                [0x3c23d70a, 0xbc521e5f, 0xbf801503, 0],
+                [0x42c80000, 0xc29bf333, 0xc29c0ccd, 0],
+            ),
+            (
+                127.3,
+                Some(1.7),
+                Some(333.3),
+                [0x3c00b42f, 0xbbc5a2bf, 0xbf814ffb, 0],
+                [0x42fe9999, 0xc325cccc, 0xc3277fff, 0],
+            ),
+        ];
+        for (distance, near, far, [side, m22, m32, _], [i_side, i22, i32, _]) in cases {
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    distance,
+                    near,
+                    far,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            assert_eq!(
+                bits(&u, "shadowProjection"),
+                [side, o, o, o, o, side, o, o, o, o, m22, o, o, o, m32, one],
+                "{near:?} {far:?}"
+            );
+            assert_eq!(
+                bits(&u, "shadowProjectionInverse"),
+                [
+                    i_side, z, z, o, z, i_side, z, o, z, z, i22, o, z, z, i32, one
+                ],
+                "{near:?} {far:?}"
+            );
+        }
+    }
+
     /// Iris 1.11.7's camera and shadow matrices to the last bit, read back from its uniforms by
     /// a probe pack of ours: on a texel boundary of the shadow map the last bit decides which
     /// texel a fragment reads (#8464). Noon at 6000 ticks, looking west (yaw 90) with vanilla's
@@ -1211,6 +1464,105 @@ mod initial_history_tests {
         assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3eb134f4);
     }
 
+    /// `sunPosition`, `moonPosition`, `upPosition` and `shadowLightPosition` to the last bit, as
+    /// a probe pack of ours read them back in Iris 1.11.7: noon looking west, just after sunset
+    /// looking south (where Iris's sun is exactly 0 in z), and with `sunPathRotation = 30` at
+    /// 1000 ticks, at 13000 looking down 45° and at 12786 with yaw 200, pitch -30. The sky
+    /// angles are vanilla's timeline at those ticks.
+    #[test]
+    fn the_sun_moon_and_up_are_iris_s_to_the_last_bit() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        let o = 0;
+        type Case = (f32, f32, f32, u32, u32, [[u32; 3]; 3], bool);
+        let cases: [Case; 5] = [
+            (
+                0.0,
+                90.0,
+                0.0,
+                0,
+                0x43340000,
+                [[o, 0x42c7fffe, o], [o, 0xc2c7fffe, o], [o, 0x42c7fffe, o]],
+                true,
+            ),
+            (
+                0.0,
+                0.0,
+                0.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0x42c7fff7, 0xbde43dae, o],
+                    [0xc2c7fff7, 0x3de4376e, o],
+                    [o, 0x42c7ffff, o],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                90.0,
+                0.0,
+                0x4394c5da,
+                0x43eec5da,
+                [
+                    [0x41b8fb81, 0x42203312, 0x42b15411],
+                    [0xc1b8fb8c, 0xc220331b, 0xc2b1540f],
+                    [o, 0x42c7fffe, o],
+                ],
+                true,
+            ),
+            (
+                30.0,
+                0.0,
+                45.0,
+                0x42bb0aec,
+                0x4388c2bb,
+                [
+                    [0x42c79f54, 0xbfcb7a52, 0xc0bdd8f1],
+                    [0xc2c79f54, 0x3fcb7a25, 0x40bdd8c7],
+                    [o, 0x428d6bdc, 0x428d6bde],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                200.0,
+                -30.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0xc2bbe678, 0x41885944, 0x41edb502],
+                    [0x42bbe677, 0xc1885947, 0xc1edb4fc],
+                    [o, 0x42ad347e, 0xc247fffe],
+                ],
+                false,
+            ),
+        ];
+        for (tilt, yaw, pitch, sun, moon, [sun_at, moon_at, up], day) in cases {
+            f.yaw = yaw;
+            f.pitch = pitch;
+            f.sky.sun_angle = f32::from_bits(sun);
+            f.sky.moon_angle = f32::from_bits(moon);
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    sun_path_rotation: tilt,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            let vector = |name: &str| -> [u32; 3] {
+                let v = bits(&u, name);
+                [v[0], v[1], v[2]]
+            };
+            assert_eq!(vector("sunPosition"), sun_at, "{sun:x}");
+            assert_eq!(vector("moonPosition"), moon_at, "{sun:x}");
+            assert_eq!(vector("upPosition"), up, "{sun:x}");
+            let light = if day { sun_at } else { moon_at };
+            assert_eq!(vector("shadowLightPosition"), light, "{sun:x}");
+        }
+    }
+
     /// At night the moon casts the shadows, here with `sunPathRotation = 30`: Iris 1.11.7 at
     /// 16000 ticks (the moon at 324.4897°), the camera at (-556.5, 76.62, 212.5), whose
     /// negative x keeps its sign in the remainder.
@@ -1246,6 +1598,86 @@ mod initial_history_tests {
         );
         assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3f26bf8b);
         assert_eq!(float(&u, "shadowAngle")[0].to_bits(), 0x3e1afe2e);
+    }
+
+    /// Between whole ticks of the timeline, Iris 1.11.7 turns `shadowModelView` by an angle made
+    /// from `shadowAngle`, not by the sky's own angle: read back by a probe pack of ours at 7297,
+    /// 7300 and 16000 ticks, and at 7303 with `sunPathRotation = 30`, the camera at
+    /// (13.5, 69.62, -13.5). The sky angles are vanilla's timeline at those ticks.
+    #[test]
+    fn the_shadow_matrices_turn_by_iris_s_angle_between_ticks() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        f.camera = DVec3::new(13.5, 68.0 + f64::from(1.62f32), -13.5);
+        let (o, z, one, minus) = (0, 0x80000000, 0x3f800000, 0xbf800000);
+        let cases: [(f32, u32, u32, [u32; 16], [u32; 16]); 4] = [
+            (
+                0.0,
+                0x415d5e10,
+                0x4341d5e1,
+                [
+                    0x3f789291, o, 0xbe74dfb0, o, 0x3e74dfb0, o, 0x3f789291, o, o, minus, z, o,
+                    0x3f223deb, 0x40200000, 0x3ef7034a, one,
+                ],
+                [
+                    0x3f789291, 0x3e74dfb0, o, o, o, o, minus, o, 0xbe74dfb0, 0x3f789291, z, o,
+                    0xbf000000, 0xbf1eb87f, 0x40200000, one,
+                ],
+            ),
+            (
+                0.0,
+                0x415de96f,
+                0x4341de97,
+                [
+                    0x3f788940, o, 0xbe7576d1, o, 0x3e7576d1, o, 0x3f788940, o, o, minus, z, o,
+                    0x3f2250af, 0x40200000, 0x3ef6d1f4, one,
+                ],
+                [
+                    0x3f788940, 0x3e7576d1, o, o, o, o, minus, o, 0xbe7576d1, 0x3f788940, z, o,
+                    0xbeffffff, 0xbf1eb87f, 0x40200000, one,
+                ],
+            ),
+            (
+                0.0,
+                0x43107d5b,
+                0x43a23eae,
+                [
+                    0x3f506307, o, 0x3f14b28c, o, 0xbf14b28c, z, 0x3f506307, o, o, minus, z, o,
+                    0x3d400268, 0x40200000, 0x3f4b8c94, one,
+                ],
+                [
+                    0x3f506307, 0xbf14b28c, o, o, o, z, minus, o, 0x3f14b28c, 0x3f506307, z, o,
+                    0xbf000000, 0xbf1eb880, 0x40200000, one,
+                ],
+            ),
+            (
+                30.0,
+                0x415e74d7,
+                0x4341e74d,
+                [
+                    0x3f787fe8, o, 0xbe760e06, o, 0x3e5516f6, 0xbf000000, 0x3f5734fd, o,
+                    0xbdf60e06, 0xbf5db3d7, 0xbef87fe8, o, 0x3f6a2bc6, 0x3fed72ac, 0x3fcea5f8, one,
+                ],
+                [
+                    0x3f787fe8, 0x3e5516f6, 0xbdf60e06, o, o, 0xbf000000, 0xbf5db3d7, o,
+                    0xbe760e06, 0x3f5734fd, 0xbef87fe8, o, 0xbf000001, 0xbf1eb881, 0x40200000, one,
+                ],
+            ),
+        ];
+        for (tilt, sun, moon, view, inverse) in cases {
+            f.sky.sun_angle = f32::from_bits(sun);
+            f.sky.moon_angle = f32::from_bits(moon);
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    sun_path_rotation: tilt,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            assert_eq!(bits(&u, "shadowModelView"), view, "{sun:x}");
+            assert_eq!(bits(&u, "shadowModelViewInverse"), inverse, "{sun:x}");
+        }
     }
 
     #[test]
@@ -1855,3 +2287,7 @@ mod initial_history_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_uniforms/ftransform_test.rs"]
+mod ftransform_test;

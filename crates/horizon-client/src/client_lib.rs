@@ -12,8 +12,8 @@ pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_edit, block_entities,
     block_entity_anim, block_entity_render, block_sprites, bluemap, bluemap_detect, border_render,
     breaking, brewing, camera, chat, chunk, chunk_map, cit, cit_armor, cit_assets, cit_glint,
-    clouds, collisions, command_block, containers, crash, datapack, dynamic_light, effects,
-    environment, extras, fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui,
+    clouds, collisions, command_block, containers, controller_ui, crash, datapack, dynamic_light,
+    effects, environment, extras, fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui,
     hdr_calibration, hud, hud_layout, hud_overlays, inventory_effects, java_text, jigsaw_block,
     json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap, mipmap, mod_list,
     model_library, models, multiline_edit, native_emissive, options_file, options_fixes,
@@ -121,11 +121,13 @@ pub mod screen_layout;
 pub mod screen_narrator;
 pub mod social_screen;
 pub use horizon_server_files as server;
+pub mod controller_notice;
 pub mod server_packs;
 pub mod shadows;
 pub mod spear;
 pub mod spectator_menu;
 pub mod sprint;
+pub mod stand_up;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;

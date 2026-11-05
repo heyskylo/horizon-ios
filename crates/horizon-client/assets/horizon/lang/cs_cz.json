@@ -398,6 +398,7 @@
   "Frame Generation": "Generování snímků",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Zobrazuje vytvořený rám mezi každým dvěma skutečnými: hladší, trochu více zpoždění.",
   "Shadow Cache": "Stínová mezipaměť",
+  "Shader Packs...": "Shader Pack...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Znovu použije mapu stínu balíčku, když se slunce, pohled a svět shodují. Ve výchozím nastavení vypnuto.",
   "Find BlueMap": "Najděte BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na serverech najde jejich webovou mapu BlueMap pro vzdálený terén. Další připojení.",

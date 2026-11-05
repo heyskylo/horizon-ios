@@ -474,5 +474,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Аури и пътеки, които другите играчи носят. Изключено по подразбиране.",
   "horizon.extras.cosmetics.shown": "Показано",
   "horizon.extras.cosmetics.hidden": "Скрити",
-  "horizon.extras.cosmetics.name_tags": "Само етикети с имена"
+  "horizon.extras.cosmetics.name_tags": "Само етикети с имена",
+  "Shader Packs...": "Шейдър пакети..."
 }

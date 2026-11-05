@@ -419,11 +419,8 @@ impl Launcher {
                         ),
                 );
             }
-            SelfUpdate::Stuck(error) => {
-                let why = match error {
-                    Some(e) => trf("the update failed: {error}", &[("error", e)]),
-                    None => tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.").to_string(),
-                };
+            SelfUpdate::Stuck(error) if !self.self_update_hidden => {
+                let why = self.launcher_update_help(error.as_deref());
                 let url = backend::download_page(&self.links.website);
                 foot = foot.child(
                     card(tr("A new version is available").to_string(), None)
@@ -433,10 +430,40 @@ impl Launcher {
                                 .child(why),
                         )
                         .child(
-                            ui::solid("download-launcher", tr("Download again"), 32., 13., &t)
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
                                 .mt(px(12.))
-                                .w_full()
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                .when(self.launcher_download_available(), |actions| {
+                                    actions.child(
+                                        ui::solid(
+                                            "download-launcher",
+                                            tr("Download again"),
+                                            32.,
+                                            13.,
+                                            &t,
+                                        )
+                                        .w_full()
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    )
+                                })
+                                .child(
+                                    ui::solid(
+                                        "dismiss-launcher-update",
+                                        tr("Dismiss"),
+                                        32.,
+                                        13.,
+                                        &t,
+                                    )
+                                    .w_full()
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.self_update_hidden = true;
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
                         ),
                 );
             }
@@ -585,9 +612,11 @@ impl Launcher {
                 ),
             );
         }
-        // `min-w-0 xl:shrink-0`: under 1280 px the pages give way to the buttons on the right
-        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`).
-        let wide = self.window_width >= 1280.;
+        // `min-w-0 xl:shrink-0`: under 1380 px the pages give way to the buttons on the right
+        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`). Non-English locales
+        // with wider labels (and the build log button) require ~1300+ px, so 1380 px ensures
+        // the action buttons (Microsoft sign-in, Settings) are never pushed off-screen (#9902).
+        let wide = self.window_width >= 1380.;
         let strip = crate::glass::plate(radius::LARGE)
             .p(px(4.))
             .min_w_0()
@@ -849,8 +878,8 @@ impl Launcher {
         ))
     }
 
-    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…, the
-    /// desktop shortcut, then Delete… (asked twice). Each acts on that instance.
+    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…,
+    /// launch settings, the desktop shortcut, then Delete… (asked twice). Each acts on that instance.
     pub(super) fn row_menu(
         &mut self,
         window: &Window,
@@ -877,7 +906,8 @@ impl Launcher {
             this.select_instance(i);
             this.go(Page::Play);
         };
-        let (edit, copy, export, shortcut) = (
+        let (edit, copy, export, launch, shortcut) = (
+            instance.clone(),
             instance.clone(),
             instance.clone(),
             instance.clone(),
@@ -932,6 +962,18 @@ impl Launcher {
                         if this.export.is_none() {
                             this.toggle_export();
                         }
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                item("launch", "sliders-horizontal", tr("Launch…").into()).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        pick(this, &launch);
+                        this.home_tab = home_tabs::HomeTab::Overview;
+                        // A panel left open for another instance must not turn this into Close.
+                        this.launch = None;
+                        this.toggle_launch();
                         cx.notify();
                     },
                 )),

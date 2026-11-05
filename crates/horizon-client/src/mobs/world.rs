@@ -431,20 +431,21 @@ pub(crate) fn with_built_test_world(
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
-    with_built_test_world_rules(others, true, build, f)
+    with_built_test_world_rules(others, true, true, build, f)
 }
 /// `with_built_test_world` with the `mob_griefing` game rule the world reports.
 #[cfg(test)]
 pub(crate) fn with_built_test_world_rules(
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
-    with_resource_test_world(&root, others, mob_griefing, build, f)
+    with_resource_test_world(&root, others, mob_griefing, mob_drops, build, f)
 }
 /// The same mob world loaded from a content mod's resource root.
 #[cfg(test)]
@@ -452,6 +453,7 @@ pub(crate) fn with_resource_test_world(
     root: &std::path::Path,
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
@@ -510,7 +512,7 @@ pub(crate) fn with_resource_test_world(
         biomes: &biomes,
         mob_griefing,
         universal_anger: false,
-        mob_drops: true,
+        mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
         end: false,

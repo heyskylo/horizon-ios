@@ -61,7 +61,7 @@ struct Builder {
     threads: Vec<thread::JoinHandle<()>>,
 }
 impl Builder {
-    fn new(terrain: Arc<VanillaTerrain>) -> Self {
+    fn new(terrain: Arc<VanillaTerrain>, background: bool) -> Self {
         let shared = Arc::new(Shared {
             requests: Mutex::new(Requests::default()),
             wake: Condvar::new(),
@@ -74,7 +74,7 @@ impl Builder {
         // time while the far trees and structures came in).
         let count = horizon_threads::worker_count().div_ceil(3).clamp(1, 12);
         let threads = (0..count)
-            .map(|_| Self::spawn(terrain.clone(), shared.clone(), tx.clone()))
+            .map(|_| Self::spawn(terrain.clone(), shared.clone(), tx.clone(), background))
             .collect();
         Self {
             shared,
@@ -86,11 +86,14 @@ impl Builder {
         terrain: Arc<VanillaTerrain>,
         worker: Arc<Shared>,
         tx: mpsc::Sender<LodDetail>,
+        background: bool,
     ) -> thread::JoinHandle<()> {
         thread::Builder::new()
             .name("Far decoration".into())
             .spawn(move || {
-                horizon_threads::idle_current();
+                if background {
+                    horizon_threads::idle_current();
+                }
                 // A superflat world's far ring is its flat ground (`FlatTerrain::lod_surface`);
                 // a normal overworld rebuilt here would draw hills, oceans and trees.
                 if terrain.is_flat() {
@@ -509,7 +512,7 @@ pub(super) struct VanillaLodSampler {
 impl VanillaLodSampler {
     pub(super) fn new(generator: Arc<VanillaTerrain>) -> Self {
         let worker = generator.generator.worker();
-        let builder = Some(Builder::new(generator.clone()));
+        let builder = Some(Builder::new(generator.clone(), true));
         let vegetation = Arc::new(Vegetation::new(
             generator.generator.data(),
             &generator.biome_map,
@@ -830,6 +833,9 @@ mod tests {
             1234,
         )?);
         let mut sampler = VanillaLodSampler::new(terrain.clone());
+        // This bounded test waits for decoration. Idle workers can be starved
+        // by other tests, so keep the real request/result path at normal priority.
+        sampler.builder = Some(Builder::new(terrain.clone(), false));
         let mut fork = sampler.fork().expect("independent far sampler");
         let direct = sampler.grid(-1024, 0, 32, 16);
         assert_eq!(

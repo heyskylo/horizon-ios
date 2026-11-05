@@ -11,6 +11,7 @@ use horizon_client::{
     collisions::{SceneCollisions, no_collision_empty},
     items::ItemStack,
     mobs::Who,
+    stand_up::{StandUpLevel, StandUpType, bed_forward, stand_up_fallback},
     text::Text,
 };
 use horizon_core::{
@@ -346,23 +347,16 @@ impl Game<'_> {
 
     // ---- respawning -------------------------------------------------------
 
-    /// `DismountHelper.nonClimbableShape`: the collision shape, empty for
-    /// climbable blocks and open trapdoors.
-    fn non_climbable_shape(&self, p: [i32; 3]) -> VoxelShape {
-        let state = self.world.block(p[0], p[1], p[2]);
-        let name = &self.res.facts().get(state).name;
-        let open_trapdoor = name.ends_with("_trapdoor")
-            && self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|s| s.properties.get("open"))
-                .is_some_and(|v| v == "true");
-        if self.block_in_tag("minecraft:climbable", name) || open_trapdoor {
-            return VoxelShape::empty();
+    /// This level as the stand-up search reads it (`crate::stand_up`).
+    fn stand_up_level(&self) -> StandUpLevel<'_, '_> {
+        StandUpLevel {
+            world: &self.world,
+            registry: self.pack.assets.registry,
+            facts: self.res.facts(),
+            collision: self.collision,
+            block_tags: &self.res.items().block_tags,
+            border: Some(self.border.geometry()),
         }
-        self.block_collision_shape(p)
     }
     /// `BlockState.getCollisionShape(level, pos)`: the shape under the empty
     /// collision context.
@@ -406,81 +400,10 @@ impl Game<'_> {
             .get(tag)
             .is_some_and(|s| s.contains(block))
     }
-    /// `EntityType.isBlockDangerous` for the player.
-    fn dangerous_for_player(&self, p: [i32; 3]) -> bool {
-        let state = self.world.block(p[0], p[1], p[2]);
-        let name = &*self.res.facts().get(state).name;
-        let lit_campfire = (name == "minecraft:campfire" || name == "minecraft:soul_campfire")
-            && self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|s| s.properties.get("lit"))
-                .is_some_and(|v| v == "true");
-        // NodeEvaluator.isBurningBlock, then the hurting plants and snow.
-        self.block_in_tag("minecraft:fire", name)
-            || matches!(
-                name,
-                "minecraft:lava"
-                    | "minecraft:magma_block"
-                    | "minecraft:lava_cauldron"
-                    | "minecraft:wither_rose"
-                    | "minecraft:sweet_berry_bush"
-                    | "minecraft:cactus"
-                    | "minecraft:powder_snow"
-            )
-            || lit_campfire
-    }
     /// `DismountHelper.findSafeDismountLocation` for a standing player.
     fn safe_dismount_location(&self, p: [i32; 3], check_dangerous: bool) -> Option<Vec3> {
-        if check_dangerous && self.dangerous_for_player(p) {
-            return None;
-        }
-        let shape = self.non_climbable_shape(p);
-        let below = self.non_climbable_shape([p[0], p[1] - 1, p[2]]);
-        let floor = horizon_core::geometry::block_floor_height(&shape, || &below);
-        // DismountHelper.isBlockFloorValid.
-        if floor.is_infinite() || floor >= 1.0 {
-            return None;
-        }
-        if check_dangerous && floor <= 0.0 && self.dangerous_for_player([p[0], p[1] - 1, p[2]]) {
-            return None;
-        }
-        let position = Vec3::new(
-            f64::from(p[0]) + 0.5,
-            f64::from(p[1]) + floor,
-            f64::from(p[2]) + 0.5,
-        );
-        // EntityDimensions.makeBoundingBox for 0.6 by 1.8 (the half width is a float).
-        let half = f64::from(0.6f32 / 2.0);
-        let bounds = Aabb::new(
-            Vec3::new(position.x - half, position.y, position.z - half),
-            Vec3::new(
-                position.x + half,
-                position.y + f64::from(1.8f32),
-                position.z + half,
-            ),
-        );
-        if !self.can_dismount_to(bounds) {
-            return None;
-        }
-        let name = |q: [i32; 3]| {
-            self.res
-                .facts()
-                .get(self.world.block(q[0], q[1], q[2]))
-                .name
-                .clone()
-        };
-        if self.block_in_tag("minecraft:invalid_spawn_inside", &name(p))
-            || self.block_in_tag(
-                "minecraft:invalid_spawn_inside",
-                &name([p[0], p[1] + 1, p[2]]),
-            )
-        {
-            return None;
-        }
-        Some(position)
+        self.stand_up_level()
+            .safe_dismount_location(StandUpType::PLAYER, p, check_dangerous)
     }
     /// `Block.isPossibleToRespawnInThis`: neither solid nor liquid; banners,
     /// signs and pressure plates override it to always.
@@ -505,58 +428,11 @@ impl Game<'_> {
         }
         None
     }
-    /// `AbstractBedBlock.findStandUpPosition` for a bed whose head is at
-    /// `pos`, facing `forward`, set from `yaw`: beside the bed on the side
-    /// the player faced away from, around it, then on it; a safe spot
-    /// first, else any spot (a bunk bed: around it, a block lower, then on
-    /// it).
+    /// `AbstractBedBlock.findStandUpPosition` for a player beside the bed
+    /// whose head is at `pos`, facing `forward`, set from `yaw`.
     pub(super) fn bed_stand_up(&self, pos: [i32; 3], forward: [i32; 3], yaw: f32) -> Option<Vec3> {
-        // Direction.getClockWise.
-        let right = [-forward[2], 0, forward[0]];
-        // Direction.isFacingAngle.
-        let radians = yaw * 0.017_453_292;
-        let (dx, dz) = (
-            -horizon_core::geometry::trig::sin(f64::from(radians)),
-            horizon_core::geometry::trig::cos(f64::from(radians)),
-        );
-        let facing = right[0] as f32 * dx + right[2] as f32 * dz > 0.0;
-        let side = if facing {
-            [-right[0], 0, -right[2]]
-        } else {
-            right
-        };
-        let (f, s) = ([forward[0], forward[2]], [side[0], side[2]]);
-        // bedSurroundStandUpOffsets and bedAboveStandUpOffsets.
-        let surround = [
-            [s[0], s[1]],
-            [s[0] - f[0], s[1] - f[1]],
-            [s[0] - f[0] * 2, s[1] - f[1] * 2],
-            [-f[0] * 2, -f[1] * 2],
-            [-s[0] - f[0] * 2, -s[1] - f[1] * 2],
-            [-s[0] - f[0], -s[1] - f[1]],
-            [-s[0], -s[1]],
-            [-s[0] + f[0], -s[1] + f[1]],
-            [f[0], f[1]],
-            [s[0] + f[0], s[1] + f[1]],
-        ];
-        let above = [[0, 0], [-f[0], -f[1]]];
-        let at = |base: [i32; 3], offsets: &[[i32; 2]], check: bool| {
-            offsets.iter().find_map(|o| {
-                self.safe_dismount_location([base[0] + o[0], base[1], base[2] + o[1]], check)
-            })
-        };
-        let below = [pos[0], pos[1] - 1, pos[2]];
-        // isBunkBed: a bed below.
-        if self.is_bed(self.world.block(below[0], below[1], below[2])) {
-            return at(pos, &surround, true)
-                .or_else(|| at(below, &surround, true))
-                .or_else(|| at(pos, &above, true))
-                .or_else(|| at(pos, &surround, false))
-                .or_else(|| at(below, &surround, false))
-                .or_else(|| at(pos, &above, false));
-        }
-        let all: Vec<[i32; 2]> = surround.into_iter().chain(above).collect();
-        at(pos, &all, true).or_else(|| at(pos, &all, false))
+        self.stand_up_level()
+            .bed_stand_up(StandUpType::PLAYER, pos, forward, yaw)
     }
     pub(super) fn is_bed(&self, state: BlockStateId) -> bool {
         self.res.facts().get(state).name.ends_with("_bed")
@@ -571,29 +447,19 @@ impl Game<'_> {
             return None;
         }
         let facing = self.bed_forward(state);
-        let stand = self.bed_stand_up(head, facing, yaw).unwrap_or_else(|| {
-            Vec3::new(
-                f64::from(head[0]) + 0.5,
-                f64::from(head[1] + 1) + 0.1,
-                f64::from(head[2]) + 0.5,
-            )
-        });
+        let stand = self
+            .bed_stand_up(head, facing, yaw)
+            .unwrap_or_else(|| stand_up_fallback(head));
         Some((stand, look_at_yaw(stand, head)))
     }
     /// The bed's `facing`, as a step.
     pub(super) fn bed_forward(&self, state: BlockStateId) -> [i32; 3] {
-        let facing = self
-            .pack
-            .assets
-            .registry
-            .state(state)
-            .and_then(|s| s.properties.get("facing").cloned());
-        match facing.as_deref() {
-            Some("south") => [0, 0, 1],
-            Some("west") => [-1, 0, 0],
-            Some("east") => [1, 0, 0],
-            _ => [0, 0, -1],
-        }
+        let facing = self.pack.assets.registry.state(state);
+        bed_forward(
+            facing
+                .and_then(|s| s.properties.get("facing"))
+                .map(String::as_str),
+        )
     }
     /// `BedRule.canSetSpawn` of the bed's rule attribute (`bed_rule`,
     /// `straw_bed_rule`): only the Overworld's beds set the spawn, straw

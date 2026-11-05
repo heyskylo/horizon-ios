@@ -1,6 +1,6 @@
 //! Horizon's graphics settings screen: every video setting, vanilla's and
-//! Horizon's, on one list of pages (General, Quality, Performance, Advanced,
-//! HDR) with a page list beside it, a search field over it and a description
+//! Horizon's, on one list of pages (General, Quality, Performance, Shaders,
+//! Advanced, HDR) with a page list beside it, a search field over it and a description
 //! of the hovered setting with its cost. Which settings it shows, in what
 //! pages, with what description and cost, and its input live here; how it
 //! looks comes from `graphics_style`.
@@ -13,6 +13,7 @@ use crate::{
     hud::{HudAtlas, HudBatch},
     lang,
     settings::{Opt, Settings},
+    settings_shell::{self as shell, Columns},
     text::Text,
     ui,
 };
@@ -23,15 +24,18 @@ pub enum Page {
     General,
     Quality,
     Performance,
+    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
+    Shaders,
     Advanced,
     /// HDR output's own settings.
     Hdr,
 }
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::General,
         Page::Quality,
         Page::Performance,
+        Page::Shaders,
         Page::Advanced,
         Page::Hdr,
     ];
@@ -40,6 +44,7 @@ impl Page {
             Page::General => "General",
             Page::Quality => "Quality",
             Page::Performance => "Performance",
+            Page::Shaders => "Shaders",
             Page::Advanced => "Advanced",
             Page::Hdr => "HDR",
         }
@@ -50,6 +55,7 @@ impl Page {
             Page::General => "How far you see, the window and the HUD.",
             Page::Quality => "The sky and weather, lighting, textures and the image.",
             Page::Performance => "Chunk loading, culling and power use.",
+            Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
             Page::Advanced => "How frames reach the screen, and the performance overlay.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
         }
@@ -105,6 +111,8 @@ pub enum H {
     HdrLighting,
     BatteryMode,
     ShadowCache,
+    /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
+    ShaderPacks,
     GraphicsApi,
     TranslucentBatching,
     HdrSmoothGradients,
@@ -114,6 +122,8 @@ pub enum H {
 pub enum Item {
     Vanilla(Opt),
     Horizon(H),
+    /// A Horizon extra that changes the picture (`extras::Item`, kept in `horizon-extras.txt`).
+    Extra(crate::extras::Item),
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +146,14 @@ fn h(opt: H, cost: Cost, text: &'static str) -> Setting {
         text,
     }
 }
+/// An extra's row: its description is its own language key.
+fn e(item: crate::extras::Item, cost: Cost) -> Setting {
+    Setting {
+        item: Item::Extra(item),
+        cost,
+        text: item.description_key(),
+    }
+}
 
 /// Every page's settings, in named groups of related rows.
 pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
@@ -152,11 +170,18 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             vec![
                 (
                     "Preset",
-                    vec![h(
-                        H::Preset,
-                        None,
-                        "Sets the options below together. Changing one makes it Custom.",
-                    )],
+                    vec![
+                        h(
+                            H::Preset,
+                            None,
+                            "Sets the options below together. Changing one makes it Custom.",
+                        ),
+                        v(
+                            Opt::Preset,
+                            None,
+                            "Vanilla's own preset: sets only vanilla's options, as Minecraft does.",
+                        ),
+                    ],
                 ),
                 (
                     "Distance",
@@ -196,6 +221,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         v(Opt::GuiScale, None, "Size of menus and the HUD."),
                         v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
                         v(
+                            Opt::ExclusiveFullscreen,
+                            None,
+                            "Fullscreen takes the display over, at the mode below.",
+                        ),
+                        v(
+                            Opt::ExclusiveMode,
+                            None,
+                            "The display mode exclusive fullscreen uses. Applies when you leave.",
+                        ),
+                        v(
                             Opt::Vsync,
                             None,
                             "Waits for the display's refresh: no tearing, a little latency.",
@@ -210,17 +245,12 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "Lowers the frame rate when minimised, or idle too.",
                         ),
-                        v(
-                            Opt::Fov,
-                            Low,
-                            "Field of view. Wider shows more terrain at once.",
-                        ),
                     ],
                 ),
                 (
                     "Interface",
                     vec![
-                        v(Opt::ViewBobbing, None, "Sways the view while walking."),
+                        v(Opt::MenuBlur, Low, "Blurs the world behind menus."),
                         v(Opt::AttackIndicator, None, "Shows attack cooldown."),
                         v(Opt::Autosave, None, "Shows when the world saves."),
                     ],
@@ -252,6 +282,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How far rain and snow fall around you.",
                         ),
                         v(Opt::Particles, Medium, "How many particles effects spawn."),
+                        e(crate::extras::Item::HideBlockParticles, None),
                     ],
                 ),
                 (
@@ -279,6 +310,8 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                         v(Opt::Vignette, None, "Darkens the screen's edges."),
                         v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
+                        e(crate::extras::Item::DynamicLights, Low),
+                        e(crate::extras::Item::Fullbright, None),
                     ],
                 ),
                 (
@@ -288,6 +321,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Opt::Mipmaps,
                             None,
                             "Smaller copies of block textures for distant terrain: less shimmer.",
+                        ),
+                        v(
+                            Opt::TextureFiltering,
+                            Low,
+                            "How textures are sampled: sharper at a slant with Anisotropic.",
+                        ),
+                        v(
+                            Opt::MaxAnisotropy,
+                            Low,
+                            "How far Anisotropic filtering goes. Higher is sharper at a slant.",
                         ),
                         v(
                             Opt::CutoutLeaves,
@@ -404,11 +447,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
                         ),
-                        h(
-                            H::ShadowCache,
-                            Saves,
-                            "Reuses the pack shadow map when sun, view and world match. Off by default.",
-                        ),
                     ],
                 ),
                 (
@@ -460,6 +498,24 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     )],
                 ),
             ],
+        ),
+        (
+            Page::Shaders,
+            vec![(
+                "Shader packs",
+                vec![
+                    h(
+                        H::ShaderPacks,
+                        High,
+                        "Picks a shader pack, Horizon's or a shaders/ folder one, and sets its options.",
+                    ),
+                    h(
+                        H::ShadowCache,
+                        Saves,
+                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                ],
+            )],
         ),
         (
             Page::Advanced,
@@ -864,6 +920,8 @@ impl H {
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
+            // A press across the row, as Calibrate...: the list it opens shows the pick.
+            H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
             // they are there, while the saved value waits for a device that can.
@@ -1067,6 +1125,10 @@ impl Item {
                 Some("Only applies to asynchronous entity culling.")
             }
             Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
+            // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
+            Item::Vanilla(Opt::MaxAnisotropy) if s.file.int("textureFiltering") != 2 => {
+                Some("Only with Anisotropic texture filtering.")
+            }
             _ => None,
         }
     }
@@ -1074,7 +1136,10 @@ impl Item {
     fn steps(self, s: &Settings) -> bool {
         self.switch(s).is_none()
             && self.slider(s).is_none()
-            && !matches!(self, Item::Horizon(H::HdrKey | H::HdrCalibrate))
+            && !matches!(
+                self,
+                Item::Horizon(H::HdrKey | H::HdrCalibrate | H::ShaderPacks)
+            )
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
@@ -1107,9 +1172,10 @@ impl Item {
             Item::Horizon(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
             }
-            Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
+            Item::Extra(e) => return e.switch(&s.extras),
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
+            Item::Vanilla(Opt::ExclusiveFullscreen) => s.file.bool("exclusiveFullscreen"),
             Item::Vanilla(Opt::SmoothLighting) => s.smooth_lighting,
             Item::Vanilla(Opt::EntityShadows) => s.entity_shadows,
             Item::Vanilla(Opt::Vignette) => s.vignette,
@@ -1123,6 +1189,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Horizon(h) => h.slider(s),
+            Item::Extra(_) => None,
         }
     }
     pub fn label(self, s: &Settings) -> Text {
@@ -1133,6 +1200,10 @@ impl Item {
             ),
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s),
+            Item::Extra(e) => Text::option_name_value(
+                Text::literal(e.caption_text()),
+                Text::literal(e.value(&s.extras)),
+            ),
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
@@ -1140,8 +1211,10 @@ impl Item {
             return;
         }
         match self {
-            Item::Vanilla(o) => o.set_slider(s, v),
+            // Options.applyGraphicsPreset, as Video Settings' slider does it.
+            Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Horizon(h) => h.set_slider(s, v),
+            Item::Extra(_) => {}
         }
         self.touched(s);
     }
@@ -1152,6 +1225,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Horizon(h) => h.cycle(s, back),
+            Item::Extra(e) => e.cycle(&mut s.extras, back),
         }
         self.touched(s);
     }
@@ -1159,36 +1233,39 @@ impl Item {
     fn touched(self, s: &mut Settings) {
         let presetless = matches!(
             self,
-            Item::Horizon(
-                H::Preset
-                    | H::BlueMapAutoDetect
-                    | H::BlueMapRadius
-                    | H::Overlay
-                    | H::ScreenshotQuality
-                    | H::Pacing
-                    | H::PresentMode
-                    | H::Workers
-                    | H::FrameGeneration
-                    | H::BatteryMode
-                    | H::ShadowCache
-                    | H::GraphicsApi
-                    | H::TranslucentBatching
-                    | H::HdrSmoothGradients
-                    | H::GpuCulling
-            ) | Item::Vanilla(
-                Opt::GuiScale
-                    | Opt::Fullscreen
-                    | Opt::Vsync
-                    | Opt::MaxFps
-                    | Opt::Fov
-                    | Opt::Gamma
-                    | Opt::InactivityFps
-                    | Opt::ViewBobbing
-                    | Opt::ChunkFade
-                    | Opt::Vignette
-                    | Opt::Autosave
-                    | Opt::AttackIndicator
-            )
+            Item::Extra(_)
+                | Item::Horizon(
+                    H::Preset
+                        | H::BlueMapAutoDetect
+                        | H::BlueMapRadius
+                        | H::Overlay
+                        | H::ScreenshotQuality
+                        | H::Pacing
+                        | H::PresentMode
+                        | H::Workers
+                        | H::FrameGeneration
+                        | H::BatteryMode
+                        | H::ShadowCache
+                        | H::GraphicsApi
+                        | H::TranslucentBatching
+                        | H::HdrSmoothGradients
+                        | H::GpuCulling
+                )
+                | Item::Vanilla(
+                    Opt::GuiScale
+                        | Opt::Fullscreen
+                        | Opt::ExclusiveFullscreen
+                        | Opt::ExclusiveMode
+                        | Opt::Vsync
+                        | Opt::MaxFps
+                        | Opt::Gamma
+                        | Opt::InactivityFps
+                        | Opt::MenuBlur
+                        | Opt::ChunkFade
+                        | Opt::Vignette
+                        | Opt::Autosave
+                        | Opt::AttackIndicator
+                )
         );
         if !presetless {
             s.horizon.preset = Preset::Custom;
@@ -1198,6 +1275,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_steps(),
             Item::Horizon(h) => h.slider_steps(),
+            Item::Extra(_) => None,
         }
     }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
@@ -1207,23 +1285,7 @@ impl Item {
         let Some(pos) = self.slider(s) else {
             return;
         };
-        let next_pos = if let Some(steps) = self.slider_steps() {
-            let steps = steps as f32;
-            let current = (pos * steps).round();
-            let next = if forward {
-                current + 1.0
-            } else {
-                current - 1.0
-            };
-            (next / steps).clamp(0.0, 1.0)
-        } else {
-            let delta = 1.0 / (width - 8.0).max(1.0);
-            if forward {
-                (pos + delta).min(1.0)
-            } else {
-                (pos - delta).max(0.0)
-            }
-        };
+        let next_pos = shell::slider_step(pos, self.slider_steps(), width, forward);
         self.set_slider(s, next_pos);
         self.touched(s);
     }
@@ -1239,6 +1301,8 @@ pub enum Action {
     BindKey(&'static str),
     /// Start HDR calibration.
     Calibrate,
+    /// Open the shader pack list.
+    ShaderPacks,
     Done,
 }
 
@@ -1252,116 +1316,7 @@ pub enum Target {
     Done,
 }
 
-/// A line of the list at `y` in its content: a page's name (only while
-/// searching, which shows every page), a group's name with the height of the
-/// panel its rows sit on, or a setting.
-#[derive(Clone, Copy)]
-struct Line {
-    y: f32,
-    page: Page,
-    group: Option<(&'static str, f32)>,
-    setting: Option<Setting>,
-}
-impl Line {
-    fn h(&self) -> f32 {
-        match (self.setting, self.group) {
-            (Some(_), _) => style::ROW,
-            (None, Some(_)) => style::GROUP_ROW,
-            (None, None) => style::PAGE_ROW,
-        }
-    }
-}
-
-/// The screen's parts in GUI pixels. Down the left: the mark, the search
-/// field, the page list, and Undo and Done at the foot. On the right: the
-/// plate with the open page's name and its list, and the strip under it that
-/// describes the hovered setting. `list_x`, `list_w`, `top` and `bottom` are
-/// the list's view.
-#[derive(Clone, Copy, Debug)]
-struct Columns {
-    side_x: f32,
-    side_y: f32,
-    plate: [f32; 4],
-    dock: [f32; 4],
-    list_x: f32,
-    list_w: f32,
-    top: f32,
-    bottom: f32,
-}
-impl Columns {
-    fn of(w: f32, h: f32) -> Self {
-        let side_w = style::CONTROL_W;
-        let gap = if w >= 560.0 { 16.0 } else { 8.0 };
-        let pw = (w - 16.0 - side_w - gap).min(432.0).floor();
-        let side_x = ((w - side_w - gap - pw) / 2.0).floor();
-        let px = side_x + side_w + gap;
-        // A short screen (a 720p window at scale 3) gives the margin to the list.
-        let side_y = if h >= style::TITLED { 24.0 } else { 8.0 };
-        let dock = [px, h - 8.0 - style::DOCK_H, pw, style::DOCK_H];
-        let plate = [px, side_y, pw, dock[1] - 4.0 - side_y];
-        let list_x = px + 8.0;
-        Self {
-            side_x,
-            side_y,
-            plate,
-            dock,
-            list_x,
-            list_w: pw - 16.0 - style::SCROLLER_W - 2.0,
-            top: side_y + 30.0,
-            bottom: plate[1] + plate[3] - 6.0,
-        }
-    }
-    /// The search field, under the mark.
-    fn search(&self) -> [f32; 4] {
-        [
-            self.side_x,
-            self.side_y + 26.0,
-            style::CONTROL_W,
-            style::SEARCH_H,
-        ]
-    }
-    /// The search field's clear button, at its right end.
-    fn clear(&self) -> [f32; 4] {
-        let [x, y, w, h] = self.search();
-        [x + w - h, y, h, h]
-    }
-    /// Room for vanilla's scroller, whose thumb is 32 high and 8 short of its track.
-    fn scrolls(&self) -> bool {
-        self.bottom - self.top >= 40.0
-    }
-    fn bar_x(&self) -> f32 {
-        self.plate[0] + self.plate[2] - 8.0 - style::SCROLLER_W
-    }
-    /// A page in the page list, under the search field.
-    fn page(&self, i: usize) -> [f32; 4] {
-        [
-            self.side_x,
-            self.side_y + 56.0 + i as f32 * 18.0,
-            style::CONTROL_W,
-            16.0,
-        ]
-    }
-    /// Done (`0`), and Undo over it (`1`): under the page list, level with the strip.
-    fn button(&self, i: usize) -> [f32; 4] {
-        let foot = self.dock[1] + self.dock[3] - style::BUTTON_H;
-        let y = if i == 0 {
-            foot
-        } else {
-            foot - 4.0 - style::BUTTON_H
-        };
-        [self.side_x, y, style::CONTROL_W, style::BUTTON_H]
-    }
-    /// A row's control column: its button, tick box or slider.
-    fn track(&self) -> (f32, f32) {
-        let x = self.list_x + self.list_w - style::INSET - style::CONTROL_W;
-        (x, style::CONTROL_W)
-    }
-    /// A slider's value for the pointer at `x`: the handle's middle follows it.
-    fn slider_at(&self, x: f32) -> f32 {
-        let (tx, tw) = self.track();
-        ((x - tx - 5.0) / (tw - 10.0)).clamp(0.0, 1.0)
-    }
-}
+type Line = shell::Line<Page, Setting>;
 
 /// Whether a setting is on the screen now: Upscaling only while TAA is, which does it.
 fn shown(item: Item, s: &Settings) -> bool {
@@ -1376,18 +1331,7 @@ fn parts(item: Item, s: &Settings, binding: bool) -> (String, Option<String>) {
         let key = if binding { format!("> {key} <") } else { key };
         return (lang::get("Shortcut"), Some(key));
     }
-    let label = item.label(s).plain();
-    // `options.generic_value` ("%s: %s") joins vanilla's; Horizon's use ": " too.
-    let format = lang::get("options.generic_value");
-    let sep = format
-        .split("%s")
-        .nth(1)
-        .filter(|sep| !sep.is_empty() && label.contains(*sep))
-        .unwrap_or(": ");
-    match label.split_once(sep) {
-        Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
-        None => (label, None),
-    }
+    shell::name_and_value(&item.label(s).plain())
 }
 
 pub struct GraphicsUi {
@@ -1434,6 +1378,10 @@ impl GraphicsUi {
     pub(crate) fn scroll_amount(&self) -> f32 {
         self.scroll.amount
     }
+    /// The page the plate shows while nothing is searched.
+    pub fn page(&self) -> Page {
+        self.page
+    }
     /// The screen opens, at `page`.
     pub fn open(&mut self, page: Page) {
         *self = Self {
@@ -1452,8 +1400,7 @@ impl GraphicsUi {
     /// under the pointer.
     fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
         let query = self.query();
-        let mut lines = Vec::new();
-        let mut y: f32 = 0.0;
+        let mut lines = shell::Lines::new();
         for (page, groups) in rows() {
             if query.is_empty() && page != self.page {
                 continue;
@@ -1480,38 +1427,13 @@ impl GraphicsUi {
                 continue;
             }
             if !query.is_empty() {
-                if !lines.is_empty() {
-                    y += style::PAGE_GAP;
-                }
-                lines.push(Line {
-                    y,
-                    page,
-                    group: None,
-                    setting: None,
-                });
-                y += style::PAGE_ROW;
+                lines.page(page);
             }
             for (name, rows) in groups {
-                lines.push(Line {
-                    y,
-                    page,
-                    group: Some((name, rows.len() as f32 * style::ROW)),
-                    setting: None,
-                });
-                y += style::GROUP_ROW;
-                for setting in rows {
-                    lines.push(Line {
-                        y,
-                        page,
-                        group: None,
-                        setting: Some(setting),
-                    });
-                    y += style::ROW;
-                }
-                y += style::GROUP_GAP;
+                lines.group(page, name, rows);
             }
         }
-        (lines, (y - style::GROUP_GAP).max(0.0))
+        lines.finish()
     }
     /// The columns and the list, with the scroll kept within it.
     fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Columns, Vec<Line>, f32) {
@@ -1585,8 +1507,10 @@ impl GraphicsUi {
         s.vsync = b.vsync;
         s.max_fps = b.max_fps;
         s.inactivity_fps_limit = b.inactivity_fps_limit.clone();
-        s.fov = b.fov;
-        s.view_bobbing = b.view_bobbing;
+        s.menu_blur = b.menu_blur;
+        s.extras.fullbright = b.extras.fullbright;
+        s.extras.dynamic_lights = b.extras.dynamic_lights;
+        s.extras.hide_block_particles = b.extras.hide_block_particles;
         s.attack_indicator = b.attack_indicator;
         s.autosave_indicator = b.autosave_indicator;
         s.clouds = b.clouds.clone();
@@ -1605,6 +1529,17 @@ impl GraphicsUi {
         s.prioritize_chunk_updates = b.prioritize_chunk_updates;
         // Presets set it beside the options above.
         s.graphics_preset = b.graphics_preset.clone();
+        // The vanilla rows options.txt keeps as it read them.
+        for key in [
+            "exclusiveFullscreen",
+            "textureFiltering",
+            "maxAnisotropyBit",
+        ] {
+            if let Some(value) = b.file.get(key) {
+                s.file.set(key, value.clone());
+            }
+        }
+        s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
         self.changed = false;
     }
 
@@ -1619,99 +1554,44 @@ impl GraphicsUi {
         self.keep(s);
         let (w, h) = (batch.width, batch.height);
         let (cols, lines, content) = self.layout(s, w, h);
-        ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
-        style::fill(batch, atlas, [0.0, 0.0, w, h], style::VEIL);
+        shell::backdrop(batch, atlas, in_world);
         let current = self.current(&lines);
         self.draw_side(batch, atlas, &cols, &lines, current, cursor);
-        self.draw_search(batch, atlas, &cols, cursor);
+        let focused = self.focus == Some(Target::Search);
+        shell::search_field(&mut self.search, batch, atlas, &cols, cursor, focused);
 
-        // The plate, with the open page's name (or the search's) over its list.
-        let [px, py, pw, _] = cols.plate;
-        style::panel(batch, atlas, cols.plate);
         let query = self.search.value.trim();
         let heading = if query.is_empty() {
             lang::get(current.unwrap_or(self.page).name())
         } else {
             lang::get("Results for \"%s\"").replace("%s", query)
         };
-        let heading = Text::literal(style::fit(atlas, &heading, pw - 24.0));
-        batch.text_styled(atlas, &heading, px + 12.0, py + 10.0, style::WHITE, true);
-        style::fill(
+        shell::plate(batch, atlas, &cols, &heading);
+
+        let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
+        let mut described = None;
+        shell::list(
             batch,
             atlas,
-            [px + 8.0, py + 24.0, pw - 16.0, 1.0],
-            style::HEAD_RULE,
+            &cols,
+            &lines,
+            self.scroll.amount,
+            Page::name,
+            |batch, setting: Setting, y| {
+                let item = setting.item;
+                let rect = cols.row(y);
+                let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
+                let focused = self.focus == Some(Target::Item(item));
+                // The pointer's row wins over the keyboard's.
+                if hover || self.dragging == Some(item) || (focused && described.is_none()) {
+                    described = Some(setting);
+                }
+                self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
+            },
         );
-
-        // The list, clipped to its view: each group's panel, then its rows on it.
-        let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
-        let start = batch.vertices.len();
-        let mark = crate::widgets::targets_mark();
-        let mut described = None;
-        let shows = |y: f32, h: f32| y + h > cols.top && y < cols.bottom;
-        for line in &lines {
-            let y = self.row_y(&cols, line);
-            if let Some((_, panel)) = line.group
-                && shows(y + style::GROUP_ROW, panel)
-            {
-                let rect = [cols.list_x, y + style::GROUP_ROW, cols.list_w, panel];
-                style::group(batch, atlas, rect);
-            }
-        }
-        // A group's first row, which has no rule over it.
-        let mut first = false;
-        for line in &lines {
-            let y = self.row_y(&cols, line);
-            let after_name = std::mem::replace(&mut first, line.group.is_some());
-            if !shows(y, line.h()) {
-                continue;
-            }
-            let Some(setting) = line.setting else {
-                let (name, color, dy) = match line.group {
-                    Some((name, _)) => (name, style::MUTED, 3.0),
-                    None => (line.page.name(), style::ACCENT, 4.0),
-                };
-                let name = Text::literal(lang::get(name));
-                batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
-                continue;
-            };
-            let item = setting.item;
-            if !after_name {
-                let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
-                style::fill(batch, atlas, rule, style::ROW_RULE);
-            }
-            let rect = [cols.list_x, y, cols.list_w, style::ROW];
-            let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
-            let focused = self.focus == Some(Target::Item(item));
-            // The pointer's row wins over the keyboard's.
-            if hover || self.dragging == Some(item) || (focused && described.is_none()) {
-                described = Some(setting);
-            }
-            self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
-        }
-        if lines.is_empty() {
-            let none = Text::literal(lang::get("No settings match."));
-            batch.text_styled(
-                atlas,
-                &none,
-                cols.list_x + 2.0,
-                cols.top + 4.0,
-                style::MUTED,
-                true,
-            );
-        }
-        batch.clip_since(
-            start,
-            cols.list_x,
-            cols.top,
-            cols.list_x + cols.list_w,
-            cols.bottom,
-        );
-        crate::widgets::clip_targets(mark, cols.top, cols.bottom);
-        self.draw_scroller(batch, atlas, &cols, content);
+        shell::scroller(batch, atlas, &cols, content, self.scroll.amount);
         self.draw_dock(batch, atlas, s, &cols, described, current);
 
-        let hovered = |[x, y, w, h]: [f32; 4]| ui::hovered(cursor, x, y, w, h);
         let mut foot = vec![(cols.button(0), "Done", Target::Done)];
         // Undo only once there is something to undo.
         if self.changed {
@@ -1720,20 +1600,14 @@ impl GraphicsUi {
         for (rect, label, target) in foot {
             let label = Text::literal(lang::get(label));
             let focused = self.focus == Some(target);
-            let hover = hovered(rect) || focused;
-            crate::widgets::record(&label.plain(), rect, true);
-            crate::widgets::narratable(|| {
-                crate::widgets::Narratable::button(label.plain(), rect, true)
-                    .hovered(hovered(rect))
-                    .focused(focused)
-            });
-            crate::widgets::widget_cursor(hovered(rect), true);
-            crate::widgets::target(rect);
             let primary = target == Target::Done;
-            if primary {
-                crate::widgets::declare_action(crate::widgets::Action::Done, rect, true);
-            }
-            style::button(batch, atlas, rect, &label, (hover, true, primary));
+            let declared = if primary {
+                crate::widgets::Action::Done
+            } else {
+                crate::widgets::Action::Apply
+            };
+            crate::widgets::declare_action(declared, rect, true);
+            shell::foot_button(batch, atlas, rect, &label, cursor, (focused, primary));
         }
     }
     /// The mark over the search field, and the page list: the open page on a
@@ -1747,85 +1621,14 @@ impl GraphicsUi {
         current: Option<Page>,
         cursor: (f32, f32),
     ) {
-        let (x, y) = (cols.side_x, cols.side_y);
-        style::fill(batch, atlas, [x, y + 2.0, 6.0, 6.0], style::ACCENT);
-        let horizon = Text::literal("Horizon");
-        batch.text_styled(atlas, &horizon, x + 10.0, y, style::WHITE, true);
-        let title = Text::literal(lang::get("Graphics"));
-        batch.text_styled(atlas, &title, x, y + 10.0, style::MUTED, true);
+        shell::mark(batch, atlas, cols, &lang::get("Graphics"));
         for (i, page) in Page::ALL.into_iter().enumerate() {
-            let rect = cols.page(i);
-            let [px, py, pw, ph] = rect;
             let has = self.has(page, lines);
             let open = current == Some(page);
-            let name = Text::literal(lang::get(page.name()));
-            crate::widgets::record(&name.plain(), rect, has);
-            let hover = has && ui::hovered(cursor, px, py, pw, ph);
             let focused = self.focus == Some(Target::Page(page));
-            crate::widgets::narratable(|| {
-                crate::widgets::Narratable::button(name.plain(), rect, has)
-                    .hovered(hover)
-                    .focused(focused)
-            });
-            crate::widgets::widget_cursor(hover, has);
-            if has {
-                crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
-            }
-            if open {
-                style::fill(batch, atlas, rect, style::OPEN);
-                style::fill(batch, atlas, [px, py, 2.0, ph], style::ACCENT);
-            }
-            let color = match (open || hover, has) {
-                (true, _) => style::WHITE,
-                (false, true) => style::SOFT,
-                (false, false) => style::MUTED,
-            };
-            let ty = py + ((ph - 8.0) / 2.0).floor();
-            let name = Text::literal(style::fit(atlas, &name.plain(), pw - 12.0));
-            batch.text_styled(atlas, &name, px + 8.0, ty, color, true);
-            if focused {
-                style::ring(batch, atlas, rect, style::WHITE);
-            }
-        }
-    }
-    fn draw_search(
-        &mut self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        cols: &Columns,
-        cursor: (f32, f32),
-    ) {
-        let rect = cols.search();
-        style::well(batch, atlas, rect);
-        let focused = self.focus == Some(Target::Search);
-        self.search.focused = focused;
-        let [x, y, w, h] = rect;
-        let clear = cols.clear();
-        (self.search.x, self.search.y) = (x + 5.0, y + ((h - 8.0) / 2.0).floor());
-        self.search.width = clear[0] - self.search.x;
-        self.search.text_color = style::WHITE;
-        self.search.draw(batch, atlas, None);
-        if self.search.value.is_empty() && !focused {
-            let hint = Text::literal(self.search.message.clone());
-            batch.text_styled(atlas, &hint, x + 5.0, self.search.y, style::MUTED, true);
-        }
-        if !self.search.value.is_empty() {
-            let hover = ui::hovered(cursor, clear[0], clear[1], clear[2], clear[3]);
-            crate::widgets::widget_cursor(hover, true);
-            let color = if hover { style::WHITE } else { style::MUTED };
-            let cy = y + ((h - 8.0) / 2.0).floor();
-            ui::centered_text(
-                batch,
-                atlas,
-                &Text::literal("×"),
-                clear[0],
-                cy,
-                clear[2],
-                color,
-            );
-        }
-        if focused {
-            style::ring(batch, atlas, [x, y, w, h], style::WHITE);
+            let name = lang::get(page.name());
+            let flags = (has, open, focused);
+            shell::page_tab(batch, atlas, cols.page(i), &name, flags, cursor);
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -1840,125 +1643,20 @@ impl GraphicsUi {
         hover: bool,
         focused: bool,
     ) {
-        let rect = [cols.list_x, y, cols.list_w, style::ROW];
-        let live = item.blocked(s).is_none();
         let label = item.label(s).plain();
         let (name, value) = parts(item, s, self.binding.is_some());
-        let (tx, tw) = cols.track();
-        let right = tx + tw;
-        let control = [
-            tx,
-            y + (style::ROW - style::CONTROL_H) / 2.0,
-            tw,
-            style::CONTROL_H,
-        ];
-        let active = live && (hover || focused || self.dragging == Some(item));
-        if active {
-            let lit = [rect[0] + 2.0, y + 1.0, rect[2] - 4.0, style::ROW - 2.0];
-            style::fill(batch, atlas, lit, style::HOVER);
-        }
-        crate::widgets::widget_cursor(hover, live);
-        let slider = item.slider(s);
-        let switch = item.switch(s);
-        // The control socket's widget tree, the narrator and a controller's focus.
-        let kind = match slider {
-            Some(value) => crate::widgets::Kind::Slider {
-                value,
-                track: [tx + 5.0, tw - 10.0],
-            },
-            None => crate::widgets::Kind::Button,
+        let view = shell::RowView {
+            label: &label,
+            name: &name,
+            value: value.as_deref(),
+            switch: item.switch(s),
+            slider: item.slider(s),
+            live: item.blocked(s).is_none(),
+            hover,
+            focused,
+            held: self.dragging == Some(item),
         };
-        crate::widgets::record_as(&label, rect, live, kind);
-        crate::widgets::narratable(|| {
-            match (switch, slider) {
-                (Some(on), _) => crate::widgets::Narratable::checkbox(name.clone(), on, rect, live),
-                (_, Some(_)) => crate::widgets::Narratable::slider(label.clone(), rect, live),
-                _ => crate::widgets::Narratable::button(label.clone(), rect, live),
-            }
-            .hovered(hover)
-            .focused(focused)
-        });
-        if live {
-            crate::widgets::target_as(rect, kind);
-        }
-        let color = if live { style::WHITE } else { style::MUTED };
-        let soft = if live { style::SOFT } else { style::MUTED };
-        let ty = y + ((style::ROW - 8.0) / 2.0).floor();
-        let lit = live && (hover || self.dragging == Some(item));
-        let left = rect[0] + style::INSET;
-        // An action (Calibrate...) is a button across the row, as vanilla's lists have them.
-        if switch.is_none() && slider.is_none() && value.is_none() {
-            let wide = [left, control[1], right - left, style::CONTROL_H];
-            style::button(batch, atlas, wide, &Text::literal(name), (lit, live, false));
-        } else {
-            let value = value.unwrap_or_default();
-            let vw = atlas.font.width(&value);
-            // Where the control starts, and the value's text for a slider at rest.
-            let start = match (switch, slider) {
-                (Some(_), _) => right - style::CONTROL_H,
-                (None, Some(_)) if active => tx,
-                (None, Some(_)) => right - vw,
-                (None, None) => right - vw - 18.0,
-            };
-            match (switch, slider) {
-                (Some(on), _) => style::checkbox(batch, atlas, right, y, on, live),
-                // A slider shows its track, the value on it, while it is pointed at, focused or held.
-                (None, Some(position)) => {
-                    let value = Text::literal(value);
-                    if active {
-                        style::slider(batch, atlas, control, &value, position, (lit, live));
-                    } else {
-                        batch.text_styled(atlas, &value, start, ty, soft, true);
-                    }
-                }
-                (None, None) => {
-                    let value = Text::literal(value);
-                    style::cycler(
-                        batch,
-                        atlas,
-                        [start, y + 3.0, vw + 18.0, 14.0],
-                        &value,
-                        (lit, live),
-                    );
-                }
-            }
-            // The name, cut short before the control where a translation runs long.
-            let shown = Text::literal(style::fit(atlas, &name, start - 6.0 - left));
-            batch.text_styled(atlas, &shown, left, ty, color, true);
-        }
-        if focused {
-            style::ring(
-                batch,
-                atlas,
-                [rect[0] + 1.0, y, rect[2] - 2.0, style::ROW],
-                style::WHITE,
-            );
-        }
-    }
-    /// Vanilla's scroller, inside the panel's right edge, sized as `ui::Scroll` drags it.
-    fn draw_scroller(&self, batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, content: f32) {
-        if !cols.scrolls() {
-            return;
-        }
-        let Some((y, bar)) =
-            ui::scrollbar_thumb(cols.top, cols.bottom, content, self.scroll.amount)
-        else {
-            return;
-        };
-        let x = cols.bar_x();
-        let height = cols.bottom - cols.top;
-        crate::widgets::scroll_area(
-            [
-                cols.list_x,
-                cols.top,
-                x + style::SCROLLER_W - cols.list_x,
-                height,
-            ],
-            self.scroll.amount,
-            content - height,
-        );
-        let track = [x, cols.top, style::SCROLLER_W, height];
-        style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
+        shell::row(batch, atlas, cols, y, &view);
     }
     /// The strip under the plate: the hovered or focused setting's name and
     /// cost, then what it does (or why it can't be used now); with none, what
@@ -1999,10 +1697,7 @@ impl GraphicsUi {
                 (lang::get(page.about()), style::GREY)
             }
         };
-        let lines = atlas.font.split(&Text::literal(text), w - 24.0);
-        for (i, line) in lines.iter().take(2).enumerate() {
-            batch.text_styled(atlas, line, left, y + 20.0 + i as f32 * 10.0, color, true);
-        }
+        shell::dock_note(batch, atlas, cols, text, color);
     }
 
     /// A press (or a drag with `drag`) at `(x, y)`.
@@ -2114,6 +1809,7 @@ impl GraphicsUi {
                 vec![Action::ButtonClick, Action::Changed]
             }
             Item::Horizon(H::HdrCalibrate) => vec![Action::ButtonClick, Action::Calibrate],
+            Item::Horizon(H::ShaderPacks) => vec![Action::ButtonClick, Action::ShaderPacks],
             Item::Horizon(H::HdrKey) => {
                 vec![
                     Action::ButtonClick,
@@ -2188,10 +1884,7 @@ impl GraphicsUi {
         self.scroll
             .wheel(amount, 18.0, cols.top, cols.bottom, content);
     }
-    /// What Tab steps through, in order, with where each is on screen. The
-    /// arrows (`near`) only reach the rows in view and the one next past either
-    /// edge, which scrolls in: a row farther out sits under the tabs or the
-    /// buttons and would take the step from them.
+    /// What Tab steps through, in order, with where each is on screen (`shell::reach`).
     fn focusables(
         &self,
         s: &Settings,
@@ -2214,22 +1907,7 @@ impl GraphicsUi {
                 Some((setting.item, self.row_y(cols, line), live))
             })
             .collect();
-        // For the arrows, the rows in view and the next live one past either
-        // edge, over any greyed ones (HDR's page on a display without HDR).
-        let in_view = |y: f32| y + style::ROW > cols.top && y < cols.bottom;
-        let reach = match rows.iter().position(|r| in_view(r.1)) {
-            Some(first) if near => {
-                let last = rows.iter().rposition(|r| in_view(r.1)).unwrap_or(first);
-                let lo = rows[..first].iter().rposition(|r| r.2).unwrap_or(first);
-                let hi = rows[last + 1..]
-                    .iter()
-                    .position(|r| r.2)
-                    .map_or(last, |i| last + 1 + i);
-                lo..hi + 1
-            }
-            None if near => 0..0,
-            _ => 0..rows.len(),
-        };
+        let reach = shell::reach(&rows, cols, near);
         for &(item, y, live) in &rows[reach] {
             if !live {
                 continue;
@@ -2258,14 +1936,8 @@ impl GraphicsUi {
         self.can_change_value =
             matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
         if let Target::Item(_) = target {
-            let [_, y, _, h] = rect;
-            if y < cols.top {
-                self.scroll.amount -= cols.top - y;
-            } else if y + h > cols.bottom {
-                self.scroll.amount += y + h - cols.bottom;
-            }
+            shell::scroll_into_view(&mut self.scroll, rect, cols, content);
             self.picked = None;
-            self.scroll.clamp(cols.top, cols.bottom, content);
         }
     }
 
@@ -2310,13 +1982,7 @@ impl GraphicsUi {
             .focus
             .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
         if key == K::Tab {
-            let n = focusables.len();
-            let next = match (current, shift) {
-                (Some(i), false) => (i + 1) % n,
-                (Some(i), true) => (i + n - 1) % n,
-                (None, false) => 0,
-                (None, true) => n - 1,
-            };
+            let next = shell::tab_step(focusables.len(), current, shift);
             let (target, rect) = focusables[next];
             self.focus_on(s, target, rect, &cols, content);
             return (Vec::new(), true);
@@ -2335,34 +2001,8 @@ impl GraphicsUi {
             key,
             K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight
         ) {
-            use crate::gamepad::Button as B;
-            let dir = match key {
-                K::ArrowUp => B::DPadUp,
-                K::ArrowDown => B::DPadDown,
-                K::ArrowLeft => B::DPadLeft,
-                _ => B::DPadRight,
-            };
-            let next = match current {
-                Some(i) => {
-                    let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
-                    crate::gamepad::focus_step_rect(focusables[i].1, dir, &rects)
-                }
-                // Nothing focused in view: going down, the first setting from the
-                // view's top on (the next past its bottom where greyed rows fill it);
-                // going up, the last one down to its bottom.
-                None => {
-                    let mut rows = focusables
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (t, _))| matches!(t, Target::Item(_)));
-                    let pick = if key == K::ArrowUp {
-                        rows.rfind(|(_, (_, [_, y, ..]))| *y + style::ROW <= cols.bottom)
-                    } else {
-                        rows.find(|(_, (_, [_, y, ..]))| *y >= cols.top)
-                    };
-                    pick.map(|(i, _)| i)
-                }
-            };
+            let is_row = |t: Target| matches!(t, Target::Item(_));
+            let next = shell::arrow_step(&focusables, current, key, &cols, is_row);
             let Some(next) = next else {
                 return (Vec::new(), false);
             };
@@ -2569,7 +2209,7 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let cols = Columns::of(size.0, size.1);
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
@@ -2627,7 +2267,7 @@ mod tests {
                 .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
         }));
         ui.search.set_value("hdr");
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
         assert_eq!(ui.current(&ui.lines(&s).0), Some(Page::Hdr));
         let [x, y, ..] = cols.clear();
@@ -2827,19 +2467,58 @@ mod tests {
         assert!(!ui.scroll.held());
     }
 
+    /// The rows only vanilla's Video Settings had work here as they do there: its preset
+    /// applies its distances (`Options.applyGraphicsPreset`), Max Anisotropy waits for
+    /// Anisotropic filtering, Exclusive Fullscreen is a tick box of `options.txt`.
+    #[test]
+    fn vanilla_video_rows_work_on_the_graphics_screen() {
+        let mut s = Settings::default();
+        let preset = Item::Vanilla(Opt::Preset);
+        preset.set_slider(&mut s, 0.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fast", 8, 32)
+        );
+        preset.set_slider(&mut s, 2.0 / 3.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fabulous", 32, 128)
+        );
+        let anisotropy = Item::Vanilla(Opt::MaxAnisotropy);
+        let filtering = Item::Vanilla(Opt::TextureFiltering);
+        while s.file.int("textureFiltering") == 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_some());
+        while s.file.int("textureFiltering") != 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_none());
+        let exclusive = Item::Vanilla(Opt::ExclusiveFullscreen);
+        assert_eq!(exclusive.switch(&s), Some(false));
+        exclusive.cycle(&mut s, false, FB);
+        assert_eq!(exclusive.switch(&s), Some(true));
+        assert!(s.file.bool("exclusiveFullscreen"));
+        // The graphics extras switch their own setting.
+        let lights = Item::Extra(crate::extras::Item::DynamicLights);
+        lights.cycle(&mut s, false, FB);
+        assert!(s.extras.dynamic_lights);
+        assert_eq!(lights.switch(&s), Some(true));
+    }
+
     #[test]
     fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        s.fov = 90.0;
-        let fov = row(&mut ui, &s, Item::Vanilla(Opt::Fov));
+        s.gamma = 0.25;
+        let gamma = row(&mut ui, &s, Item::Vanilla(Opt::Gamma));
         // A slider being changed doesn't take the wheel either: a controller scrolls with it.
-        press(&mut ui, &mut s, (fov[0] + 4.0, fov[1] + 4.0));
+        press(&mut ui, &mut s, (gamma[0] + 4.0, gamma[1] + 4.0));
         assert!(ui.can_change_value);
         let before = ui.scroll.amount;
         ui.scroll(&s, SIZE, -1.0);
         assert_eq!(ui.scroll.amount, before + 18.0);
-        assert_eq!(s.fov, 90.0);
+        assert_eq!(s.gamma, 0.25);
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         ui.scroll(&s, SIZE, -1000.0);
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));

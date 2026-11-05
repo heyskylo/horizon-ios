@@ -208,7 +208,7 @@ impl Server {
 }
 
 fn server(resources: &Path) -> Server {
-    server_with(resources, NetConfig::lan(0, "Test - World".into(), 8))
+    server_with(resources, NetConfig::loopback(0, "Test - World".into(), 8))
 }
 
 fn server_with(resources: &Path, net: NetConfig) -> Server {
@@ -295,7 +295,7 @@ fn a_lan_guest_sees_the_signed_in_owners_skin() {
     let net = NetConfig {
         announce: false,
         owner_profile: Some(profile.clone()),
-        ..NetConfig::lan(0, "Test - World".into(), 8)
+        ..NetConfig::loopback(0, "Test - World".into(), 8)
     };
     let mut s = server_with(&resources, net);
     s.hub.singleplayer_owner = Some(offline_uuid("Owner"));
@@ -484,7 +484,7 @@ fn neoforge_shapes_items_reach_two_guests() {
         sync.id("minecraft:item", "minecraft:raw_copper").unwrap(),
         sync.id("minecraft:item", "minecraft:redstone").unwrap(),
     );
-    let mut s = server_sync(sync, NetConfig::lan(0, "Test - World".into(), 8));
+    let mut s = server_sync(sync, NetConfig::loopback(0, "Test - World".into(), 8));
     let port = s.hub.lan.port;
     // Guest one joins first and stays while guest two joins and reads its
     // own join packets, then guest one reads its own.
@@ -741,7 +741,7 @@ fn a_signed_in_hosts_lan_authenticates_guests_but_not_its_own_player() {
     let net = NetConfig {
         online: Some(Arc::new(OnlineMode::generate(false).unwrap())),
         announce: false,
-        ..NetConfig::lan(0, "Test - World".into(), 8)
+        ..NetConfig::loopback(0, "Test - World".into(), 8)
     };
     let lan = Lan::start_with(sync, net).unwrap();
     let guest = Connection::connect("127.0.0.1", lan.port, Duration::from_secs(5)).unwrap();

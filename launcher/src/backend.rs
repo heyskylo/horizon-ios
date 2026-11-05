@@ -1215,13 +1215,27 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
         .to_string()
     })?;
     let sha256 = match &release.nightly {
-        // Signed for the Nightly channel, served under its own GitHub tag.
-        Some(published) => crate::signed::nightly_digest(
-            published,
-            asset,
-            &horizon_release_sign::trusted_keys(),
-            fetch_small,
-        )?,
+        // Signed for its own version (SHA256SUMS.v2.sig), which its title names and it installs as;
+        // served under its own GitHub tag. A title that doesn't parse strictly is refused: nothing
+        // signs GitHub's publication time.
+        Some(github_tag) => {
+            let version = horizon_release_sign::nightly_title_version(&release.name)
+                .filter(|v| *v == release.tag)
+                .ok_or_else(|| {
+                    crate::i18n::trf(
+                        "This Nightly's title ({title}) doesn't name its date and commit as Horizon \
+                         signs them, so it can't be checked: it was not installed.",
+                        &[("title", &format!("{:?}", release.name))],
+                    )
+                })?;
+            crate::signed::nightly_digest(
+                github_tag,
+                &version,
+                asset,
+                &horizon_release_sign::trusted_keys(),
+                fetch_small,
+            )?
+        }
         None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
@@ -2619,9 +2633,21 @@ pub fn vulkan_start_crashed<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
 const GRAPHICS_FILE: &str = "horizon-graphics.txt";
 
-/// Sets `graphicsApi:dx12` in `home`'s graphics settings when it is unset or `auto`, keeping
-/// every other line. True when it changed; a player's own `vulkan` or `dx12` stays.
-pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
+/// The graphics API (the game's setting name, and its label) Auto switches to after a native
+/// crash at the Vulkan renderer's start: DirectX 12 on Windows (#746), OpenGL on Linux, where
+/// Auto also runs Mesa's hasvk on Ivy Bridge and Haswell, which Mesa itself calls incomplete
+/// there (#4293). `None` where the game has no other API (macOS: Metal only).
+pub fn vulkan_crash_fallback(os: &str) -> Option<(&'static str, &'static str)> {
+    match os {
+        "windows" => Some(("dx12", "DirectX 12")),
+        "macos" => None,
+        _ => Some(("opengl", "OpenGL")),
+    }
+}
+
+/// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto`, keeping
+/// every other line. True when it changed; a player's own choice stays.
+pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
     let path = home.join(GRAPHICS_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -2637,13 +2663,13 @@ pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
                     return Ok(false);
                 }
                 found = true;
-                lines.push("graphicsApi:dx12".to_owned());
+                lines.push(format!("graphicsApi:{api}"));
             }
             _ => lines.push(line.to_owned()),
         }
     }
     if !found {
-        lines.push("graphicsApi:dx12".to_owned());
+        lines.push(format!("graphicsApi:{api}"));
     }
     fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
     fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
@@ -2761,6 +2787,8 @@ pub fn client_command(tag: &str) -> Command {
     let home = game_home();
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
+    #[cfg(windows)]
+    crate::windows_runtime::mark(&mut cmd, &version_dir(tag));
     strip_launcher_render_env(&mut cmd);
     cmd.current_dir(&home)
         .env("HORIZON_HOME", &home)
@@ -2882,7 +2910,7 @@ fn stale_versions(installed: &[String], keep: usize, protected: &[String]) -> Ve
 /// their program and `--resources` from it. Windows refuses to delete a running program's files,
 /// so there the delete itself fails. With no answer from `ps` the version counts as running.
 #[cfg(unix)]
-fn in_use(tag: &str) -> bool {
+pub(crate) fn in_use(tag: &str) -> bool {
     let dir = format!("{}/", version_dir(tag).display());
     Command::new("ps")
         .args(["-A", "-ww", "-o", "args="])
@@ -2891,8 +2919,13 @@ fn in_use(tag: &str) -> bool {
         .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
 }
 
-#[cfg(not(unix))]
-fn in_use(_tag: &str) -> bool {
+#[cfg(windows)]
+pub(crate) fn in_use(tag: &str) -> bool {
+    crate::windows_runtime::in_use(&version_dir(tag))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn in_use(_tag: &str) -> bool {
     false
 }
 
@@ -3235,9 +3268,16 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         return Err(format!("{} has no build for this platform.", release.tag));
     }
     let before = installed();
+    let downgrade = nightly_downgrade(release, &before);
+    if let Some(warning) = &downgrade {
+        eprintln!("{warning}");
+    }
     install(release, progress)?;
     let mut settings = Settings::load();
-    if !as_update || select_after_update(settings.selected.as_deref(), &before) {
+    // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
+    let select = !as_update
+        || (downgrade.is_none() && select_after_update(settings.selected.as_deref(), &before));
+    if select {
         settings.selected = Some(release.tag.clone());
         settings.save()?;
     }
@@ -3246,6 +3286,24 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
     }
     prune_old_versions();
     Ok(release.tag.clone())
+}
+
+/// A warning when `release` is a Nightly older than a Nightly already installed: a rollback, which is
+/// allowed, but never what an update should do silently (an older build served as the current one
+/// shows its own date, since that date is signed). None otherwise.
+pub fn nightly_downgrade(release: &Release, installed: &[String]) -> Option<String> {
+    release.nightly.as_ref()?;
+    let newest = installed
+        .iter()
+        .filter(|v| crate::nightly::date_of(v).is_some())
+        .max_by(|a, b| compare_versions(a, b))?;
+    compare_versions(&release.tag, newest).is_lt().then(|| {
+        crate::i18n::trf(
+            "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection \
+             only moves to it when you pick it.",
+            &[("tag", &release.tag), ("newest", newest)],
+        )
+    })
 }
 
 /// The launcher's own path, read once at start: after a self-update the running file is gone.
@@ -3817,6 +3875,18 @@ pub fn cannot_replace_itself() -> bool {
     })
 }
 
+/// Whether a package manager owns this launcher: the update target is classified, rather than
+/// the executable inside an AppImage's mount. Asked while the sidebar is drawn, and the launcher
+/// doesn't move while it runs, so the path is resolved once.
+pub fn package_managed_launcher() -> bool {
+    static MANAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MANAGED.get_or_init(|| {
+        let target = update_target();
+        let target = target.canonicalize().unwrap_or(target);
+        crate::update_recovery::package_managed(&target)
+    })
+}
+
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
     let made = fs::OpenOptions::new()
@@ -4021,7 +4091,32 @@ impl Running {
     }
 }
 
-pub fn spawn(job: Job, mut cmd: Command, tx: Sender<Msg>) -> Result<Running, String> {
+/// Prepare a command's Windows runtime and keep its guard alive through process exit.
+pub struct RuntimeGuard {
+    pub(crate) _slot: fs::File,
+    pub(crate) _source: fs::File,
+}
+
+pub fn prepare_command(cmd: Command) -> Result<(Command, Option<RuntimeGuard>), String> {
+    #[cfg(windows)]
+    let cmd = crate::windows_runtime::redirect(cmd);
+    #[cfg(windows)]
+    let guard = crate::windows_runtime::prepare(&cmd).map_err(|e| {
+        crate::i18n::trf(
+            "Could not run {program}: {error}",
+            &[
+                ("program", &cmd.get_program().to_string_lossy()),
+                ("error", &e.to_string()),
+            ],
+        )
+    })?;
+    #[cfg(not(windows))]
+    let guard = None;
+    Ok((cmd, guard))
+}
+
+pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String> {
+    let (mut cmd, runtime) = prepare_command(cmd)?;
     crate::process::hide_console(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -4064,6 +4159,7 @@ pub fn spawn(job: Job, mut cmd: Command, tx: Sender<Msg>) -> Result<Running, Str
             Ok(s) => Err(format!("Exited with {s}")),
             Err(e) => Err(e.to_string()),
         };
+        drop(runtime);
         let _ = tx.send(Msg::Exit(job, result));
     });
     Ok(Running { child, stdin })
@@ -4209,6 +4305,10 @@ pub struct Settings {
     /// The window's language. Unset follows the system's (`i18n::Language::system`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::i18n::Language>,
+    /// Whether what the browser installed from Horizon's registry updates by itself, at start
+    /// and before Play (`browser::horizon::auto`). Unset is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods_auto_update: Option<bool>,
     /// The player has read the notice before the first native mod (`native_status::NOTICE`).
     /// Native mods are always on: an older file's `native_mods` switch is ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -4311,6 +4411,10 @@ impl Settings {
     /// Whether the cheaper scene is on ([`performance`](Self::performance)).
     pub fn performance(&self) -> bool {
         self.performance.unwrap_or(false)
+    }
+    /// Registry mods update by themselves ([`Settings::mods_auto_update`]): on unless turned off.
+    pub fn auto_updates_mods(&self) -> bool {
+        self.mods_auto_update.unwrap_or(true)
     }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {
@@ -5088,26 +5192,47 @@ pub fn {f}("
         let home = std::env::temp_dir().join(format!("horizon-dx12-switch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         // No settings file yet: one with the API alone.
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "graphicsApi:dx12\n"
         );
         // Already DirectX 12, or the player's own Vulkan: left alone.
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         fs::write(home.join(GRAPHICS_FILE), "sky:false\ngraphicsApi:vulkan\n").unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         // Auto becomes DirectX 12 and the other settings stay.
         fs::write(
             home.join(GRAPHICS_FILE),
             "sky:false\ngraphicsApi:auto\nfog:true\n",
         )
         .unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "sky:false\ngraphicsApi:dx12\nfog:true\n"
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// #4293: an Ivy Bridge on Linux whose Vulkan driver (Mesa's hasvk) crashes at the renderer's
+    /// start plays on OpenGL next time; Windows keeps DirectX 12 (#746), macOS has nothing else.
+    #[test]
+    fn a_vulkan_start_crash_on_linux_switches_auto_to_opengl() {
+        assert_eq!(vulkan_crash_fallback("windows").unwrap().0, "dx12");
+        assert_eq!(vulkan_crash_fallback("macos"), None);
+        let (api, _) = vulkan_crash_fallback("linux").unwrap();
+        let home = std::env::temp_dir().join(format!("horizon-gl-switch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(GRAPHICS_FILE), "graphicsApi:auto\nvsync:true\n").unwrap();
+        assert_eq!(switch_from_auto(&home, api), Ok(true));
+        assert_eq!(
+            fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
+            "graphicsApi:opengl\nvsync:true\n"
+        );
+        // The next crash (OpenGL had no GPU either and Vulkan ran again) leaves it: no loop.
+        assert_eq!(switch_from_auto(&home, api), Ok(false));
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -5397,6 +5522,39 @@ pub fn {f}("
             parse_version_output(&format!("horizon-launcher {VERSION}\n")),
             Some(VERSION)
         );
+    }
+
+    #[test]
+    fn an_older_nightly_installs_as_a_rollback_with_a_warning() {
+        let nightly = |tag: &str| Release {
+            tag: tag.into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: Some(("u".into(), 1)),
+            prerelease: false,
+            nightly: Some("nightly".into()),
+        };
+        let installed = [
+            "v0.2.81".to_owned(),
+            "nightly-2026-10-28-0c02067".to_owned(),
+        ];
+        let warning =
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed).unwrap();
+        assert!(
+            warning.contains("older than nightly-2026-10-28-0c02067"),
+            "{warning}"
+        );
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-29-bbbbbbb"), &installed).is_none());
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-28-0c02067"), &installed).is_none());
+        // No Nightly installed, or a release: nothing to warn about.
+        assert!(
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed[..1]).is_none()
+        );
+        let mut release = nightly("v0.2.80");
+        release.nightly = None;
+        assert!(nightly_downgrade(&release, &installed).is_none());
     }
 
     #[test]

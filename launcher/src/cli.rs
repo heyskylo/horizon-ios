@@ -1212,7 +1212,8 @@ fn json(value: serde_json::Value) {
 }
 
 /// Runs a game process in this terminal and reports how it ended.
-fn attached(mut cmd: Command) -> Result<(), String> {
+fn attached(cmd: Command) -> Result<(), String> {
+    let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
     let status = cmd
         .status()
         .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
@@ -2384,9 +2385,9 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
         .as_ref()
         .and_then(|i| i.java.as_ref())
         .map(|j| j.target());
-    let home = match (&action, instance) {
+    let home = match (&action, &instance) {
         (ModsCmd::Search { .. }, _) | (_, None) => backend::game_home(),
-        (_, Some(i)) => i.home,
+        (_, Some(i)) => i.home.clone(),
     };
     let entry_json = |e: &installed::Entry| serde_json::to_value(e).unwrap_or_default();
     let line = |label: &str, f: f32| progress(label.to_string())(f);
@@ -2482,7 +2483,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         "id": p.id, "slug": p.slug, "title": p.title, "summary": p.summary,
                         "author": p.author, "downloads": p.downloads, "page": p.page,
                         "license": p.license, "support": support.label(), "reason": support.reason(),
-                        "about": if p.source == SourceId::Horizon { horizon::trust_and_capabilities(&p.id) } else { Vec::new() },
+                        "about": if p.source == SourceId::Horizon { horizon::trust_and_capabilities(&p.id, instance.as_ref()) } else { Vec::new() },
                     })
                 }).collect());
             } else {
@@ -2493,7 +2494,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     let support = p.support();
                     if p.source == SourceId::Horizon {
                         println!("{}  ({})  {}\n  {}", p.title, p.slug, p.author, p.summary);
-                        for line in horizon::trust_and_capabilities(&p.id) {
+                        for line in horizon::trust_and_capabilities(&p.id, instance.as_ref()) {
                             println!("  {line}");
                         }
                         continue;
