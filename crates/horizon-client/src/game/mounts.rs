@@ -1152,6 +1152,33 @@ mod tests {
         ))
     }
 
+    /// `ItemStack.hurtAndConvertOnBreak`: the seven points a pig's boost
+    /// wears break a carrot on a stick at 25, and what it leaves is a fishing
+    /// rod that kept the stick's components - not a fresh plain rod.
+    #[test]
+    fn a_steering_stick_that_breaks_leaves_a_fishing_rod() {
+        let mut stick = ItemStack::new("minecraft:carrot_on_a_stick", 1);
+        stick.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Old Nag".into()));
+        // One point short of the break: the caller wears it and it holds.
+        stick.damage = 17;
+        assert!(stick_on_break(&stick, 7, 25).is_none());
+        // 18 + 7 is the break: the rod it leaves is whole and keeps the name.
+        stick.damage = 18;
+        let rod = stick_on_break(&stick, 7, 25).expect("the wear breaks it");
+        assert_eq!(&*rod.item, "minecraft:fishing_rod");
+        assert_eq!(rod.count, 1);
+        assert_eq!(rod.damage, 0, "the rod starts whole");
+        assert_eq!(
+            rod.custom_name().as_deref(),
+            Some("Old Nag"),
+            "the components carry over"
+        );
+        // Wear Unbreaking took away breaks nothing, and a stack with no
+        // durability at all never breaks.
+        assert!(stick_on_break(&stick, 0, 25).is_none());
+        assert!(stick_on_break(&stick, 25, 0).is_none());
+    }
+
     /// `handlePlayerCommand` START_RIDING_JUMP reaches the ridden vehicle's
     /// `handleStartJump`: a saddled horse rears, slides on the rider's keys and
     /// its jump sound is played at 0.4; a donkey and a mule have their own
