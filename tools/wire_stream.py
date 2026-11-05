@@ -130,13 +130,26 @@ def self_id(entries):
 
 def scenarios(entries):
     """One list of ticks for each /wire-mark in the play stream, in order (the ticks after a mark run to the
-    next mark); a tick is {'packets': [(name, fields)], 'frame': [(name, fields)], 'misplaced': [name]}."""
+    next mark); a tick is {'packets': [(name, fields)], 'frame': [(name, fields)], 'misplaced': [name]}.
+
+    A click's state id becomes `stale`: how far it is behind the last one the server sent for that container
+    (0 = up to date). The ids themselves count every change the server made since the login, so two runs
+    whose earlier scenarios differed number the same click differently."""
     me = self_id(entries)
-    c2s = [e for e in entries if e.get('dir') == 'c2s' and e.get('state') == 'play' and 'name' in e]
-    runs, current = [], None
-    for e in c2s:
+    play = [e for e in entries if e.get('state') == 'play' and 'name' in e and e.get('dir') in ('c2s', 's2c')]
+    runs, current, server_state = [], None, {}
+    for e in play:
         name = e['name']
+        if e['dir'] == 's2c':
+            if name in ('container_set_content', 'container_set_slot'):
+                r = Reader(bytes.fromhex(e.get('data', '')))
+                container = r.varint()
+                server_state[container] = r.varint()
+            continue
         fields = decode(name, bytes.fromhex(e.get('data', '')))
+        if name == 'container_click':
+            last = server_state.get(fields['container'], fields['state'])
+            fields = {'container': fields['container'], 'stale': last - fields.pop('state'), **fields}
         if name == 'chat_command' and fields.get('command') == 'wire-mark':
             current = [new_tick()]
             runs.append(current)

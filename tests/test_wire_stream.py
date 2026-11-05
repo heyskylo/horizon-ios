@@ -72,6 +72,21 @@ class WireStreamTest(unittest.TestCase):
         self.assertEqual(wire_stream.decode('player_action', varint(0) + as_long(29999999, 2047, -30000000)
                                             + b'\1' + varint(3))['pos'], [29999999, 2047, -30000000])
 
+    def test_a_click_s_state_id_compares_as_how_far_it_lags_the_server(self):
+        def set_slot(state):
+            return {'conn': 1, 'dir': 's2c', 'state': 'play', 'name': 'container_set_slot',
+                    'data': (varint(0) + varint(state) + b'\0\x24\0').hex()}
+
+        def click(state):
+            return c2s('container_click', varint(0) + varint(state) + b'\0\x24\0' + varint(0) + b'\0\0')
+        # Two runs whose servers counted differently: both clicks are up to date, the third is one behind.
+        a = wire_stream.scenarios([LOGIN, set_slot(53), mark(), click(53), TICK_END])
+        b = wire_stream.scenarios([LOGIN, set_slot(55), mark(), click(55), TICK_END, set_slot(56), click(55),
+                                   TICK_END])
+        self.assertEqual(a[0][0]['packets'], b[0][0]['packets'])
+        self.assertEqual(a[0][0]['packets'][0][1]['stale'], 0)
+        self.assertEqual(b[0][1]['packets'][0][1]['stale'], 1)
+
     def test_compare_reports_the_first_field_that_differs(self):
         tick = lambda y: {'packets': [('move_player_pos', {'x': 0.5, 'y': y})], 'frame': [], 'misplaced': []}  # noqa
         diffs = wire_stream.compare([tick(-60.0)], [tick(-60.0000001)], 0)

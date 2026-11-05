@@ -151,9 +151,12 @@ SCENARIOS = {
         setup=[TARGET.format(x=0.5, y=FLOOR + 1, z=3.0)] +
               [f'item replace entity {PLAYER} hotbar.{i} with minecraft:{item}' for i, item in
                enumerate(['diamond_sword', 'stone_axe', 'golden_apple', 'stone', 'bow'])],
-        ticks=50, steps=merge({0: ['look 0 20']}, {t: [f'key {t % 5 + 1} tap'] for t in range(5, 15)},
+        # 52-54: a swing at the sky with a new slot sends no slot before its Punch (no ensureHasSentCarriedItem
+        # on a miss); the next tick's MultiPlayerGameMode.tick does.
+        ticks=60, steps=merge({0: ['look 0 20']}, {t: [f'key {t % 5 + 1} tap'] for t in range(5, 15)},
                               {16: ['key 2 tap', 'mouse left click'], 20: ['key 1 tap'], 21: ['key 3 tap'],
-                               30: ['key 5 tap', 'mouse left click'], 35: ['key q tap'], 40: ['key f tap']})),
+                               30: ['key 5 tap', 'mouse left click'], 35: ['key q tap'], 40: ['key f tap'],
+                               52: ['look 0 -80'], 54: ['key 3 tap', 'mouse left click']})),
     'dig_teleport': dict(
         setup=[f'setblock 0 {FLOOR + 1} 2 minecraft:stone'],
         ticks=60, steps={0: ['look 0 45'], 3: ['mouse left down'], 15: ['command tp @s ~ ~ ~'],
