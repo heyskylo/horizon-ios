@@ -11679,7 +11679,8 @@ CHECK_FNS['mooshroom'] = check_mooshroom
 
 def check_shulker_menu(host, guest, out):
     """A shulker box opens a ShulkerBoxMenu (ShulkerBoxBlockEntity.createMenu), whose ShulkerBoxSlots
-    refuse shulker boxes. The server opened it as a 9x3 chest menu, which took them."""
+    refuse shulker boxes. The server opened it as a 9x3 chest menu, which took them. The lid must
+    also be open while the menu is open and shut after it closes, on the host and the guest."""
     x, y, z = (int(v // 1) for v in pos_of(guest))
     box = (x, y, z + 2)
     try:
