@@ -18,7 +18,7 @@ pub(super) fn crossed(pad: &Gamepad) -> bool {
                 Button::Z,
             ]
             .map(|button| pad.button_code(button).is_some()),
-            GlyphStyle::of_vendor(pad.vendor_id()),
+            GlyphStyle::of_device(pad.vendor_id(), pad.product_id()),
         )
 }
 
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn an_unmapped_xbox_style_pad_is_crossed() {
         // The GameSir Nova Lite 2 of #7323: `3537:1098`, no SDL row, X sends BTN_NORTH.
-        let style = GlyphStyle::of_vendor(Some(0x3537));
+        let style = GlyphStyle::of_device(Some(0x3537), Some(0x1098));
         assert!(crossed_layout(MappingSource::Driver, XBOX_BUTTONS, style));
     }
 
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn a_sony_or_nintendo_pad_means_what_its_codes_say() {
         for vendor in [0x054c, 0x057e] {
-            let style = GlyphStyle::of_vendor(Some(vendor));
+            let style = GlyphStyle::of_device(Some(vendor), None);
             assert!(!crossed_layout(MappingSource::Driver, XBOX_BUTTONS, style));
         }
     }

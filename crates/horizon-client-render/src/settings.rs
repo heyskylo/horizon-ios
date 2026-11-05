@@ -814,6 +814,7 @@ pub enum Opt {
     PadToggleSneak,
     PadMoveDeadzone,
     PadLookDeadzone,
+    PadTriggerThreshold,
     PadGlyphs,
     PadKeyboard,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
