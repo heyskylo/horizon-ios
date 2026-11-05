@@ -341,7 +341,8 @@ def run(args, out):
             client = None
             try:
                 if who == 'horizon':
-                    client = HorizonClient(Path(args.bin), resources, work / 'horizon', f'127.0.0.1:{listen}', scripts)
+                    client = HorizonClient(Path(args.bin).resolve(), resources, work / 'horizon',
+                                           f'127.0.0.1:{listen}', scripts)
                 else:
                     client = VanillaClient(f'127.0.0.1:{listen}', work / 'vanilla', out / 'vanilla-client.log')
                     if not client.ready.wait(300):
