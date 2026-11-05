@@ -170,6 +170,15 @@ impl Game<'_> {
                         animal,
                     );
                 }
+                if vehicle.species() == horizon_client::mobs::Species::HappyGhast {
+                    // EntityType.HAPPY_GHAST: four seats, by the rider's place
+                    // in `getPassengers`.
+                    let seat = self.mobs[..i]
+                        .iter()
+                        .filter(|r| r.extra.mount == Some(v))
+                        .count();
+                    attach = riders::happy_ghast_attachment(seat);
+                }
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
