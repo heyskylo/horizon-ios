@@ -153,6 +153,8 @@ pub(super) struct MenuCursor {
     /// The pad's focus on each screen it left (`Game::key_screen`), so coming
     /// back lands where it was, as vanilla keeps a screen's focused widget.
     remembered: std::collections::HashMap<u64, Rect>,
+    /// The frame drawn when the pad last left a screen.
+    left_screen: u64,
 }
 
 impl MenuCursor {
@@ -177,6 +179,23 @@ fn list_amount(areas: &[gamepad::ScrollArea], rect: &Rect) -> Option<f32> {
 fn list_shift(was: Option<f32>, now: Option<f32>) -> Option<Option<f32>> {
     let dy = was?.trunc() - now?.trunc();
     Some((dy.abs() >= 0.5).then_some(dy))
+}
+
+/// The target nearest `rect` on its line, for a focus that lost it.
+fn beside(rect: Rect, targets: &[Rect]) -> Option<usize> {
+    let middle = rect[1] + rect[3] / 2.0;
+    let centre = |r: &Rect| r[0] + r[2] / 2.0;
+    targets
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r[1] <= middle && middle < r[1] + r[3])
+        .min_by(|(_, a), (_, b)| {
+            let from = centre(&rect);
+            (centre(a) - from)
+                .abs()
+                .total_cmp(&(centre(b) - from).abs())
+        })
+        .map(|(i, _)| i)
 }
 
 /// Where letting go of A clicks: the armed button, if the focus is still on it.
@@ -602,7 +621,7 @@ impl Game<'_> {
         self.pad.menu.keyboard = false;
         // Controller Binds waiting for a button: this one (Start cancels).
         if self.screen == Screen::Options
-            && self.ui.options.page() == Page::PadBinds
+            && self.ui.options.controller_open()
             && let Some(action) = self.ui.options.selected_pad_action.take()
         {
             if button != Button::Start {
@@ -960,6 +979,7 @@ impl Game<'_> {
     /// comes back. Called before the new screen's targets are read, so the
     /// focus is still the left screen's.
     pub(super) fn pad_remember_focus(&mut self, screen: u64) {
+        self.pad.menu.left_screen = widgets::generation();
         let Some(focus) = self.pad.menu.focus else {
             return;
         };
@@ -1432,8 +1452,18 @@ impl Game<'_> {
                     .or_else(|| gamepad::refind(focus.rect, &rects, 12.0))
                     .map(|i| targets[i]);
                 if self.pad.menu.focus.is_none() && self.pad.menu.pos.is_some() {
-                    // The widget went away (a page changed): start again.
-                    let first = self.pad_first_target(targets);
+                    // The widget went away on this screen (a Reset or an Undo took itself away
+                    // when pressed): what's beside it. Two frames on, as the first may have been
+                    // drawn before the screen changed.
+                    let next_to = (!self.pad.menu.keyboard
+                        && widgets::generation() > self.pad.menu.left_screen + 1)
+                        .then(|| beside(focus.rect, &rects))
+                        .flatten();
+                    // Else a page changed: start again.
+                    let first = match next_to {
+                        Some(i) => Some(targets[i]),
+                        None => self.pad_first_target(targets),
+                    };
                     if self.pad.menu.keyboard
                         && let Some(first) = first
                     {
@@ -2079,6 +2109,19 @@ fn field_at(targets: &[Target], at: (f32, f32)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_focus_that_lost_its_widget_goes_beside_it() {
+        let reset = [200.0, 50.0, 40.0, 20.0];
+        let targets = [
+            [0.0, 0.0, 100.0, 16.0],
+            [100.0, 50.0, 90.0, 20.0],
+            [0.0, 50.0, 40.0, 20.0],
+            [200.0, 80.0, 40.0, 20.0],
+        ];
+        assert_eq!(beside(reset, &targets), Some(1));
+        assert_eq!(beside(reset, &targets[3..]), None);
+    }
 
     #[test]
     fn keyboard_auto_opens_for_pad_on_typing_screen() {
