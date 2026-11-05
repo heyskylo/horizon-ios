@@ -14,11 +14,12 @@ use super::*;
 use gpui::img;
 use horizon_launcher::browser::{
     self,
-    details::{Details, Environment, Filters, Image, Sort, Tags},
+    details::{self, Details, Environment, Filters, Image, Sort, Tags},
     images, java, Kind as PackKind, Project, SourceId, Support, Version,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Category and tag names from Modrinth / CurseForge, present in code so the i18n
@@ -60,6 +61,26 @@ const CATEGORY_NAMES: &[&str] = &[
     "vanilla like",
     "worldgen",
 ];
+
+/// A category's name in the launcher's language: the tables' translation of its words where they
+/// have one (Modrinth's names), else the name playhorizon.dev gives it.
+fn category_name(slug: &str) -> String {
+    let words = slug.replace('-', " ");
+    let said = tr(&words);
+    if said == words {
+        return details::category_label(slug);
+    }
+    let mut chars = said.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// One of the registry's tags as a chip shows it.
+fn tag_name(tag: &str) -> String {
+    format!("#{tag}")
+}
 
 /// A project page's tabs.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -407,7 +428,8 @@ impl Launcher {
     }
 
     /// The filter bar: sort always (Horizon's registry has its own bar); loader, version,
-    /// environment and categories when shown, only categories for the registry.
+    /// environment and categories when shown, only categories and tags for the registry. While
+    /// the panel is closed, what is picked stays in view as chips that each remove theirs.
     pub(super) fn mods_filters(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
@@ -417,6 +439,7 @@ impl Launcher {
         let sort = (!t.glass && !registry).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
+            + f.tags.len()
             + f.loader.is_some() as usize
             + f.game_version.is_some() as usize
             + f.environment.is_some() as usize;
@@ -444,6 +467,9 @@ impl Launcher {
                 .child(toggle),
         );
         if !shown {
+            if active > 0 {
+                bar = bar.child(self.mods_picked_filters(&f, cx));
+            }
             return bar;
         }
         let Some(tags) = self.mods_tags().cloned() else {
@@ -510,7 +536,7 @@ impl Launcher {
             let on = f.categories.contains(&c.name);
             let value = c.name.clone();
             categories = categories.child(
-                chip(format!("mods-cat-{}", c.name), c.name.replace('-', " "), on).on_click(
+                chip(format!("mods-cat-{}", c.name), category_name(&c.name), on).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let v = value.clone();
                         this.mods_filter(|f| {
@@ -526,6 +552,24 @@ impl Launcher {
             );
         }
         let _ = CATEGORY_NAMES;
+        let mut tag_row = row("Tags");
+        for tag in &tags.tags {
+            let on = f.tags.contains(tag);
+            let value = tag.clone();
+            tag_row = tag_row.child(chip(format!("mods-tag-{tag}"), tag_name(tag), on).on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    let v = value.clone();
+                    this.mods_filter(|f| {
+                        if !f.tags.contains(&v) {
+                            f.tags.push(v);
+                        } else {
+                            f.tags.retain(|x| *x != v);
+                        }
+                    });
+                    cx.notify();
+                }),
+            ));
+        }
         let clear = button("mods-clear", "Clear filters", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
                 this.mods_filter(|f| *f = Filters::default());
@@ -536,10 +580,85 @@ impl Launcher {
             bar = bar.child(loaders).child(versions).child(environment);
         }
         bar = bar.child(categories);
+        if registry && !tags.tags.is_empty() {
+            bar = bar.child(tag_row);
+        }
         if active > 0 {
             bar = bar.child(div().flex().child(clear));
         }
         bar
+    }
+
+    /// What the filters pick, each a chip with a cross that removes it, then Clear filters.
+    fn mods_picked_filters(&self, f: &Filters, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        type Remove = Rc<dyn Fn(&mut Filters)>;
+        let mut picked: Vec<(String, String, Remove)> = Vec::new();
+        for c in &f.categories {
+            let v = c.clone();
+            picked.push((
+                format!("cat-{c}"),
+                category_name(c),
+                Rc::new(move |f| f.categories.retain(|x| *x != v)),
+            ));
+        }
+        for tag in &f.tags {
+            let v = tag.clone();
+            picked.push((
+                format!("tag-{tag}"),
+                tag_name(tag),
+                Rc::new(move |f| f.tags.retain(|x| *x != v)),
+            ));
+        }
+        if let Some(l) = &f.loader {
+            picked.push(("loader".into(), l.clone(), Rc::new(|f| f.loader = None)));
+        }
+        if let Some(v) = &f.game_version {
+            picked.push((
+                "version".into(),
+                v.clone(),
+                Rc::new(|f| f.game_version = None),
+            ));
+        }
+        if let Some(e) = f.environment {
+            picked.push((
+                "env".into(),
+                e.label().into(),
+                Rc::new(|f| f.environment = None),
+            ));
+        }
+        let mut row = div().flex().flex_wrap().items_center().gap(px(6.));
+        for (id, label, remove) in picked {
+            let cross = if t.glass {
+                crate::glass_ui::icon("cancel-01", 14., t.ink_soft)
+            } else {
+                blocks::icon("close", 14., t.ink_soft)
+            };
+            row = row.child(
+                button(format!("mods-picked-{id}"), label, Kind::Secondary, &t)
+                    .gap(px(6.))
+                    .child(cross)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        let remove = remove.clone();
+                        this.mods_filter(move |f| remove(f));
+                        cx.notify();
+                    })),
+            );
+        }
+        row.child(
+            button("mods-picked-clear", "Clear filters", Kind::Ghost, &t).on_click(cx.listener(
+                |this, _: &ClickEvent, _, cx| {
+                    // The sort has its own control: only what filters goes.
+                    this.mods_filter(|f| {
+                        *f = Filters {
+                            sort: f.sort,
+                            ..Filters::default()
+                        }
+                    });
+                    cx.notify();
+                },
+            )),
+        )
     }
 
     /// The open project's page.
@@ -580,7 +699,9 @@ impl Launcher {
         if !p.license.is_empty() {
             meta.push(p.license.clone());
         }
-        meta.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            meta.push(trf("from {source}", &[("source", source)]));
+        }
         let authors = match &details {
             Some(Ok(d)) if !d.authors.is_empty() => d.authors.join(", "),
             _ => p.author.clone(),
@@ -591,7 +712,7 @@ impl Launcher {
                 div().flex().flex_wrap().gap(px(6.)).children(
                     d.categories
                         .iter()
-                        .map(|c| blocks::badge(c.replace('-', " "), t.muted, &t)),
+                        .map(|c| blocks::badge(category_name(c), t.muted, &t)),
                 ),
             ),
             _ => None,

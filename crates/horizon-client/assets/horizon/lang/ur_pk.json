@@ -399,5 +399,6 @@
   "horizon.repro.bundle": "ریپرو بنڈل: %s",
   "horizon.repro.error": "ریپرو: %s",
   "horizon.repro.no_recording": "برآمد کرنے کے لیے ابھی تک کوئی ریکارڈنگ نہیں ہے۔",
-  "horizon.repro.replay_started": "ری پلے شروع ہو گیا: %s"
+  "horizon.repro.replay_started": "ری پلے شروع ہو گیا: %s",
+  "Shader Packs...": "شیڈر پیکس..."
 }

@@ -335,6 +335,17 @@ fn summon_vexes(m: &mut Mob, cx: &mut Cx) {
                 ..Default::default()
             },
         });
+        // `serverLevel.gameEvent(ENTITY_PLACE, pos, Context.of(evoker))` after each vex.
+        cx.events.push(MobEvent::GameEvent {
+            event: "minecraft:entity_place",
+            at: [
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + 0.5,
+                f64::from(p[2]) + 0.5,
+            ],
+            source: m.id,
+            state: horizon_world::registry::BlockStateId(0),
+        });
     }
 }
 /// `EvokerAttackSpellGoal.performSpellCasting`: a ring of fangs when the

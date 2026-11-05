@@ -131,11 +131,14 @@ def main():
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
+    parser.add_argument("--map-decoration-namespace-fixture", action="store_true")
+    parser.add_argument("--map-decoration-empty-diagnostic", action="store_true")
     parser.add_argument('--piglin-anger-memory-fixture', action='store_true')
     parser.add_argument('--piglin-anger-raw-diagnostic', action='store_true')
     parser.add_argument('--piglin-anger-memory-diagnostic', action='store_true')
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
+    parser.add_argument("--selector-bounds-fixture", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -161,6 +164,8 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_FRAME_MAPS]
     if not args.only and not args.wolf_anger_clock_diagnostic:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_WOLF_ANGER]
     if args.wolf_anger_clock_diagnostic:
@@ -209,6 +214,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.map_decoration_namespace_fixture:
+        try:
+            from .map_decoration_namespace_corpus import map_decoration_namespaces
+        except ImportError:
+            from map_decoration_namespace_corpus import map_decoration_namespaces
+        groups = [("setup", corpus_module.group_setup()), ("map decoration namespaces", map_decoration_namespaces(args.map_decoration_empty_diagnostic))]
     if args.armor_stand_honey_fixture:
         try:
             from .armor_stand_honey_corpus import armor_stand_honey
@@ -279,6 +290,9 @@ def main():
     if args.map_decoration_patch_fixture:
         from map_decoration_patch_corpus import map_decoration_patches
         groups = [('setup', corpus_module.group_setup()), ('map decoration saved patch', map_decoration_patches(args.map_decoration_removal_diagnostic))]
+    if args.selector_bounds_fixture:
+        from selector_bounds_corpus import selector_bounds
+        groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -291,6 +305,13 @@ def main():
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
     loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
     advancements.update(loot_advancements)
+    if os.environ.get('HORIZON_FISHING_FALLBACK_FIXTURE') == '1':
+        # No random_sequence: FishingHook.retrieve must use the level stream.
+        loot_tables['minecraft:gameplay/fishing'] = {
+            'type': 'minecraft:fishing', 'pools': [{'rolls': 1, 'entries': [
+                {'type': 'minecraft:item', 'name': 'minecraft:cod', 'weight': 1},
+                {'type': 'minecraft:item', 'name': 'minecraft:salmon', 'weight': 1},
+            ]}]}
 
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import advancements as contact_advancements
@@ -318,7 +339,7 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'mob_anger', 'menu_state') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'menu_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
@@ -331,6 +352,8 @@ def main():
                 sys.exit(f'Java fixture guard failed: {op}: {row.get("results")}')
             if 'expect_callback' in op and row.get('results') != [op['expect_callback']]:
                 sys.exit(f'Java callback guard failed: {op}: {row.get("results")}')
+            if 'expect_map' in op and row.get('messages') != [[[op['expect_map'], [None, False, False, False, False, False]]]]:
+                sys.exit(f'Java map prerequisite failed: {op}: {row}')
         print(f'Java reference: {len(reference)} records, fixture guards passed')
         return
 
@@ -378,7 +401,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -404,7 +427,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []

@@ -395,6 +395,7 @@
   "Frame Generation": "Generovanie rámu",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Zobrazuje vytvorený rám medzi každým z dvoch skutočných: hladší, trochu viac oneskorenia.",
   "Shadow Cache": "Tieňová vyrovnávacia pamäť",
+  "Shader Packs...": "Shader Pack...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Opätovne použije tieňovú mapu balenia, keď sa slnko, výhľad a svet zhodujú. Predvolene vypnuté.",
   "Find BlueMap": "Nájdite BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na serveroch nájde svoju webovú mapu BlueMap pre vzdialený terén. Ďalšie pripojenie.",

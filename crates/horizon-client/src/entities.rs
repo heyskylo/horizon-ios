@@ -1483,6 +1483,68 @@ impl Experience {
         sound_level
     }
 }
+
+/// A player's `Entity.tickCount` and `Player.lastLevelUpTime`. This state belongs
+/// to the player entity, not the level or the server's clock.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LevelUpSound {
+    ticks: i32,
+    last: i32,
+}
+
+impl LevelUpSound {
+    /// `Entity.commonTick`: called once for this player, including spectators.
+    pub fn tick(&mut self) {
+        self.ticks = self.ticks.wrapping_add(1);
+    }
+
+    /// `Player.giveExperienceLevels`: return the sound's volume and start its
+    /// cooldown when a positive change lands on a fifth level.
+    pub fn give_levels(&mut self, amount: i32, level: i32) -> Option<f32> {
+        if amount > 0 && level % 5 == 0 && (self.last as f32) < self.ticks as f32 - 100.0 {
+            self.last = self.ticks;
+            Some((if level > 30 { 1.0 } else { level as f32 / 30.0 }) * 0.75)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod level_up_sound {
+    use super::LevelUpSound;
+
+    #[test]
+    fn players_have_independent_ages_and_cooldowns() {
+        let mut a = LevelUpSound::default();
+        let mut b = LevelUpSound::default();
+        for _ in 0..100 {
+            a.tick();
+            b.tick();
+        }
+        assert_eq!(a.give_levels(1, 5), None);
+        a.tick();
+        b.tick();
+        assert_eq!(a.give_levels(1, 5), Some(0.125));
+        assert_eq!(b.give_levels(1, 10), Some(0.25));
+        assert_eq!(a.give_levels(1, 10), None);
+        for _ in 0..100 {
+            a.tick();
+        }
+        assert_eq!(a.give_levels(1, 30), None);
+        a.tick();
+        assert_eq!(a.give_levels(1, 30), Some(0.75));
+        let mut respawned = LevelUpSound::default();
+        assert_eq!(respawned.give_levels(1, 35), None);
+        for _ in 0..101 {
+            respawned.tick();
+        }
+        assert_eq!(respawned.give_levels(-1, 35), None);
+        assert_eq!(respawned.give_levels(1, 34), None);
+        assert_eq!(respawned.give_levels(1, 35), Some(0.75));
+    }
+}
+
 /// A painting (`Painting`, a `HangingEntity`): the block it hangs in, the
 /// 2D data value of the direction it faces, and its variant.
 #[derive(Clone, Debug)]

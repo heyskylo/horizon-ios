@@ -1019,10 +1019,18 @@ impl Hub {
         }
         let max = transfers.settings.max_freeze_ticks;
         for g in &mut self.guests {
-            if g.handover
-                .as_ref()
-                .is_some_and(|h| super::arrivals::frozen_too_long(h.since, self.ticks, max))
-            {
+            let Some(h) = &g.handover else {
+                continue;
+            };
+            // A frozen player takes no damage, but the void and `/kill` still kill: its
+            // record is then not what is left of it, and `player-release moved` must fail.
+            if g.dead {
+                g.handover = None;
+                events.push(HostEvent::Warn(format!(
+                    "{} died while frozen for a hand-over: the hand-over is over",
+                    g.name,
+                )));
+            } else if super::arrivals::frozen_too_long(h.since, self.ticks, max) {
                 g.handover = None;
                 events.push(HostEvent::Warn(format!(
                     "{} was frozen for a hand-over for {max} ticks and nothing finished it: let go",
@@ -2037,9 +2045,53 @@ impl Hub {
             if o.tab_hidden.remove(&g.uuid) {
                 continue;
             }
-            o.sender.send(left.clone());
+            if !g.quiet_leave {
+                o.sender.send(left.clone());
+            }
         }
         g
+    }
+
+    /// Takes the frozen player `uuid` out of the world because a proxy moved it to another
+    /// server, for the hand-over `id`: the others see it go (its entity and its player-list
+    /// entry), but nothing is saved (the other server has the player now) and, unless
+    /// `announce`, the "left the game" line is not sent. The game is told it left, marked
+    /// released, so it saves nothing.
+    ///
+    /// Refused when the player is not in that hand-over: another one, or none because the
+    /// freeze ran out (the player has played on since, and the record the other server has is
+    /// older), or a player who died while frozen.
+    pub fn release_moved(
+        &mut self,
+        uuid: u128,
+        id: u128,
+        announce: bool,
+    ) -> Result<(), &'static str> {
+        let i = self.handover_of(uuid, id)?;
+        let g = &mut self.guests[i];
+        g.quiet_leave = !announce;
+        g.left_reason = "moved to another server".to_owned();
+        g.sender
+            .disconnect(translatable("multiplayer.disconnect.generic", &[]));
+        let mut gone = self.remove_guest(i, "moved to another server");
+        gone.released = true;
+        gone.handover = None;
+        self.pending_kicks.push(HostEvent::Left(Box::new(gone)));
+        Ok(())
+    }
+
+    /// The guest index of the player `uuid` while it is frozen for the hand-over `id`.
+    pub fn handover_of(&self, uuid: u128, id: u128) -> Result<usize, &'static str> {
+        let Some(i) = self.guests.iter().position(|g| g.uuid == uuid) else {
+            return Err("that player is not connected to this server");
+        };
+        let g = &self.guests[i];
+        match &g.handover {
+            _ if g.dead => Err("that player died during the hand-over"),
+            None => Err("that player is not in a hand-over (or its freeze ran out)"),
+            Some(h) if h.id != id => Err("that is not the player's current hand-over"),
+            Some(_) => Ok(i),
+        }
     }
 
     /// `ServerTickRateManager.updateStepTicks` / `updateStateToClients`:

@@ -656,6 +656,37 @@ def scenario_live():
         g.quit()
 
 
+def scenario_pause():
+    print('pause: the game runs on while one player sits behind a pause menu')
+    g = Game(2)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)  # let the frames settle on the new pause state before measuring
+        before = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        time.sleep(1.0)
+        after = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        # The world runs for the other player, so P1's own client must tick too: its
+        # ticks counter keeps advancing behind the menu (issue #9718 stopped it).
+        check('P1 behind its menu: its client keeps ticking', after[0] - before[0] > 10, True)
+        check('P2: ticks on as ever', after[1] - before[1] > 10, True)
+        g.close_page(1)
+    finally:
+        g.quit()
+    # Alone the same menu does stop the game: the splitscreen exemption must not leak.
+    g = Game(1)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)
+        before = g.ctl(1, 'status')['ticks']
+        time.sleep(1.0)
+        check('alone: the pause menu still stops the ticks',
+              g.ctl(1, 'status')['ticks'] - before < 5, True)
+    finally:
+        g.quit()
+
+
 def scenario_profile_availability():
     print('profile_availability: long profile lists and a profile freed while another picker stays open')
     def seed(home):
@@ -1338,6 +1369,7 @@ SCENARIOS = {
     'controls': scenario_controls,
     'three': scenario_three,
     'live': scenario_live,
+    'pause': scenario_pause,
     'profile_availability': scenario_profile_availability,
     'gui_scales': scenario_gui_scales,
     'fullscreen': scenario_fullscreen,

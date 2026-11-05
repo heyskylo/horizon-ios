@@ -32,7 +32,9 @@ explode elsewhere (`RespawnAnchorBlock`, through the stand-in level's real
 (`RespawnAnchorBlock.findStandUpPosition` through `DismountHelper`): the
 position, the yaw that faces the anchor and the charge it uses; others on a
 bed's head set from some yaw (`AbstractBedBlock.findStandUpPosition`: intact,
-bunk, only the foot left or gone, crowded around and on top). Beds and straw
+bunk, only the foot left or gone, crowded around and on top). Villagers lying
+in such beds wake up from some yaw (`Villager.stopSleeping`: the same search for
+a villager's box, with shelves among the blocks around, #9502). Beds and straw
 beds clicked (head or foot, whole or broken) in the Nether and the End blow up
 or fall apart (`AbstractBedBlock.useWithoutItem` under the dimension's
 `bed_rule`: `BedBlock.destroyOnUse`, `StrawBedBlock.destroyBed`). Horizon runs
@@ -104,6 +106,17 @@ def bed_respawn_case(rng, states, case):
     """Respawning at a bed's head set from some yaw: intact, a bunk bed, only the foot left or
     gone, with blocks around and on it, in the Overworld (and a few in the Nether or the End)."""
     name = 'straw_bed' if rng.random() < 0.15 else rng.choice(BED_COLORS) + '_bed'
+    cells = bed_cells(rng, states, name, STAND)
+    if rng.random() < 0.1:
+        case['dim'] = rng.choice(['nether', 'end'])
+    yaw = rng.choice([0.0, 90.0, -90.0, 180.0, round(rng.uniform(-720, 720), rng.choice([0, 2]))])
+    case['respawn_at'] = {'forced': rng.random() < 0.15, 'consume': rng.random() < 0.8, 'yaw': yaw}
+    case['cells'] = cells
+
+
+def bed_cells(rng, states, name, stand):
+    """A bed `name` at the origin: intact, a bunk bed, only the foot left or gone, with blocks from
+    `stand` around and on it."""
     facing = rng.choice(list(FACINGS))
     fx, fz = FACINGS[facing]
     bed = {}
@@ -130,20 +143,30 @@ def bed_respawn_case(rng, states, case):
                 if dy == -1 and (dx, 0, dz) in bed:
                     name2 = 'stone'
                 elif dy < 0:
-                    name2 = rng.choice(['stone'] * 8 + STAND)
+                    name2 = rng.choice(['stone'] * 8 + stand)
                 elif rng.random() < crowd:
-                    name2 = rng.choice(['stone'] * 4 + STAND)
+                    name2 = rng.choice(['stone'] * 4 + stand)
                 else:
                     continue
                 if name2 == 'air':
                     continue
-                state = states.any(rng, name2) if name2 in ('oak_trapdoor', 'oak_slab', 'snow', 'campfire', 'water', 'ladder') else states.get(name2)
+                varied = name2 in ('oak_trapdoor', 'oak_slab', 'snow', 'campfire', 'water', 'ladder') or name2.endswith('_shelf')
+                state = states.any(rng, name2) if varied else states.get(name2)
                 cells.append([dx, dy, dz, state])
-    if rng.random() < 0.1:
-        case['dim'] = rng.choice(['nether', 'end'])
+    return cells
+
+
+# What a villager waking up may stand on or beside: shelves (#9502) beside the blocks a player
+# stands up on.
+WAKE_STAND = STAND + ['oak_shelf', 'spruce_shelf', 'bamboo_shelf', 'oak_shelf']
+
+
+def wake_case(rng, states, case):
+    """A villager lying in a bed (`Villager.stopSleeping`) wakes up from some yaw: the bed intact, a
+    bunk bed, only the foot left or gone, with blocks and shelves around and on it."""
+    case['cells'] = bed_cells(rng, states, rng.choice(BED_COLORS) + '_bed', WAKE_STAND)
     yaw = rng.choice([0.0, 90.0, -90.0, 180.0, round(rng.uniform(-720, 720), rng.choice([0, 2]))])
-    case['respawn_at'] = {'forced': rng.random() < 0.15, 'consume': rng.random() < 0.8, 'yaw': yaw}
-    case['cells'] = cells
+    case['wake'] = {'yaw': yaw}
 
 
 def bed_case(rng, states, case):
@@ -666,6 +689,20 @@ def cases(facts, count, seed):
         yield case
 
 
+def wake_cases(facts, count, seed):
+    """Villagers waking up, from a stream of their own so the other cases stay as they were."""
+    rng = random.Random(f'wake {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        wake_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
 # Items whose `Item.use` counts the used statistic (#9775): books, the spyglass, boats, a carrot or
 # warped fungus on a stick off its mount, armor and other equippables swapped from the hand, and
 # flint and steel or a fire charge on TNT (or lighting a fire). An empty map needs the server's
@@ -713,6 +750,66 @@ def used_stat_cases(facts, count, seed):
         yield case
 
 
+# Entities an item places, each with its ENTITY_PLACE game event and used statistic (#9776):
+# paintings and item frames on a wall, armor stands, end crystals on obsidian or bedrock, minecarts
+# on rails.
+HANGING = ['painting', 'painting', 'item_frame', 'glow_item_frame']
+RAILS = ['rail', 'powered_rail', 'detector_rail', 'activator_rail']
+CARTS = ['minecart', 'chest_minecart', 'furnace_minecart', 'tnt_minecart', 'hopper_minecart']
+
+
+def placement_case(rng, states, case):
+    """An item that places an entity, clicked where it fits or does not."""
+    roll = rng.random()
+    if roll < 0.35:
+        # A wall facing the player (south), up to 4x4 so the larger paintings fit; the click on its
+        # south face, or another face.
+        width, height = rng.choice([(1, 1), (2, 2), (4, 3), (4, 4)])
+        wall = rng.choice(['stone', 'oak_planks', 'glass', 'stone'])
+        cells = [[x, y, 0, states.get(wall)] for x in range(-(width // 2), width - width // 2)
+                 for y in range(height)]
+        item = rng.choice(HANGING)
+        # Something in front of the wall, for the frames only: a painting picks among the largest
+        # variants that fit with its own (unseeded) random, so each wall here fits one size alone.
+        if item != 'painting' and rng.random() < 0.3:
+            cells.append([0, 1 if height > 1 else 0, 1, states.get(rng.choice(['torch', 'stone', 'oak_slab']))])
+        case['use_item'] = {'item': d.plain(item, 1), 'face': rng.choice(['south', 'south', 'south', 'up', 'east'])}
+    elif roll < 0.6:
+        cells = [[0, 0, 0, states.get(rng.choice(['stone', 'grass_block', 'short_grass', 'oak_slab']))]]
+        if rng.random() < 0.3:
+            cells.append([0, rng.choice([1, 2]), 0, states.get(rng.choice(['stone', 'glass']))])
+        case['use_item'] = {'item': d.plain('armor_stand', 1)}
+    elif roll < 0.8:
+        cells = [[0, 0, 0, states.get(rng.choice(['obsidian', 'obsidian', 'bedrock', 'stone']))]]
+        if rng.random() < 0.25:
+            cells.append([0, 1, 0, states.get(rng.choice(['fire', 'stone']))])
+        case['use_item'] = {'item': d.plain('end_crystal', 1)}
+    else:
+        rail = rng.choice(RAILS)
+        cells = [[0, -1, 0, states.get('stone')], [0, 0, 0, states.any(rng, rail)]]
+        case['use_item'] = {'item': d.plain(rng.choice(CARTS), 1)}
+    case['cells'] = cells
+    case['use_item'].update(creative=rng.random() < 0.2, sneaking=rng.random() < 0.15, food=20,
+                            yaw=rng.choice([0.0, 90.0, 180.0, 270.0, 33.0]))
+    if rng.random() < 0.25:
+        held = case['use_item']['item']
+        case['use_item'].update(offhand=held, item=rng.choice(['-', '-', d.plain('stick', 1)]))
+
+
+def placement_cases(facts, count, seed):
+    """`placement_case`s, from a stream of their own."""
+    rng = random.Random(f'placed {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        placement_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -721,6 +818,8 @@ def kind(case, facts):
     first = facts.states[case['cells'][0][3]][0].split(':')[1]
     if 'respawn_at' in case:
         return f'respawn at {first}'
+    if 'wake' in case:
+        return f'villager waking at {first}'
     item = case['use_item']['item']
     item = item.split('"')[1].split(':')[1] if item != '-' else 'empty hand'
     if 'entities' in case:
@@ -738,7 +837,9 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = [*cases(facts, args.count, args.seed), *used_stat_cases(facts, max(args.count // 10, 1), args.seed)]
+    all_cases = [*cases(facts, args.count, args.seed), *wake_cases(facts, max(args.count // 10, 1), args.seed),
+                 *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
+                 *placement_cases(facts, max(args.count // 10, 1), args.seed)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
@@ -757,7 +858,7 @@ def main():
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)
     assert len(native) == len(rust) == len(all_cases), (len(native), len(rust), len(all_cases))
     groups, errors = {}, {}
-    planted = eaten = respawned = exploded = 0
+    planted = eaten = respawned = exploded = moved = 0
     for case, a, b in zip(all_cases, native, rust):
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
@@ -766,6 +867,8 @@ def main():
         eaten += any(line.startswith('held') and not line.endswith('using -') for line in a)
         respawned += any(line.startswith('respawn ') and line != 'respawn none' and 'respawn_at' in case for line in a)
         exploded += any(line.endswith(' minecraft:explode') for line in a)
+        # Off the bed: not where the villager lay (y 0.6875).
+        moved += any(line.startswith('wake ') and line.split()[2] != '0.687500' for line in a)
         if not d.same(a, b):
             groups.setdefault(kind(case, facts), []).append((case, a, b))
     for name, entries in sorted(errors.items(), key=lambda e: -len(e[1])):
@@ -773,14 +876,15 @@ def main():
     for name, entries in sorted(groups.items(), key=lambda e: -len(e[1])):
         print(f'{name}: {len(entries)} differing')
         for case, a, b in entries[:args.show]:
-            print('  case ' + d.describe(case, facts) + ' use=' + json.dumps(case.get('use_item', case.get('respawn_at'))))
+            print('  case ' + d.describe(case, facts) + ' use='
+                  + json.dumps(case.get('use_item', case.get('respawn_at', case.get('wake')))))
             print('   native ' + ' | '.join(sorted(a)))
             print('   rust   ' + ' | '.join(sorted(b)))
     total = sum(len(v) for v in groups.values())
     skipped = sum(len(v) for v in errors.values())
     print(f'{len(all_cases) - total - skipped}/{len(all_cases) - skipped} cases match ({skipped} oracle errors); '
           f'vanilla planted in {planted}, started eating in {eaten}, exploded {exploded} times and found a respawn '
-          f'spot in {respawned}')
+          f'spot in {respawned}; villagers woke off the bed in {moved}')
     h.finish(total + skipped)
 
 
