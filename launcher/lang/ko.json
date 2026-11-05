@@ -1144,7 +1144,7 @@
   "Move…": "이동…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "데이터를 복사하고 검증하는 동안 런처가 종료되며, 완료되면 다시 열립니다. 기존 폴더는 그대로 보관되며, 이동이 정상적으로 완료되었는지 확인한 후 직접 삭제할 때까지 디스크 공간을 계속 차지합니다.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "상점 열기",
+  "Get more cosmetics on playhorizon.dev": "playhorizon.dev에서 코스메틱 더 보기",
   "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "자동은 이 런처의 아키텍처를 따릅니다. Windows ARM에서는 x64 또는 ARM64를 선택할 수 있습니다. ARM64가 없는 릴리스는 서명된 x64 빌드를 사용합니다.",
   "Game architecture": "게임 아키텍처",

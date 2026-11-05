@@ -1144,7 +1144,7 @@
   "Move…": "Premjesti…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "Pokretač se zatvara dok se podaci kopiraju i provjeravaju, a zatim se ponovno otvara. Stare mape ostaju sačuvane i zauzimaju prostor na disku dok ne provjerite je li premještanje uspjelo i sami ih izbrišete.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Otvori trgovinu",
+  "Get more cosmetics on playhorizon.dev": "Više kozmetike na playhorizon.dev",
   "You don't own any cosmetics yet.": "Još nemaš nijednu kozmetiku.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatski prati arhitekturu ovog pokretača. Na Windows ARM-u odaberite x64 ili ARM64. Izdanja bez ARM64 koriste potpisanu x64 verziju.",
   "Game architecture": "Arhitektura igre",

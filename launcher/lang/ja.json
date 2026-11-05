@@ -1144,7 +1144,7 @@
   "Move…": "移動…",
   "Move and restart": "移動して再起動",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "ショップを開く",
+  "Get more cosmetics on playhorizon.dev": "playhorizon.dev でコスメティックをもっと見る",
   "You don't own any cosmetics yet.": "コスメをまだ持っていません。",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "自動ではこのランチャーのアーキテクチャを使用します。Windows ARM では x64 または ARM64 を選択できます。ARM64 がないリリースでは署名済みの x64 ビルドを使用します。",
   "Game architecture": "ゲームのアーキテクチャ",

@@ -219,10 +219,13 @@ page stays hidden.
   it, with your name tag over the head as others see it (Horizon's mark unless the game's *Show me
   as Horizon* is off, your style's badge after the name) (`horizon_cosmetics::preview`); **what you own for the
   chosen slot**, "Nothing" first. Equipping shows at once.
-- **The shop is on the website**: an *Open the shop* button by the page's title opens
-  `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim, purchases through
-  Paddle). An account that owns nothing yet sees "You don't own any cosmetics yet." with that button
-  instead. **Your purchases** lists the account's orders (date, item, price, state, order number).
+- **The shop is on the website only** (Ludovic, 2026-11-05): the launcher has no prices, product
+  lists or checkout. One plain button by the page's title, *Get more cosmetics on playhorizon.dev*,
+  opens `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim,
+  purchases through Paddle); no badge, reminder or pop-up points to it. An account that owns
+  nothing yet sees "You don't own any cosmetics yet." with that button instead. The one exception
+  is the founder set's free *Claim for free* where Paddle doesn't sell (`Claim::here`): the site
+  sends those players to the Wardrobe, since only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
