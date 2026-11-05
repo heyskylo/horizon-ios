@@ -1033,6 +1033,10 @@ impl Game<'_> {
             }
             if g.vehicle.is_none() && (moved > 0.0001 || turned || teleported) {
                 host.hub.teleport(i, Some(at));
+            } else if teleported {
+                // ServerPlayer.startRiding and an asPassenger transition also
+                // teleport the rider. Retain its mount and publish its body.
+                host.hub.teleport_rider(i, at);
             }
         }
         let g = &mut host.hub.guests[i];
@@ -2837,6 +2841,7 @@ impl Game<'_> {
                     dim,
                     at,
                     rotation: Some([yaw, pitch]),
+                    vehicle: None,
                 });
             return;
         }

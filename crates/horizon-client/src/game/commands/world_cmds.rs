@@ -1459,6 +1459,14 @@ impl Game<'_> {
                         return Err(generic());
                     }
                     self.yaw = self.boats[i].yaw;
+                    // ServerPlayer.startRiding seats the player immediately.
+                    let at = self.player_boat_seat(i);
+                    if let Some(player) = self.player.as_mut() {
+                        player.position = at;
+                        player.velocity = horizon_core::geometry::Vec3::ZERO;
+                        player.teleported = true;
+                    }
+                    self.previous_position = at;
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
                     self.start_riding(id);
                 }
@@ -1549,11 +1557,22 @@ impl Game<'_> {
             return;
         }
         self.mobs[i].extra.mount = None;
+        let remaining = self
+            .mobs
+            .iter()
+            .find(|m| m.extra.mount == Some(v))
+            .map(|m| m.id);
+        if let Some(vehicle) = self.mobs.iter_mut().find(|m| m.id == v) {
+            vehicle.extra.rider = remaining;
+        }
         let (width, yaw) = (f64::from(self.mobs[i].width()), self.mobs[i].yaw);
         let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
             self.boat_dismount_target(b, width, yaw)
+        } else if let Some(at) = self.horse_dismount_point(v, i) {
+            at
+        } else if let Some(at) = self.cart_dismount_point(v, i) {
+            at
         } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == v) {
-            m.extra.rider = None;
             // Entity.getDismountLocationForPassenger: on top of the vehicle.
             let p = m.position;
             horizon_core::geometry::Vec3::new(p.x, p.y + f64::from(m.height()), p.z)

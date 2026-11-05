@@ -2809,6 +2809,8 @@ impl Minecart {
         c.yaw = yaw;
         c.previous_yaw = yaw;
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
+        c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
+        c.previous_pitch = c.pitch;
         let int = |k: &str| match tag.get(k) {
             Some(Tag::Byte(v)) => Some(i32::from(*v)),
             Some(Tag::Short(v)) => Some(i32::from(*v)),

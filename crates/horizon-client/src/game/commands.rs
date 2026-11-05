@@ -1516,7 +1516,7 @@ impl Game<'_> {
         // An entity in another level is teleported in the level that holds it.
         let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
     }
-    fn teleport_to_in_level(
+    pub(super) fn teleport_to_in_level(
         &mut self,
         t: Target,
         pos: [f64; 3],
@@ -1779,7 +1779,16 @@ impl Game<'_> {
         level: super::Dim,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
-    ) -> bool {
+        turn_riders: bool,
+    ) -> R<bool> {
+        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => {
+                log::error!("entity teleport into {}: {error}", level.id());
+                return Err(err("commands.generic.exception", &[]));
+            }
+        }
         let conn = match t {
             Target::Player => self.lan_acting,
             Target::Guest(conn) => Some(conn),
@@ -1787,7 +1796,7 @@ impl Game<'_> {
         };
         let at = self.target_level(t);
         let Some(conn) = conn.filter(|_| at != level) else {
-            return false;
+            return Ok(false);
         };
         self.level_teleports
             .push(super::server_travel::LevelTeleport {
@@ -1795,8 +1804,9 @@ impl Game<'_> {
                 dim: level,
                 at: pos,
                 rotation,
+                vehicle: None,
             });
-        true
+        Ok(true)
     }
     /// `ServerPlayer.lookAt`: besides turning the player, tell their client
     /// with a `ClientboundPlayerLookAtPacket` (`from` anchor, the point, and
@@ -1854,13 +1864,22 @@ impl Game<'_> {
         };
         if id.ends_with("destination") {
             let dest = self.entities(ctx, "destination", false)?[0];
-            let pos = self.target_position(dest).unwrap_or(self.source_position());
-            // Into the destination's level.
-            let level = self.target_level(dest);
-            // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
+            let (pos, level, rotation, destination_name) = self
+                .in_target_level(dest, |game| {
+                    (
+                        game.target_position(dest).unwrap_or(game.source_position()),
+                        game.target_level(dest),
+                        Some(game.target_rotation(dest).map(wrap_degrees)),
+                        game.target_name(dest),
+                    )
+                })
+                .ok_or_else(|| err("argument.entity.notfound.entity", &[]))?;
+            let target_name = (targets.len() == 1).then(|| {
+                self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                    .unwrap_or_else(Text::empty)
+            });
             for &t in &targets {
-                if !self.teleport_across(t, level, pos, rotation) {
+                if !self.teleport_across(t, level, pos, rotation, true)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
                     self.teleport_to(t, pos, rotation, true);
@@ -1869,15 +1888,12 @@ impl Game<'_> {
             let message = if targets.len() == 1 {
                 Text::translate(
                     "commands.teleport.success.entity.single",
-                    &[self.target_name(targets[0]), self.target_name(dest)],
+                    &[target_name.unwrap(), destination_name],
                 )
             } else {
                 Text::translate(
                     "commands.teleport.success.entity.multiple",
-                    &[
-                        Text::literal(targets.len().to_string()),
-                        self.target_name(dest),
-                    ],
+                    &[Text::literal(targets.len().to_string()), destination_name],
                 )
             };
             self.feedback(message);
@@ -1940,6 +1956,10 @@ impl Game<'_> {
             None if self.source_entity().is_none() => super::Dim::Overworld,
             None => self.dim,
         };
+        let target_name = (targets.len() == 1).then(|| {
+            self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                .unwrap_or_else(Text::empty)
+        });
         for &t in &targets {
             // `facing` teleports with the rotation unchanged (Relative.ROTATION,
             // no turn for the riders), then LookAt.perform turns the target alone.
@@ -1947,7 +1967,9 @@ impl Game<'_> {
             let turn_riders = looked.is_none();
             let rotation = looked.or_else(|| {
                 let (angles, relative) = rotation?;
-                let current = self.target_rotation(t);
+                let current = self
+                    .in_target_level(t, |game| game.target_rotation(t))
+                    .unwrap_or([0.0, 0.0]);
                 // performTeleport wraps relative deltas before calculateAbsolute
                 // adds them back; wrapping the resolved pitch changes its clamp.
                 Some(std::array::from_fn(|axis| {
@@ -1958,7 +1980,7 @@ impl Game<'_> {
                     }
                 }))
             });
-            if self.teleport_across(t, source_level, pos, rotation) {
+            if self.teleport_across(t, source_level, pos, rotation, turn_riders)? {
                 continue;
             }
             self.teleport_to(t, pos, rotation, turn_riders);
@@ -1971,7 +1993,7 @@ impl Game<'_> {
         let message = if targets.len() == 1 {
             Text::translate(
                 "commands.teleport.success.location.single",
-                &[self.target_name(targets[0]), x, y, z],
+                &[target_name.unwrap(), x, y, z],
             )
         } else {
             Text::translate(

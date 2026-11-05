@@ -4805,9 +4805,11 @@ def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
         from .carpet_farm_corpus import carpet_farms
+        from .passenger_teleport_corpus import passenger_teleports
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
         from carpet_farm_corpus import carpet_farms
+        from passenger_teleport_corpus import passenger_teleports
     return [
         ('setup', group_setup()),
         ('bell server glow', bell_server_glow()),
@@ -4859,6 +4861,7 @@ def groups():
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
         ('carpet farms', carpet_farms(cmd, setup)),
+        ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
         ('camel riders', camel_riders()),

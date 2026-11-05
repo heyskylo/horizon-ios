@@ -134,12 +134,12 @@ impl Game<'_> {
                 .boats
                 .iter()
                 .find(|b| b.id == id)
-                .map_or([0.0; 2], |b| [b.yaw, 0.0]),
+                .map_or([0.0; 2], |b| [b.yaw, b.pitch]),
             Target::Cart(id) => self
                 .carts
                 .iter()
                 .find(|c| c.id == id)
-                .map_or([0.0; 2], |c| [c.yaw, 0.0]),
+                .map_or([0.0; 2], |c| [c.yaw, c.pitch]),
             Target::Fangs(id) => self
                 .fangs
                 .list

@@ -672,6 +672,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.pitch = entity_nbt::rotation(&tag)[1];
             if chest {
                 b = b.with_chest();
                 b.items =
@@ -971,7 +972,7 @@ impl Game<'_> {
         there.then_some(v)
     }
     /// The root vehicle `root` with its passengers (`Entity.save`).
-    fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+    pub(super) fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
         if let Some(i) = self.mobs.iter().position(|m| m.id == root) {
             return Some(self.mob_tree_nbt(i));
         }
@@ -1893,7 +1894,7 @@ fn root_vehicle_tag(attach: [i32; 4], entity: Tag) -> Tag {
     ])
 }
 /// `Entity.getPassengersAndSelf` of `root`, from each rider's mount.
-fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
+pub(super) fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
     let mut tree = vec![root];
     let mut k = 0;
     while k < tree.len() {
