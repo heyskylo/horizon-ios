@@ -1047,21 +1047,40 @@ impl ReducedColumns {
             levels: std::array::from_fn(|_| std::sync::OnceLock::new()),
         }
     }
+    /// Builds the reduction levels whose bit is set in `levels`
+    /// (`Shared::detail_widths`), off the render thread.
+    fn warm(self, levels: u8) -> Self {
+        for level in 0..self.levels.len() {
+            if levels & (1 << level) != 0 {
+                self.level(level);
+            }
+        }
+        self
+    }
+    /// The chunk reduced to cells `2 << level` blocks wide, built once.
+    fn level(&self, level: usize) -> &[Column] {
+        let width = 2 << level;
+        self.levels[level].get_or_init(|| {
+            // Timed on whichever thread first asks for this width, so the
+            // frame profile tells a reduction apart from the column copying
+            // around it (`Lod::apply_detail` does both).
+            crate::spans::time("lod_reduce", || {
+                let columns = &self.columns;
+                (0..16 / width)
+                    .flat_map(|z| {
+                        (0..16 / width)
+                            .map(move |x| Column::reduced(columns, x * width, z * width, width))
+                    })
+                    .collect()
+            })
+        })
+    }
     fn get(&self, x: usize, z: usize, width: usize) -> &Column {
         if width == 1 {
             return &self.columns[z * 16 + x];
         }
         let level = width.trailing_zeros() as usize - 1;
-        let reduced = self.levels[level].get_or_init(|| {
-            let columns = &self.columns;
-            (0..16 / width)
-                .flat_map(|z| {
-                    (0..16 / width)
-                        .map(move |x| Column::reduced(columns, x * width, z * width, width))
-                })
-                .collect()
-        });
-        &reduced[(z / width) * (16 / width) + x / width]
+        &self.level(level)[(z / width) * (16 / width) + x / width]
     }
 }
 enum Job {
@@ -1168,6 +1187,19 @@ struct Shared {
     stop: AtomicBool,
     /// Reduced far detail: samplers approximate wide cells.
     approximate: AtomicBool,
+    /// The reduction levels `Lod::apply_detail` reads, one bit each (level
+    /// `i` is a cell `2 << i` blocks wide), so the far terrain thread builds
+    /// them before it sends a chunk's columns on.
+    ///
+    /// Learned rather than derived from the plan: a chunk's ancestors are
+    /// read only where they were sampled, which the plan alone does not say.
+    /// `apply_detail` sets a bit the first time it reads that width, so the
+    /// first chunk of a width still reduces on the render thread and every
+    /// chunk after it finds the work done. Bits are never cleared: a width
+    /// the view has stopped using costs the worker a reduction nothing
+    /// reads, and holding all four is exactly the eager behaviour this
+    /// replaces.
+    detail_widths: std::sync::atomic::AtomicU8,
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
     /// The near terrain is loading: the far threads step behind it
@@ -1314,6 +1346,7 @@ impl Lod {
             mesh_wake: Condvar::new(),
             stop: AtomicBool::new(false),
             approximate: AtomicBool::new(false),
+            detail_widths: std::sync::atomic::AtomicU8::new(0),
             mesh_held: AtomicBool::new(false),
             near_loading: AtomicBool::new(false),
         });
@@ -1492,7 +1525,12 @@ impl Lod {
                         'work: loop {
                             for (key, columns) in sampler.drain_details() {
                                 if tx
-                                    .send(Done::Detail(key, ReducedColumns::new(columns), asked))
+                                    .send(Done::Detail(
+                                        key,
+                                        ReducedColumns::new(columns)
+                                            .warm(worker.detail_widths.load(Ordering::Relaxed)),
+                                        asked,
+                                    ))
                                     .is_err()
                                 {
                                     break 'work;
@@ -1538,7 +1576,11 @@ impl Lod {
                                     };
                                     let columns = summarize(&chunk, kinds);
                                     sampler.observed(key, &columns);
-                                    Done::Observed(key, ReducedColumns::new(columns))
+                                    Done::Observed(
+                                        key,
+                                        ReducedColumns::new(columns)
+                                            .warm(worker.detail_widths.load(Ordering::Relaxed)),
+                                    )
                                 }
                                 Job::RequestDetail {
                                     chunks,
@@ -2123,6 +2165,12 @@ impl Lod {
             };
             let [ox, _, oz] = key.origin();
             let stride = key.size() / 16;
+            // What the far terrain thread should have ready next time.
+            if stride > 1 {
+                self.shared
+                    .detail_widths
+                    .fetch_or(1 << (stride.trailing_zeros() - 1), Ordering::Relaxed);
+            }
             let x0 = ((cx * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let x1 = (((cx + 1) * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let z0 = ((cz * 16 - oz + stride - 1).div_euclid(stride)).clamp(0, 16);
@@ -3755,6 +3803,89 @@ mod tests {
             lod.detail_request_at > long_ago,
             "asked once the backlog drained"
         );
+    }
+    /// `warm` builds exactly the levels asked for, off the render thread, and
+    /// `get` then finds them built.
+    #[test]
+    fn warming_builds_the_levels_asked_for_and_no_others() {
+        let built = |reduced: &ReducedColumns| {
+            reduced
+                .levels
+                .iter()
+                .enumerate()
+                .filter(|(_, level)| level.get().is_some())
+                .map(|(level, _)| 2usize << level)
+                .collect::<Vec<_>>()
+        };
+        let chunk = || {
+            Arc::new(std::array::from_fn::<Column, 256, _>(|i| Column {
+                surface: None,
+                spans: vec![Span {
+                    min: 0,
+                    max: 4 + (i % 3) as i16,
+                    state: BlockStateId(1),
+                    biome: 0,
+                    light: 240,
+                }]
+                .into(),
+            }))
+        };
+        // No bits: nothing is built, as before.
+        assert!(built(&ReducedColumns::new(chunk()).warm(0)).is_empty());
+        // Widths 2 and 8 are levels 0 and 2.
+        let warmed = ReducedColumns::new(chunk()).warm(0b101);
+        assert_eq!(built(&warmed), [2, 8]);
+        // Reading a warmed width builds nothing more; an unwarmed one does.
+        warmed.get(0, 0, 2);
+        warmed.get(6, 6, 8);
+        assert_eq!(built(&warmed), [2, 8], "already built");
+        warmed.get(0, 0, 4);
+        assert_eq!(built(&warmed), [2, 4, 8]);
+        // Warming is the same reduction as reading would have made.
+        let lazy = ReducedColumns::new(chunk());
+        for (x, z, width) in [(0, 0, 2), (6, 6, 8), (4, 8, 4), (0, 0, 16)] {
+            assert_eq!(
+                warmed.get(x, z, width),
+                lazy.get(x, z, width),
+                "width {width} at {x},{z}"
+            );
+        }
+    }
+    /// Applying a chunk's detail records the cell widths it read, so the far
+    /// terrain thread reduces them before it sends the next chunk.
+    #[test]
+    fn applying_detail_records_the_widths_it_read() {
+        let mut lod = Lod::scheduler_for_test();
+        assert_eq!(lod.shared.detail_widths.load(Ordering::Relaxed), 0);
+        let chunk = (0, 0);
+        let columns = || ReducedColumns::new(Arc::new(std::array::from_fn(|_| Column::default())));
+        // Only tiles in `ready` are read. A level-0 tile has cells one block
+        // wide, which is the chunk's own columns: no reduction, no bit.
+        lod.ready.insert(
+            TileKey {
+                x: 0,
+                z: 0,
+                level: 0,
+            },
+            Arc::new(vec![Column::default(); CELLS * CELLS]),
+        );
+        lod.apply_detail(chunk, &columns());
+        assert_eq!(
+            lod.shared.detail_widths.load(Ordering::Relaxed),
+            0,
+            "full-detail cells read the chunk itself"
+        );
+        // A level-2 tile has cells 4 blocks wide: reduction level 1.
+        lod.ready.insert(
+            TileKey {
+                x: 0,
+                z: 0,
+                level: 2,
+            },
+            Arc::new(vec![Column::default(); CELLS * CELLS]),
+        );
+        lod.apply_detail(chunk, &columns());
+        assert_eq!(lod.shared.detail_widths.load(Ordering::Relaxed), 0b10);
     }
     /// Detail read before a refresh over its chunk is dropped (asked
     /// again); elsewhere, or read after, it is kept.
