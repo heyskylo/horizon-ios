@@ -381,6 +381,7 @@
   "Frame Generation": "Geração de fotogramas",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Mostra um fotograma gerado entre cada dois reais: maior fluidez, com uma ligeira latência adicional.",
   "Shadow Cache": "Cache de sombras",
+  "Shader Packs...": "Pacotes de shaders...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Reutiliza o mapa de sombras do pacote quando o sol, a visão e o mundo coincidem. Desligado por predefinição.",
   "Find BlueMap": "Encontrar BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Em servidores, encontra o mapa web BlueMap para terreno distante. Na próxima entrada.",

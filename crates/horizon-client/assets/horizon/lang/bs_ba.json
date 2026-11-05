@@ -419,5 +419,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Aure i staze koje drugi igrači nose. Podrazumevano isključeno.",
   "horizon.extras.cosmetics.shown": "Prikazano",
   "horizon.extras.cosmetics.hidden": "Skriveno",
-  "horizon.extras.cosmetics.name_tags": "Samo oznake sa imenom"
+  "horizon.extras.cosmetics.name_tags": "Samo oznake sa imenom",
+  "Shader Packs...": "Shader paketi..."
 }

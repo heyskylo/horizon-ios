@@ -33,6 +33,8 @@ pub enum Slot {
     /// A name tag style: no model, a square mark drawn before the player's
     /// name and a line under it (`Item::tag`).
     NameTag,
+    /// An emote: not worn, played (`Item::emote`); its parts are props.
+    Emote,
 }
 
 /// The part of the player model an item follows.
@@ -59,6 +61,19 @@ impl Bone {
             Bone::LeftLeg => "left_leg",
             Bone::RightLeg => "right_leg",
         }
+    }
+
+    /// The part's pivot in the player model at rest (pixels, y down): vanilla `PlayerModel`'s,
+    /// with the wide arms (a slim skin's sit half a pixel lower).
+    pub fn rest(self) -> glam::Vec3 {
+        let [x, y, z] = match self {
+            Bone::Head | Bone::Body => [0.0, 0.0, 0.0],
+            Bone::LeftArm => [5.0, 2.0, 0.0],
+            Bone::RightArm => [-5.0, 2.0, 0.0],
+            Bone::LeftLeg => [1.9, 12.0, 0.0],
+            Bone::RightLeg => [-1.9, 12.0, 0.0],
+        };
+        glam::Vec3::new(x, y, z)
     }
 }
 
@@ -145,6 +160,12 @@ pub struct Item {
     pub limbs: Vec<(Bone, Part)>,
     /// A name tag's line (`Slot::NameTag` only; it has no parts).
     pub tag: Option<Tag>,
+    /// How high the item gets above the player model's neck (the head's and body's pivot), in
+    /// pixels: its highest vertex with every bone at rest (`Bone::rest`), animations included.
+    /// The game lifts its wearer's name tag over it. 0 for a name tag style (no model).
+    pub top: f32,
+    /// What an emote does (`Slot::Emote` only).
+    pub emote: Option<crate::Emote>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -187,12 +208,16 @@ struct ItemFile {
     bone: Bone,
     #[serde(default)]
     attach: AttachFile,
-    texture: TextureFile,
+    /// Only an emote without props goes without.
+    #[serde(default)]
+    texture: Option<TextureFile>,
     parts: Vec<PartFile>,
     #[serde(default)]
     animations: Vec<Animation>,
     #[serde(default)]
     tag: Option<TagFile>,
+    #[serde(default)]
+    emote: Option<crate::emote::EmoteFile>,
 }
 
 #[derive(Deserialize)]
@@ -298,7 +323,16 @@ impl Item {
         {
             return Err(invalid("the id is 1 to 64 of a-z, 0-9 and _"));
         }
-        let texture = decode_png(&file.texture.png)?;
+        let texture = match (&file.texture, file.slot) {
+            (Some(t), _) => decode_png(&t.png)?,
+            // Nothing is drawn from it: no skin slot is taken.
+            (None, Slot::Emote) if file.parts.is_empty() => Texture {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            },
+            (None, _) => return Err(Error::Texture("no texture".into())),
+        };
         let tag = match (file.slot, &file.tag) {
             (Slot::NameTag, Some(t)) => {
                 if !file.parts.is_empty() || !file.animations.is_empty() {
@@ -359,6 +393,12 @@ impl Item {
         if names.len() > MAX_PARTS {
             return Err(Error::TooManyParts(names.len()));
         }
+        let emote = match (file.slot, file.emote) {
+            (Slot::Emote, Some(e)) => Some(e.check(&names)?),
+            (Slot::Emote, None) => return Err(invalid("an emote needs its emote")),
+            (_, Some(_)) => return Err(invalid("only an emote has an emote")),
+            (_, None) => None,
+        };
         let root = Part {
             name: "cosmetic".into(),
             pose,
@@ -399,12 +439,14 @@ impl Item {
             vertices,
             limbs,
             tag,
+            top: 0.0,
+            emote,
         };
-        let reach = item.reach();
+        let (reach, top) = item.extent();
         if reach > MAX_REACH {
             return Err(Error::TooFar(reach));
         }
-        Ok(item)
+        Ok(Item { top, ..item })
     }
 
     /// The item's roots and the bone each rides: `root` on `bone`, then the `limbs`.
@@ -412,27 +454,51 @@ impl Item {
         std::iter::once((self.bone, &self.root)).chain(self.limbs.iter().map(|(b, p)| (*b, p)))
     }
 
-    /// The farthest any vertex gets from the bone's pivot (pixels): at rest,
-    /// and at 32 points of each animation's period.
-    fn reach(&self) -> f32 {
+    /// The farthest any vertex gets from its bone's pivot, and the highest above the neck with
+    /// the bones at rest (pixels, `top`): at rest, at 32 points of each animation's period, and
+    /// through an emote's props' keys.
+    fn extent(&self) -> (f32, f32) {
         let mut times = vec![0.0];
         for anim in &self.animations {
             times.extend((0..32).map(|k| anim.period * k as f32 / 32.0));
         }
+        if let Some(emote) = &self.emote {
+            times.extend(emote.sample_times());
+        }
         let mut far = 0.0_f32;
+        let mut top = 0.0_f32;
         let mut poses = std::collections::HashMap::new();
         for ticks in times {
             poses.clear();
             self.animate(ticks, |name, pose| {
                 poses.insert(name.to_owned(), pose);
             });
-            for (_, root) in self.roots() {
+            if let Some(emote) = &self.emote {
+                let mut props = Vec::new();
+                emote.pose_props(
+                    ticks,
+                    |name| self.rest(name),
+                    |name, pose| props.push((name.to_owned(), pose)),
+                );
+                poses.extend(props);
+            }
+            for (bone, root) in self.roots() {
+                let pivot = bone.rest();
                 walk(root, glam::Mat4::IDENTITY, &poses, &mut |p| {
                     far = far.max(p.length() * 16.0);
+                    // y points down.
+                    top = top.max(-(pivot.y + p.y * 16.0));
                 });
             }
         }
-        far
+        (far, top)
+    }
+
+    /// The rest pose of the part named `name`.
+    pub fn rest(&self, name: &str) -> Option<Pose> {
+        self.roots()
+            .find_map(|(_, r)| find(r, name))
+            .map(|p| p.pose)
     }
 
     /// The animated parts' poses at `ticks` (game ticks, any start): each

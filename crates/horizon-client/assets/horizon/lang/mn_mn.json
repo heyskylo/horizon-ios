@@ -417,6 +417,7 @@
   "F2 screenshots at this many times the game's resolution. Higher takes longer.": "F2 дэлгэцийн агшин нь тоглоомын нягтралаас хэд дахин их. Өндөр нь илүү урт хугацаа шаарддаг.",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Хоёр бодит хоёрын хооронд зохиосон хүрээг харуулна: илүү зөөлөн, бага зэрэг хоцрогдолтой.",
   "Shadow Cache": "Сүүдрийн кэш",
+  "Shader Packs...": "Shader багцууд...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Нар, харагдац, ертөнц таарах үед сүүдрийн зургийг дахин ашигладаг. Өгөгдмөлөөр унтраа.",
   "Find BlueMap": "BlueMap-г олоорой",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Серверүүдээс хол газрын BlueMap вэб газрын зургийг олдог. Дараагийн нэгдэх.",

@@ -256,6 +256,12 @@ public final class VanillaBlockUpdateOracle {
                 }
             }
         }
+        /** Level.hasEntities (HangingEntity.canCoexist) over the level's entities. */
+        @Override public <T extends Entity> boolean hasEntities(net.minecraft.world.level.entity.EntityTypeTest<Entity, T> type, AABB box, java.util.function.Predicate<? super T> filter) {
+            List<T> out = new ArrayList<>();
+            getEntities(type, box, filter, out, 1);
+            return !out.isEmpty();
+        }
         /** ServerLevel.getEntity(id) over the level's entities. */
         @Override public Entity getEntity(int id) {
             if (entities == null) return null;

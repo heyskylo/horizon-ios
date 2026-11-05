@@ -415,6 +415,7 @@
   "F2 screenshots at this many times the game's resolution. Higher takes longer.": "F2 скриншоттары ойынның ажыратымдылығын бірнеше есе арттырады. Жоғарырақ болу ұзағырақ уақыт алады.",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Әрбір екі нақты жақтаудың арасында жасалған жақтауды көрсетеді: тегіс, сәл кідіріс.",
   "Shadow Cache": "Көлеңкелік кэш",
+  "Shader Packs...": "Шейдер бумалары...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Күн, көрініс және әлем сәйкес болған кезде пакеттің көлеңке картасын қайта пайдаланады. Әдепкі бойынша өшірулі.",
   "Find BlueMap": "BlueMap табыңыз",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Серверлерде алыс жерлерге арналған BlueMap веб-картасын табады. Келесі қосылу.",

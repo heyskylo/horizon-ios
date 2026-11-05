@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 mod face_buttons;
+mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
 #[derive(Default)]
@@ -72,6 +73,11 @@ const EXTRA_SDL_MAPPINGS: &str = concat!(
     "03000000c82d00000b31000014010000,8BitDo Ultimate 2,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n",
 );
 
+/// The one way to open gilrs: each reader needs the extra rows.
+fn gilrs_builder() -> gilrs::GilrsBuilder {
+    gilrs::GilrsBuilder::new().add_mappings(EXTRA_SDL_MAPPINGS)
+}
+
 impl Pads {
     /// Open gilrs on first use. A platform without it (or a Linux without
     /// udev) leaves controllers off; the game runs as before.
@@ -80,10 +86,7 @@ impl Pads {
             return;
         }
         self.devices.started = true;
-        self.devices.gilrs = match gilrs::GilrsBuilder::new()
-            .add_mappings(EXTRA_SDL_MAPPINGS)
-            .build()
-        {
+        self.devices.gilrs = match gilrs_builder().build() {
             Ok(g) => {
                 for (id, pad) in g.gamepads() {
                     log::info!("Controller connected: {}", pad.name());
@@ -214,20 +217,7 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
     );
     state.left = left;
     state.right = right;
-    // Triggers arrive as analog buttons on most mappings, as plain
-    // buttons on some.
-    let trigger = |b: gilrs::Button| {
-        let value = pad.button_data(b).map_or(0.0, |d| d.value());
-        if pad.is_pressed(b) {
-            value.max(1.0)
-        } else {
-            value
-        }
-    };
-    state.triggers = [
-        trigger(gilrs::Button::LeftTrigger2),
-        trigger(gilrs::Button::RightTrigger2),
-    ];
+    state.triggers = triggers::triggers(pad);
     state
 }
 
@@ -243,6 +233,28 @@ pub(in crate::game) struct PadRouter {
 }
 
 impl PadRouter {
+    /// Take over the reader P1 already has open, instead of opening a second and closing the
+    /// first. A compositor can count who holds a pad to pause its own use of it (KWin's pointer
+    /// emulation), and that count goes wrong when readers overlap: gilrs opens a pad twice at
+    /// once, which inotify can merge into one event, and closes it twice apart (#9730).
+    pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) {
+        if !self.started
+            && let Some(gilrs) = pads.devices.gilrs.take()
+        {
+            self.started = true;
+            self.gilrs = Some(gilrs);
+        }
+    }
+
+    /// Routing ends: P1 gets the reader back, open as it was.
+    pub(in crate::game) fn hand_back(&mut self, pads: &mut Pads) {
+        self.started = false;
+        if let Some(gilrs) = self.gilrs.take() {
+            pads.devices.gilrs = Some(gilrs);
+            pads.devices.started = true;
+        }
+    }
+
     /// Solo play uses this reader's device IDs for feedback too: another pad cannot steal
     /// the active output while its input is being offered to join. Reclaimed after P1's turn.
     pub(in crate::game) fn lend_output(&mut self, pads: &mut Pads, id: PadId) {
@@ -272,7 +284,7 @@ impl PadRouter {
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {
             self.started = true;
-            self.gilrs = gilrs::Gilrs::new().ok();
+            self.gilrs = gilrs_builder().build().ok();
         }
         let Some(gilrs) = self.gilrs.as_mut() else {
             return Vec::new();
@@ -600,5 +612,52 @@ impl Game<'_> {
             "dualsense_output": devices.output.as_ref().and_then(|o| o.open()).map(|t| format!("{t:?}")),
             "trigger_effects": devices.shown.map(|s| s.triggers),
         })
+    }
+}
+
+#[cfg(test)]
+mod one_reader_tests {
+    use super::*;
+
+    /// Whether a machine can open gilrs at all; a test without it has nothing to check.
+    fn reader() -> Option<gilrs::Gilrs> {
+        gilrs_builder().build().ok()
+    }
+
+    #[test]
+    fn routing_takes_p1s_reader_and_gives_it_back_without_closing_it() {
+        let Some(gilrs) = reader() else {
+            return;
+        };
+        let mut pads = Pads::default();
+        pads.devices.gilrs = Some(gilrs);
+        pads.devices.started = true;
+        let mut router = PadRouter::default();
+
+        router.adopt(&mut pads);
+        assert!(pads.devices.gilrs.is_none(), "P1 no longer holds it");
+        assert!(router.gilrs.is_some(), "the router holds the same reader");
+        assert!(router.started, "so the router won't open a second");
+
+        pads.release_hardware();
+        router.hand_back(&mut pads);
+        assert!(router.gilrs.is_none());
+        assert!(pads.devices.gilrs.is_some(), "P1 holds it again");
+        assert!(pads.devices.started, "so P1 won't open a second");
+    }
+
+    #[test]
+    fn a_router_with_its_own_reader_leaves_a_lent_ones_owner_alone() {
+        let (Some(own), Some(other)) = (reader(), reader()) else {
+            return;
+        };
+        let mut pads = Pads::default();
+        pads.devices.gilrs = Some(other);
+        let mut router = PadRouter {
+            gilrs: Some(own),
+            started: true,
+        };
+        router.adopt(&mut pads);
+        assert!(pads.devices.gilrs.is_some());
     }
 }
