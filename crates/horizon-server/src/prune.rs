@@ -532,6 +532,7 @@ pub struct Outcome {
 
 /// Scans the world and, with `delete`, prunes it. The game must not be running when `delete` is set.
 pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> Result<Outcome, String> {
+    let started = std::time::Instant::now();
     let mut notes = Vec::new();
     let keep = listed(world, &settings.keep_files, &mut notes)?;
     let spawn = spawn_chunk(world);
@@ -656,7 +657,8 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
         }
         tallies.push((dim.id.clone(), t));
     }
-    Ok(report(settings, delete, spawn, &tallies, &notes, &errors))
+    let seconds = started.elapsed().as_secs();
+    Ok(report(settings, delete, spawn, &tallies, &notes, &errors, seconds))
 }
 
 fn mib(b: u64) -> String {
@@ -670,6 +672,7 @@ fn report(
     tallies: &[(String, Tally)],
     notes: &[String],
     errors: &[String],
+    seconds: u64,
 ) -> Outcome {
     let mut text = String::new();
     let verb = if delete { "Deleted" } else { "Would delete (dry run)" };
@@ -729,13 +732,14 @@ fn report(
     let freed: u64 = total.freed.iter().sum();
     let before: u64 = total.before.iter().sum();
     let summary = format!(
-        "{verb} {} of {} chunks; {} MiB of {} MiB of region, entities and poi files freed, {} files emptied, {} left as they were{}",
+        "{verb} {} of {} chunks; {} MiB of {} MiB of region, entities and poi files freed, {} files emptied, {} left as they were, in {} s{}",
         total.pruned,
         total.chunks,
         mib(freed),
         mib(before),
         total.emptied,
         total.skipped,
+        seconds,
         if errors.is_empty() {
             String::new()
         } else {
