@@ -18038,24 +18038,8 @@ impl Game<'_> {
                 self.track_drag_button(*button, *state == ElementState::Pressed);
             }
             // The emote key let go over the wheel, a click on it.
-            if self.screen == Screen::EmoteWheel {
-                if let WindowEvent::KeyboardInput { event, .. } = &event
-                    && event.state == ElementState::Released
-                    && let PhysicalKey::Code(key) = event.physical_key
-                    && self.settings.keys.translate(key) == Some(Ok(KeyCode::KeyB))
-                {
-                    self.emote_wheel_released();
-                    return Ok(());
-                }
-                if let WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } = &event
-                {
-                    self.emote_wheel_click();
-                    return Ok(());
-                }
+            if self.screen == Screen::EmoteWheel && self.emote_wheel_event(&event) {
+                return Ok(());
             }
             if let WindowEvent::KeyboardInput { event, .. } = &event
                 && event.state == ElementState::Released
