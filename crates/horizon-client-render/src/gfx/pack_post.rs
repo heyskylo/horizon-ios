@@ -49,6 +49,9 @@ mod weather_depth_tests;
 #[cfg(test)]
 mod custom_type_tests;
 
+#[cfg(test)]
+mod sky_depth_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
