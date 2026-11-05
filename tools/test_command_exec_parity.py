@@ -119,6 +119,7 @@ def main():
     parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
+    parser.add_argument("--boat-leash-view-fixture", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
     parser.add_argument('--reinforcement-original-diagnostic', action='store_true', help='replay the original unisolated174/108 fixture, retaining its terrain prerequisite failure')
     parser.add_argument('--reinforcement-target-diagnostic', action='store_true', help='retain the separate creative-callee target relation record (full209)')
@@ -293,6 +294,10 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.boat_leash_view_fixture:
+        from boat_leash_view_corpus import cases as boat_leash_views
+        groups = [('setup', corpus_module.group_setup()),
+                  ('boat live leash view', boat_leash_views(corpus_module.cmd, corpus_module.setup))]
     script = []
     for _, lines in groups:
         script.extend(lines)
