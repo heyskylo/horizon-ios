@@ -23,6 +23,10 @@ pub(super) struct ModsState {
     /// A live switch's resource reload is running: when it applied, the server
     /// reloads its data from the new root. Its start, for the log.
     pub(super) live: Option<std::time::Instant>,
+    /// The content mods installed, and those of them with only assets and
+    /// data (`mod_content::live_switch`): they switch with a world open.
+    content_ids: std::collections::BTreeSet<String>,
+    live_ids: std::collections::BTreeSet<String>,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
@@ -317,6 +321,26 @@ fn native_mods_detail(built: &str) -> Option<String> {
     (!list.is_empty()).then_some(list)
 }
 
+/// Notes a content mod's id, and whether its files can switch with a world
+/// open (`mod_content::live_switch`).
+fn live_switch_of(
+    path: &std::path::Path,
+    package: &horizon_mods::Package,
+    content_ids: &mut std::collections::BTreeSet<String>,
+    live_ids: &mut std::collections::BTreeSet<String>,
+) {
+    let id = &package.manifest.id;
+    content_ids.insert(id.clone());
+    let content = horizon_mods::Content::read(path, &package.manifest);
+    match content.as_ref().map(horizon_client::mod_content::live_switch) {
+        Ok(Ok(())) if package.wasm.is_none() => {
+            live_ids.insert(id.clone());
+        }
+        Ok(Err(why)) => log::debug!("Horizon: mod {id} switches on a restart: {why}"),
+        _ => {}
+    }
+}
+
 /// A row for each native mod the launcher installed in `dir` (`<id>.hnmod`) that this game wasn't
 /// built with (`built`: its [`BUILD_INFO`], empty for a release or Nightly) and that has no row
 /// yet. The page said "No mods" before, and players copied the files into `horizon-mods` (#4770).
@@ -369,6 +393,7 @@ impl Game<'_> {
         let mut paths = horizon_mods::find(&dir);
         paths.retain(|p| !self.mods.dev.contains(p));
         paths.extend(self.mods.dev.iter().cloned());
+        let (mut content_ids, mut live_ids) = Default::default();
         self.settings.mods.installed = paths
             .iter()
             .map(|path| {
@@ -388,6 +413,7 @@ impl Game<'_> {
                 };
                 let m = &package.manifest;
                 let problem = package.wasm.is_some().then(|| STOPPED.to_owned());
+                live_switch_of(path, &package, &mut content_ids, &mut live_ids);
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
@@ -398,6 +424,8 @@ impl Game<'_> {
                 }
             })
             .collect();
+        (self.mods.content_ids, self.mods.live_ids) = (content_ids, live_ids);
+        self.ui.options.mods_live = self.mods_live_now();
         if self.mods.applied.is_none() {
             self.mods.applied = Some(self.settings.mods.enabled.clone());
         }
@@ -431,6 +459,15 @@ impl Game<'_> {
             .map(|row| row.title.clone())
             .collect();
     }
+    /// The content mods the Mods page lets the player switch with a world
+    /// open: in single player and on an open LAN world, those with only
+    /// assets and data; none on another server, which owns its data.
+    pub(super) fn mods_live_now(&self) -> std::collections::BTreeSet<String> {
+        match self.integrated.is_some() || self.remote.is_none() {
+            true => self.mods.live_ids.clone(),
+            false => Default::default(),
+        }
+    }
     /// The content mods the resources load with: the ones applied, which a
     /// switch that needs a restart doesn't change.
     pub(super) fn applied_mods(&self) -> std::collections::BTreeSet<String> {
@@ -452,31 +489,19 @@ impl Game<'_> {
         if applied == wanted {
             return;
         }
-        let packages: Vec<horizon_mods::Package> =
-            horizon_mods::find(&Self::game_dir().join(mod_list::DIR))
-                .iter()
-                .filter_map(|path| {
-                    let package = horizon_mods::Package::read(path).ok()?;
-                    let content = horizon_mods::Content::read(path, &package.manifest).ok()?;
-                    match horizon_client::mod_content::live_switch(&content) {
-                        Ok(()) => None,
-                        Err(why) => {
-                            log::info!(
-                                "Horizon: mod {} needs a restart to switch: {why}",
-                                package.manifest.id
-                            );
-                            Some(package)
-                        }
-                    }
-                })
-                .collect();
-        let waits = |id: &String| packages.iter().any(|p| &p.manifest.id == id);
-        let mut next = applied.clone();
+        // Native mods' `mod.<id>` lines follow the player's choice as they are
+        // (`sync_native_switches`); a content mod with blocks, items or
+        // worldgen keeps the state it loaded with until a restart.
+        let content = &self.mods.content_ids;
+        let mut next = wanted.clone();
         let mut waiting = Vec::new();
         for id in applied.symmetric_difference(&wanted) {
-            if waits(id) {
-                waiting.push(id.clone());
-            } else if wanted.contains(id) {
+            if !content.contains(id) || self.mods.live_ids.contains(id) {
+                continue;
+            }
+            log::info!("Horizon: mod {id} needs a restart to switch");
+            waiting.push(id.clone());
+            if applied.contains(id) {
                 next.insert(id.clone());
             } else {
                 next.remove(id);
@@ -484,7 +509,9 @@ impl Game<'_> {
         }
         self.ui.options.mods_note = (!waiting.is_empty())
             .then(|| lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")]));
-        if next == applied {
+        let changed = applied.symmetric_difference(&next).any(|id| content.contains(id));
+        if !changed {
+            self.mods.applied = Some(next);
             return;
         }
         log::info!(
