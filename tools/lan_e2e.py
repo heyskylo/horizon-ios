@@ -13255,20 +13255,23 @@ def set_legacy_rules(game, on):
 
 
 def check_legacy_pvp(host, guest, out):
-    """The host's legacy combat rules (crates/horizon-client/src/legacy_combat.rs) on a guest's two diamond
-    axe hits 12 ticks apart, past the host's 10 ticks of hurt immunity.
+    """The host's legacy combat rules (crates/horizon-client/src/legacy_combat.rs) on a guest's diamond axe hits:
+    one at full charge, and one right after a hotbar swap, which empties the charge on the server
+    (ServerPlayer's attack item change resets attackStrengthTicker).
 
     1.8.9, EntityPlayer.attackTargetEntityWithCurrentItem: the hit deals the attack damage attribute, which is
     EntityPlayer.applyEntityAttributes' base 1 plus the axe's weapon modifier (ItemAxe's 3.0F +
-    Item.ToolMaterial.EMERALD.getDamageVsEntity() 3.0F): 7, and 7 again, as nothing charges.
-    26.3, Player.attack: 9 at full charge, and the second hit is scaled by getAttackStrengthScale
-    ((12 + 0.5) / 20 ticks for an attack speed of 1): 9 * (0.2 + 0.625^2 * 0.8), about 4.6."""
+    Item.ToolMaterial.EMERALD.getDamageVsEntity() 3.0F): 7, and 7 again after the swap, as nothing charges.
+    26.3, Player.attack: 9 at full charge, and the swapped hit is scaled by getAttackStrengthScale down to
+    9 * (0.2 + scale^2 * 0.8)."""
     if dead(guest):
         guest.raw('respawn')
         guest.wait(40)
     for g in (host, guest):
         g('command', command='gamemode survival')
-    guest('command', command='item replace entity @s weapon.mainhand with minecraft:diamond_axe')
+    guest('command', command='item replace entity @s hotbar.0 with minecraft:diamond_axe')
+    guest('command', command='item replace entity @s hotbar.1 with minecraft:stick')
+    guest.raw('select', '1')
     server_reply(host, 'gamerule natural_health_regeneration false', 'Game rule', 'false')
     host('command', command='attribute @s minecraft:knockback_resistance base set 1')
 
@@ -13276,8 +13279,8 @@ def check_legacy_pvp(host, guest, out):
         reply = server_reply(host, 'data get entity @s Health', 'entity data')
         return float(re.search(r'entity data: ([0-9.]+)f?\s*$', reply).group(1))
 
-    def dealt(attacks):
-        """Health the host loses to `attacks` hits 12 ticks apart, from full health and a full charge."""
+    def dealt(swap):
+        """Health the host loses to one hit from full health: after a full charge, or right after a swap."""
         host('command', command='effect give @s minecraft:instant_health 1 10')
         host.wait(5)
         hx, hy, hz = pos_of(host)
@@ -13287,10 +13290,8 @@ def check_legacy_pvp(host, guest, out):
         guest.wait(30)  # a full attack charge
         before = health()
         assert before == 20.0, f'the host was not healed: {before}'
-        for i in range(attacks):
-            if i:
-                guest.wait(12)
-            guest.raw('attack')
+        # One ctl process keeps the swap and the hit together.
+        guest.script(['select 2', 'select 1', 'attack'] if swap else ['attack'])
         guest.wait(10)
         return before - health()
 
@@ -13298,15 +13299,15 @@ def check_legacy_pvp(host, guest, out):
     try:
         for name, rules in (('modern', False), ('legacy', True)):
             set_legacy_rules(host, rules)
-            hits[name] = (dealt(1), dealt(2))
+            hits[name] = (dealt(False), dealt(True))
             guest.shot(out, f'legacy-pvp-{name}')
     finally:
         set_legacy_rules(host, False)
         host('command', command='attribute @s minecraft:knockback_resistance base set 0')
         host('command', command='gamerule natural_health_regeneration true')
-    assert hits['legacy'] == (7.0, 14.0), f'1.8.9 rules: hits of 7, the second as hard: {hits}'
-    one, two = hits['modern']
-    assert one == 9.0 and 9.0 < two < 18.0, f'26.3 rules: 9, then a hit the cooldown cut: {hits}'
+    assert hits['legacy'] == (7.0, 7.0), f'1.8.9 rules: 7, charged or not: {hits}'
+    full, swapped = hits['modern']
+    assert full == 9.0 and swapped < 9.0, f'26.3 rules: 9 charged, less right after a swap: {hits}'
     return hits
 
 
