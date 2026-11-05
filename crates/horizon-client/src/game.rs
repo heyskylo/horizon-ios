@@ -12326,7 +12326,13 @@ impl Game<'_> {
                     m.velocity = Vec3::new(x, y, z);
                     m.needs_sync = true;
                 } else {
-                    self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
+                    self.mobs[index].knockback_effect(
+                        f64::from(knockback),
+                        xd,
+                        zd,
+                        &source,
+                        amount,
+                    );
                 }
                 self.stop_sprint_after_extra_knockback();
             }
