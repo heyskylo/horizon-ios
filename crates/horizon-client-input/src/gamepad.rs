@@ -119,6 +119,19 @@ impl Button {
             ][face],
         }
     }
+    /// The face button that plays this one's part on a Nintendo pad going by its letters
+    /// (`PadSettings::nintendo_letters`): the A it prints on the right is South, which confirms
+    /// and jumps as A does on a Switch; B (bottom) is East, X (top) West, Y (left) North. It is
+    /// its own inverse, so it turns a part into the button playing it and back.
+    pub fn by_letter(self) -> Button {
+        match self {
+            Button::South => Button::East,
+            Button::East => Button::South,
+            Button::West => Button::North,
+            Button::North => Button::West,
+            other => other,
+        }
+    }
 }
 
 /// A pad's inputs at one moment. Sticks are `[x, y]` with right and up
@@ -141,6 +154,14 @@ impl PadState {
     }
     pub fn held(&self, button: Button) -> bool {
         self.buttons & button.bit() != 0
+    }
+    /// A Nintendo pad's buttons read by their letters (`Button::by_letter`).
+    pub fn by_letter(&self) -> PadState {
+        let mut state = *self;
+        for part in [Button::South, Button::East, Button::West, Button::North] {
+            state.set(part, self.held(part.by_letter()));
+        }
+        state
     }
     /// Two sources at once (a real pad and `horizon-ctl pad`): buttons held on
     /// either, sticks and triggers added.
@@ -454,6 +475,10 @@ pub struct PadSettings {
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
     pub glyphs: GlyphStyle,
+    /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
+    /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
+    /// by default on the Switch only.
+    pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
     pub pointer_speed: f32,
@@ -478,6 +503,7 @@ impl Default for PadSettings {
             trigger_threshold: 0.4,
             toggle_sneak: true,
             glyphs: GlyphStyle::Auto,
+            nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
             pointer_speed: 1.0,
             scroll_speed: 12.0,
@@ -545,6 +571,7 @@ impl PadSettings {
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
+                "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
                 "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
@@ -568,7 +595,7 @@ impl PadSettings {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
@@ -581,6 +608,7 @@ impl PadSettings {
             self.trigger_threshold,
             bool_text(self.toggle_sneak),
             self.glyphs.name(),
+            bool_text(self.nintendo_letters),
             self.keyboard.name(),
         );
         text.push_str(&format!(
@@ -1391,7 +1419,9 @@ mod tests {
         s.invert_y = true;
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
+        s.nintendo_letters = !s.nintendo_letters;
         let text = s.serialize();
+        assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));
         assert!(text.contains("bind_key.drop:none\n"));
         assert!(!text.contains("key.sneak"));
@@ -1435,6 +1465,27 @@ mod tests {
             false,
         );
         assert_eq!(other, ([0.0, 0.0], [1.0, 0.0]));
+    }
+
+    #[test]
+    fn a_nintendo_pad_by_its_letters_confirms_with_a() {
+        // The pad's A sits on the right (East): going by letters it plays South, confirm and jump.
+        let mut pad = PadState::default();
+        pad.set(Button::East, true);
+        pad.set(Button::LeftBumper, true);
+        pad.left = [0.5, -0.25];
+        let parts = pad.by_letter();
+        assert!(parts.held(Button::South));
+        assert!(!parts.held(Button::East));
+        // Other buttons and the sticks stay; reading by letters again gives the pad back.
+        assert!(parts.held(Button::LeftBumper));
+        assert_eq!(parts.left, [0.5, -0.25]);
+        assert_eq!(parts.by_letter(), pad);
+        // A part's glyph is the letter of the button playing it.
+        assert_eq!(Button::South.by_letter().label(GlyphStyle::Nintendo), "A");
+        assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
+        assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
+        assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
     }
 
     #[test]

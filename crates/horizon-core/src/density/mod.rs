@@ -275,6 +275,20 @@ impl DensitySampler for GradientSampler {
     ) -> Result<(), SampleError> {
         check_buffer(buffer, volume)?;
         let [sx, sy, sz] = volume.sizes();
+        if self.axis == Axis::Y {
+            // Columns are contiguous along y: compute the first, copy it.
+            let columns = sx * sz;
+            for y in 0..sy {
+                let value = self.compute(volume.block(Axis::Y, y).unwrap())?;
+                if columns != 0 {
+                    buffer[y] = value;
+                }
+            }
+            for column in 1..columns {
+                buffer.copy_within(0..sy, column * sy);
+            }
+            return Ok(());
+        }
         for coordinate in 0..volume.sizes()[self.axis as usize] {
             let value = self.compute(volume.block(self.axis, coordinate).unwrap())?;
             match self.axis {
@@ -284,13 +298,7 @@ impl DensitySampler for GradientSampler {
                         buffer[start..start + sy].fill(value);
                     }
                 }
-                Axis::Y => {
-                    for z in 0..sz {
-                        for x in 0..sx {
-                            buffer[(x + z * sx) * sy + coordinate] = value;
-                        }
-                    }
-                }
+                Axis::Y => unreachable!("filled above"),
                 Axis::Z => {
                     let start = coordinate * sx * sy;
                     buffer[start..start + sx * sy].fill(value);

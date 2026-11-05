@@ -399,7 +399,8 @@ impl Launcher {
             .child(self.reset_look_row(cx));
         let network = card().child(self.proxy_row(n, cx));
         let game = card()
-            .child(self.game_args_row(n, cx))
+            .child(self.game_architecture_row(n, cx))
+            .child(self.game_args_row(n + 1, cx))
             .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))

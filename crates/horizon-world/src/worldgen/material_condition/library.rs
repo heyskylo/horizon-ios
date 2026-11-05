@@ -158,6 +158,11 @@ impl MaterialRuleLibrary {
                 density: self.compiler.get_sampler(self.roots[roots[0]])?,
                 richness: self.compiler.get_sampler(self.roots[roots[1]])?,
                 filler_gap: self.compiler.get_sampler(self.roots[roots[2]])?,
+                positive_y: self
+                    .compiler
+                    .graph()
+                    .positive_y_bounds(self.roots[roots[0]])?
+                    .unwrap_or([i32::MIN, i32::MAX]),
             },
         });
         self.compiled.insert(key, value.clone());
