@@ -468,7 +468,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status | pad connection connected|disconnected", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
         "Buttons by position: south east west north lb rb lt rt select start ls rs up down left right (south is Xbox A / PlayStation cross). Sticks run -1..1 with up positive and stay tilted until centred; triggers 0..1. Merged with any real controller; status lists the connected ones and what is held.",
         ["horizon-ctl pad south tap", "horizon-ctl pad stick left 0 1", "horizon-ctl pad trigger right 1", "horizon-ctl pad status"],
-        &[p("what", Ty::Str, "a button name, stick, trigger, release or status"), opt("a", Ty::Str, "down|up|tap, or left|right"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
+        &[p("what", Ty::Str, "a button name, stick, trigger, release, status or connection"), opt("a", Ty::Str, "down|up|tap, left|right, or connected|disconnected"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
     cmd!("release", Act, "release", "release every key and mouse button", "", ["horizon-ctl release"], &[], mcp: true, local: false),
     cmd!("stop", Act, "stop", "cancel the running action (goto, break...) and release every key", "", ["horizon-ctl stop"], &[], mcp: true, local: false),
     // Screens
