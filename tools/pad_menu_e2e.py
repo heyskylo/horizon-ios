@@ -30,6 +30,9 @@ Cases:
 - glyph_on_field: A on a focused text field and B on Cancel; A opens one keyboard, which hides them; B closes it.
 - settings_apply: X presses World Options' Apply once something changed.
 - long_label: a label too wide for its button slides, beside its glyph.
+- every_screen_has_targets: the title's submenus and every options page give the focus something to land on.
+- pause_icon: the pause menu's icons are targets, and A presses one.
+- erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 """
@@ -362,6 +365,17 @@ def lock_question(args, name):
     return check.failures
 
 
+def open_optimize_confirm(game):
+    """From the title, with one saved world, to the screen with the Erase Cached Data box."""
+    game.pad('south')
+    game.pad('south')
+    game.wait_targets()
+    game.pad('down')
+    click_widget(game, game.rows()[0])
+    click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Edit'))
+    click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Optimize World'))
+
+
 def optimize_world(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -375,13 +389,7 @@ def optimize_world(args, name):
         source = max((game.game_home / 'saves' / 'Menus').rglob('region/*.mca'), key=lambda f: f.stat().st_size)
         for i in range(400):
             shutil.copy(source, source.parent / f'r.{100 + i}.100.mca')
-        game.pad('south')
-        game.pad('south')
-        game.wait_targets()
-        game.pad('down')
-        click_widget(game, game.rows()[0])
-        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Edit'))
-        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Optimize World'))
+        open_optimize_confirm(game)
         click_widget(game, next(w for w in game.widgets() if w.get('label') == "I Know What I'm Doing!"))
         check(game.widgets()[0].get('label') == 'Cancel', f'not on Optimize World: {labels(game)}')
         game.pad('down')
@@ -1318,7 +1326,8 @@ def controller_settings_pad(args, name):
         for page in ('General', 'Bindings', 'Device'):
             check(has_label(game, page), f'no page {page} in {labels(game)}')
         check(has_label(game, 'Editing:'), 'the screen does not say whose profile it edits')
-        check(not has_label(game, 'Navigation'), 'a navigation page contradicts menus always focusing')
+        # Exactly: the General page has its Navigation Repeat rows.
+        check('Navigation' not in labels(game), 'a navigation page contradicts menus always focusing')
         shot(game, 'controller-general')
         # The D-pad walks the whole list, scrolling it.
         game.pad('right')
@@ -1440,6 +1449,74 @@ def controller_settings_keys(args, name):
     return check.failures
 
 
+OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller', 'controller-binds', 'mouse', 'chat',
+                 'accessibility', 'language', 'font', 'packs', 'mods', 'shader-packs', 'graphics', 'graphics-advanced',
+                 'graphics-hdr', 'extras', 'pvp', 'credits', 'horizon', 'agent')
+# Screens allowed to draw no target, and why. The pad falls back to the crosshair on these.
+NO_TARGETS = {'studio': 'its buttons and rows only paint, nothing registers them yet'}
+TARGETS_WAIT = 5
+
+
+def check_has_targets(game, check, screen):
+    """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
+    if screen in NO_TARGETS:
+        return
+    end = time.time() + TARGETS_WAIT
+    while True:
+        menu = game.menu()
+        if menu['mode'] != 'focus' or menu['targets']:
+            return
+        if time.time() > end:
+            check(False, f'{screen} has no targets: a controller is left with the crosshair')
+            return
+        time.sleep(0.2)
+
+
+@title_case
+def every_screen_has_targets(game, check, single, options, quit_game):
+    for screen, steps in (('create world', ['singleplayer']), ('multiplayer warning', ['multiplayer']),
+                          ('multiplayer', ['multiplayer', 'proceed']), ('realms', ['realms'])):
+        for step in steps:
+            click_widget(game, widget(game, step))
+        check(quit_game not in game.rects(), f'{screen} did not open')
+        check_has_targets(game, check, screen)
+        for _ in range(4):
+            if quit_game in game.rects():
+                break
+            # Not the Escape key: horizon-ctl's needs a world open.
+            game.pad('east')
+            time.sleep(SETTLE)
+        else:
+            raise RuntimeError(f'B did not come back to the title from {screen}')
+    game.pad('west')
+    for page in OPTIONS_PAGES:
+        game.ctl('options', page)
+        time.sleep(SETTLE)
+        check_has_targets(game, check, page)
+    game.ctl('options', 'horizon')
+    time.sleep(SETTLE)
+    click_widget(game, widget(game, 'studio'))
+    check_has_targets(game, check, 'studio')
+
+
+def pause_icon(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'escape', 'tap')
+        game.wait_targets()
+        # Report Bugs, Feedback and Player Reporting, and Friends when it is live.
+        icons = sorted(r for r in game.rects() if r[2:] == (20, 20))
+        check(len(icons) >= 3, f'pause icons with targets: {icons}')
+        game.focus_on(next(w['id'] for w in game.widgets() if tuple(w['bounds']) == icons[-1]))
+        before = game.rects()
+        game.pad('south')
+        check(game.rects() != before, 'A did not press Player Reporting')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def controller_notices(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -1458,6 +1535,41 @@ def controller_notices(args, name):
         shot(game, 'notice-connected')
         time.sleep(6.5)
         check(notice() is None, f'the notice outstayed its time: {notice()}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def erase_checkbox(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'escape', 'tap')
+        game.wait_targets()
+        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Save and Quit to Title'))
+        game.wait_targets()
+        game.title_buttons()
+        open_optimize_confirm(game)
+        box = next(w for w in game.widgets() if 'label' not in w)
+        # The box is the screen's topmost target.
+        for _ in range(4):
+            if game.focus() == tuple(box['bounds']):
+                break
+            game.pad('up')
+        check(game.focus() == tuple(box['bounds']), f"the D-pad stopped on {game.focus()}, not {box['bounds']}")
+        path = game.home / 'box.png'
+
+        def shot():
+            game.ctl('screenshot', path)
+            rows, width, channels = png_rows(path)
+            scale = width / game.ctl('ui')['gui_size'][0]
+            x, y, h = (int(box['bounds'][i] * scale) for i in (0, 1, 3))
+            return [row[x * channels:(x + h) * channels] for row in rows[y:y + h]]
+
+        # Ticked, its sprite changes under the same hover.
+        unticked = shot()
+        game.pad('south')
+        check(shot() != unticked, 'A did not tick Erase Cached Data')
     finally:
         game.quit()
     return check.failures
@@ -1494,7 +1606,10 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'controller_settings_pad': controller_settings_pad,
          'controller_bind': controller_bind,
          'controller_settings_keys': controller_settings_keys,
-         'controller_notices': controller_notices}
+         'controller_notices': controller_notices,
+         'every_screen_has_targets': every_screen_has_targets,
+         'pause_icon': pause_icon,
+         'erase_checkbox': erase_checkbox}
 
 
 def main():

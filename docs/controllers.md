@@ -94,6 +94,13 @@ Draw the screen's Done, Back, Cancel or Apply with `ui::action_button` and the
 `widgets::Action` it performs, or call `widgets::declare_action` if the screen
 draws its own buttons. That is all: nothing else names the screen.
 
+Every control also needs a focus target, or the pad can't reach it. `ui::button` and its kin register
+themselves, as does `settings_shell::foot_button`. `graphics_style::button` and `screen_draw::button` only
+paint, so anything drawn with them, or by hand, needs its own
+`widgets::record` or `widgets::target_as`. A focus screen with any target has no crosshair, so register all
+of it. The `every_screen_has_targets` case of `tools/pad_menu_e2e.py` fails on a focus screen that
+registers nothing, unless its allowlist names it.
+
 | Action | Pad button | With the button disabled |
 |---|---|---|
 | Back, Cancel, Done (the first the screen has that can be pressed, in that order) | B | B falls back to Escape |
@@ -140,18 +147,19 @@ that player's options and bindings.
 Both modes feed the screens the same pointer events a mouse sends: in focus
 mode the (hidden) pointer sits on the focused widget. So every screen keeps
 its mouse behaviour (drags, sliders, scrollbars, hover highlights) with no
-controller code of its own, and both modes reach every screen. Moving the
-real mouse hands control back at once.
+controller code of its own, but focus only lands on what a screen registers,
+and a focus screen with any target has no crosshair: a control with no target
+on it is out of the pad's reach. Moving the real mouse hands control back at once.
 
 ### Focus navigation
 
-Every interactive rectangle a screen draws registers itself as a focus
-target with its kind (`widgets::target_as`): classic buttons, sliders, edit
-boxes and list rows (worlds, servers, languages, superflat layers and presets, biomes), icon buttons (the title's
-and pause menu's Friends button), inventory and container slots, creative and recipe-book
+A screen registers what it draws as focus targets with their kind
+(`widgets::target_as`): classic buttons, sliders, edit
+boxes and list rows (worlds, servers, languages, superflat layers and presets, biomes), icon buttons (the title's,
+the pause menu's and Realms'), inventory and container slots, creative and recipe-book
 tabs, and the stations' own buttons (trades, loom patterns, beacon effects,
 enchantments, stonecutter recipes, the recipe book's recipes, pages and
-filter). A screen that registers nothing falls back to the pointer.
+filter). Not every control registers yet (see "Adding a screen"). A screen that registers nothing falls back to the pointer.
 
 The step itself is **vanilla's arrow-key navigation**
 (`ContainerEventHandler.nextFocusPathInDirection`, 26.3), applied to every
@@ -307,10 +315,10 @@ Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
 
 ### Screens covered
 
-Both modes reach every screen through the pointer events. Focus mode
+Both modes send the same pointer events, but neither reaches everything. Focus mode
 registers targets on: the title menus (main, world list and its search, create
 and edit world, delete, multiplayer list and its edit screens), every options
-page (vanilla's and Horizon Settings with the pages it opens, key and
+page (vanilla's and Horizon Settings with the pages it opens except Replay Studio, key and
 controller binds, language list), pause and Play with Friends, death, chat, signs and books (their buttons), the
 survival and creative inventories, every container and station (chests,
 furnaces, brewing, crafter, crafting table with its recipe book, anvil,
@@ -318,7 +326,7 @@ grindstone, smithing, stonecutter, loom, cartography, enchanting, beacon,
 villager and wandering-trader trades, mount inventories), and the LAN /
 world options. Where a screen draws something clickable no target names
 (the advancements map, the statistics lists, the pack screen's rows, the
-book's page text), the pad drives the pointer instead.
+book's page text), the pad drives the pointer instead, as it does on Replay Studio, which registers nothing yet.
 
 ## Glyphs
 
