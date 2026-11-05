@@ -926,6 +926,42 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def dragon_command_damage():
+    """DamageCommand -> EnderDragon.hurtServer (the body: a quarter plus up to 1, health only
+    with a player behind it or #is_explosion, success either way) and EndCrystal.hurtServer
+    (removed unless invulnerable, fire or the dragon's; generic_kill bypasses Invulnerable)."""
+    ops = setup('/forceload add 0 0 63 47', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    dragon = '@e[tag=dmg_dragon,limit=1]'
+    ops += setup('/summon ender_dragon 8.5 160 8.5 {Tags:["dmg_actor","dmg_dragon"],NoAI:1b}')
+    ops += [cmd(f'/execute if entity {dragon}', expect_result=1),
+            cmd(f'/data get entity {dragon} Health', expect_result=200)]
+    for damage, health in (
+        ('8', 200),                         # no player, not an explosion: lands, no health
+        ('8 minecraft:explosion', 197),     # 8 / 4 + 1
+        ('40 minecraft:generic by @s', 189),  # 11 within the cooldown: only the excess over 3
+        ('4 minecraft:in_fire by @s', 189),  # reallyHurt refuses fire; hurt still succeeds
+        ('0', 189),                         # under 0.01: refused, invulnerable
+    ):
+        ops += [cmd(f'/damage {dragon} {damage}'),
+                cmd(f'/data get entity {dragon} Health', expect_result=health)]
+    for i, (label, nbt, hits) in enumerate((
+        ('blast', '', (('1', False),)),
+        ('explosion', '', (('1 minecraft:explosion', False),)),
+        ('fire', '', (('1 minecraft:in_fire', True),)),
+        ('shield', ',Invulnerable:1b', (('1', True), ('1 minecraft:generic_kill', False))),
+        ('by_dragon', '', ((f'1 minecraft:generic by {dragon}', True), ('1', False))),
+    )):
+        crystal = f'@e[tag=dmg_{label},limit=1]'
+        x, z = (40, 56, 40, 56, 40)[i], (8, 8, 24, 24, 40)[i]
+        ops += setup(f'/summon end_crystal {x}.5 160 {z}.5 {{Tags:["dmg_actor","dmg_{label}"],ShowBottom:0b{nbt}}}')
+        ops += [cmd(f'/execute if entity {crystal}', expect_result=1)]
+        for damage, stays in hits:
+            ops += [cmd(f'/damage {crystal} {damage}'),
+                    cmd(f'/execute {"if" if stays else "unless"} entity {crystal}', expect_result=1)]
+    return ops + setup('/kill @e[tag=dmg_actor]', '/tick unfreeze', '/forceload remove all')
+
+
 def execute():
     return [
         *setup('/scoreboard objectives add exec dummy', '/scoreboard players set @s exec 4', '/scoreboard players set fake exec 9'),
@@ -5639,6 +5675,7 @@ def groups():
         ('large fireball fire', large_fireball_fire()),
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
+        ('dragon command damage', dragon_command_damage()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),

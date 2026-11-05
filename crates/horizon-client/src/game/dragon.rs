@@ -6,6 +6,7 @@
 //! the spikes, its parts (head and neck take full damage, the rest a quarter
 //! plus one), wing knockback, block breaking, the death flight and rays, the
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
+use super::commands::Target;
 use super::{
     Dim, Game,
     potions::{Victim, mob_can_be_affected},
@@ -465,6 +466,15 @@ pub(super) enum Hurt {
     /// A perched dragon's `onHurt` took a direct arrow's or wind charge's
     /// damage away (and set it alight for a second).
     Shrugged,
+}
+/// The dragon's body among its parts (head, neck, body, ...).
+const BODY: usize = 2;
+/// `#minecraft:is_explosion` by the damage type's id.
+fn is_explosion_type(ty: &str) -> bool {
+    matches!(
+        ty.trim_start_matches("minecraft:"),
+        "fireworks" | "explosion" | "player_explosion" | "bad_respawn_point"
+    )
 }
 /// `#minecraft:is_fire`, which the dragon's parts and the crystals refuse
 /// (`isInvulnerableToBase`: both types are fire immune).
@@ -1359,6 +1369,75 @@ impl Game<'_> {
         } else {
             Hurt::Refused
         }
+    }
+    /// The player behind a command's damage source (`source.getEntity() instanceof Player`).
+    fn command_player(&self, cause: Option<Target>) -> Option<FightWho> {
+        match cause {
+            Some(Target::Player) => Some(self.acting_player()),
+            Some(Target::Guest(conn)) => Some(FightWho::Guest(conn)),
+            _ => None,
+        }
+    }
+    /// `DamageCommand` on the dragon: `EnderDragon.hurtServer` is `hurt(body, ...)`, so a
+    /// quarter plus up to 1. `reallyHurt` runs only with a player behind the source or an
+    /// `#is_explosion` type, and its `LivingEntity.hurtServer` refuses fire (the dragon is fire
+    /// immune); `hurt` succeeds either way unless the dragon is dying or the hit is under 0.01.
+    pub(super) fn command_damage_dragon(
+        &mut self,
+        id: u32,
+        amount: f32,
+        ty: &str,
+        kind: DamageKind,
+        cause: Option<Target>,
+    ) -> bool {
+        let player = self.command_player(cause);
+        let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+            return false;
+        };
+        if is_fire(kind) {
+            return d.hurt_from(BODY, amount, None, false, None) != Hurt::Refused;
+        }
+        let counts = player.is_some() || is_explosion_type(ty);
+        self.hurt_dragon_part(BODY, amount, counts, player, kind, None) != Hurt::Refused
+    }
+    /// `DamageCommand` on an End crystal: `EndCrystal.hurtServer`. `isInvulnerableToBase`
+    /// refuses an `Invulnerable` crystal unless the type bypasses it or a creative player is
+    /// behind it, and fire; the dragon's own damage is refused too. Else the crystal is removed,
+    /// and blows up unless the damage is an explosion.
+    pub(super) fn command_damage_crystal(
+        &mut self,
+        id: u32,
+        ty: &str,
+        kind: DamageKind,
+        cause: Option<Target>,
+    ) -> bool {
+        let Some(index) = self.crystals.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let creative = cause
+            .filter(|t| matches!(t, Target::Player | Target::Guest(_)))
+            .and_then(|t| self.for_player(t, |g| g.creative))
+            .unwrap_or(false);
+        let bypass = matches!(
+            ty.trim_start_matches("minecraft:"),
+            "out_of_world" | "generic_kill"
+        ) || creative;
+        if (self.crystals[index].invulnerable && !bypass)
+            || is_fire(kind)
+            || matches!(cause, Some(Target::Dragon(_)))
+        {
+            return false;
+        }
+        // destroy_crystal keeps a crystal invulnerable to everything else.
+        self.crystals[index].invulnerable = false;
+        let damage = if is_explosion_type(ty) {
+            CrystalDamage::Explosion
+        } else {
+            CrystalDamage::Direct
+        };
+        let player = self.command_player(cause);
+        self.destroy_crystal(index, player, damage);
+        true
     }
     /// `hurt_dragon_part` with no projectile behind the hit.
     fn hurt_dragon(

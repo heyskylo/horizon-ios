@@ -264,6 +264,12 @@ impl Game<'_> {
                 }
             }
             Target::Item(id) => self.command_damage_item(id, amount, &ty, cause.or(by)),
+            Target::Dragon(id) => {
+                self.command_damage_dragon(id, amount, &ty, Self::damage_kind(&ty), cause.or(by))
+            }
+            Target::Crystal(id) => {
+                self.command_damage_crystal(id, &ty, Self::damage_kind(&ty), cause.or(by))
+            }
             _ => false,
         };
         if !hurt {
