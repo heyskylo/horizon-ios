@@ -172,6 +172,11 @@ def scenarios(entries):
     return runs
 
 
+def first_frame(run, name):
+    """The first tick whose frame sent `name` (the server's answer it carries), or None."""
+    return next((i for i, tick in enumerate(run) if any(n == name for n, _ in tick['frame'])), None)
+
+
 def new_tick():
     return {'packets': [], 'frame': [], 'misplaced': []}
 

@@ -159,8 +159,8 @@ SCENARIOS = {
                                52: ['look 0 -80'], 54: ['key 3 tap', 'mouse left click']})),
     'dig_teleport': dict(
         setup=[f'setblock 0 {FLOOR + 1} 2 minecraft:stone'],
-        ticks=60, steps={0: ['look 0 45'], 3: ['mouse left down'], 15: ['command tp @s ~ ~ ~'],
-                         40: ['mouse left up']}),
+        ticks=60, anchor='accept_teleportation',
+        steps={0: ['look 0 45'], 3: ['mouse left down'], 15: ['command tp @s ~ ~ ~'], 40: ['mouse left up']}),
 }
 
 
@@ -414,6 +414,22 @@ def run(args, out):
     return captures
 
 
+def anchored_diffs(v, h, ticks, anchor, problems):
+    """wire_stream.compare over the scenario's ticks. With an anchor (a frame packet the server's answer brings,
+    as AcceptTeleportation), the ticks before it compare one to one and the ticks from it on are aligned on it:
+    a loaded server answers a tick or more later in one run than in the other. Numbers are vanilla's ticks."""
+    if not anchor:
+        return wire_stream.compare(v, h, ticks)
+    av, ah = wire_stream.first_frame(v, anchor), wire_stream.first_frame(h, anchor)
+    if av is None or ah is None:
+        problems.append(f'  no {anchor}: vanilla at tick {av}, Horizon at tick {ah}')
+        return wire_stream.compare(v, h, ticks)
+    # Between the two anchors both clients wait for the server: the ticks after the shorter wait are left out.
+    before = wire_stream.compare(v[:min(av, ah)], h[:min(av, ah)], min(av, ah) - 1)
+    after = wire_stream.compare(v[av:], h[ah:], ticks - max(av, ah))
+    return before + [(i + av, vt, ht) for i, vt, ht in after]
+
+
 def compare(captures, scenarios):
     runs = {}
     for who, capture in captures.items():
@@ -427,7 +443,7 @@ def compare(captures, scenarios):
         v, h = runs['vanilla'][name], runs['horizon'][name]
         ticks = SCENARIOS[name]['ticks'] + PRELUDE
         problems = []
-        for i, vt, ht in wire_stream.compare(v, h, ticks):
+        for i, vt, ht in anchored_diffs(v, h, ticks, SCENARIOS[name].get('anchor'), problems):
             problems.append(f'  tick {i}:\n  vanilla:\n{wire_stream.describe(vt)}\n  Horizon:\n'
                             f'{wire_stream.describe(ht)}')
             problems += wire_stream.field_diff(vt, ht)
