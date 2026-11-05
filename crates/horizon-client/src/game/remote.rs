@@ -571,6 +571,8 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// The player's place in its vehicle's `getPassengers`.
+    pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -1080,6 +1082,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passenger_index: 0,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,

@@ -47,6 +47,19 @@ fn pt(x: f32, y: f32, z: f32) -> [f64; 3] {
 fn up(y: f32) -> [f64; 3] {
     pt(0.0, y, 0.0)
 }
+/// `EntityType.HAPPY_GHAST` `passengerAttachments`: four seats at the corners
+/// of the back (front, left, back, right), picked by the rider's place in
+/// `getPassengers` (`EntityAttachments.get` clamps the index to the last).
+pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
+    const SEATS: [[f32; 3]; 4] = [
+        [0.0, 4.0, 1.7],
+        [-1.7, 4.0, 0.0],
+        [0.0, 4.0, -1.7],
+        [1.7, 4.0, 0.0],
+    ];
+    let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
+    pt(x, y, z)
+}
 fn base_attachment(v: &Mob) -> [f64; 3] {
     let baby = v.is_baby();
     // Players and mannequins have no `passengerAttachments`: their box top.
@@ -83,7 +96,7 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Endermite | Species::Silverfish => up(0.2375),
         Species::Enderman => up(2.80625),
         Species::Ghast => up(4.0625),
-        Species::HappyGhast => pt(0.0, 4.0, 1.7),
+        Species::HappyGhast => happy_ghast_attachment(0),
         Species::Warden => up(3.15),
         Species::Sniffer => up(2.09375),
         Species::Fox => pt(0.0, 0.6375, -0.25),
@@ -551,5 +564,20 @@ mod tests {
         ];
         assert!(start_riding(&mut others, 1, 2));
         assert_eq!(others[0].extra.variant3, 4);
+    }
+}
+
+#[cfg(test)]
+mod happy_ghast_seat_tests {
+    use super::happy_ghast_attachment;
+
+    #[test]
+    fn passengers_take_separate_seats() {
+        assert_eq!(happy_ghast_attachment(0), [0.0, 4.0, f64::from(1.7_f32)]);
+        let seats: Vec<_> = (0..4).map(happy_ghast_attachment).collect();
+        for (i, a) in seats.iter().enumerate() {
+            assert!(seats[i + 1..].iter().all(|b| a != b));
+        }
+        assert_eq!(happy_ghast_attachment(9), seats[3]);
     }
 }
