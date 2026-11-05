@@ -3558,7 +3558,16 @@ impl Mob {
     /// `damage` by a source whose direct entity is `direct` (an entity type id), which `source`
     /// cannot carry: `DamageSources.indirectMagic(potion or cloud, owner)`.
     pub fn damage_by(&mut self, amount: f32, source: Damage, direct: &'static str) -> bool {
+        // Enderman.hurtServer: only a thrown potion skips the teleport draw;
+        // a lingering cloud's `indirect_magic` goes through it.
+        let cloud = self.species() == Species::Enderman
+            && direct == "minecraft:area_effect_cloud"
+            && !self.removed
+            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
         let hurt = self.damage(amount, source);
+        if cloud {
+            enderman::teleport_chance(self, &source);
+        }
         if hurt {
             self.last_direct = Some(direct);
         }

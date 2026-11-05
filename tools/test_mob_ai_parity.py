@@ -109,6 +109,14 @@ def scenarios():
         'fill -8 -61 -8 -2 -61 8 minecraft:bedrock',
         'mob minecraft:enderman 0.5 -60 0.5 0 352 persistent',
     ], 'rain')
+    # Not onto ground that holds water (Enderman.canRandomlyTeleportTo): a floor of waterlogged slabs.
+    add('enderman_rain_waterlogged', 190, [
+        'fill -32 -61 -32 32 -61 32 minecraft:oak_slab[type=top,waterlogged=true]',
+        'fill -3 -61 -3 3 -61 3 minecraft:stone',
+        'mob minecraft:enderman 0.5 -60 0.5 0 353 persistent',
+    ], 'rain')
+    # A NoAI enderman still teleports out of the rain's hurt (Enderman.hurtServer).
+    add('enderman_rain_noai', 46, ['mob minecraft:enderman 0.5 -60 0.5 0 354 persistent noai'], 'rain')
     # RandomStandGoal (rearing, with the ambient sound) of every equine, left alone for 800 ticks.
     for i, species in enumerate(['horse', 'donkey', 'mule', 'zombie_horse', 'skeleton_horse', 'llama']):
         # The zombie horse at night: by day it burns, and a burning horse's hurts are another matter.

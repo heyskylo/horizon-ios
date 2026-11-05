@@ -2112,10 +2112,11 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
-                // Armadillo.rollUp/rollOut: `gameEvent(ENTITY_ACTION)`.
+                // Armadillo.rollUp/rollOut: `gameEvent(ENTITY_ACTION)`;
+                // Enderman.teleport: `gameEvent(TELEPORT)` where it was.
                 MobEvent::GameEvent {
                     event, at, source, ..
-                } if event == "minecraft:entity_action" => {
+                } if event == "minecraft:entity_action" || event == "minecraft:teleport" => {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }

@@ -130,27 +130,22 @@ pub fn teleport_to(
     if !w.no_collision(b) {
         return false;
     }
-    // Level.containsAnyLiquid: the cells from floor(min) up to ceil(max).
+    // LevelReader.containsAnyLiquid and findBlocksIn: the same closed range of
+    // cells, from BlockPos.containing(min) to BlockPos.containing(max).
     let (lo, hi) = (b.min_position(), b.max_position());
-    let cells = |lo: f64, hi: f64| lo.floor() as i32..hi.ceil() as i32;
-    for cx in cells(lo.x, hi.x) {
-        for cy in cells(lo.y, hi.y) {
-            for cz in cells(lo.z, hi.z) {
-                if w.fluid(cx, cy, cz) != Fluid::None {
+    for cx in lo.x.floor() as i32..=hi.x.floor() as i32 {
+        for cy in lo.y.floor() as i32..=hi.y.floor() as i32 {
+            for cz in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                if w.fluid(cx, cy, cz) != Fluid::None || refused(w.block_name(cx, cy, cz)) {
                     return false;
                 }
             }
         }
     }
-    // Level.findBlocksIn: BlockPos.betweenClosed(floor(min), floor(max)).
-    for cx in lo.x.floor() as i32..=hi.x.floor() as i32 {
-        for cy in lo.y.floor() as i32..=hi.y.floor() as i32 {
-            for cz in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                if refused(w.block_name(cx, cy, cz)) {
-                    return false;
-                }
-            }
-        }
+    // Enderman.canRandomlyTeleportTo: not onto ground that holds water
+    // (a waterlogged slab, leaves or roots).
+    if w.fluid(bx, by, bz) == Fluid::Water {
+        return false;
     }
     let old = m.position;
     let old_block = [
@@ -185,15 +180,11 @@ pub fn teleport_to(
             pos: old_block,
             data: packed(0) << 16 | packed(1) << 8 | packed(2),
         });
-        // Both sounds are at the new spot: `xo` was moved by snapTo.
+        // Both sounds are at the new feet: `xo` was moved by snapTo, and
+        // Entity.playSound plays at the position.
         let at = [m.position.x, m.position.y, m.position.z];
         events.push(MobEvent::Sound("entity.enderman.teleport", at, 1.0, 1.0));
-        events.push(MobEvent::Sound(
-            "entity.enderman.teleport",
-            m.center(),
-            1.0,
-            1.0,
-        ));
+        events.push(MobEvent::Sound("entity.enderman.teleport", at, 1.0, 1.0));
     }
     true
 }
@@ -268,14 +259,18 @@ pub fn on_damage(m: &mut Mob, source: &Damage) -> bool {
     true
 }
 pub fn after_hurt(m: &mut Mob, source: &Damage) {
-    // A thrown potion's hit (`indirect_magic`, which only a splash potion
-    // deals to a mob) and a projectile it dodges leave `Enderman.hurtServer`
-    // before the random chance: `repeatedlyTryToTeleport` replaces it.
-    if !dodges(m, source)
-        && source.kind != super::DamageKind::IndirectMagic
-        && source.attacker.is_none()
-        && m.random.next_int_bound(10).unwrap_or(0) != 0
-    {
+    // A thrown potion's hit (`indirect_magic` with the potion as the direct
+    // entity, `Mob::damage_by`) and a projectile it dodges leave
+    // `Enderman.hurtServer` before the random chance:
+    // `repeatedlyTryToTeleport` replaces it.
+    if !dodges(m, source) && source.kind != super::DamageKind::IndirectMagic {
+        teleport_chance(m, source);
+    }
+}
+/// `Enderman.hurtServer`'s `!(source.getEntity() instanceof LivingEntity) &&
+/// random.nextInt(10) != 0`: a teleport after the hurt.
+pub fn teleport_chance(m: &mut Mob, source: &Damage) {
+    if source.attacker.is_none() && m.random.next_int_bound(10).unwrap_or(0) != 0 {
         m.extra.counter2 = 1;
     }
 }
