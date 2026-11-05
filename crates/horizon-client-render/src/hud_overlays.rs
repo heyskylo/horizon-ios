@@ -323,13 +323,12 @@ impl Titles {
             }
         }
     }
-    /// `Hud.extractOverlayMessage`; `bar_height` is
-    /// `max(leftHeight, rightHeight)`.
+    /// `Hud.extractOverlayMessage`: the action bar keeps its place however
+    /// tall the health, food, air and mount rows above the hotbar are.
     pub fn overlay_message(
         &self,
         w: i32,
         h: i32,
-        bar_height: i32,
         partial: f32,
         font: &Font,
         background: u32,
@@ -345,12 +344,11 @@ impl Titles {
         let alpha = ((t * 255.0 / 20.0) as i32).min(255);
         if alpha > 0 {
             let message = message.resolve_legacy();
-            // The bars' height plus the gap between the item name (59) and the
-            // overlay (68), at least the default level.
-            let y_shift = bar_height + (68 - 59);
+            // `Hud.extractOverlayMessage` translates to `guiHeight - 68`, a
+            // constant the bars above the hotbar never move.
             out.push(GuiDraw::Push(vec![PoseOp::Translate(
                 (w / 2) as f32,
-                (h - y_shift.max(68)) as f32,
+                (h - 68) as f32,
             )]));
             let color = if self.overlay_animated {
                 hsv_to_argb(t / 50.0, 0.7, 0.6, alpha as u32)
@@ -468,13 +466,13 @@ impl ToolHighlight {
         self.last = selected;
     }
     /// `Hud.extractSelectedItemName`; `can_hurt` is
-    /// `gameMode.canHurtPlayer()` (survival and adventure) and `bar_height`
-    /// is `max(leftHeight, rightHeight)`.
+    /// `gameMode.canHurtPlayer()` (survival and adventure). The name sits 59
+    /// pixels above the bottom edge whatever the bars above the hotbar do,
+    /// and 14 lower when the mode cannot hurt the player.
     pub fn draw(
         &self,
         w: i32,
         h: i32,
-        bar_height: i32,
         can_hurt: bool,
         font: &Font,
         background: u32,
@@ -495,7 +493,7 @@ impl ToolHighlight {
         }
         let str_width = width(font, &name);
         let x = (w - str_width) / 2;
-        let mut y = h - bar_height.max(59);
+        let mut y = h - 59;
         if !can_hurt {
             y += 14;
         }
@@ -1295,3 +1293,4 @@ mod subtitle_tests {
         assert!(!o.listening());
     }
 }
+
