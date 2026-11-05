@@ -462,6 +462,19 @@ pub struct Hud {
     /// How many of the held item the inventory holds (arrows with a bow or crossbow).
     pub held: bool,
     pub held_corner: Corner,
+    /// The latency the server reports for this player (the tab list's bars), in multiplayer.
+    pub ping: bool,
+    pub ping_corner: Corner,
+    /// The block position and the direction faced, as F3 shows them; hidden when F3 is
+    /// reduced (`reducedDebugInfo`).
+    pub coords: bool,
+    pub coords_corner: Corner,
+    /// The server's address, in multiplayer.
+    pub server: bool,
+    pub server_corner: Corner,
+    /// Hits in a row the server confirmed, until this player is hurt or 3 seconds pass.
+    pub combo: bool,
+    pub combo_corner: Corner,
     /// A dark box behind each widget.
     pub background: bool,
 }
@@ -475,6 +488,14 @@ impl Default for Hud {
             effects_corner: Corner::TopRight,
             held: false,
             held_corner: Corner::BottomRight,
+            ping: false,
+            ping_corner: Corner::TopLeft,
+            coords: false,
+            coords_corner: Corner::TopLeft,
+            server: false,
+            server_corner: Corner::TopLeft,
+            combo: false,
+            combo_corner: Corner::TopLeft,
             background: true,
         }
     }
@@ -542,6 +563,14 @@ impl Pvp {
             "hudHeld" => u.held = flag(value, u.held),
             "hudHeldCorner" => u.held_corner = Corner::parse(value, u.held_corner),
             "hudBackground" => u.background = flag(value, u.background),
+            "hudPing" => u.ping = flag(value, u.ping),
+            "hudPingCorner" => u.ping_corner = Corner::parse(value, u.ping_corner),
+            "hudCoords" => u.coords = flag(value, u.coords),
+            "hudCoordsCorner" => u.coords_corner = Corner::parse(value, u.coords_corner),
+            "hudServer" => u.server = flag(value, u.server),
+            "hudServerCorner" => u.server_corner = Corner::parse(value, u.server_corner),
+            "hudCombo" => u.combo = flag(value, u.combo),
+            "hudComboCorner" => u.combo_corner = Corner::parse(value, u.combo_corner),
             _ => return false,
         }
         true
@@ -588,6 +617,18 @@ impl Pvp {
             u.held,
             u.held_corner.name(),
             u.background,
+        );
+        let _ = write!(
+            out,
+            "hudPing:{}\nhudPingCorner:{}\nhudCoords:{}\nhudCoordsCorner:{}\nhudServer:{}\nhudServerCorner:{}\nhudCombo:{}\nhudComboCorner:{}\n",
+            u.ping,
+            u.ping_corner.name(),
+            u.coords,
+            u.coords_corner.name(),
+            u.server,
+            u.server_corner.name(),
+            u.combo,
+            u.combo_corner.name(),
         );
     }
 }
@@ -649,6 +690,16 @@ opts! {
     HudHeld, "hud_held", "Held item count",
         "How many of the item in your hand your inventory holds; arrows with a bow or crossbow.";
     HudHeldCorner, "hud_held_corner", "Held count corner", "Where the count shows.";
+    HudPing, "hud_ping", "Ping", "The latency the server reports for you, in milliseconds. Multiplayer only.";
+    HudPingCorner, "hud_ping_corner", "Ping corner", "Where the ping shows.";
+    HudCoords, "hud_coords", "Coordinates",
+        "Your block position and the direction you face, as F3 shows them. Hidden when the world or server reduces F3.";
+    HudCoordsCorner, "hud_coords_corner", "Coordinates corner", "Where the coordinates show.";
+    HudServer, "hud_server", "Server address", "The address of the server you play on. Multiplayer only.";
+    HudServerCorner, "hud_server_corner", "Server corner", "Where the address shows.";
+    HudCombo, "hud_combo", "Combo counter",
+        "Hits in a row the server confirmed, until you are hurt or 3 seconds pass without one.";
+    HudComboCorner, "hud_combo_corner", "Combo corner", "Where the combo shows.";
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
@@ -692,6 +743,14 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
             HudEffectsCorner,
             HudHeld,
             HudHeldCorner,
+            HudPing,
+            HudPingCorner,
+            HudCoords,
+            HudCoordsCorner,
+            HudServer,
+            HudServerCorner,
+            HudCombo,
+            HudComboCorner,
             HudBackground,
         ]
         .map(Ok),
@@ -706,7 +765,12 @@ impl Opt {
             Crosshair | Outline | Hit => None,
             OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
             HitColour | HitOpacity => Some(Hit),
-            HudArmour | HudEffects | HudHeld | HudBackground => None,
+            HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
+            | HudBackground => None,
+            HudPingCorner => Some(HudPing),
+            HudCoordsCorner => Some(HudCoords),
+            HudServerCorner => Some(HudServer),
+            HudComboCorner => Some(HudCombo),
             HudArmourCorner | HudArmourPercent => Some(HudArmour),
             HudEffectsCorner => Some(HudEffects),
             HudHeldCorner => Some(HudHeld),
@@ -726,6 +790,10 @@ impl Opt {
             Opt::HudEffects => p.hud.effects,
             Opt::HudHeld => p.hud.held,
             Opt::HudBackground => p.hud.background,
+            Opt::HudPing => p.hud.ping,
+            Opt::HudCoords => p.hud.coords,
+            Opt::HudServer => p.hud.server,
+            Opt::HudCombo => p.hud.combo,
             _ => return None,
         })
     }
@@ -754,6 +822,10 @@ impl Opt {
             Opt::HudArmourCorner => corner_label(p.hud.armour_corner),
             Opt::HudEffectsCorner => corner_label(p.hud.effects_corner),
             Opt::HudHeldCorner => corner_label(p.hud.held_corner),
+            Opt::HudPingCorner => corner_label(p.hud.ping_corner),
+            Opt::HudCoordsCorner => corner_label(p.hud.coords_corner),
+            Opt::HudServerCorner => corner_label(p.hud.server_corner),
+            Opt::HudComboCorner => corner_label(p.hud.combo_corner),
             _ => return None,
         })
     }
@@ -805,6 +877,14 @@ impl Opt {
             Opt::HudHeld => u.held = !u.held,
             Opt::HudHeldCorner => u.held_corner = corner(u.held_corner),
             Opt::HudBackground => u.background = !u.background,
+            Opt::HudPing => u.ping = !u.ping,
+            Opt::HudPingCorner => u.ping_corner = corner(u.ping_corner),
+            Opt::HudCoords => u.coords = !u.coords,
+            Opt::HudCoordsCorner => u.coords_corner = corner(u.coords_corner),
+            Opt::HudServer => u.server = !u.server,
+            Opt::HudServerCorner => u.server_corner = corner(u.server_corner),
+            Opt::HudCombo => u.combo = !u.combo,
+            Opt::HudComboCorner => u.combo_corner = corner(u.combo_corner),
         }
     }
 }
