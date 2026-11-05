@@ -13089,5 +13089,53 @@ CHECKS += ['pig-saddle-shears']
 CHECK_FNS['pig-saddle-shears'] = check_pig_saddle_shears
 
 
+def check_levelup_sounds(host, guest, out):
+    """Each server player has its own age and level-up cooldown, including point gains."""
+    sound = 'minecraft:entity.player.levelup'
+    guest('command', command=f'tp @s {host.player}')
+    for player in (host, guest):
+        player('command', command='xp set @s 0 levels')
+        player('command', command='xp set @s 0 points')
+    host.wait(120)
+    before = {p.name: heard(p, sound) for p in (host, guest)}
+    for player in (host, guest):
+        command_says(player, 'xp add @s 5 levels')
+    host.wait(10)
+    first = {p.name: heard(p, sound) - before[p.name] for p in (host, guest)}
+    assert first == {p.name: 2 for p in (host, guest)}, first
+    command_says(host, 'xp add @s 5 levels')
+    host.wait(5)
+    cooldown = {p.name: heard(p, sound) - before[p.name] for p in (host, guest)}
+    assert cooldown == first, cooldown
+    host.wait(110)
+    command_says(host, 'xp set @s 4 levels')
+    command_says(host, 'xp set @s 0 points')
+    command_says(host, 'xp add @s 15 points')
+    host.wait(10)
+    points = {p.name: heard(p, sound) - before[p.name] for p in (host, guest)}
+    assert points == {p.name: 3 for p in (host, guest)}, points
+    command_says(guest, 'spawnpoint @s ~ ~ ~')
+    guest('command', command='kill @s')
+    guest.wait(30)
+    guest.raw('respawn')
+    guest.wait(5)
+    command_says(host, 'xp set Guest 0 levels')
+    command_says(host, 'xp add Guest 5 levels')
+    guest.wait(5)
+    after_respawn = {p.name: heard(p, sound) - before[p.name] for p in (host, guest)}
+    assert after_respawn == points, after_respawn
+    guest.wait(110)
+    command_says(host, 'xp add Guest 5 levels')
+    guest.wait(10)
+    aged = {p.name: heard(p, sound) - before[p.name] for p in (host, guest)}
+    assert aged == {p.name: 4 for p in (host, guest)}, aged
+    return {'independent': first, 'cooldown': cooldown, 'points': points,
+            'respawn': after_respawn, 'respawn_aged': aged}
+
+
+CHECKS += ['levelup-sounds']
+CHECK_FNS['levelup-sounds'] = check_levelup_sounds
+
+
 if __name__ == '__main__':
     main()

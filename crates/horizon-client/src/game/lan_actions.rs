@@ -118,6 +118,8 @@ pub(super) struct GuestPlay {
     pub(super) respawn_requested: bool,
     /// `Player.takeXpDelay`: ticks until the next orb can be taken.
     xp_delay: u32,
+    /// This player entity's age and level-up sound cooldown.
+    level_up_sound: horizon_client::entities::LevelUpSound,
     /// What last killed the guest outright (`/kill`): the death message's key.
     death_cause: Option<String>,
     /// The equipment modifiers on the guest's attributes (`apply_equipment`)
@@ -166,6 +168,7 @@ pub(super) struct GuestSwap {
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
+    level_up_sound: horizon_client::entities::LevelUpSound,
     host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
@@ -486,6 +489,7 @@ impl Game<'_> {
                 total: g.xp_total,
             },
         );
+        let level_up_sound = std::mem::replace(&mut self.level_up_sound, play.level_up_sound);
         // The host's held keys stay theirs: the guest holds only sneak, and a
         // screen the guest opens (`keys.clear()`) leaves the host walking.
         let host_keys = std::mem::take(&mut self.keys);
@@ -617,6 +621,7 @@ impl Game<'_> {
             block_reach,
             permission,
             xp,
+            level_up_sound,
             host_keys,
             screen,
             host_sign,
@@ -717,6 +722,7 @@ impl Game<'_> {
             block_reach,
             permission,
             xp,
+            level_up_sound,
             host_keys,
             screen,
             host_sign,
@@ -966,6 +972,7 @@ impl Game<'_> {
                 .insert(key, BlockEntity::Chest(self.ender_items.clone()));
             self.ender_open = Some(key);
         }
+        play.level_up_sound = std::mem::replace(&mut self.level_up_sound, level_up_sound);
         let new_xp = std::mem::replace(&mut self.experience, xp);
         g.xp_level = new_xp.level;
         g.xp_progress = new_xp.progress;
@@ -3539,6 +3546,7 @@ impl Game<'_> {
         // empty: the mods hear each worn item again from empty (`native_players_equipment`).
         if let Some(play) = host.play.get_mut(&conn) {
             play.equipment_heard = None;
+            play.level_up_sound = Default::default();
         }
         // PlayerList.respawn: a server's player comes back in its respawn
         // point's level: the Overworld, where the world spawn and beds are,
@@ -3702,6 +3710,13 @@ impl Game<'_> {
         self.tick_player_menus(host);
         self.native_players_equipment(host);
         self.announce_guest_advancements(host);
+        // ServerLevel.tickNonPassenger calls Entity.commonTick for each player,
+        // including spectators and players whose client has not loaded yet.
+        for g in &host.hub.guests {
+            if host.hub.here(g) && !self.on_server_trip(g.conn) {
+                host.play.entry(g.conn).or_default().level_up_sound.tick();
+            }
+        }
         let conns: Vec<u32> = host
             .hub
             .guests

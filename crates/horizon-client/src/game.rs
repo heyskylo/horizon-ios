@@ -2759,7 +2759,7 @@ struct Game<'a> {
     orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
     xp_delay: u32,
     ordered: ordered_tick::OrderedTicks,
-    last_level_up: u64,
+    level_up_sound: horizon_client::entities::LevelUpSound,
     /// The arm swing (`LivingEntity.SwingState`) and how many swings started.
     swing: horizon_client::first_person::SwingState,
     swings_started: u32,
@@ -14194,19 +14194,13 @@ impl Game<'_> {
             return;
         };
         let gained = gained.max(0);
-        let at = self.eye_position();
         let old_level = self.experience.level;
         let gave = self.experience.give(gained);
         self.native_player_level_changed(old_level);
         // Player.giveExperienceLevels runs per level, so the first multiple of 5
         // crossed plays the sound (and starts the cooldown for the rest).
-        if let Some(level) = gave
-            && self.ticks > self.last_level_up + 100
-        {
-            self.last_level_up = self.ticks;
-            let volume = if level > 30 { 1.0 } else { level as f32 / 30.0 };
-            self.audio
-                .play("minecraft:entity.player.levelup", at, volume * 0.75, 1.0);
+        if let Some(level) = gave {
+            self.play_level_up(1, level);
         }
     }
     /// BowItem.releaseUsing: power from charge time, arrows at power * 3.
@@ -19476,7 +19470,7 @@ impl<'a> Game<'a> {
             orbs: Default::default(),
             xp_delay: 0,
             ordered: Default::default(),
-            last_level_up: 0,
+            level_up_sound: Default::default(),
             swing: Default::default(),
             swings_started: 0,
             heights: Default::default(),

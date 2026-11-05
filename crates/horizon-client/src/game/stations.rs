@@ -1000,14 +1000,12 @@ impl Game<'_> {
             xp.total = 0;
         }
         let level = xp.level;
-        if let Some(volume) = horizon_client::entities::Experience::level_up_volume(
-            levels,
-            level,
-            self.ticks,
-            self.last_level_up,
-        ) {
-            self.last_level_up = self.ticks;
-            // playSound(null, feet): the player hears their own level-up.
+        self.play_level_up(levels, level);
+        self.native_player_level_changed(old_level);
+    }
+    /// `Player.giveExperienceLevels`: all players near its feet hear the sound.
+    pub(super) fn play_level_up(&mut self, amount: i32, level: i32) {
+        if let Some(volume) = self.level_up_sound.give_levels(amount, level) {
             let at = self
                 .player
                 .as_ref()
@@ -1015,7 +1013,6 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:entity.player.levelup", at, volume, 1.0);
         }
-        self.native_player_level_changed(old_level);
     }
     /// Whether the result slot may be taken (`mayPickup`).
     fn may_take_result(&self) -> bool {

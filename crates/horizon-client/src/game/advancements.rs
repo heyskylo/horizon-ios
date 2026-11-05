@@ -883,7 +883,10 @@ impl Game<'_> {
         if a.rewards.experience > 0 {
             let old_level = self.experience.level;
             let points = self.xp_change(a.rewards.experience).map_or(0, |p| p.max(0));
-            self.experience.give(points);
+            let gained_level = self.experience.give(points);
+            if let Some(level) = gained_level {
+                self.play_level_up(1, level);
+            }
             self.native_player_level_changed(old_level);
         }
         // ServerPlayer.awardRecipesByKey: the rewards that name a recipe.
