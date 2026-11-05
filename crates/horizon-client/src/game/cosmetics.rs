@@ -633,7 +633,10 @@ mod tests {
     /// The service: every player asked about wears its items (`TAG` by default); each request is
     /// logged.
     #[derive(Clone)]
-    struct Service(Arc<Mutex<Vec<String>>>, &'static [(&'static str, &'static str)]);
+    struct Service(
+        Arc<Mutex<Vec<String>>>,
+        &'static [(&'static str, &'static str)],
+    );
 
     impl Default for Service {
         fn default() -> Self {
@@ -806,13 +809,19 @@ mod tests {
         // No cosmetics drawn on the body (a name tag style only): vanilla's height exactly.
         let (worn, _) = other_player(&shown, long);
         assert!(worn.is_some());
-        assert_eq!(tag(body_top(&shown, false, worn.as_ref(), |_| false)), VANILLA);
+        assert_eq!(
+            tag(body_top(&shown, false, worn.as_ref(), |_| false)),
+            VANILLA
+        );
         // A small hat under the tag: vanilla's height too.
         assert_eq!(cosmetic_lift(10.0, 1.0), 0.0);
         // The crown: the whole tag just over the star.
         let crowned = tag(top_of(&shown, long));
         let bottom = crowned - 10.0 * unit;
-        assert!(bottom > star && bottom < star + 2.0 * unit, "{bottom} over {star}");
+        assert!(
+            bottom > star && bottom < star + 2.0 * unit,
+            "{bottom} over {star}"
+        );
         // A helmet over it: vanilla's height.
         let (worn, _) = other_player_from(Service(Arc::default(), both), &shown, long);
         let helmet = body_top(&shown, false, worn.as_ref(), |slot| slot == Slot::Head);
@@ -823,7 +832,11 @@ mod tests {
                 cosmetics_others: Some(others),
                 ..Extras::default()
             };
-            let patience = if others == Others::Hidden { short } else { long };
+            let patience = if others == Others::Hidden {
+                short
+            } else {
+                long
+            };
             assert_eq!(tag(top_of(&extras, patience)), VANILLA, "{others:?}");
         }
     }

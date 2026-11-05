@@ -296,7 +296,11 @@ pub(crate) mod tests {
         // corners (±2, 4 up from the pivot) rise to 10 + 4 cos 10° + 2 sin 10° at the swing's end.
         let (s, c) = 10f32.to_radians().sin_cos();
         let item = Item::parse(hat("").as_bytes()).unwrap();
-        assert!((item.top - (10.0 + 4.0 * c + 2.0 * s)).abs() < 1e-4, "{}", item.top);
+        assert!(
+            (item.top - (10.0 + 4.0 * c + 2.0 * s)).abs() < 1e-4,
+            "{}",
+            item.top
+        );
         // Each root counts from its own bone's rest pivot: a sleeve 2 pixels above the body's
         // pivot (the neck) reaches 2 up; on the right arm, whose pivot is 2 below, the neck.
         let on_body = Item::parse(shirt(r#""bone": "body","#).as_bytes()).unwrap();
