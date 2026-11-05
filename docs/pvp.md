@@ -8,6 +8,9 @@ off by default: a fresh install looks exactly like vanilla 26.3, and turning one
 Nothing here tells the player more than vanilla does or plays for them, so the game stays fine on servers
 that ban unfair clients. That rules out, on purpose: a reach display, entities on the minimap, freelook,
 auto-clicking or any other automatic action, seeing through walls, and hitboxes beyond vanilla's F3+B.
+Three options do see further than vanilla would at that moment, and some strict servers ban fog or light
+changes: clear water and clear lava (below), and a fixed time of day, whose sky light brightens a night.
+They are off by default; check a server's rules before turning them on there.
 Each feature is built from what it visibly does, never from another client's or mod's code.
 
 ## Where it lives
@@ -95,7 +98,9 @@ so it costs nothing. Resource packs' core shaders and OptiFine CIT glints keep t
 | Clear water | `clearWater` | Water fog as vanilla's after 30 seconds under water (water vision 1), from the first tick. |
 | Clear lava | `clearLava` | Lava fog as vanilla's with Fire Resistance (0 to 5 blocks), without the effect. |
 
-Both fog options stop at the clearest view vanilla itself gives, so they show nothing a vanilla player can't see.
+Both fog options stop at the clearest view vanilla itself gives, but they give it at once: 96 blocks of water
+on entering instead of 24, and 5 blocks of lava without the effect instead of 1. That is an edge in a fight
+(see Fair play).
 There is no "no hurt camera" option: vanilla's Accessibility → Damage Tilt already sets the shake from 0 to 100%.
 
 ## Your view: time of day and weather (`viewTime`, `viewWeather`, default the world's)
@@ -106,3 +111,15 @@ fog (`Game::view_day_time`, `Game::view_weather` in `game/pvp.rs`). The world's 
 that plays by them (mobs, crops, beds, riptide, rain sounds), stay the server's, and nothing is sent to it.
 The moon keeps the world's phase. Only a client of a server draws it (single player's window is one), in the
 Overworld.
+
+## Chat (each default off)
+
+| Option | Key | What it does |
+|---|---|---|
+| Timestamps | `chatTimestamps` | The local time a message came in, before it, in grey (`horizon.chat.timestamp`). |
+| Compact chat | `chatCompact` | A message equal to the one before it (same text, kind and tag, neither signed) raises that one's count, "(x3)", instead of adding lines. |
+| Copy on click | `chatCopy` | In the open chat, a click on a message where the click has no action of its own copies the message's text (without time or count). |
+| Chat search | `chatSearch` | Ctrl+F in the open chat: the box takes a query and only the messages holding it (any case) show. Enter, Esc or Ctrl+F again stops. |
+
+They change how `chat::Chat` lays its lines out (`ChatQol`, `set_search`): the 100 messages it keeps are the same,
+so turning an option off shows them as before. Code: `chat.rs`, `game/chat.rs`.

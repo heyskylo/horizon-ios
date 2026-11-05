@@ -660,6 +660,28 @@ impl Tweaks {
     }
 }
 
+/// Chat options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatOptions {
+    /// The local time before each message.
+    pub timestamps: bool,
+    /// A message repeated in a row shows once with its count.
+    pub compact: bool,
+    /// A click on a message (where it has no click action) copies it.
+    pub copy: bool,
+    /// Ctrl+F in the chat searches the chat's messages.
+    pub search: bool,
+}
+impl ChatOptions {
+    /// What `chat::Chat` lays its lines out with.
+    pub fn qol(&self) -> crate::chat::ChatQol {
+        crate::chat::ChatQol {
+            timestamps: self.timestamps,
+            compact: self.compact,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
@@ -667,6 +689,7 @@ pub struct Pvp {
     pub hit: Hit,
     pub hud: Hud,
     pub tweaks: Tweaks,
+    pub chat: ChatOptions,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -740,6 +763,10 @@ impl Pvp {
             }
             "clearWater" => t.clear_water = flag(value, t.clear_water),
             "clearLava" => t.clear_lava = flag(value, t.clear_lava),
+            "chatTimestamps" => self.chat.timestamps = flag(value, self.chat.timestamps),
+            "chatCompact" => self.chat.compact = flag(value, self.chat.compact),
+            "chatCopy" => self.chat.copy = flag(value, self.chat.copy),
+            "chatSearch" => self.chat.search = flag(value, self.chat.search),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -829,6 +856,12 @@ impl Pvp {
             t.time.map_or("off", ViewTime::name),
             t.weather.map_or("off", ViewWeather::name),
         );
+        let c = &self.chat;
+        let _ = write!(
+            out,
+            "chatTimestamps:{}\nchatCompact:{}\nchatCopy:{}\nchatSearch:{}\n",
+            c.timestamps, c.compact, c.copy, c.search,
+        );
     }
 }
 
@@ -917,6 +950,13 @@ opts! {
         "The time of day you see: the sky and its light only. The world's time goes on and nothing is sent to the server.";
     ViewWeather, "view_weather", "Weather",
         "The weather you see: rain, its light and fog only. The world's weather goes on and nothing is sent to the server.";
+    ChatTimestamps, "chat_timestamps", "Timestamps", "The time each message came in, before it.";
+    ChatCompact, "chat_compact", "Compact chat",
+        "A message repeated in a row shows once, with how many times it came: (x3).";
+    ChatCopy, "chat_copy", "Copy on click",
+        "Clicking a message in the open chat copies its text, unless the click does something else.";
+    ChatSearch, "chat_search", "Chat search",
+        "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -978,6 +1018,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.extend([FireLower, ShieldSize, TotemSize, ClearWater, ClearLava].map(Ok));
     rows.push(Err("horizon.pvp.header.view"));
     rows.extend([ViewTime, ViewWeather].map(Ok));
+    rows.push(Err("horizon.pvp.header.chat"));
+    rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
     rows
 }
 impl Opt {
@@ -992,6 +1034,7 @@ impl Opt {
             | HudBackground | NumericEnchants => None,
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
+            ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1022,6 +1065,10 @@ impl Opt {
             Opt::NumericEnchants => p.tweaks.numeric_enchants,
             Opt::ClearWater => p.tweaks.clear_water,
             Opt::ClearLava => p.tweaks.clear_lava,
+            Opt::ChatTimestamps => p.chat.timestamps,
+            Opt::ChatCompact => p.chat.compact,
+            Opt::ChatCopy => p.chat.copy,
+            Opt::ChatSearch => p.chat.search,
             _ => return None,
         })
     }
@@ -1142,6 +1189,10 @@ impl Opt {
                     .collect();
                 t.time = step(&all, t.time, back);
             }
+            Opt::ChatTimestamps => p.chat.timestamps = !p.chat.timestamps,
+            Opt::ChatCompact => p.chat.compact = !p.chat.compact,
+            Opt::ChatCopy => p.chat.copy = !p.chat.copy,
+            Opt::ChatSearch => p.chat.search = !p.chat.search,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
@@ -1294,6 +1345,8 @@ mod tests {
             (t.time, t.weather),
             (Some(ViewTime::Morning), Some(ViewWeather::Clear))
         );
+        let c = p.chat;
+        assert!(c.timestamps && c.compact && c.copy && c.search);
         let mut text = String::new();
         p.serialize(&mut text);
         let mut read = Pvp::default();
