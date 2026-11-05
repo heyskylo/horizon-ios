@@ -13,8 +13,54 @@ use std::{
     path::Path,
 };
 
+/// What `check`, the carry and the report say of a jar made for 1.20 or older.
+pub const OLD_LAYOUT: &str =
+    "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.";
+
+/// The data folders 1.21 (pack format 45) renamed to the singular, before and after.
+const RENAMED_IN_1_21: [(&str, &str); 13] = [
+    ("recipes", "recipe"),
+    ("loot_tables", "loot_table"),
+    ("structures", "structure"),
+    ("advancements", "advancement"),
+    ("predicates", "predicate"),
+    ("item_modifiers", "item_modifier"),
+    ("functions", "function"),
+    ("tags/blocks", "tags/block"),
+    ("tags/items", "tags/item"),
+    ("tags/entity_types", "tags/entity_type"),
+    ("tags/fluids", "tags/fluid"),
+    ("tags/game_events", "tags/game_event"),
+    ("tags/functions", "tags/function"),
+];
+
+/// Data files mostly in folders named as before 1.21 (`recipes/`, `loot_tables/`,
+/// `tags/blocks/`, `structures/`...): the game doesn't read them, and the carry upgrades
+/// from 1.21.1 on. Some 1.21 jars keep a stale plural folder beside the new one, and some
+/// 1.20 jars hold a tag folder or two in the singular, so the larger share decides.
+pub fn old_layout(names: &[String]) -> bool {
+    let (mut old, mut new) = (0usize, 0usize);
+    for n in names {
+        let p: Vec<&str> = n.split('/').collect();
+        if p.len() < 4 || p[0] != "data" {
+            continue;
+        }
+        let folder = if p[2] == "tags" && p.len() > 4 {
+            format!("tags/{}", p[3])
+        } else {
+            p[2].to_owned()
+        };
+        old += usize::from(RENAMED_IN_1_21.iter().any(|(before, _)| *before == folder));
+        new += usize::from(RENAMED_IN_1_21.iter().any(|(_, after)| *after == folder));
+    }
+    old > new
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
+    /// Made for 1.20 or older ([`old_layout`]): nothing was carried.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub old_layout: bool,
     pub copied: usize,
     /// Namespaces besides the mod id its content owns ([`extra_namespaces`]),
     /// listed in the manifest's `namespaces`.
@@ -866,6 +912,20 @@ pub fn carry(
     let _ = fs::remove_dir_all(&inside);
     let _ = fs::remove_dir_all(&outside);
     let mut report = Report::default();
+    let names: Vec<String> = zip
+        .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", jar.display()))?;
+    if old_layout(&names) {
+        // The report reads this to say why the mod did not come over.
+        report.old_layout = true;
+        write(
+            &out.join("carry-report.json"),
+            &serde_json::to_vec_pretty(&report).unwrap_or_default(),
+        )?;
+        return Err(OLD_LAYOUT.into());
+    }
     let mut blockstates: BTreeMap<String, Value> = BTreeMap::new();
     let mut item_models = BTreeSet::new();
     // Models another item model's `overrides` switch to (trim looks, a bow's pull): variants, not items.
@@ -1548,6 +1608,132 @@ mod tests {
         fs::write(&sentinel, b"keep").unwrap();
         assert!(run(&jar).is_err());
         assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 1.21 named every data folder in the singular, tags' too; a jar holding only
+    /// the plural ones is made for 1.20 or older, whichever of them it ships.
+    #[test]
+    fn old_layout_reads_every_folder_1_21_renamed() {
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        for old in [
+            "data/m/recipes/a.json",
+            "data/m/loot_tables/blocks/a.json",
+            "data/m/structures/a.nbt",
+            "data/m/advancements/a.json",
+            "data/m/tags/blocks/a.json",
+            "data/c/tags/items/a.json",
+            "data/m/tags/entity_types/a.json",
+            "data/m/functions/a.mcfunction",
+        ] {
+            assert!(
+                old_layout(&names(&[old, "assets/m/lang/en_us.json"])),
+                "{old}"
+            );
+        }
+        for new in [
+            "data/m/recipe/a.json",
+            "data/m/structure/a.nbt",
+            "data/m/tags/block/a.json",
+        ] {
+            assert!(!old_layout(&names(&[new])), "{new}");
+            // A stale plural folder beside the singular ones is a 1.21 jar.
+            assert!(
+                !old_layout(&names(&[new, "data/m/tags/blocks/a.json"])),
+                "{new}"
+            );
+        }
+        // A 1.20 jar with a tag folder misnamed in the singular (Prominence II's
+        // forcemaster-class-mod: 49 files in plural folders, 3 in `tags/entity_type/`).
+        assert!(old_layout(&names(&[
+            "data/m/recipes/a.json",
+            "data/m/recipes/b.json",
+            "data/m/tags/items/a.json",
+            "data/m/tags/entity_type/a.json",
+        ])));
+        // Folders 1.21 kept as they were say nothing either way.
+        assert!(!old_layout(&names(&["data/m/worldgen/structure/a.json"])));
+        assert!(!old_layout(&names(&["assets/m/lang/en_us.json"])));
+    }
+
+    /// A jar made for 1.20 or older names its data folders as before 1.21
+    /// (`recipes/`, `loot_tables/`, `tags/blocks/`), which 26.3 does not read.
+    /// `check` says so; the pack's carry and report say the same, rather than
+    /// count a mod whose recipes and loot tables would not load as come over.
+    #[test]
+    fn a_jar_made_for_1_20_is_not_carried_and_the_report_says_why() {
+        use crate::{
+            inventory::Record,
+            report::{self, Status},
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("horizon-old-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("old.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        for (name, body) in [
+            (
+                "assets/example/blockstates/stone.json",
+                br#"{"variants":{"":{"model":"example:block/stone"}}}"#.as_slice(),
+            ),
+            (
+                "data/example/recipes/stone.json",
+                br#"{"type":"minecraft:crafting_shapeless","ingredients":[{"item":"minecraft:stone"}],"result":{"item":"example:stone"}}"#,
+            ),
+            (
+                "data/example/loot_tables/blocks/stone.json",
+                br#"{"type":"minecraft:block","pools":[]}"#,
+            ),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body).unwrap();
+        }
+        zip.finish().unwrap();
+        let work = dir.join("work");
+        let out = work.join("mods/example");
+        // A carry an older build left: it goes, as for any re-carry.
+        fs::create_dir_all(out.join("carry")).unwrap();
+        let info = crate::jar::JarInfo {
+            mod_id: "example".into(),
+            ..Default::default()
+        };
+        let err = carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            &|_| true,
+            &Pack {
+                loaded: &|_| true,
+                mods: &|_| false,
+            },
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(err.contains("1.20 or older"), "{err}");
+        assert!(!out.join("carry").exists());
+
+        let records = [Record {
+            key: "example".into(),
+            class: "content".into(),
+            tier: "data".into(),
+            jar: Some(jar.clone()),
+            ..Default::default()
+        }];
+        let rows = report::build(&records, &work);
+        let row = &rows[0];
+        assert_eq!(row.status, Status::NotYet);
+        assert!(row.old_layout);
+        assert!(row.reason.contains("1.20 or older"), "{}", row.reason);
+        assert!(row.plain.contains("1.20 or older"), "{}", row.plain);
+        // Not one Port can still carry over: it waits on other work.
+        let s = report::summary(&rows);
+        assert_eq!((s.needing, s.carried, s.ready, s.later), (1, 0, 0, 1));
         fs::remove_dir_all(&dir).unwrap();
     }
 
