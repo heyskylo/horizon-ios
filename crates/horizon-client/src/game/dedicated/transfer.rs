@@ -16,8 +16,30 @@ use std::time::Instant;
 
 impl Game<'_> {
     /// A proxy's `player-*` request; the reply is one JSON line, `{"ok": true, ...}` or
-    /// `{"error": "..."}`.
+    /// `{"error": "..."}`. Each request writes one line to the log with what became of it
+    /// (`arrivals::request_log`): a hand-over that failed leaves a trace.
     pub(super) fn player_request(&mut self, verb: &str, args: &str) -> Value {
+        // The name is read before the request runs: a release or a drop takes the player away.
+        let name = args
+            .split_whitespace()
+            .next()
+            .and_then(arrivals::parse_uuid)
+            .and_then(|uuid| {
+                self.lan
+                    .as_ref()?
+                    .hub
+                    .guests
+                    .iter()
+                    .find(|g| g.uuid == uuid)
+                    .map(|g| g.name.clone())
+            });
+        let reply = self.run_player_request(verb, args);
+        let (level, line) = arrivals::request_log(verb, name.as_deref(), args, &reply);
+        super::log(level, &line);
+        reply
+    }
+
+    fn run_player_request(&mut self, verb: &str, args: &str) -> Value {
         let Some(host) = self.lan.as_ref() else {
             return json!({ "error": "the server is not open to players" });
         };

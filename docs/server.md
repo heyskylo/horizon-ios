@@ -389,6 +389,36 @@ A proxy that fails after a successful `player-import` with `place: false`, and b
 byte of the hand-over, calls `player-drop` and the target is as it was. A proxy that dies in between leaves a held
 player that is dropped by itself after `max_hold_seconds`, with a warning in the log.
 
+**A hand-over, in order.** A proxy moving a player from server A to server B, without a loading screen. Both run
+with `[transfer]` on and behind the proxy's Velocity forwarding:
+
+1. `player-expect <uuid>` on B: B holds the player's next login.
+2. `player-export <uuid> freeze` on A: the record and its `handover` id, and A stops acting on the player's inputs.
+   A lost reply is asked again: the same record comes back.
+3. The proxy logs the player in to B on its own connection: B sends the held player the world around the place B
+   loaded for it.
+4. `player-import <uuid> <json>` on B with `"place": false` and, if the proxy knows where its client stands, the
+   request's `position`, `rotation`, `on_ground` and `velocity`. With `"recentered": true` the proxy waits for B's
+   next chunk batches.
+5. The proxy switches its client over to B's connection. If anything fails before the client got the first byte of
+   it, `player-drop <uuid> <hand-over>` on B and `player-release <uuid> <hand-over> abort` on A, and the player goes on
+   on A as before.
+6. `player-confirm <uuid> <hand-over>` on B: B writes the player's files, then places it. Only after its `ok`,
+   `player-release <uuid> <hand-over> moved` on A: the player is out of A's world, and A saves nothing of it.
+
+Every step that is not taken in time is undone by itself: an expectation after `expect_seconds`, a held player after
+`max_hold_seconds`, a freeze after `max_freeze_seconds`, each with a warning in the log. A `moved` that comes after
+the freeze ran out is refused, so the proxy must confirm and release within `max_freeze_seconds` of the export.
+
+**In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
+(`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
+hand-over <id>`), or `WARN` and the reason it was refused (`player-export Alex (<uuid>): refused: that player is
+riding`). The hand-over's id is in the lines of the export, the import, the confirm, the release and a named drop, so
+the lines of one hand-over can be found on both servers. Only the ids, the name when the server knows it, and a few
+words of the outcome are written: never the record or the request's body, which are large and are the player's. A
+held player has its own lines instead of the join and leave ones: `<name> is held: it arrives from another server`,
+`<name> placed: it has arrived from another server` and `<name> was dropped while held: <reason>`.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 

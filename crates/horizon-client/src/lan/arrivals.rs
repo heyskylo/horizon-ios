@@ -380,6 +380,100 @@ pub fn export_reply(hub: &Hub, i: usize, record: serde_json::Value) -> serde_jso
     reply
 }
 
+/// The log line for a proxy's `player-*` request and what became of it, with its level.
+/// `name` is the player's name when the server knows it. Only the player's id and a few
+/// words of the outcome are written: never the record, which is large and is the player's.
+pub fn request_log(
+    verb: &str,
+    name: Option<&str>,
+    args: &str,
+    reply: &serde_json::Value,
+) -> (&'static str, String) {
+    let mut words = args.split_whitespace();
+    let id = words.next().unwrap_or("");
+    let who = match (parse_uuid(id), name) {
+        (Some(u), Some(name)) => format!("{name} ({})", horizon_protocol::crypto::uuid_string(u)),
+        (Some(u), None) => horizon_protocol::crypto::uuid_string(u),
+        (None, _) => format!("{id:?}"),
+    };
+    if let Some(why) = reply.get("error").and_then(serde_json::Value::as_str) {
+        return ("WARN", format!("{verb} {who}: refused: {why}"));
+    }
+    let flag = |key: &str| reply.get(key).and_then(serde_json::Value::as_bool);
+    // The hand-over a request names (release, confirm, drop) or a reply gives (export,
+    // import): it ties the lines of one hand-over together on both servers.
+    let named = words.next();
+    let handover = |given: Option<&serde_json::Value>| {
+        given
+            .and_then(serde_json::Value::as_str)
+            .or(named.filter(|w| parse_handover(w).is_some()))
+            .map_or(String::new(), |id| format!(", hand-over {id}"))
+    };
+    let details = match verb {
+        "player-expect" => format!(
+            "expected for {} s{}",
+            reply["ttl_seconds"],
+            if flag("renewed") == Some(true) {
+                " (renewed)"
+            } else {
+                ""
+            }
+        ),
+        "player-export" => format!(
+            "record of {} bytes{}",
+            reply["record"]["player"]
+                .as_str()
+                .map_or(0, |p| p.len() / 4 * 3),
+            match reply["record"]["handover"].as_str() {
+                Some(id) => format!(", frozen, hand-over {id}"),
+                None => ", a read".to_owned(),
+            }
+        ),
+        "player-import" => format!(
+            "parts {}, placed {}, announced {}, recentered {}{}",
+            reply["parts"]
+                .as_array()
+                .map(|p| p
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","))
+                .unwrap_or_default(),
+            flag("placed").unwrap_or(false),
+            flag("announced").unwrap_or(false),
+            flag("recentered").unwrap_or(false),
+            handover(reply.get("handover")),
+        ),
+        "player-confirm" => format!(
+            "placed, announced {}{}",
+            flag("announced").unwrap_or(false),
+            handover(None)
+        ),
+        "player-release" => match reply.get("released").and_then(serde_json::Value::as_str) {
+            Some("moved") => format!(
+                "moved, announced {}{}",
+                flag("announced").unwrap_or(false),
+                handover(None)
+            ),
+            other => format!("{}{}", other.unwrap_or("released"), handover(None)),
+        },
+        "player-drop" => format!(
+            "held {}, expected {}{}",
+            flag("held").unwrap_or(false),
+            flag("expected").unwrap_or(false),
+            handover(None)
+        ),
+        _ => "done".to_owned(),
+    };
+    // A retry after the commit, whose reply was lost: nothing was done again.
+    let retried = if flag("retried") == Some(true) {
+        " (a retry: nothing done again)"
+    } else {
+        ""
+    };
+    ("INFO", format!("{verb} {who}: ok, {details}{retried}"))
+}
+
 /// The line written when a player is held: it logged in as the player a proxy expected.
 pub fn held_line(name: &str) -> String {
     format!("{name} is held: it arrives from another server")
@@ -3004,4 +3098,163 @@ mod hub_tests {
         let error = import_player(&mut hub, UUID_N, &alone).unwrap_err();
         assert!(error.contains("belong to the position part"), "{error}");
     }
+
+    // ---- the lines of the log ------------------------------------------------
+
+    use super::{dropped_line, held_line, placed_line, request_log};
+    use serde_json::json;
+
+    #[test]
+    fn a_refused_request_is_a_warning_with_the_reason() {
+        let reply = json!({ "error": "that player is riding" });
+        let (level, line) = request_log(
+            "player-export",
+            Some("Alex"),
+            &format!("{UUID} freeze"),
+            &reply,
+        );
+        assert_eq!(level, "WARN");
+        assert_eq!(
+            line,
+            "player-export Alex (123e4567-e89b-12d3-a456-426614174000): refused: that player is riding"
+        );
+    }
+
+    #[test]
+    fn an_accepted_request_says_what_it_did_and_never_writes_the_record() {
+        let id = UUID.replace('-', "");
+        let (level, line) = request_log(
+            "player-expect",
+            None,
+            &format!("{id} 30"),
+            &json!({"ok": true, "renewed": true, "ttl_seconds": 30}),
+        );
+        assert_eq!(level, "INFO");
+        assert_eq!(
+            line,
+            "player-expect 123e4567-e89b-12d3-a456-426614174000: ok, expected for 30 s (renewed)"
+        );
+        // 8 base64 characters are 6 bytes.
+        let reply = json!({"ok": true, "record": {"player": "AAAAAAAA", "name": "Alex", "handover": "0123456789abcdef0123456789abcdef"}});
+        let (_, line) = request_log(
+            "player-export",
+            Some("Alex"),
+            &format!("{UUID} freeze"),
+            &reply,
+        );
+        assert!(
+            line.ends_with(
+                "ok, record of 6 bytes, frozen, hand-over 0123456789abcdef0123456789abcdef"
+            ),
+            "{line}"
+        );
+        // An export without freeze is a read.
+        let read = json!({"ok": true, "record": {"player": "AAAAAAAA", "handover": null}});
+        let (_, line) = request_log("player-export", None, UUID, &read);
+        assert!(line.ends_with("ok, record of 6 bytes, a read"), "{line}");
+        assert!(
+            !line.contains("AAAA"),
+            "the record itself must not be written: {line}"
+        );
+        let reply = json!({"ok": true, "handover": "0123456789abcdef0123456789abcdef", "parts": ["inventory", "experience"], "placed": false, "announced": true, "recentered": true});
+        let (_, line) = request_log(
+            "player-import",
+            Some("Alex"),
+            &format!("{UUID} {{\"record\":{{}}}}"),
+            &reply,
+        );
+        assert!(
+            line.ends_with(
+                "ok, parts inventory,experience, placed false, announced true, recentered true, hand-over 0123456789abcdef0123456789abcdef"
+            ),
+            "{line}"
+        );
+        assert!(
+            !line.contains("record"),
+            "the request body must not be written: {line}"
+        );
+        let (_, line) = request_log(
+            "player-release",
+            Some("Alex"),
+            &format!("{UUID} 0123456789abcdef0123456789abcdef moved"),
+            &json!({"ok": true, "released": "moved", "announced": false}),
+        );
+        assert!(
+            line.ends_with(
+                "ok, moved, announced false, hand-over 0123456789abcdef0123456789abcdef"
+            ),
+            "{line}"
+        );
+        let (_, line) = request_log(
+            "player-drop",
+            None,
+            UUID,
+            &json!({"ok": true, "held": true, "expected": false}),
+        );
+        assert!(line.ends_with("ok, held true, expected false"), "{line}");
+        let (_, line) = request_log(
+            "player-drop",
+            None,
+            &format!("{UUID} 0123456789abcdef0123456789abcdef"),
+            &json!({"ok": true, "held": true, "expected": false}),
+        );
+        assert!(
+            line.ends_with(
+                "ok, held true, expected false, hand-over 0123456789abcdef0123456789abcdef"
+            ),
+            "{line}"
+        );
+        let (_, line) = request_log(
+            "player-confirm",
+            None,
+            &format!("{UUID} 0123456789abcdef0123456789abcdef"),
+            &json!({"ok": true, "placed": true, "announced": true}),
+        );
+        assert!(
+            line.ends_with(
+                "ok, placed, announced true, hand-over 0123456789abcdef0123456789abcdef"
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_request_without_a_readable_id_is_logged_as_typed() {
+        let (level, line) = request_log(
+            "player-drop",
+            None,
+            "nonsense",
+            &json!({"error": "player-drop needs the player's unique id"}),
+        );
+        assert_eq!(level, "WARN");
+        assert!(
+            line.starts_with("player-drop \"nonsense\": refused"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_lines_of_a_held_player_never_say_it_joined_or_left() {
+        assert_eq!(
+            held_line("Alex"),
+            "Alex is held: it arrives from another server"
+        );
+        assert_eq!(
+            placed_line("Alex"),
+            "Alex placed: it has arrived from another server"
+        );
+        let dropped = dropped_line("Alex", "dropped before its hand-over");
+        assert_eq!(
+            dropped,
+            "Alex was dropped while held: dropped before its hand-over"
+        );
+        for line in [held_line("Alex"), dropped] {
+            assert!(
+                !line.contains("joined the game") && !line.contains("left the game"),
+                "{line}"
+            );
+        }
+    }
+
+    // ---- the view follows the imported position ------------------------------
 }
