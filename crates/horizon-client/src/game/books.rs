@@ -200,6 +200,8 @@ impl Game<'_> {
         } else if let Some(screen) = self.book_screen(stack) {
             self.open_book(screen);
         }
+        // WritableBookItem.use / WrittenBookItem.use count every open.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }

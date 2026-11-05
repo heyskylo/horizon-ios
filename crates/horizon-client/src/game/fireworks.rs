@@ -370,6 +370,7 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", "minecraft:firework_rocket", 1);
         self.swing_arm();
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_elytra_boost(player, &name);

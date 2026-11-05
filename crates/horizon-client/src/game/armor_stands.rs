@@ -1480,6 +1480,10 @@ impl Game<'_> {
         }) {
             return true;
         }
+        // Counted on the server only, before the swap.
+        if self.remote.is_none() {
+            self.award_stat("used", &stack.item, 1);
+        }
         let swap = swap_with_equipment_slot(stack, current, self.creative);
         self.armor[index] = Some(swap.worn.clone());
         // Player.setItemSlot: onEquipItem plays the equip sound.

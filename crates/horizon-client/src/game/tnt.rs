@@ -337,6 +337,7 @@ impl Game<'_> {
         } else {
             self.consume_held();
         }
+        self.award_stat("used", item, 1);
         Ok(true)
     }
     /// `TntRenderer`: the block centred on the entity, swelling over the last
