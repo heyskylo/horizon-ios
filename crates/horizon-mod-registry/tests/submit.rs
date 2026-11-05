@@ -685,6 +685,29 @@ async fn what_the_form_refuses() {
 
 /// The origin gate in front of a submission, before the sign-in and the
 /// form: how the answer to a request from `origin`.
+/// The mod's file with a symlink beside its files: refused before any kind's
+/// reader opens it (src/archive.rs).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zip_with_a_symlink_is_refused() {
+    let (mut client, _mock) = setup().await;
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let mut zip = zip::ZipWriter::new_append(std::io::Cursor::new(file)).unwrap();
+    zip.add_symlink(
+        "assets/link",
+        "/etc/passwd",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    let linked = zip.finish().unwrap().into_inner();
+    let csrf = client.sign_in().await;
+    let (status, json) = client.submit(&csrf, &form(), &linked).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(
+        json["error"],
+        "\"assets/link\" is a symlink or special file"
+    );
+}
+
 async fn origin_gate(app: &Router, origin: Option<&str>) -> StatusCode {
     let mut request = Request::post("/api/mods/submit");
     if let Some(origin) = origin {

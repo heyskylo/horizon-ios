@@ -276,6 +276,68 @@ impl Game<'_> {
                         out.push('\n');
                     }
                 }
+                "mob_anger" => {
+                    // Metadata-state equality through the production writer, not packet delivery.
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("anger state: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let index = op["index"].as_u64().ok_or("anger state: missing index")? as u8;
+                    let state = self.harness_owner(|g| {
+                        let Some(super::commands::Target::Mob(id)) = g.target_by_uuid(uuid) else {
+                            return Err("anger state: UUID is not a loaded mob".into());
+                        };
+                        let actual = g
+                            .persist
+                            .uuids
+                            .get(&id)
+                            .copied()
+                            .ok_or("anger state: no saved UUID")?;
+                        if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
+                            return Err("anger state: UUID mismatch".into());
+                        }
+                        let m = g
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == id && m.alive() && !m.removed)
+                            .ok_or("anger state: missing live actor")?;
+                        if Some(m.kind.id.as_str()) != op["kind"].as_str() {
+                            return Err("anger state: wrong actor type".into());
+                        }
+                        let hub = &g.lan.as_ref().ok_or("anger state: no connected hub")?.hub;
+                        let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+                        super::lan::mob_meta(
+                            m,
+                            hub,
+                            None,
+                            g.world.game_time,
+                            &mut meta,
+                            &mut defaults,
+                        );
+                        let entry = meta
+                            .iter()
+                            .find(|e| e.0 == index)
+                            .or_else(|| defaults.iter().find(|e| e.0 == index))
+                            .ok_or("anger state: metadata entry/default absent")?;
+                        if entry.1 != horizon_protocol::entity_data::serializer::LONG {
+                            return Err("anger state: metadata serializer is not LONG".into());
+                        }
+                        let horizon_protocol::entity_data::Value::Long(value) = &entry.2 else {
+                            return Err("anger state: metadata value is not long".into());
+                        };
+                        Ok(json!({"uuid":actual,"kind":m.kind.id,"index":index,
+                            "serializer":entry.1,"value":value,"game_time":g.world.game_time}))
+                    })?;
+                    out.push_str(
+                        &json!({"cmd":format!("#mob_anger {}",op["label"].as_str().unwrap_or("")),
+                        "messages":[],"results":[],"state":state})
+                        .to_string(),
+                    );
+                    out.push('\n');
+                }
                 "server_distances" => {
                     let state = self.harness_owner(|g| {
                         let hub = &g.lan.as_ref().ok_or("no connected hub")?.hub;

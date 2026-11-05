@@ -8,7 +8,8 @@ use super::{Error, scan::Stage};
 
 pub(super) fn merge<'a>(
     stages: impl IntoIterator<Item = (&'a Stage<'a>, &'a Module)>,
-) -> Result<Vec<u8>, Vec<Error>> {
+) -> Result<(Vec<u8>, Vec<Error>), Vec<Error>> {
+    let mut notes = Vec::new();
     let mut result = Vec::new();
     let mut seen = BTreeMap::<String, Vec<u8>>::new();
     for (stage, module) in stages {
@@ -40,27 +41,28 @@ pub(super) fn merge<'a>(
             let constant = module.constants.iter().find_map(|(_, c)| {
                 (c.name.as_deref() == Some(constant_name.as_str())).then_some(c)
             });
-            let failure = || {
-                vec![stage.error(
-                    *at,
-                    &format!("`{name}` needs a supported constant initializer"),
-                )]
-            };
-            let constant = constant.ok_or_else(failure)?;
-            let mut words = Vec::new();
-            flatten(module, constant.init, &mut words).ok_or_else(failure)?;
+            // Store into scratch bytes: an unsupported aggregate must not leave a
+            // partially initialized uniform in the program's initial contents.
             let mut bytes = vec![0; span as usize];
-            let mut words = words.into_iter();
-            write(
-                module,
-                &module.types[member.ty].inner,
-                &mut words,
-                &mut bytes,
-                member.offset as usize,
-            )
-            .ok_or_else(failure)?;
-            if words.next().is_some() {
-                return Err(failure());
+            let stored = constant.and_then(|constant| {
+                let mut words = Vec::new();
+                flatten(module, constant.init, &mut words)?;
+                let mut words = words.into_iter();
+                write(
+                    module,
+                    &module.types[member.ty].inner,
+                    &mut words,
+                    &mut bytes,
+                    member.offset as usize,
+                )?;
+                words.next().is_none().then_some(())
+            });
+            if stored.is_none() {
+                notes.push(stage.error(
+                    *at,
+                    &format!("`{name}` has an unsupported constant initializer; using zero"),
+                ));
+                continue;
             }
             if let Some(previous) = seen.get(name) {
                 if previous != &bytes {
@@ -77,7 +79,7 @@ pub(super) fn merge<'a>(
             }
         }
     }
-    Ok(result)
+    Ok((result, notes))
 }
 
 fn flatten(module: &Module, value: Handle<Expression>, out: &mut Vec<[u8; 4]>) -> Option<()> {

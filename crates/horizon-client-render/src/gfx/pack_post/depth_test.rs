@@ -8,7 +8,7 @@ pub(super) const SIZE: [u32; 2] = [16, 16];
 pub(super) struct Gpu {
     adapter: wgpu::Adapter,
     pub(super) device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(super) queue: wgpu::Queue,
 }
 impl Gpu {
     pub(super) fn new() -> Option<Self> {
@@ -92,7 +92,12 @@ impl Gpu {
         );
         built
     }
-    fn clear(&self, color: &wgpu::TextureView, depth: &wgpu::TextureView, reverse_depth: f32) {
+    pub(super) fn clear(
+        &self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        reverse_depth: f32,
+    ) {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Independent original fixture clear"),
@@ -316,7 +321,7 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
     let hand = matches!(scene, Scene::Terrain { hand: true, .. });
     let water = matches!(scene, Scene::Terrain { water: true, .. } | Scene::WaterOnly);
     let inputs=horizon_shaders::GameInputs {
-        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None,item_id_declared:false }),
+        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None,item_id_declared:false,far_depth:false }),
         hand:hand.then(crate::gfx::pack_hand::inputs),..Default::default()
     };
     let mut post = gpu.load(
@@ -677,6 +682,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
             after: String::new(),
             alpha_test: None,
             item_id_declared: false,
+            far_depth: false,
         }),
         ..Default::default()
     };
@@ -782,4 +788,69 @@ fn shadowtex_nearest_settings_read_the_nearest_texel() {
             all_pixels(&pixels, expected, line);
         }
     }
+}
+
+/// The sky program covers the horizon and downward viewing directions too.
+/// This original probe reports sky colour in RGB and window depth in alpha.
+#[test]
+#[ignore = "requires a host GPU"]
+fn sky_covers_the_horizon_without_writing_depth_or_overpainting_terrain() {
+    let gpu = Gpu::new().expect("GPU required for the sky coverage regression");
+    assert_ne!(gpu.adapter.get_info().device_type, wgpu::DeviceType::Cpu);
+    let color = gpu.texture(T::Rgba8Unorm);
+    let depth = gpu.texture(T::Depth32Float);
+    let files = vec![
+        ("gbuffers_skybasic.vsh".into(), "#version 120\nvoid main(){gl_Position=ftransform();}".into()),
+        ("gbuffers_skybasic.fsh".into(), "#version 120\n/* DRAWBUFFERS:0 */\nvoid main(){gl_FragData[0]=vec4(1.0,0.0,0.0,1.0);}".into()),
+        ("final.vsh".into(), VERTEX.into()),
+        ("final.fsh".into(), "#version 120\nuniform sampler2D colortex0;uniform sampler2D depthtex0;varying vec2 uv;\nconst vec4 colortex0ClearColor=vec4(0.0,1.0,0.0,1.0);\nvoid main(){gl_FragColor=vec4(texture2D(colortex0,uv).rgb,texture2D(depthtex0,uv).r);}".into()),
+    ];
+    let mut post = gpu.load(
+        files,
+        World {
+            atlas: None,
+            material_maps: None,
+            lightmap: color.clone(),
+            terrain: None,
+            block_ids: &[],
+            sprite_rects: &[],
+            celestial: None,
+            gui_size: SIZE,
+            clouds: None,
+            weather: false,
+            hand: false,
+        },
+        horizon_shaders::GameInputs {
+            sky: Some(crate::gfx::pack_sky::inputs()),
+            ..Default::default()
+        },
+    );
+    let hud = HudBatch::new(SIZE);
+    let mut frame = fixture_frame(&hud);
+    frame.title = false;
+    frame.skybox = true;
+    frame.distance = 512.0;
+    frame.detail_distance = 512.0;
+    frame.depth_far = 2048.0;
+    for yaw in [0.0, 45.0, 90.0, 180.0, 270.0] {
+        for pitch in [-60.0, 0.0, 21.1, 60.0] {
+            frame.yaw = yaw;
+            frame.pitch = pitch;
+            gpu.clear(&color, &depth, 0.0);
+            let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});
+            all_pixels(
+                &pixels,
+                [255, 0, 0, 255],
+                &format!("sky yaw={yaw} pitch={pitch}"),
+            );
+        }
+    }
+    // A pre-existing foreground depth must survive the sky, as must its colour.
+    gpu.clear(&color, &depth, 0.5);
+    let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});
+    all_pixels(
+        &pixels,
+        [16, 16, 16, 128],
+        "foreground colour and depth survive sky",
+    );
 }

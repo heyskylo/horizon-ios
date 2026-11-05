@@ -259,6 +259,29 @@ public final class VanillaCommandExecOracle {
                             out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "mob_anger" -> {
+                        try {
+                        var entity=player.level().getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (entity==null || !entity.isAlive()) throw new IllegalStateException("anger state: missing live UUID");
+                        String kind=net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
+                        if (!kind.equals(op.get("kind").getAsString())) throw new IllegalStateException("anger state: wrong actor type");
+                        int index=op.get("index").getAsInt();
+                        var field=entity.getClass().getDeclaredField("DATA_ANGER_END_TIME");field.setAccessible(true);
+                        var accessor=(net.minecraft.network.syncher.EntityDataAccessor<?>)field.get(null);
+                        if (accessor.id()!=index || accessor.serializer()!=net.minecraft.network.syncher.EntityDataSerializers.LONG)
+                            throw new IllegalStateException("anger state: wrong actual metadata accessor");
+                        long value=(Long)entity.getEntityData().get(accessor);
+                        UUID uuid=entity.getUUID();
+                        int[] words={(int)(uuid.getMostSignificantBits()>>32),(int)uuid.getMostSignificantBits(),
+                            (int)(uuid.getLeastSignificantBits()>>32),(int)uuid.getLeastSignificantBits()};
+                        JsonObject state=new JsonObject();state.add("uuid",gson.toJsonTree(words));state.addProperty("kind",kind);
+                        state.addProperty("index",index);state.addProperty("serializer",net.minecraft.network.syncher.EntityDataSerializers.getSerializedId(accessor.serializer()));
+                        state.addProperty("value",value);state.addProperty("game_time",entity.level().getGameTime());
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#mob_anger "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(gson.toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {throw new IllegalStateException(e);}
+                    }
                     case "server_distances" -> {
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#server_distances");

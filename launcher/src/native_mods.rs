@@ -2542,6 +2542,9 @@ pub fn prune(keep: &str) {
         })
         .collect();
     for old in stale(builds, keep, &played) {
+        if backend::in_use(&old) {
+            continue;
+        }
         let _ = backend::remove(&old);
     }
 }
