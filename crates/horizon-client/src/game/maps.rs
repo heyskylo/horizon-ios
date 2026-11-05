@@ -1795,7 +1795,9 @@ impl Game<'_> {
                     let tm = glam::Mat4::from_translation(glam::Vec3::new(
                         f32::from(d.x) / 2.0 + 64.0,
                         f32::from(d.y) / 2.0 + 64.0 + 4.0,
-                        -0.025,
+                        // MapRenderer translates by -0.025, then flips Z and
+                        // translates by 0.1 in text space: -0.025 - 0.1.
+                        -0.125,
                     )) * glam::Mat4::from_scale(glam::Vec3::new(f1, f1, 1.0));
                     for (i, quad) in text_batch.vertices.as_chunks::<6>().0.iter().enumerate() {
                         let z_shift = if i * 6 < behind { 0.0005 } else { -0.0005 };
