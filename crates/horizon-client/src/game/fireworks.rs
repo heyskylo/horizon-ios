@@ -861,12 +861,10 @@ mod tests {
         let heard = game.audio.capture.take().unwrap_or_default();
         let snaps: Vec<_> = heard
             .into_iter()
-            .filter(|s| s.0 == "minecraft:item.lead.break")
+            .filter(|s| s.event == "minecraft:item.lead.break")
+            .map(|s| (s.position, s.volume, s.pitch))
             .collect();
-        assert_eq!(
-            snaps,
-            vec![("minecraft:item.lead.break".to_owned(), feet, 1.0, 1.0)]
-        );
+        assert_eq!(snaps, vec![(feet, 1.0, 1.0)]);
     }
 }
 horizon_client::impl_joined!(Rocket);
