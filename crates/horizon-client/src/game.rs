@@ -16971,7 +16971,7 @@ impl Game<'_> {
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
-                Screen::Playing if self.spectator() => {}
+                Screen::Playing if self.spectator() || self.in_portal_transition() => {}
                 Screen::Playing => {
                     // handleKeybinds: the number keys select before key.inventory.
                     self.select_queued_hotbar();
