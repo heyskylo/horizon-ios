@@ -13141,7 +13141,9 @@ def check_recipes_hmod(host, guest, out):
         assert fields, f'{game.name}: no Recipes search field (mod absent or empty-search recovery failed)'
         # The native panel is to the right of the vanilla recipe book's search field.
         field = max(fields, key=lambda w: w['bounds'][0])
-        game.raw('click', field['id'])
+        x, y, width, height = field['bounds']
+        # Clicking the centre can leave a suffix to the right of the cursor.
+        game.raw('click-at', x + width - 1, y + height / 2)
         # `key` drives key bindings; `type` drives this focused edit box, including backspace.
         game.script([r"type '\b'"] * 50 + [f'type {text}'])
         game.wait(5)
