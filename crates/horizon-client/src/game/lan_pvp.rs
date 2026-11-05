@@ -95,6 +95,9 @@ pub(super) struct Sweep {
     pub(super) hit_box: Aabb,
     /// The entity id of the player the sweep started from, which it spares.
     pub(super) skip: Option<i32>,
+    /// The weapon's `minecraft:ignite` (Fire Aspect) on each swept player, in
+    /// seconds (`doPostAttackEffects` after a sweep hit lands).
+    ignite: f32,
 }
 
 impl Strike {
@@ -155,22 +158,7 @@ impl Game<'_> {
             self.attack_item_info()
                 .map_or(0.0, |i| i.disable_blocking_seconds)
         };
-        let ignite = self.held().map_or(0.0, |held| {
-            let ctx = EffectContext {
-                this: Some("minecraft:player"),
-                attacker: Some("minecraft:player"),
-                direct_attacker: Some("minecraft:player"),
-                is_direct: true,
-                items: Some(world_items!(self)),
-                ..Default::default()
-            };
-            let mut random = self.world.random.clone();
-            world_stations!(self).enchantments.ignite_seconds(
-                held.enchantments(),
-                &ctx,
-                &mut random,
-            )
-        });
+        let ignite = self.weapon_ignite_seconds();
         Some(Strike {
             attacker: self.lan_acting,
             amount,
@@ -186,6 +174,26 @@ impl Game<'_> {
             item: self.main_hand_custom_name(),
             ignite,
         })
+    }
+
+    /// The held weapon's `minecraft:ignite` (Fire Aspect) seconds on a player
+    /// victim (`EnchantmentHelper.doPostAttackEffects`).
+    fn weapon_ignite_seconds(&mut self) -> f32 {
+        let Some(held) = self.held().cloned() else {
+            return 0.0;
+        };
+        let ctx = EffectContext {
+            this: Some("minecraft:player"),
+            attacker: Some("minecraft:player"),
+            direct_attacker: Some("minecraft:player"),
+            is_direct: true,
+            items: Some(world_items!(self)),
+            ..Default::default()
+        };
+        let mut random = self.world.random.clone();
+        world_stations!(self)
+            .enchantments
+            .ignite_seconds(held.enchantments(), &ctx, &mut random)
     }
 
     /// The guests by connection, with their entity ids.
@@ -453,6 +461,7 @@ impl Game<'_> {
             team: self.player_team().cloned(),
             hit_box: Aabb::new(Vec3::ZERO, Vec3::ZERO),
             skip: None,
+            ignite: self.weapon_ignite_seconds(),
         }
     }
 
@@ -509,6 +518,12 @@ impl Game<'_> {
             }
             if g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack") {
                 g.knock_back_player(0.4, xd, zd, PVP_SOURCE);
+                // EnchantmentHelper.doPostAttackEffects, after the knockback.
+                if sweep.ignite > 0.0
+                    && let Some(p) = g.player.as_mut()
+                {
+                    let _ = p.ignite_for_ticks((sweep.ignite * 20.0) as i32);
+                }
             }
         };
         for (victim, id, team) in victims {
