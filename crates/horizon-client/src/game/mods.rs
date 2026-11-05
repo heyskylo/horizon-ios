@@ -610,4 +610,90 @@ mod tests {
         assert!(not_built(&dir.join("missing"), "", &[]).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// A trait mod's `register_goals` (`Mob.registerGoals`) gets every new
+    /// mob: the goals of its type replace its template's, its `Float` goal
+    /// floats the navigation as FloatGoal's constructor does, and the
+    /// template's other types keep their goals. The only test here that
+    /// installs the client library's hooks.
+    #[test]
+    fn a_mods_register_goals_replaces_its_types_goals() {
+        use horizon_client::mobs::{
+            Mob,
+            goals::{self, Cx, Goal},
+        };
+        use horizon_client::mod_api::{Hooks, RegisterGoalsEvent, dispatch_register_goals};
+        use horizon_client::native_client_hooks::{NativeClientHooks, install};
+        use horizon_core::geometry::Vec3;
+        // docs/native-mods.md's example.
+        #[derive(Clone, Debug)]
+        struct ToPost {
+            post: [f64; 3],
+        }
+        impl Goal for ToPost {
+            fn flags(&self) -> u8 {
+                goals::MOVE
+            }
+            fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                let [x, y, z] = self.post;
+                let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+                dx * dx + dy * dy + dz * dz > 16.0
+            }
+            fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                !m.ai.nav.is_done()
+            }
+            fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+                m.nav_move_to(cx.w, self.post, 1.0);
+            }
+            fn box_clone(&self) -> Box<dyn Goal> {
+                Box::new(self.clone())
+            }
+        }
+        struct Guards;
+        impl Hooks for Guards {
+            fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+                if event.mob.kind.id == "ruby:guard" {
+                    let ai = &mut event.mob.ai;
+                    ai.goals.clear();
+                    ai.targets.clear();
+                    ai.goals.add(0, goals::Float);
+                    ai.goals.add(
+                        1,
+                        ToPost {
+                            post: [0.5, 64.0, 0.5],
+                        },
+                    );
+                }
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
+        let installed = install(NativeClientHooks {
+            menu_slot_rules: |_, _, _, _, _| {},
+            living_heal: |_, _, _| {},
+            player_chat: |_, _, _, _, _| {},
+            living_breathe: |_, _, _, _, _| {},
+            living_drown: |_, _, _, _, _, _| {},
+            living_fall: |_, _, _, _, _| {},
+            living_jump: |_, _| {},
+            register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            ingredient: |_, _, _| {},
+            ingredient_test: |_, _, _, _| {},
+        });
+        assert!(installed.is_ok());
+
+        let types = living_mod_types();
+        let mut guard = (*types["ruby:ghoul"]).clone();
+        guard.id = "ruby:guard".into();
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        let guard = Mob::new(1, std::sync::Arc::new(guard), at, 0.0);
+        let ghoul = Mob::new(2, types["ruby:ghoul"].clone(), at, 0.0);
+        assert!(guard.ai.goals.has("Float") && guard.ai.goals.has("ToPost"));
+        assert!(!guard.ai.goals.has("RandomLookAround"));
+        assert!(!guard.ai.targets.has("NearestTarget"));
+        assert!(guard.ai.nav.can_float);
+        assert!(ghoul.ai.goals.has("RandomLookAround") && !ghoul.ai.goals.has("ToPost"));
+        assert!(ghoul.ai.targets.has("NearestTarget"));
+        assert!(!ghoul.ai.nav.can_float, "a zombie has no FloatGoal");
+    }
 }

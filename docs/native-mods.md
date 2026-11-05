@@ -2577,6 +2577,60 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
 
+### Mob goals
+
+**`horizon_client_lib::mobs::ai::native_register_goals(mob)`** (vanilla's `Mob.registerGoals`; a trait mod's
+`Hooks::register_goals(event)`, with `event.mob`) is asked for every new mob, after its species added its goals and before its
+saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
+([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a
+class whose `registerGoals` skips `super`'s, or add to them. A villager acts through its brain, which goals don't replace:
+a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. A goal is a
+Rust type implementing
+`horizon_client::mobs::goals::Goal` (a bundle compiles into the game, so nothing is loaded at run time): its `flags` (`MOVE`,
+`LOOK`, `JUMP`, `TARGET`), `can_use`, `can_continue`, `start`, `tick` and `stop` run by priority and flag as vanilla's
+`GoalSelector` runs them. The vanilla goals in that module (`Float`, `Stroll`, `LookAtPlayer`, `MeleeAttack`, `NearestTarget`
+and the rest) are there to reuse.
+
+```rust
+use horizon_client::mobs::{Mob, goals::{self, Cx, Goal}};
+use horizon_client::mod_api::{Hooks, RegisterGoalsEvent};
+
+/// Walks the mob back to its post when it is more than 4 blocks away.
+#[derive(Clone, Debug)]
+struct ToPost { post: [f64; 3] }
+impl Goal for ToPost {
+    fn flags(&self) -> u8 { goals::MOVE }
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        let [x, y, z] = self.post;
+        let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+        dx * dx + dy * dy + dz * dz > 16.0
+    }
+    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool { !m.ai.nav.is_done() }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) { m.nav_move_to(cx.w, self.post, 1.0); }
+    fn box_clone(&self) -> Box<dyn Goal> { Box::new(self.clone()) }
+}
+
+struct Guards;
+impl Hooks for Guards {
+    fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+        if event.mob.kind.id == "example:guard" {
+            let ai = &mut event.mob.ai;
+            ai.goals.clear();
+            ai.targets.clear();
+            ai.goals.add(0, goals::Float);
+            ai.goals.add(1, ToPost { post: [0.5, 64.0, 0.5] });
+        }
+    }
+}
+```
+
+From a goal, `mob.nav_move_to(cx.w, [x, y, z], speed)` walks the mob with the engine's pathfinding (`create_path_to` and
+`nav_move_to_path` to check a path first), and `mob.ai.mov.set_wanted(x, y, z, speed)` steps it toward a point, for a mod with
+pathfinding of its own. `goals::Float` keeps the navigation floating, as FloatGoal's constructor does. Each mob gets its own
+goals, so a goal's fields are that mob's state while it lives; state that is saved goes in an attachment on
+`Holder::Entity(mob.id)` ([Server attachments](#server-attachments)), from a hook with a host such as `native_entity_tick_pre`.
+The hook is asked on a client too, for its copies of a server's mobs; goals tick only where the mob's AI runs.
+
 ### Loot tables
 
 Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
