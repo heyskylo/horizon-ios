@@ -999,7 +999,7 @@ impl Game<'_> {
                 .ok_or_else(|| err("argument.predicate.unknown", &[&id]))?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &json));
         Ok(self.conditions_hold(&json, view.as_ref(), source.pos))
     }
 }
