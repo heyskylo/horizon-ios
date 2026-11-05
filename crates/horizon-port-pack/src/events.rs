@@ -20,11 +20,15 @@ pub const CATALOG: &str = include_str!("../../../native-hooks.json");
 
 /// Names NeoForge changed after 1.21.1, which packs such as ATM10 still use
 /// (NeoForge's documentation for both versions): a name the catalog lacks is
-/// looked up again under its new one.
-const RENAMED: [(&str, &str); 3] = [
+/// looked up again under its new one. `RecipesUpdatedEvent` is the exception:
+/// 1.21.1's documentation doesn't name it, only that the client has "a full
+/// copy of the `RecipeManager`". 26.1's client gets just the recipe types a
+/// mod asks for (`OnDatapackSyncEvent#sendRecipes`), in `RecipesReceivedEvent`.
+const RENAMED: [(&str, &str); 4] = [
     ("Capabilities.ItemHandler.", "Capabilities.Item."),
     ("Capabilities.EnergyStorage.", "Capabilities.Energy."),
     ("AddReloadListenerEvent", "AddServerReloadListenersEvent"),
+    ("RecipesUpdatedEvent", "RecipesReceivedEvent"),
 ];
 
 /// The catalog's NeoForge names: the hooks that are each name's
