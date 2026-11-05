@@ -7,9 +7,11 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     mesher::Vertex,
     pvp::{Colour, CrosshairCache},
-    pvp_hud::{self, Combo, Durability, Icon, Line, Widget},
+    pvp_hud::{self, Combo, Durability, Icon, Key, Line, Widget},
+    text::Text,
 };
 use std::sync::Arc;
+use winit::event::MouseButton;
 
 #[derive(Default)]
 pub(super) struct PvpState {
@@ -26,6 +28,18 @@ pub(super) struct PvpState {
     server: Widget<Option<String>>,
     combo: Combo,
     combo_count: Widget<u32>,
+    fps: Widget<u32>,
+    /// Left and right presses, counted while the CPS or keystrokes widget is on.
+    clicks: [pvp_hud::Clicks; 2],
+    cps: Widget<(u32, u32)>,
+    keys: Keystrokes,
+    /// The local hour and minute, and when they were read.
+    clock: Widget<(u8, u8)>,
+    clock_read: f64,
+    reach: pvp_hud::Reach,
+    reach_shown: Widget<Option<u32>>,
+    speed: pvp_hud::Speed,
+    speed_shown: Widget<u32>,
     /// The open chat's box holds a chat search's query (Ctrl+F).
     pub(super) chat_search: bool,
     /// What the chat box held when the search borrowed it.
@@ -35,6 +49,19 @@ pub(super) struct PvpState {
 const DETAIL: u32 = 0xFF7F_7F7F;
 /// The extras' box colour.
 const BACKGROUND: u32 = 0x7800_0000;
+/// A held key's box in the keystrokes widget, and its text.
+const KEY_HELD: u32 = 0xB4FF_FFFF;
+const KEY_HELD_TEXT: u32 = 0xFF00_0000;
+
+/// The keystrokes widget: each key's label, made again only when its binding changes, which
+/// keys are held, and the clicks per second under the mouse buttons.
+#[derive(Default)]
+struct Keystrokes {
+    bound: [String; 7],
+    labels: Vec<(Text, f32)>,
+    held: [bool; 7],
+    cps: Widget<(u32, u32)>,
+}
 const ARROWS: [&str; 3] = [
     "minecraft:arrow",
     "minecraft:spectral_arrow",
@@ -165,10 +192,35 @@ impl Game<'_> {
             _ => self.weather_levels(partial),
         }
     }
-    /// This player attacked entity `id` (the combo counter waits for the server's report).
-    pub(super) fn pvp_attacked(&mut self, id: i32) {
+    /// This player attacked entity `id`, `distance` from the eyes to where the crosshair's
+    /// ray met its box (the combo counter waits for the server's report; the reach widget
+    /// shows the distance).
+    pub(super) fn pvp_attacked(&mut self, id: i32, distance: f64) {
         let now = self.started.elapsed().as_secs_f64();
         self.pvp.combo.attacked(id, now);
+        self.pvp.reach.hit(distance, now);
+    }
+    /// A mouse press, counted for clicks per second while playing with a widget that shows them.
+    pub(super) fn pvp_click(&mut self, button: MouseButton) {
+        let hud = &self.settings.extras.pvp.hud;
+        if !(hud.cps || hud.keys) || self.screen != super::Screen::Playing {
+            return;
+        }
+        let i = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            _ => return,
+        };
+        let now = self.started.elapsed().as_secs_f64();
+        self.pvp.clicks[i].press(now);
+    }
+    /// Whether the key `mapping` is bound to is held: a keyboard key or a mouse button.
+    fn binding_held(&self, mapping: &str) -> bool {
+        let bound = self.settings.keys.get(mapping);
+        if let Some(button) = horizon_client::keybinds::mouse_button(bound) {
+            return self.physical_buttons.contains(&button);
+        }
+        self.mapped_key_down(mapping)
     }
     /// The server reports entity `id` hurt; `own` when it is this player,
     /// `by_me` whether this player was the damage's direct entity (if named).
@@ -188,7 +240,7 @@ impl Game<'_> {
     /// lines only when what it shows changed.
     pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let hud = self.settings.extras.pvp.hud;
-        if self.player.is_none() {
+        if self.player.is_none() || !hud.any() {
             return;
         }
         // What each widget shows, read before its cache is borrowed.
@@ -210,6 +262,13 @@ impl Game<'_> {
         let server = (hud.server && self.pvp.server.next.as_deref() != server)
             .then(|| server.map(str::to_owned));
         let now = self.started.elapsed().as_secs_f64();
+        let fps = self.fps.round() as u32;
+        let position = self.player.as_ref().map(|p| (p.position.x, p.position.z));
+        if hud.keys {
+            let held = Key::ALL.map(|k| self.binding_held(k.mapping()));
+            self.pvp.keys.held = held;
+            self.keystroke_labels();
+        }
         let atlas = &self.gui.atlas;
         let width = |s: &str| HudBatch::text_width(atlas, s);
         let state = &mut self.pvp;
@@ -338,6 +397,69 @@ impl Game<'_> {
         } else {
             state.combo_count.clear();
         }
+        let cps = if hud.cps || hud.keys {
+            [0, 1].map(|i| state.clicks[i].per_second(now))
+        } else {
+            [0; 2]
+        };
+        if hud.fps {
+            state.fps.next = fps;
+            state
+                .fps
+                .refresh(|fps, lines| lines.push(text("horizon.pvp.hud.fps", &[fps])));
+        } else {
+            state.fps.clear();
+        }
+        if hud.cps {
+            state.cps.next = (cps[0], cps[1]);
+            state.cps.refresh(|(l, r), lines| {
+                lines.push(text("horizon.pvp.hud.cps", &[l, r]));
+            });
+        } else {
+            state.cps.clear();
+        }
+        if hud.keys {
+            state.keys.cps.next = (cps[0], cps[1]);
+            state.keys.cps.refresh(|(l, r), lines| {
+                for n in [l, r] {
+                    lines.push(text("horizon.pvp.hud.keys.cps", &[n]));
+                }
+            });
+        }
+        if hud.clock {
+            // The time is read once a second, not every frame.
+            if now - state.clock_read >= 1.0 || state.clock.lines.is_empty() {
+                use chrono::Timelike;
+                let t = chrono::Local::now();
+                state.clock.next = (t.hour() as u8, t.minute() as u8);
+                state.clock_read = now;
+            }
+            state.clock.refresh(|&(h, m), lines| {
+                lines.push(Line::new(Icon::None, pvp_hud::clock(h, m), &width));
+            });
+        } else {
+            state.clock.clear();
+        }
+        if hud.reach {
+            state.reach_shown.next = state.reach.hundredths(now);
+            state.reach_shown.refresh(|reach, lines| {
+                if let Some(n) = reach {
+                    lines.push(text("horizon.pvp.hud.reach", &[&pvp_hud::hundredths(*n)]));
+                }
+            });
+        } else {
+            state.reach_shown.clear();
+        }
+        if hud.speed
+            && let Some((x, z)) = position
+        {
+            state.speed_shown.next = state.speed.sample(x, z, now);
+            state.speed_shown.refresh(|n, lines| {
+                lines.push(text("horizon.pvp.hud.speed", &[&pvp_hud::tenths(*n)]));
+            });
+        } else if !hud.speed {
+            state.speed_shown.clear();
+        }
         let background = hud.background;
         let p = &self.pvp;
         let widgets = [
@@ -373,10 +495,97 @@ impl Game<'_> {
                 &p.combo_count.lines,
                 p.combo_count.size,
             ),
+            (hud.fps, hud.fps_corner, &p.fps.lines, p.fps.size),
+            (hud.cps, hud.cps_corner, &p.cps.lines, p.cps.size),
+            (hud.clock, hud.clock_corner, &p.clock.lines, p.clock.size),
+            (
+                hud.reach,
+                hud.reach_corner,
+                &p.reach_shown.lines,
+                p.reach_shown.size,
+            ),
+            (
+                hud.speed,
+                hud.speed_corner,
+                &p.speed_shown.lines,
+                p.speed_shown.size,
+            ),
         ];
         for (on, corner, lines, size) in widgets {
             if on && !lines.is_empty() && self.native_corner_shown(corner) {
                 self.paint_widget(batch, corners, corner, lines, size, background);
+            }
+        }
+        if hud.keys && self.native_corner_shown(hud.keys_corner) {
+            let (w, h) = pvp_hud::keys_size();
+            let (x, y) = corners.place(hud.keys_corner, w, h);
+            self.paint_keys(batch, x, y, background);
+        }
+    }
+    /// The keystrokes' labels: each key's name, made again only when a binding changed.
+    fn keystroke_labels(&mut self) {
+        let keys = &self.settings.keys;
+        let k = &mut self.pvp.keys;
+        let same = Key::ALL
+            .iter()
+            .zip(&k.bound)
+            .all(|(key, b)| keys.get(key.mapping()) == b);
+        if same && k.labels.len() == Key::ALL.len() {
+            return;
+        }
+        let atlas = &self.gui.atlas;
+        k.labels.clear();
+        for (i, key) in Key::ALL.into_iter().enumerate() {
+            let bound = keys.get(key.mapping());
+            k.bound[i] = bound.to_owned();
+            let label = match horizon_client::keybinds::mouse_button(bound) {
+                Some(MouseButton::Left) => Text::tr("horizon.pvp.hud.keys.attack", &[]),
+                Some(MouseButton::Right) => Text::tr("horizon.pvp.hud.keys.use", &[]),
+                _ => horizon_client::keybinds::display_name(bound),
+            };
+            let w = HudBatch::text_width(atlas, &label.plain());
+            k.labels.push((label, w));
+        }
+    }
+    /// The keystrokes widget at `(x, y)`: a box per key, light while held, its name centred,
+    /// and under each mouse button its clicks per second.
+    fn paint_keys(&self, batch: &mut HudBatch, x: f32, y: f32, background: bool) {
+        let atlas = &self.gui.atlas;
+        let k = &self.pvp.keys;
+        let colour = |c: u32| {
+            let [a, r, g, b] = c.to_be_bytes();
+            rgba(r, g, b, a)
+        };
+        for (i, key) in Key::ALL.into_iter().enumerate() {
+            let (kx, ky, w, h) = pvp_hud::key_rect(key);
+            let (kx, ky) = (x + kx, y + ky);
+            let held = k.held[i];
+            if held {
+                batch.fill(atlas, kx, ky, w, h, colour(KEY_HELD));
+            } else if background {
+                batch.fill(atlas, kx, ky, w, h, colour(BACKGROUND));
+            }
+            let text_colour = colour(if held { KEY_HELD_TEXT } else { 0xFFFF_FFFF });
+            let Some((label, lw)) = k.labels.get(i) else {
+                continue;
+            };
+            let cps = match key {
+                Key::Attack => k.cps.lines.first(),
+                Key::Use => k.cps.lines.get(1),
+                _ => None,
+            };
+            let top = match cps {
+                Some(_) => ky + 2.0,
+                None => ky + (h - 8.0) / 2.0,
+            };
+            batch.text_styled(atlas, label, kx + (w - lw) / 2.0, top, text_colour, !held);
+            if let Some(line) = cps {
+                // The count at half size under the name.
+                let start = batch.vertices.len();
+                let (cx, cy) = (kx + w / 2.0, ky + h - 6.0);
+                let tx = cx - line.text_width / 2.0;
+                batch.text_styled(atlas, &line.text, tx, cy, text_colour, false);
+                batch.scale_since(start, cx, cy, 0.5, 0.5);
             }
         }
     }
