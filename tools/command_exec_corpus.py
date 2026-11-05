@@ -642,11 +642,13 @@ def entities():
         # So is a falling block, named after its block (`getTypeName`).
         cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
         cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
-        cmd('/tag @e[type=minecraft:falling_block,limit=1] list'),
-        cmd('/data get entity @e[type=minecraft:falling_block,limit=1] BlockState.Name'),
-        cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
-        cmd('/kill @e[type=minecraft:falling_block]'),
-        cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # Near the fixture only: terrain the Rust side ticks and the oracle never loads has its own
+        # falling gravel (see piglin_pickups).
+        cmd('/tag @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] BlockState.Name'),
+        cmd('/tp @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
+        cmd('/execute if entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
         # A firework rocket, with what `addAdditionalSaveData` writes.
         cmd('/summon minecraft:firework_rocket 4.5 210 8.5 {LifeTime:2000,NoGravity:1b,Tags:["r"]}'),
         cmd('/execute if entity @e[type=minecraft:firework_rocket,tag=r]'),
@@ -966,7 +968,9 @@ def execute():
         cmd('/execute facing 0 230 0 run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute facing entity @e[tag=ex,limit=1] feet run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute in minecraft:the_nether run setblock 0 200 0 minecraft:stone'),
-        cmd('/execute in minecraft:the_end if block 0 64 0 minecraft:air'),
+        # Far from the End's centre: the oracle's settles keep their tickets for the rest of the run, so a
+        # group that settles in the End (gateway passengers) leaves 0 64 0 loaded on the Java side only.
+        cmd('/execute in minecraft:the_end if block 1000 64 1000 minecraft:air'),
         cmd('/execute in minecraft:the_end run say elsewhere'),
         cmd('/execute in minecraft:nowhere run say nowhere'),
         cmd('/execute in minecraft:overworld run setblock 5 210 5 minecraft:dirt'),
@@ -2460,6 +2464,10 @@ def creative_shulker_drops():
 
 def piglin_pickups():
     """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    # The item checks look in the pen only: the Rust side block-ticks a wider ring of terrain than the
+    # oracle loads, where generated kelp breaks and gravel falls into flooded caves (as vanilla's own
+    # would once ticked), and those drops are no piglin's.
+    PEN = 'x=4.5,y=210,z=4.5,distance=..16'
     ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
                   '/fill 3 209 3 5 209 5 minecraft:stone')]
     for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
@@ -2480,15 +2488,15 @@ def piglin_pickups():
                    '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
             {'op': 'tick', 'n': 40},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             {'op': 'tick', 'n': 140},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
             # A baby drops nothing. What an adult's barter throws comes from the level's random (vanilla's is
             # unseeded), and the piglin picks some of it back up, so only the gold's fate is fixed: none of it lies
             # on the ground.
-            cmd('/execute if entity @e[type=minecraft:item]' if baby
-                else '/execute if items entity @e[type=minecraft:item] contents minecraft:gold_ingot'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]' if baby
+                else f'/execute if items entity @e[type=minecraft:item,{PEN}] contents minecraft:gold_ingot'),
         ]
         if baby:
             ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
@@ -2503,7 +2511,7 @@ def piglin_pickups():
                    '/summon minecraft:item 4.5 210 4.5 '
                    '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
             {'op': 'tick', 'n': 40},
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
         ]
     ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
