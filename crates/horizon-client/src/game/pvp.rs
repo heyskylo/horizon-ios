@@ -1,6 +1,6 @@
 //! The PvP & HUD page's options in the game (`horizon_client::pvp`, `docs/pvp.md`). Each
 //! does nothing while it is off.
-use super::Game;
+use super::{Dim, Game};
 use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
@@ -141,6 +141,25 @@ impl Game<'_> {
     pub(super) fn pvp_frame(&mut self) {
         let tweaks = self.settings.extras.pvp.tweaks;
         horizon_client::enchant::set_numeric_levels(tweaks.numeric_enchants);
+    }
+    /// Whether this window may draw PvP & HUD's own time and weather: only a client of a server
+    /// (single player's included) draws them, never the server that ticks the world.
+    fn own_view(&self) -> bool {
+        self.remote.is_some() && self.dim == Dim::Overworld
+    }
+    /// The day time the frame draws (sky, sun, moon, the sky's light): PvP & HUD's time of day,
+    /// else the world's. The world's own `day_time` and everything that plays by it stay.
+    pub(super) fn view_day_time(&self) -> i64 {
+        let fixed = self.settings.extras.pvp.tweaks.time;
+        horizon_client::pvp::view_day_time(self.world.day_time, fixed.filter(|_| self.own_view()))
+    }
+    /// The rain and thunder levels the frame draws (rain, the sky's colour and light, fog): PvP &
+    /// HUD's weather, else the world's. Gameplay (riptide, mobs, crops) keeps the world's.
+    pub(super) fn view_weather(&self, partial: f32) -> (f32, f32) {
+        match self.settings.extras.pvp.tweaks.weather {
+            Some(w) if self.own_view() && self.can_have_weather() => w.levels(),
+            _ => self.weather_levels(partial),
+        }
     }
     /// This player attacked entity `id` (the combo counter waits for the server's report).
     pub(super) fn pvp_attacked(&mut self, id: i32) {
