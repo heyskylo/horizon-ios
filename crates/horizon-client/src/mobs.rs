@@ -1937,6 +1937,13 @@ pub enum MobEvent {
         table: &'static str,
         at: [f64; 3],
     },
+    /// A leave-block goal's sampled candidate, before neighbor-shape updates.
+    EndermanPlaceBlock {
+        mob: u32,
+        pos: [i32; 3],
+        carried: horizon_world::registry::BlockStateId,
+        occupants: Vec<horizon_core::geometry::Aabb>,
+    },
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,

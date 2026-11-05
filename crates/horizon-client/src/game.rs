@@ -118,6 +118,9 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+mod enderman;
+#[cfg(test)]
+mod enderman_placement_tests;
 mod entity;
 mod entity_culling;
 mod entity_sounds;
