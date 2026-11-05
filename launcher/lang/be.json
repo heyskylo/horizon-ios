@@ -1139,5 +1139,6 @@
   "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
   "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
-  "The Founder Set is yours.": "Набор заснавальнікаў цяпер ваш."
+  "The Founder Set is yours.": "Набор заснавальнікаў цяпер ваш.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

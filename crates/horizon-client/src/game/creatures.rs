@@ -3480,7 +3480,7 @@ impl Game<'_> {
                     // The mix needs all of `self`, so it waits until `child`'s
                     // borrow of the mob list is over.
                     let mixed = dye_mix(
-                        self.res.recipes(),
+                        world_recipes!(self),
                         &mut self.world.random,
                         p.extra.color,
                         other.extra.color,
@@ -3508,7 +3508,7 @@ impl Game<'_> {
                     // The mix needs all of `self`, so it waits until `child`'s
                     // borrow of the mob list is over.
                     let mixed = dye_mix(
-                        self.res.recipes(),
+                        world_recipes!(self),
                         &mut self.world.random,
                         p.extra.color,
                         other.extra.color,
@@ -3559,7 +3559,7 @@ impl Game<'_> {
             if p.species() == Species::Sheep {
                 let other = q.as_ref().unwrap_or(&p);
                 let mixed = dye_mix(
-                    self.res.recipes(),
+                    world_recipes!(self),
                     &mut self.world.random,
                     p.extra.color,
                     other.extra.color,

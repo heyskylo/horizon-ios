@@ -479,9 +479,15 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).
 - **Safety.** Same as `/nightly`: main's copy of the workflow runs, no pull request's code is checked out or run,
   the comment reaches the script as env vars, and the token has `issues` and `pull-requests` write only.
-- **Ludovic stays in charge.** A one-line pull request removing a login from the list revokes it as soon as it merges
-  (the file is his under CODEOWNERS). A line `paused` stops `/nightly` and the triage commands for every reviewer;
-  his own still work.
+- **Ludovic stays in charge.** A one-line pull request removing a reviewer's line revokes it as soon as it merges
+  (the file is his under CODEOWNERS). A line `paused` stops `/nightly`, the triage commands and the reviewers' claim
+  powers for every reviewer; his own still work.
+- **Accounts, not names.** Each line is `<numeric GitHub ID> <login>`, and every command decides by the comment
+  author's ID (`AUTHOR_ID`, from `github.event.comment.user.id`), never by the login: GitHub hands a renamed or deleted
+  account's login to whoever claims it next, while an ID is never reused. Ludovic is `OWNER_ID` in
+  `tools/ci/nightly_set.py`. A line in any other form, a bare login included, grants nothing.
+  `python3 tools/ci/resolve_reviewer_ids.py` fills in IDs for new lines; `--check` reports a listed ID whose login
+  changed (a rename to look at) or whose account is gone.
 
 ### Trusted reviewers pick the Nightly's pull requests
 
