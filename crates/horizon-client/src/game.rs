@@ -22643,6 +22643,32 @@ fn subtitles(show_hud: bool, in_game_ui: bool) -> Subtitles {
 
 #[cfg(test)]
 mod tests {
+    /// `Hud.extractRenderState`: the subtitles follow the HUD when no screen
+    /// is over the game, are deferred over a screen that keeps the game
+    /// behind it (so F1 does not take them away), and vanish under F1 alone.
+    #[test]
+    fn the_subtitles_follow_the_hud_unless_a_screen_keeps_them() {
+        use super::{Screen, Subtitles, in_game_ui, subtitles};
+        // A container screen defers them above itself, hidden HUD or not.
+        assert_eq!(subtitles(true, true), Subtitles::Deferred);
+        assert_eq!(subtitles(false, true), Subtitles::Deferred);
+        // No such screen: in the HUD's pass, and gone under F1.
+        assert_eq!(subtitles(true, false), Subtitles::Now);
+        assert_eq!(subtitles(false, false), Subtitles::Hidden);
+        // `Screen.isInGameUi` is `AbstractContainerScreen` and the block
+        // editors' answer; a pause menu, the chat and the death screen say no.
+        assert!(in_game_ui(Screen::Inventory, false));
+        assert!(in_game_ui(Screen::Creative, false));
+        assert!(in_game_ui(Screen::CommandBlock, false));
+        assert!(in_game_ui(Screen::BlockEditor, false));
+        // A book and a sign editor are in-game UI drawn over `Playing`.
+        assert!(in_game_ui(Screen::Playing, true));
+        assert!(!in_game_ui(Screen::Paused, false));
+        assert!(!in_game_ui(Screen::Chat, false));
+        assert!(!in_game_ui(Screen::Dead, false));
+        assert!(!in_game_ui(Screen::Playing, false));
+    }
+
     #[test]
     fn weather_follows_the_dimension_type_not_the_id() {
         use super::level_can_have_weather as w;
