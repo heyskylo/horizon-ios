@@ -388,6 +388,11 @@ fn curseforge_instances_read_their_version_and_loader() {
     assert!(import(by("neither"), "x", None)
         .unwrap_err()
         .contains("--minecraft"));
+    // A folder pointing at one instance reads it the same way.
+    let one = in_folder(&root.join("Instances/neo"), None);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].minecraft.as_deref(), Some("1.21.1"));
+    assert_eq!(one[0].loader, loader("neoforge", "21.1.133"));
     // The Modrinth App's profiles are left as they were.
     let profile = root.join("profiles/p");
     write(

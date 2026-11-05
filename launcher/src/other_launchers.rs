@@ -412,6 +412,7 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
         return game_folders(parent, CURSEFORGE)
             .into_iter()
             .filter(|f| f.game.file_name() == name)
+            .map(with_curseforge_target)
             .collect();
     }
     if dir.join("instance.json").is_file() {
