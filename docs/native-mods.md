@@ -366,10 +366,13 @@ menus have their own data slots. Bundles that use it need `"hooks": 45`.
 API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
-normal terrain/entity shaders, not gameplay light. Only the first eight rims
-and eight lights are examined; positions must be within 32 blocks of the player,
-values must be finite and bounded, and source chunks must be loaded. At most
-256 rim edges and 16 colored lights are rendered. Requests are frame-local,
+normal terrain/entity shaders, not gameplay light. Each mod has a budget of its
+own: its first 256 rims and eight lights are examined, and its rims draw at most
+4096 outline edges, so one mod's requests never crowd out another's (requests
+bundles' injections push share one budget). Positions must be within 32 blocks
+of the player, values must be finite and bounded, and source chunks must be
+loaded. A rim that would pass its mod's edge budget is skipped whole. At most
+16 colored lights are rendered in all. Requests are frame-local,
 so disabling a native mod or leaving the world clears them without a retained
 state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
 blocks and emit a nearby vanilla flame particle; native mods must rate-limit
