@@ -519,7 +519,12 @@ impl AnimateContext<'_> {
         if outline.is_empty() {
             return [0.5; 2];
         }
-        let seed = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let seed = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
         let [x1, z1, x2, z2] = outline.iter().fold(seed, |b, box_| {
             [
                 b[0].min(box_[0]),
