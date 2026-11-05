@@ -87,7 +87,7 @@ const SHARED: [&str; 9] = [
 /// files, and the BlueMap web maps the game asks for tiles around the player
 /// (`horizon_client_render::bluemap::SERVERS_FILE`): only the player names those, never a pack
 /// the other launcher installed.
-const SKIPPED: [&str; 6] = [
+const SKIPPED: [&str; 7] = [
     "logs",
     "crash-reports",
     "minecraftinstance.json",
@@ -95,6 +95,8 @@ const SKIPPED: [&str; 6] = [
     "horizon-bluemap.txt",
     // Far terrain's copies of what servers sent, and of their web maps.
     "server-terrain",
+    // The browser's list of what it installed (and may delete): only this launcher writes it.
+    "mod-browser.json",
 ];
 const CURSEFORGE: &str = "the CurseForge app";
 const MODRINTH_APP: &str = "the Modrinth App";
