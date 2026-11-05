@@ -829,16 +829,27 @@ impl Game<'_> {
         let at = [p.position.x, p.position.y, p.position.z];
         let on_ground = p.ground.on_ground;
         let cell = |v: [f64; 3]| v.map(|c| c.floor() as i32);
-        if cell(from) == cell(at) && !(on_ground && !was_on_ground) {
+        // LivingEntity.collectEquipmentChanges: newly worn armor runs its
+        // location_changed effects at once, even when standing still.
+        let changed: [bool; 4] = std::array::from_fn(|i| self.armor[i] != self.location_armor[i]);
+        self.location_armor.clone_from(&self.armor);
+        let moved = cell(from) != cell(at) || (on_ground && !was_on_ground);
+        if !moved && !changed.iter().any(|c| *c) {
             return;
         }
         let riding = self.riding.is_some();
-        let disks = location_disks(
-            &self.stations().enchantments,
-            self.armor.iter().zip(["head", "chest", "legs", "feet"]),
-            on_ground,
-            riding,
-        );
+        let slots = ["head", "chest", "legs", "feet"];
+        let mut disks = Vec::new();
+        for i in 0..4 {
+            if moved || changed[i] {
+                disks.extend(location_disks(
+                    &self.stations().enchantments,
+                    std::iter::once((&self.armor[i], slots[i])),
+                    on_ground,
+                    riding,
+                ));
+            }
+        }
         for (effect, level) in disks {
             self.replace_disk(&effect, level, at, Who::Player);
         }
