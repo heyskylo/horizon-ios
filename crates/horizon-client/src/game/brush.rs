@@ -40,10 +40,16 @@ pub(super) type Brushing = HashMap<[i32; 3], BrushState>;
 impl Game<'_> {
     /// `BrushItem.onUseTick` for a brush used `ticks` ticks so far, the
     /// hand of `slot` acting.
-    pub(super) fn tick_brush(&mut self, slot: usize, ticks: u32) {
-        // No block under the crosshair: releaseUsingItem.
+    pub(super) fn tick_brush(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        slot: usize,
+        ticks: u32,
+    ) {
+        // No block under the crosshair: vanilla calls releaseUsingItem, which
+        // stops the use and causes the interaction vibration.
         let Some(hit) = self.pick() else {
-            self.using = None;
+            self.stop_using_item(stack);
             return;
         };
         let elapsed = ticks + 1;
@@ -51,8 +57,13 @@ impl Game<'_> {
         if elapsed % 10 == 5 {
             self.brush_stroke(&hit, slot);
         }
-        // The use ends after 200 ticks; the held button starts it again.
-        self.using = (elapsed < USE_DURATION).then_some((slot, elapsed));
+        // The use ends after USE_DURATION; stopUsingItem causes the vibration
+        // (vanilla's tickUsingItem), the held button starts it again.
+        if elapsed < USE_DURATION {
+            self.using = Some((slot, elapsed));
+        } else {
+            self.stop_using_item(stack);
+        }
     }
 
     /// One stroke on the block aimed at: dust (this window only), the brush

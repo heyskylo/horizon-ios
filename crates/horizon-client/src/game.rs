@@ -7432,12 +7432,18 @@ impl Game<'_> {
             .instrument(&stack)
             .map(|i| i.use_ticks().max(0) as u32)
         {
-            // InstrumentItem.getUseDuration: held up that long, nothing more.
-            self.using = (ticks + 1 < duration).then_some((slot, ticks + 1));
+            // InstrumentItem.getUseDuration: held up that long. When it runs
+            // out, LivingEntity.stopUsingItem ends the use and causes the
+            // interaction vibration; letting go of the button already does.
+            if ticks + 1 < duration {
+                self.using = Some((slot, ticks + 1));
+            } else {
+                self.stop_using_item(&stack);
+            }
             return;
         }
         if &*stack.item == "minecraft:brush" {
-            self.tick_brush(slot, ticks);
+            self.tick_brush(&stack, slot, ticks);
             return;
         }
         if info.bundle {
