@@ -153,10 +153,17 @@ impl Game<'_> {
             .into_iter()
             .chain(self.own_name_tag())
             .map(|(m, name)| (m, name, true));
-        // Who is riding whom: asked once per tag below, and rescanning every mob
-        // for each tag made this quadratic in the number of loaded mobs.
-        let ridden: std::collections::HashSet<u32> =
-            self.mobs.iter().filter_map(|o| o.extra.mount).collect();
+        // Who is riding whom: asked once per tag below, and rescanning every entity
+        // for each tag made this quadratic in the number of loaded entities.
+        let local_entity_id = self.remote.as_ref().map(|r| r.entity_id as u32);
+        let ridden = collect_vehicle_ids(
+            &self.mobs,
+            self.text_displays.values().filter_map(|d| d.vehicle),
+            self.armor_stands.iter().filter_map(|a| a.vehicle),
+            self.interactions.values().filter_map(|i| i.vehicle),
+            self.riding,
+            local_entity_id,
+        );
         for (m, name, player) in named.chain(players) {
             if !m.alive() {
                 continue;
@@ -207,7 +214,9 @@ impl Game<'_> {
                 .then(|| m.extra.description.component())
                 .flatten()
                 .map(|tag| horizon_client::entity_nbt::name_text(&tag).resolve_legacy());
+            let is_own = Some(m.id) == own;
             let name_shown = sb::name_shown(team, viewer, view)
+                && (!is_own || !view.is_vehicle)
                 && (player || m.name_visible || Some(m.id) == target)
                 && (player || m.custom_name.is_some());
             let mut visible = name_shown;
@@ -237,7 +246,7 @@ impl Game<'_> {
                         lines: vec![(text, 0.0)],
                         light: l,
                         discrete,
-                        style: None,
+                        marks: Marks::default(),
                     });
                 }
                 continue;
@@ -281,18 +290,18 @@ impl Game<'_> {
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
             );
-            // A Horizon player's name tag style (cosmetics), beside the name.
-            let style = if player && horizon_cosmetics::enabled() {
-                self.cosmetics_tag(m, Some(m.id) == own)
+            // Horizon's mark before a Horizon player's name and their name tag style (cosmetics).
+            let marks = if player || self.cosmetics_local() {
+                self.cosmetics_marks(m, Some(m.id) == own)
             } else {
-                None
+                Marks::default()
             };
             tags.push(NameTag {
                 at: p,
                 lines,
                 light: l,
                 discrete,
-                style,
+                marks,
             });
         }
         drop(player_ids);
@@ -374,7 +383,7 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete: false,
-                style: None,
+                marks: Marks::default(),
             });
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
@@ -437,7 +446,7 @@ impl Game<'_> {
                         center.z.floor() as i32,
                     ),
                     discrete: false,
-                    style: None,
+                    marks: Marks::default(),
                 });
             }
         }
@@ -473,7 +482,7 @@ impl Game<'_> {
                     light,
                     NAME_TAG_UNIT,
                     out,
-                    tag.style,
+                    tag.marks,
                 ));
                 continue;
             }
@@ -490,7 +499,7 @@ impl Game<'_> {
                 light,
                 NAME_TAG_UNIT,
                 out,
-                tag.style,
+                tag.marks,
             ));
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
             patches.extend(self.styled_name_tag_quads(
@@ -502,7 +511,7 @@ impl Game<'_> {
                 0,
                 NAME_TAG_UNIT,
                 see_through,
-                tag.style,
+                tag.marks,
             ));
         }
         self.map_patches.extend(patches);
@@ -524,12 +533,21 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) -> Vec<horizon_client::font::Patch> {
         self.styled_name_tag_quads(
-            o, lines, text_alpha, background, text_layer, light, unit, out, None,
+            o,
+            lines,
+            text_alpha,
+            background,
+            text_layer,
+            light,
+            unit,
+            out,
+            Marks::default(),
         )
     }
 
-    /// [`Self::name_tag_quads`], with a cosmetic style on the last line (the name): its mark
-    /// before the text and its line under the background.
+    /// [`Self::name_tag_quads`], with Horizon's marks on the last line (the name): the Horizon
+    /// player's mark before the text, a name tag style's badge after it and its line under the
+    /// background.
     #[allow(clippy::too_many_arguments)]
     fn styled_name_tag_quads(
         &self,
@@ -541,7 +559,7 @@ impl Game<'_> {
         light: u32,
         unit: f32,
         out: &mut Vec<Vertex>,
-        style: Option<TagStyle>,
+        marks: Marks,
     ) -> Vec<horizon_client::font::Patch> {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
@@ -581,20 +599,36 @@ impl Game<'_> {
                 text_alpha << 24 | 0xFF_FFFF,
                 if background { BACKGROUND } else { 0 },
             );
-            if let Some(style) = style.filter(|_| n == last) {
-                let x = -self.gui.atlas.font.width_text(text) / 2.0;
-                let alpha = text_alpha << 24;
-                // The mark, 8 text pixels square, a pixel left of the background.
-                batch.rect_uv(x - 10.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
-                // The line, a pixel tall, under the background (which runs from -1 to 9).
+            if n == last && marks.horizon {
+                let x = -self.gui.atlas.font.width_text(text) / 2.0 - 10.0;
+                // 8 text pixels square, a pixel left of the background.
+                for (mx, my, w, h, argb) in horizon_cosmetics::mark::MARK {
+                    let a = text_alpha * (argb >> 24) / 255;
+                    batch.fill(
+                        &self.gui.atlas,
+                        x + f32::from(mx),
+                        y0 + f32::from(my),
+                        f32::from(w),
+                        f32::from(h),
+                        horizon_client::hud_layout::abgr(a << 24 | argb & 0xFF_FFFF),
+                    );
+                }
+            }
+            if let Some(style) = marks.style.filter(|_| n == last) {
                 let width = self.gui.atlas.font.width_text(text);
+                let x = -width / 2.0;
+                let alpha = text_alpha << 24;
+                // The badge, 8 text pixels square, a pixel right of the background.
+                batch.rect_uv(x + width + 2.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
+                // The line, a pixel tall, under the background (which runs from -1 to 9).
                 batch.fill(
                     &self.gui.atlas,
                     x - 1.0,
                     y0 + 9.0,
                     width + 1.0,
                     1.0,
-                    alpha | style.line,
+                    // The batch takes RGBA: the line as ARGB, swapped.
+                    horizon_client::hud_layout::abgr(alpha | style.line),
                 );
             }
             for (i, quad) in batch.vertices.as_chunks::<6>().0.iter().enumerate() {
@@ -622,11 +656,45 @@ impl Game<'_> {
     }
 }
 
-/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
-/// current pose, which the submitter lifts 0.5 more, between the last two tick
-/// positions. The player box is `Pose::dimensions(1.0)`.
-/// shortcut: the scale attribute is not in the tag height, add `model_scale`
-/// when tags on scaled players matter.
+/// Collect entity IDs of all vehicles: entities that have passengers
+/// (mobs, players, text displays, armor stands, or interactions riding them).
+///
+/// On multiplayer servers (e.g. `mcpvp.club`), server plugins hang custom nametags
+/// (ranks, prefixes, stats) over players using `TextDisplay` or `ArmorStand` passengers.
+/// In vanilla `LivingEntityRenderer.shouldShowName`, a vehicle does not show its default
+/// name tag (`!entity.isVehicle()`).
+///
+/// If the local player's remote entity ID is in the set, ID 0 (`player_model`) is also
+/// added so that Horizon's own name tag extra (`ownNameTag`) recognizes that the player
+/// is ridden and suppresses the duplicate tag (#9477).
+fn collect_vehicle_ids(
+    mobs: &[Mob],
+    text_display_vehicles: impl IntoIterator<Item = u32>,
+    armor_stand_vehicles: impl IntoIterator<Item = u32>,
+    interaction_vehicles: impl IntoIterator<Item = u32>,
+    local_riding: Option<u32>,
+    local_entity_id: Option<u32>,
+) -> std::collections::HashSet<u32> {
+    let mut ridden: std::collections::HashSet<u32> = mobs
+        .iter()
+        .filter_map(|o| o.extra.mount)
+        .chain(mobs.iter().filter_map(|m| m.extra.rider.map(|_| m.id)))
+        .chain(text_display_vehicles)
+        .chain(armor_stand_vehicles)
+        .chain(interaction_vehicles)
+        .collect();
+    if let Some(riding) = local_riding {
+        ridden.insert(riding);
+    }
+    if let Some(id) = local_entity_id
+        && ridden.contains(&id)
+    {
+        // The local player's model has id 0 (player_model).
+        ridden.insert(0);
+    }
+    ridden
+}
+
 /// The entity ids the player-list pass names, which the custom-name pass must
 /// therefore skip.
 ///
@@ -644,6 +712,11 @@ impl Game<'_> {
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
+/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
+/// current pose, which the submitter lifts 0.5 more, between the last two tick
+/// positions. The player box is `Pose::dimensions(1.0)`.
+/// shortcut: the scale attribute is not in the tag height, add `model_scale`
+/// when tags on scaled players matter.
 pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
@@ -659,10 +732,17 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
-    style: Option<TagStyle>,
+    marks: Marks,
 }
 
-/// A cosmetic name tag style: a mark before the name and a line under it.
+/// What Horizon draws by a player's name: its mark (they play Horizon) and their name tag style.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Marks {
+    pub horizon: bool,
+    pub style: Option<TagStyle>,
+}
+
+/// A cosmetic name tag style: a badge after the name and a line under it.
 #[derive(Clone, Copy)]
 pub(super) struct TagStyle {
     /// The mark's place in the GUI atlas.
@@ -784,5 +864,64 @@ mod tests {
         m.extra.avatar_pose = Pose::Standing;
         m.extra.crouching = false;
         assert!((at_y(&m) - 2.3).abs() < 1e-6, "1.8 + 0.5");
+    }
+
+    /// #9477: When server plugins attach a TextDisplay or ArmorStand to a player
+    /// (e.g. rank prefixes on multiplayer lobbies), vanilla's `LivingEntityRenderer.shouldShowName`
+    /// hides the default nametag because `entity.isVehicle()` is true.
+    ///
+    /// For the local player with `ownNameTag: true`, `player_model` has ID 0 while
+    /// the server sends passengers for `local_entity_id`. `collect_vehicle_ids`
+    /// maps `local_entity_id -> 0` so that `ownNameTag` is not drawn twice over the
+    /// server's rider nametag.
+    #[test]
+    fn vehicle_with_text_display_or_armor_stand_passenger_is_marked_ridden() {
+        let mut remote_player = player_mob();
+        remote_player.id = 42;
+        let mobs = vec![remote_player];
+
+        // 1. TextDisplay riding remote player 42
+        let ridden = collect_vehicle_ids(
+            &mobs,
+            vec![42],
+            std::iter::empty(),
+            std::iter::empty(),
+            None,
+            Some(100),
+        );
+        assert!(
+            ridden.contains(&42),
+            "remote player 42 is ridden by text display"
+        );
+        assert!(!ridden.contains(&100), "local player 100 has no passenger");
+        assert!(!ridden.contains(&0), "local model 0 has no passenger");
+
+        // 2. ArmorStand riding local player 100 -> model 0 must be in ridden
+        let ridden_local = collect_vehicle_ids(
+            &mobs,
+            std::iter::empty(),
+            vec![100],
+            std::iter::empty(),
+            None,
+            Some(100),
+        );
+        assert!(
+            ridden_local.contains(&100),
+            "local player 100 is ridden by armor stand"
+        );
+        assert!(
+            ridden_local.contains(&0),
+            "local player model (id 0) must be mapped to vehicle so ownNameTag is suppressed (#9477)"
+        );
+
+        // 3. Name tag is suppressed for vehicles when team is None
+        let view_vehicle = sb::NameView {
+            is_vehicle: true,
+            ..Default::default()
+        };
+        assert!(
+            !sb::name_shown(None, None, view_vehicle),
+            "vanilla shouldShowName hides tag for vehicles with no team"
+        );
     }
 }

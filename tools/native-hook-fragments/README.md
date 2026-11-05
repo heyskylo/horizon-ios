@@ -26,7 +26,23 @@ not API yet; do not depend on it until it has a number.
 
 After hook PRs merge, run `python3 tools/stamp_native_hooks.py` on current
 main and open a PR with the result. The tool assigns one API number per
-fragment in first-parent merge order. It consumes all pending fragments.
-`--check` exits nonzero when any are pending. Running the tool again does
-nothing. For local testing only, run it on a hook branch without committing
+fragment in first-parent merge order. By default it consumes all pending
+fragments; running it again does nothing. `--check` exits nonzero when any
+are pending.
+
+To register reviewed fragments while unrelated contracts are still being
+settled, select their names without `.json`:
+
+```sh
+python3 tools/stamp_native_hooks.py --only gui_render_post client_services
+```
+
+Only the selected fragments get numbers, still in merge order regardless of
+argument order. All others and their markers remain pending; a later stamp
+continues from the current API number. Missing names (including already
+stamped ones) fail before writing anything. `--check --only ...` checks the
+selection without changing files. Selection does not check dependencies:
+include any pending contracts the selected APIs require.
+
+For local testing only, run the tool on a hook branch without committing
 the result. If another stamp PR merges first, regenerate from current main.

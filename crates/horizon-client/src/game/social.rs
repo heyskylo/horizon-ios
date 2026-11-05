@@ -74,6 +74,7 @@ impl Game<'_> {
     }
     /// `new SocialInteractionsScreen(lastScreen)`: it opens on All, with an empty search.
     pub(super) fn open_social(&mut self, from_pause: bool) {
+        self.hide_social_tutorial();
         self.social.page = Page::All;
         self.social.search.set_value("");
         self.social.scroll = 0.0;

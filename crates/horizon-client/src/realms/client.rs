@@ -64,6 +64,32 @@ pub struct RealmServer {
     pub minigame_id: Option<i32>,
     #[serde(default)]
     pub minigame_image: Option<String>,
+    /// The invited players: only in the detail answer (`RealmsClient.getOwnRealm`).
+    #[serde(default, deserialize_with = "nullable")]
+    pub players: Vec<PlayerInfo>,
+}
+
+/// `PlayerInfo`: a Realm's invited player.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerInfo {
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub operator: bool,
+    #[serde(default, deserialize_with = "nullable")]
+    pub accepted: bool,
+    #[serde(default, deserialize_with = "nullable")]
+    pub online: bool,
+}
+
+/// `Ops`: the Realm's operators, by name (`RealmsClient.op`/`deop`).
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+pub struct Ops {
+    #[serde(default, deserialize_with = "nullable")]
+    pub ops: Vec<String>,
 }
 
 impl RealmServer {
@@ -118,6 +144,20 @@ pub struct PendingInviteDto {
 struct PendingInvitesResponse {
     #[serde(default, deserialize_with = "nullable")]
     invites: Vec<PendingInviteDto>,
+}
+
+/// `Subscription`: the realm's own, as `RealmsClient.subscriptionFor` reads it.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Subscription {
+    /// `Subscription.startDate`: epoch milliseconds.
+    #[serde(default, deserialize_with = "nullable")]
+    pub start_date: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub days_left: i32,
+    /// `Subscription.SubscriptionType`: `NORMAL` or `RECURRING`.
+    #[serde(rename = "type", default, deserialize_with = "nullable")]
+    pub kind: String,
 }
 
 /// Why a Realms call failed (`RealmsServiceException` and its `RealmsError`). None of them
@@ -400,6 +440,54 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
+    /// `RealmsClient.subscriptionFor`: the configuration screen's subscription tab.
+    pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/subscription"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.deleteRealm` (`Request.delete`).
+    pub fn delete_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}"));
+        Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
+    }
+
+    /// `RealmsClient.getOwnRealm`: the detail answer with the slots and the players.
+    pub fn get_own_realm(&self, realm_id: i64) -> Result<RealmServer, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.op`: `POST worlds/{id}/{uuid}` with an empty body, then the ops.
+    pub fn op_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/{}", undashed(uuid)?));
+        let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.deop`: `DELETE worlds/{id}/{uuid}`, then the ops.
+    pub fn deop_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/{}", undashed(uuid)?));
+        let json = Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.invite`: `POST worlds/{id}` with the player's name, then the players.
+    pub fn invite_player(&self, realm_id: i64, name: &str) -> Result<Vec<PlayerInfo>, RealmsError> {
+        let body = serde_json::json!({"name": name}).to_string();
+        let url = self.url(&format!("worlds/{realm_id}"));
+        let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body))?;
+        serde_json::from_str::<Vec<PlayerInfo>>(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.uninvite`: `DELETE worlds/{id}/invite/{uuid}`.
+    pub fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/invite/{}", undashed(uuid)?));
+        Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
+    }
+
     /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
     /// `x-mojangauth` as `frontendV2Request` sets it.
     pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
@@ -428,6 +516,17 @@ fn path_segment(s: &str) -> Result<&str, RealmsError> {
             reason: None,
             message: Some(crate::lang::get("mco.selectServer.joinCode.invalid")),
         })
+    }
+}
+
+/// `UndashedUuid.toString`: a player's UUID as 32 hex digits, the op/deop/uninvite path
+/// segment. Anything else (a name with a `/`, a shortened id) would reach another path.
+fn undashed(uuid: &str) -> Result<String, RealmsError> {
+    let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+    if hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(hex)
+    } else {
+        Err(RealmsError::Parse)
     }
 }
 

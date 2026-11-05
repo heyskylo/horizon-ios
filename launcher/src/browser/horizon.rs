@@ -217,11 +217,26 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
         index::Kind::Mod => Some(Kind::Mod),
         index::Kind::ResourcePack => Some(Kind::ResourcePack),
         index::Kind::Modpack => Some(Kind::Modpack),
-        index::Kind::Shader => Some(Kind::Shader),
+        // Both go in shaderpacks/: the game reads `.hshader` packs and shaders/-folder zips.
+        index::Kind::Shader | index::Kind::ShaderPack => Some(Kind::Shader),
         // Mixin mods: installed beside the others, compiled into the game by `native_mods`.
         index::Kind::NativeMod => Some(Kind::Mod),
+        // Into a world the player picks ([`installed::install_datapack`]).
+        index::Kind::DataPack => Some(Kind::DataPack),
         index::Kind::Other(_) => None,
     }
+}
+
+/// The registry kind whose category list a browser kind filters by (`page::categories`): a
+/// native mod's list is a mod's, a shaders/-folder pack's a shader pack's.
+fn categories_of(kind: Kind) -> &'static [&'static str] {
+    index::page::categories(&match kind {
+        Kind::Mod => index::Kind::Mod,
+        Kind::ResourcePack => index::Kind::ResourcePack,
+        Kind::Modpack => index::Kind::Modpack,
+        Kind::Shader => index::Kind::Shader,
+        Kind::DataPack => index::Kind::DataPack,
+    })
 }
 
 /// Where the registry's mod policy is: who owns and answers for a project, takedowns.
@@ -344,9 +359,17 @@ fn github_login(login: &str) -> bool {
         && !login.contains("--")
 }
 
-/// The words of a query found in a project's id, name, summary or authors.
+/// The words of a query found in a project's id, name, summary, authors or tags.
 fn matches(p: &index::Project, text: &str) -> bool {
-    let hay = format!("{} {} {} {}", p.id, p.name, p.summary, p.authors.join(" ")).to_lowercase();
+    let hay = format!(
+        "{} {} {} {} {}",
+        p.id,
+        p.name,
+        p.summary,
+        p.authors.join(" "),
+        p.tags.join(" ")
+    )
+    .to_lowercase();
     text.split_whitespace()
         .all(|word| hay.contains(&word.to_lowercase()))
 }
@@ -359,7 +382,8 @@ pub const SORTS: [super::details::Sort; 3] = [
     super::details::Sort::Updated,
 ];
 
-/// The projects of the query's kind whose words match, for this game unless `everything`: the
+/// The projects of the query's kind whose words match and that have every category the filters
+/// ask for, for this game unless `everything`: the
 /// most downloaded first, or the newest (first published) or most recently updated (latest
 /// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
@@ -368,6 +392,13 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
         .projects
         .iter()
         .filter(|p| kind_of(&p.kind) == Some(query.kind) && matches(p, &query.text))
+        .filter(|p| {
+            query
+                .filters
+                .categories
+                .iter()
+                .all(|c| p.categories.contains(c))
+        })
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
         // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
         .filter(|p| !p.versions.iter().filter(|v| v.game == GAME).all(needs_port))
@@ -398,6 +429,21 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
         .filter_map(project_of)
         .skip(query.offset)
         .take(query.limit)
+        .collect()
+}
+
+/// A project's screenshots as its page's gallery, in the index's order: those the registry
+/// mirrored (`screenshots/<id>/`, served beside its icons), never another host's.
+fn gallery_of(p: &index::Project) -> Vec<super::details::Image> {
+    p.screenshots
+        .iter()
+        .filter(|url| super::images::refuse(url).is_none())
+        .map(|url| super::details::Image {
+            url: url.clone(),
+            title: String::new(),
+            description: String::new(),
+            featured: false,
+        })
         .collect()
 }
 
@@ -439,6 +485,20 @@ impl Source for Registry {
             .iter()
             .map(|v| version_of(&index, p, v, level))
             .collect())
+    }
+
+    /// Only categories: every registry file is for Horizon on the version it plays.
+    fn tags(&self, kind: Kind) -> Result<super::details::Tags, String> {
+        Ok(super::details::Tags {
+            categories: categories_of(kind)
+                .iter()
+                .map(|name| super::details::Tag {
+                    name: (*name).to_owned(),
+                    header: "categories".into(),
+                })
+                .collect(),
+            ..Default::default()
+        })
     }
 
     fn details(&self, project: &Project) -> Result<Details, String> {
@@ -503,6 +563,8 @@ impl Source for Registry {
                 .map(|v| v.published.clone())
                 .unwrap_or_default(),
             updated: newest.map(|v| v.published.clone()).unwrap_or_default(),
+            categories: p.categories.clone(),
+            gallery: gallery_of(p),
             ..Details::default()
         })
     }
@@ -557,7 +619,7 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
         Kind::ResourcePack => Ok(format!("resourcepacks/{file_name}")),
         Kind::Shader => Ok(format!("shaderpacks/{file_name}")),
         Kind::Modpack => Err("A modpack installs as its own profile (pack::install).".into()),
-        Kind::DataPack => Err("Horizon's registry has no data packs.".into()),
+        Kind::DataPack => Err("A data pack goes into a world (fetch_datapack).".into()),
     }
 }
 
@@ -591,6 +653,37 @@ fn install_from(
         return Err(format!("{} {NEEDS_PORT}.", p.name));
     }
     install_version(index, local, p, v, home, progress).map(|e| vec![e])
+}
+
+/// Downloads the newest version of the registry's data pack `project` into `folder`, checked
+/// against the index as every registry file is (size, SHA-256, signature, `pack.mcmeta` and
+/// `data/`): the file and its version. [`installed::install_datapack`] puts it in a world.
+pub fn fetch_datapack(
+    project: &Project,
+    folder: &Path,
+    progress: &dyn Fn(f32),
+) -> Result<(PathBuf, String), String> {
+    fetch_datapack_from(&*index()?, local(), project, folder, progress)
+}
+
+fn fetch_datapack_from(
+    index: &Index,
+    local: bool,
+    project: &Project,
+    folder: &Path,
+    progress: &dyn Fn(f32),
+) -> Result<(PathBuf, String), String> {
+    let p = index
+        .project(&project.id)
+        .filter(|p| p.kind == index::Kind::DataPack)
+        .ok_or_else(|| format!("{} isn't a data pack in Horizon's registry.", project.title))?;
+    let v = newest(index, p, None)?;
+    let file = &version_of(index, p, v, None).files[0];
+    let path = fetch(file, folder, local, progress)?;
+    index::check_file(index, p, v, &path).inspect_err(|_| {
+        let _ = fs::remove_file(&path);
+    })?;
+    Ok((path, v.version.clone()))
 }
 
 /// A project's newest version for this game that wasn't taken down and that a game serving mod
@@ -645,6 +738,20 @@ fn install_version(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
+    install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)
+}
+
+/// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
+/// checks and before it replaces anything: its error leaves everything as it was.
+fn install_version_guarded(
+    index: &Index,
+    local: bool,
+    p: &index::Project,
+    v: &index::Version,
+    home: &Path,
+    guard: &dyn Fn(&Path) -> Result<(), String>,
+    progress: &dyn Fn(&str, f32),
+) -> Result<installed::Entry, String> {
     let project = project_of(p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
@@ -694,9 +801,11 @@ fn install_version(
             false => Ok(trust),
         }
     });
-    let trust = checked.inspect_err(|_| {
-        let _ = fs::remove_file(&path);
-    })?;
+    let trust = checked
+        .and_then(|t| guard(&path).map(|()| t))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&path);
+        })?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
@@ -811,6 +920,7 @@ pub fn before_play(home: &Path) {
     });
 }
 
+pub mod auto;
 pub mod pack;
 #[cfg(test)]
 mod tests;

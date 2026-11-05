@@ -379,26 +379,35 @@ pub fn install_datapack(
     if project.kind != Kind::DataPack && !project.loaders.iter().any(|l| l == "datapack") {
         return Err(format!("{} isn't a data pack.", project.title));
     }
-    let versions = source.versions(project)?;
-    let version = pick(Kind::DataPack, &versions, everything).ok_or_else(|| {
-        format!(
-            "{} has no data pack for {}{}.",
-            project.title,
-            super::GAME,
-            if everything {
-                " or any other version"
-            } else {
-                ""
-            }
-        )
-    })?;
-    let file = version.file().expect("pick keeps versions with a file");
     let folder = std::env::temp_dir().join(format!(
         "horizon-launcher-datapack-{}-{}",
         std::process::id(),
-        version.id
+        project.id
     ));
-    let result = source.fetch(file, &folder, progress).and_then(|zip| {
+    // The registry's are checked against its index (signature, `pack.mcmeta` and `data/`).
+    let fetched = match project.source {
+        SourceId::Horizon => super::horizon::fetch_datapack(project, &folder, progress),
+        _ => {
+            let versions = source.versions(project)?;
+            let version = pick(Kind::DataPack, &versions, everything).ok_or_else(|| {
+                format!(
+                    "{} has no data pack for {}{}.",
+                    project.title,
+                    super::GAME,
+                    if everything {
+                        " or any other version"
+                    } else {
+                        ""
+                    }
+                )
+            })?;
+            let file = version.file().expect("pick keeps versions with a file");
+            source
+                .fetch(file, &folder, progress)
+                .map(|zip| (zip, version.number.clone()))
+        }
+    };
+    let result = fetched.and_then(|(zip, number)| {
         let coverage = crate::datapacks::coverage(&zip)?;
         if coverage.read.is_empty() {
             return Err(format!(
@@ -411,7 +420,7 @@ pub fn install_datapack(
         let pack = crate::datapacks::add(world, &zip)?;
         Ok(DataPackInstall {
             pack,
-            number: version.number.clone(),
+            number,
             coverage,
         })
     });

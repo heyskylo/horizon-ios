@@ -8,6 +8,8 @@ use super::{Game, Screen};
 use horizon_client::held::Source;
 use horizon_client::{
     Result,
+    controller_notice::{Glyph, Notice, NoticeId, Priority},
+    controller_ui::Device,
     gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Route, Rumble},
     keymapping::SNEAK,
 };
@@ -21,6 +23,7 @@ pub(super) const HELP: &[&str] = &[
     "pad trigger left|right VALUE   pull a virtual trigger (0..1)",
     "pad release                    centre and release the virtual controller",
     "pad status                     connected controllers, the active one and its state",
+    "pad connection connected|disconnected   as if a controller came or went at this game's own reader",
 ];
 
 /// The controllers and the state the game last acted on.
@@ -58,6 +61,10 @@ pub(super) struct Pads {
     /// The pad drove the game last (the mouse and keyboard hand control back).
     pub(super) in_use: bool,
     pub(super) style: GlyphStyle,
+    /// The controller driving this player, or else the first one its own reader sees.
+    pub(super) device: Option<Device>,
+    /// Controllers that came and went at this game's own reader since the last poll.
+    connections: Vec<Connection>,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
     /// The last vibration asked for, for `pad status`.
@@ -81,6 +88,15 @@ mod hardware;
 #[cfg(test)]
 mod parity_tests;
 pub(super) use hardware::{PadId, PadRouter};
+
+/// A controller coming or going, for this player's notice (`pad_connection_notice`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Connection {
+    /// A controller of this glyph family connected.
+    Connected(GlyphStyle),
+    /// One disconnected; `active`: it was driving this player.
+    Disconnected { active: bool },
+}
 
 /// What a controller did since the last frame.
 #[cfg_attr(not(feature = "controllers"), allow(dead_code))]
@@ -115,6 +131,12 @@ mod hardware {
     impl PadRouter {
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
+        }
+        pub(in crate::game) fn device(
+            &self,
+            _: PadId,
+        ) -> Option<horizon_client::controller_ui::Device> {
+            None
         }
         pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
         pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
@@ -173,6 +195,16 @@ impl Pads {
             self.menu.armed = None;
         }
         self.feed = Some(state);
+    }
+    /// The device the controller settings name: a real one, else `horizon-ctl`'s virtual pad.
+    pub(super) fn device_or_virtual(&self) -> Option<Device> {
+        self.device.clone().or_else(|| {
+            self.in_use.then(|| Device {
+                name: "Virtual controller".to_owned(),
+                vendor: None,
+                product: None,
+            })
+        })
     }
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
@@ -254,11 +286,15 @@ impl Game<'_> {
                 },
             );
         }
+        for change in std::mem::take(&mut self.pad.connections) {
+            self.pad_connection_notice(change);
+        }
         let style = self.settings.controller.glyphs.resolve(self.pad.style);
         self.ui.options.pad_style = style;
         // Nintendo glyphs on a pad going by its letters name the button playing each part.
         self.ui.options.pad_by_letter =
             style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
+        self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         let mut state = hardware.merge(&self.pad.injected);
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
         for (i, (stick, deadzone)) in [
@@ -550,6 +586,40 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl pad ...`.
+    /// A controller came or went with no splitscreen router: say so on this view, in its one
+    /// notice. Nothing here decides what the controller drives; a player who turned controllers
+    /// off isn't told about them.
+    fn pad_connection_notice(&mut self, change: Connection) {
+        if !self.settings.controller.enabled {
+            return;
+        }
+        let split =
+            |key: &str| horizon_client::lang::get(&format!("horizon.splitscreen.prompt.{key}"));
+        let notice = match change {
+            Connection::Connected(family) => Notice::new(
+                NoticeId::Connection,
+                Priority::Info,
+                split("controller_connected"),
+                horizon_client::lang::get("horizon.pad.notice.connected.press"),
+            )
+            .with_glyph(Glyph {
+                button: Button::South,
+                style: self.settings.controller.glyphs.resolve(family),
+            }),
+            Connection::Disconnected { active } => Notice::new(
+                NoticeId::Connection,
+                if active {
+                    Priority::Attention
+                } else {
+                    Priority::Info
+                },
+                split("controller_disconnected"),
+                split("controller_disconnected.hint"),
+            ),
+        };
+        self.split_hud.notice.raise(notice);
+    }
+
     pub(super) fn pad_command(&mut self, words: &[&str]) -> Result<Value> {
         let arg = |i: usize| -> Result<&str> {
             words
@@ -580,6 +650,9 @@ impl Game<'_> {
                         "reason": why, "strong": p.strong, "weak": p.weak, "ms": p.millis,
                     })),
                     "in_use": self.pad.in_use,
+                    "notice": self.split_hud.notice.showing().map(|(title, body)| {
+                        json!({ "title": title, "body": body })
+                    }),
                     "menu": self.pad_menu_status(),
                     "held": held,
                     "left": s.left,
@@ -592,6 +665,20 @@ impl Game<'_> {
                     status.extend(devices);
                 }
                 Ok(status)
+            }
+            "connection" => {
+                let change = match arg(2)? {
+                    "connected" => Connection::Connected(GlyphStyle::PlayStation),
+                    "disconnected" => Connection::Disconnected { active: true },
+                    other => {
+                        return Err(format!(
+                            "connection must be connected or disconnected, not {other}"
+                        )
+                        .into());
+                    }
+                };
+                self.pad.connections.push(change);
+                Ok(json!({ "ok": true }))
             }
             "release" => {
                 self.pad.menu.armed = None;

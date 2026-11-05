@@ -55,9 +55,14 @@ pub struct RideTarget {
     pub aimed: Option<[i32; 3]>,
 }
 /// What a piglin's or hoglin's brain remembers of its surroundings and of
-/// what it retreats from. None of it is saved: these memories have no codec.
+/// what it retreats from. Most have no codec; live guarded anger below is saved.
 #[derive(Clone, Debug, Default)]
 pub struct Memories {
+    /// The guarded-block event owns the saved ANGRY_AT entry once set.
+    /// Outer None leaves unmodeled loaded memory alone; Some(None) has no
+    /// authoritative actor identity and clears stale raw data instead of inventing one.
+    /// Its remaining TTL is the existing `Extra::anger` counter.
+    pub guarded_angry_at: Option<Option<[i32; 4]>>,
     /// `AVOID_TARGET`.
     pub avoid: Option<AvoidTarget>,
     /// `RIDE_TARGET`.
@@ -105,6 +110,14 @@ pub struct Memories {
     /// `ADMIRING_DISABLED`: the ticks left.
     pub admire_disabled: i32,
 }
+/// Existing guarded-block anger, with the causal player's authoritative UUID.
+/// This adds identity only; targeting and countdown keep their existing policy.
+pub fn set_guarded_anger_target(m: &mut Mob, player: Option<[i32; 4]>) {
+    m.extra.anger = 600;
+    m.ai.target = Some(Who::Player);
+    m.extra.piglin.guarded_angry_at = Some(player);
+}
+
 impl Memories {
     /// `StartAdmiringItemIfSeen.create(119)` (core activity) and the admire
     /// activity's `StopAdmiringIfItemTooFarAway(9)` and

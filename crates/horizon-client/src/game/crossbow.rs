@@ -400,6 +400,7 @@ impl Game<'_> {
         // is an empty stack (no match) when the shots broke it.
         if let Some(stack) = self.held().cloned() {
             self.trigger_item("minecraft:shot_crossbow", &stack);
+            self.award_stat("used", &stack.item, 1);
         }
     }
 }

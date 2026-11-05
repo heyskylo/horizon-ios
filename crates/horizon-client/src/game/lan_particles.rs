@@ -917,7 +917,7 @@ mod tests {
     fn hitting_shulker_bullet_sends_15_crit_particles_to_players() {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "ShulkerBulletTest".into(), 2)
+            ..NetConfig::loopback(0, "ShulkerBulletTest".into(), 2)
         };
         let mut sync = data::SyncData::empty();
         sync.builtin.registries.insert(

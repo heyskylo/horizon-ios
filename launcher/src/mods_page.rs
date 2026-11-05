@@ -52,6 +52,9 @@ pub(super) enum Event {
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
+    /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
+    /// mods moved on: their game is built again before it plays.
+    AutoUpdated(Vec<String>, Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
     /// The palette's registry mods for its search of that number.
@@ -99,6 +102,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// Instances (ids) whose native mods the automatic update moved on: Play builds their game
+    /// first (`build_native`), then plays it when `play_after_build` is set.
+    pub(super) rebuild: Vec<String>,
+    pub(super) play_after_build: bool,
     /// The project the glass look's detail card shows; the first result when none is.
     pub(super) picked: Option<String>,
     /// The project the glass detail card showed last.
@@ -194,6 +201,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            rebuild: Vec::new(),
+            play_after_build: false,
             picked: None,
             shown: None,
             checks: HashMap::new(),
@@ -391,6 +400,14 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::AutoUpdated(lines, rebuild) => {
+                    m.rebuild.extend(rebuild);
+                    if !lines.is_empty() {
+                        m.message = Some(Ok(lines.join("\n")));
+                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.installed_list.reset();
+                    }
+                }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
                     m.installed = installed::Installed::load(&m.home()).entries;
@@ -501,6 +518,31 @@ impl Launcher {
             let lines = horizon::turn_off_revoked(&index, &home);
             if !lines.is_empty() {
                 let _ = tx.send(Event::TakenDown(lines));
+            }
+        });
+    }
+
+    /// At start, with the setting on: every Horizon instance's registry projects update on a
+    /// thread ([`auto_update`]), the selected instance's list read again after.
+    pub(super) fn mods_auto_update(&mut self) {
+        if !self.settings.auto_updates_mods() {
+            return;
+        }
+        let list: Vec<AutoTarget> = self
+            .instances
+            .list
+            .iter()
+            .map(|i| AutoTarget {
+                level: self.version_of(i).map(|tag| backend::mod_api_level(tag)),
+                natives: !pinned_to_nightly(i),
+                instance: i.clone(),
+            })
+            .collect();
+        let tx = self.mods.tx.clone();
+        std::thread::spawn(move || {
+            let (lines, rebuild) = auto_update(&list);
+            if !lines.is_empty() || !rebuild.is_empty() {
+                let _ = tx.send(Event::AutoUpdated(lines, rebuild));
             }
         });
     }
@@ -1064,10 +1106,10 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
-        // The registry lists only what was made for Horizon: no "everything", no Modrinth filters,
-        // only its sort.
+        // The registry lists only what was made for Horizon: no "everything", and of the filters
+        // only its categories.
         let registry = self.mods.source == SourceId::Horizon && !java;
-        let filters = (!registry).then(|| self.mods_filters(cx));
+        let filters = self.mods_filters(cx);
         // The registry's sort sits below the GitHub row, above the list it orders.
         let registry_sort = registry.then(|| self.mods_sort_bar(cx));
         let controls = div()
@@ -1084,7 +1126,7 @@ impl Launcher {
                     .when(!registry && !java, |d| d.child(toggle)),
             )
             .children(source_note)
-            .children(filters)
+            .child(filters)
             .children(self.mods_target_line(cx));
         // The kinds are inventory tabs on the panel that holds the open one.
         let body = blocks::panel(&t).flex().flex_col().gap(px(24.)).p(px(20.));
@@ -1872,8 +1914,52 @@ impl Launcher {
     }
 }
 
+/// An instance whose registry projects may update: the mod API level of the game it plays, and
+/// whether its native mods may (`horizon::auto::Context`).
+pub(super) struct AutoTarget {
+    pub(super) instance: instances::Instance,
+    pub(super) level: Option<u32>,
+    pub(super) natives: bool,
+}
+
+/// Whether `instance` keeps a Nightly, or a native build made on one: its native mods stay as
+/// they are, built for that Horizon.
+pub(super) fn pinned_to_nightly(instance: &instances::Instance) -> bool {
+    let nightly = |v: &str| v.starts_with("nightly-");
+    instance
+        .version
+        .as_deref()
+        .is_some_and(|v| nightly(v) || native_mods::about(v).is_some_and(|a| nightly(&a.base)))
+}
+
+/// Updates the registry projects of `targets`: Horizon's own instances only, never a modpack's
+/// profile, whose pack pins its mods. What happened, for the page's notice, and the instances
+/// whose native mods were updated.
+pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) {
+    let (mut lines, mut rebuild) = (Vec::new(), Vec::new());
+    for t in targets {
+        let i = &t.instance;
+        let pack = i.id.starts_with("pack:") || i.id.starts_with("port:");
+        let (false, None, Some(level)) = (pack, &i.java, t.level) else {
+            continue;
+        };
+        let ctx = horizon::auto::Context {
+            in_pack: horizon::auto::in_pack(&i.home),
+            level,
+            natives: t.natives,
+        };
+        if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
+            lines.extend(report.lines());
+            if report.rebuild {
+                rebuild.push(i.id.clone());
+            }
+        }
+    }
+    (lines, rebuild)
+}
+
 /// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
-/// the rest (data packs are only there).
+/// the rest.
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
         PackKind::Mod | PackKind::Shader => SourceId::Horizon,
@@ -1881,14 +1967,10 @@ fn source_for(kind: PackKind) -> SourceId {
     }
 }
 
-/// Whether a kind's tab picks its source: mods, modpacks and resource packs are on both Horizon's
-/// registry and Modrinth; Horizon's shader packs are on its registry only, data packs on Modrinth
-/// only.
+/// Whether a kind's tab picks its source: mods, modpacks, resource packs and data packs are on
+/// both Horizon's registry and Modrinth; Horizon's shader packs are on its registry only.
 pub(super) fn switches(kind: PackKind) -> bool {
-    matches!(
-        kind,
-        PackKind::Mod | PackKind::ResourcePack | PackKind::Modpack
-    )
+    kind != PackKind::Shader
 }
 
 impl Launcher {
