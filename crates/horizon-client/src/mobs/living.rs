@@ -1928,6 +1928,30 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Entity.getLightProbePosition(partialTick)` for a living entity is
+    /// `getEyePosition`: `getEyeHeight()` over `Mth.lerp(partialTick, xo, x)`.
+    /// Horizon probed this tick's own position, so a mob walking into the next
+    /// cell was drawn lit by that cell for the whole frame before it got there,
+    /// and a falling one for a frame after it left.
+    #[test]
+    fn a_mob_probe_follows_the_frame() {
+        let eye = 1.62;
+        // Walking from x = 0.9 to 1.1: the eye is in the cell at 0 until the
+        // frame reaches the boundary, and in the cell at 1 from there on.
+        let (previous, position) = (Vec3::new(0.9, 64.0, 0.5), Vec3::new(1.1, 64.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [1, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [1, 65, 0]);
+        // The old probe was the tick's own position on every frame.
+        assert_eq!(position.x.floor() as i32, 1);
+        // Falling a block: the eye is at 71.62 at the start of the frame and
+        // 70.62 at its end.
+        let (previous, position) = (Vec3::new(0.5, 70.0, 0.5), Vec3::new(0.5, 69.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [0, 70, 0]);
+    }
     /// A pig dropped hard onto a block bounces by that block's restitution
     /// (`Entity.getBlockBounciness`): landing on a slime block sends it back
     /// up, landing on stone stops it dead. The same 8-block fall then costs the
