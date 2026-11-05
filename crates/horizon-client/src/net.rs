@@ -10,6 +10,7 @@ use crate::auth::AuthSession;
 use crate::studio::{Metadata, RecorderStatus, StudioRecorder};
 use horizon_protocol::{
     PROTOCOL_VERSION,
+    buf::Reader,
     connection::{ConnReader, ConnWriter, Connection, Counters},
     crypto::{generate_secret, offline_uuid, server_hash},
     packets::{Empty, configuration as cfg, handshake, login, play},
@@ -862,24 +863,11 @@ fn receive_play(
                 continue;
             }
         };
-        // Keep private messages, account data, custom payloads, and external
-        // URLs out of player-created recordings.
-        let recordable = !matches!(
-            &packet,
-            play::Clientbound::CookieRequest(_)
-                | play::Clientbound::CustomPayload(_)
-                | play::Clientbound::DisguisedChat(_)
-                | play::Clientbound::PlayerChat(_)
-                | play::Clientbound::PlayerInfoRemove(_)
-                | play::Clientbound::PlayerInfoUpdate(_)
-                | play::Clientbound::ResourcePackPush(_)
-                | play::Clientbound::ServerLinks(_)
-                | play::Clientbound::StoreCookie(_)
-                | play::Clientbound::SystemChat(_)
-                | play::Clientbound::Transfer(_)
-        );
-        if recordable && let Some(rec) = recorder.lock().unwrap().as_ref() {
-            rec.record_packet(id, &payload);
+        if let Some((recorded_id, recorded_payload)) =
+            studio_recording_packet(&packet, id, &payload)
+            && let Some(rec) = recorder.lock().unwrap().as_ref()
+        {
+            rec.record_packet(recorded_id, &recorded_payload);
         }
         let reply = |p: play::Serverbound| {
             if let Some(w) = shared_writer.lock().unwrap().as_mut() {
@@ -950,6 +938,51 @@ fn receive_play(
                 }
             }
         }
+    }
+}
+
+/// Return the packet bytes safe to persist in a Studio recording.
+///
+/// Unknown packets fail closed so a newly added protocol packet cannot bypass
+/// the privacy policy. `AddEntity` retains its entity id and state, but gets a
+/// fresh UUID so the recording cannot link that entity to an account UUID.
+fn studio_recording_packet(
+    packet: &play::Clientbound,
+    packet_id: i32,
+    payload: &[u8],
+) -> Option<(i32, Vec<u8>)> {
+    use play::Clientbound as P;
+    match packet {
+        P::AddEntity(entity) => {
+            let mut anonymous = entity.clone();
+            anonymous.uuid = u128::from_be_bytes(generate_secret().ok()?);
+            let encoded = P::AddEntity(anonymous).encode();
+            let mut reader = Reader::new(&encoded);
+            let id = reader.varint().ok()?;
+            Some((id, reader.rest().to_vec()))
+        }
+        P::CookieRequest(_)
+        | P::CustomChatCompletions(_)
+        | P::CustomPayload(_)
+        | P::DeleteChat(_)
+        | P::Disconnect(_)
+        | P::DisguisedChat(_)
+        | P::PlayerChat(_)
+        | P::PlayerCombatKill(_)
+        | P::PlayerInfoRemove(_)
+        | P::PlayerInfoUpdate(_)
+        | P::ResetScore(_)
+        | P::ResourcePackPush(_)
+        | P::ServerLinks(_)
+        | P::SetPlayerTeam(_)
+        | P::SetScore(_)
+        | P::StoreCookie(_)
+        | P::SystemChat(_)
+        | P::TabList(_)
+        | P::TrackedWaypoint(_)
+        | P::Transfer(_)
+        | P::Unknown(..) => None,
+        _ => Some((packet_id, payload.to_vec())),
     }
 }
 
@@ -1308,6 +1341,170 @@ mod tests {
             "Connecting to play.example.net, 25577"
         );
         assert_eq!(line("[::1]:25566"), "Connecting to ::1, 25566");
+    }
+
+    #[test]
+    fn studio_recording_drops_packets_with_direct_player_identity_or_private_text() {
+        use horizon_protocol::packets::configuration::{
+            ResourcePackPush, ServerLink, ServerLinkKind, ServerLinks, StoreCookie, Transfer,
+        };
+        use play::{
+            ChatTypeBound, Clientbound as P, CustomChatCompletions, PlayerInfo, PlayerInfoRemove,
+            PlayerInfoUpdate, ResetScore, SetPlayerTeam, SetScore, TrackedWaypoint, WaypointId,
+            WaypointTarget,
+        };
+
+        let packets = [
+            P::CookieRequest(cfg::CookieRequest {
+                key: "private_cookie".into(),
+            }),
+            P::CustomChatCompletions(CustomChatCompletions {
+                action: 2,
+                entries: vec!["/msg PlayerName private text".into()],
+            }),
+            P::CustomPayload(cfg::CustomPayload {
+                channel: "private:channel".into(),
+                data: b"private payload".to_vec(),
+            }),
+            P::DeleteChat(play::DeleteChat {
+                signature: (3, Some(vec![1, 2, 3])),
+            }),
+            P::DisguisedChat(play::DisguisedChat {
+                message: Tag::String("private message".into()),
+                chat_type: ChatTypeBound {
+                    chat_type: 0,
+                    name: Tag::String("PlayerName".into()),
+                    target: None,
+                },
+            }),
+            P::PlayerCombatKill(play::PlayerCombatKill {
+                id: 7,
+                message: Tag::String("PlayerName was slain".into()),
+            }),
+            P::PlayerChat(play::PlayerChat {
+                global_index: 1,
+                sender: 7,
+                index: 2,
+                signature: None,
+                content: "private message".into(),
+                timestamp: 3,
+                salt: 4,
+                last_seen: vec![],
+                unsigned_content: None,
+                filter: (0, vec![]),
+                chat_type: ChatTypeBound {
+                    chat_type: 0,
+                    name: Tag::String("PlayerName".into()),
+                    target: None,
+                },
+            }),
+            P::ResetScore(ResetScore {
+                owner: "PlayerName".into(),
+                objective: Some("deaths".into()),
+            }),
+            P::SetScore(SetScore {
+                owner: "PlayerName".into(),
+                objective: "deaths".into(),
+                score: 1,
+                display: None,
+                number_format: None,
+            }),
+            P::PlayerInfoRemove(PlayerInfoRemove { uuids: vec![7] }),
+            P::PlayerInfoUpdate(PlayerInfoUpdate {
+                actions: 1,
+                entries: vec![PlayerInfo {
+                    uuid: 7,
+                    name: Some("PlayerName".into()),
+                    ..PlayerInfo::default()
+                }],
+            }),
+            P::ResourcePackPush(ResourcePackPush {
+                id: 8,
+                url: "https://private.example/pack.zip".into(),
+                hash: "hash".into(),
+                required: false,
+                prompt: None,
+            }),
+            P::ServerLinks(ServerLinks {
+                links: vec![ServerLink {
+                    kind: ServerLinkKind::Known(0),
+                    link: "https://private.example".into(),
+                }],
+            }),
+            P::SetPlayerTeam(SetPlayerTeam {
+                name: "red".into(),
+                method: 3,
+                parameters: None,
+                players: vec!["PlayerName".into()],
+            }),
+            P::StoreCookie(StoreCookie {
+                key: "private_cookie".into(),
+                payload: b"secret".to_vec(),
+            }),
+            P::SystemChat(play::SystemChat {
+                content: Tag::String("private message".into()),
+                overlay: false,
+            }),
+            P::TabList(play::TabList {
+                header: Tag::String("PlayerName".into()),
+                footer: Tag::End,
+            }),
+            P::TrackedWaypoint(TrackedWaypoint {
+                operation: play::waypoint_operation::TRACK,
+                id: WaypointId::Uuid(7),
+                style: "minecraft:default".into(),
+                color: None,
+                target: WaypointTarget::Empty,
+            }),
+            P::Transfer(Transfer {
+                host: "private.example".into(),
+                port: 25565,
+            }),
+            P::Disconnect(cfg::Disconnect {
+                reason: Tag::String("PlayerName was disconnected".into()),
+            }),
+            P::Unknown(999, b"unclassified private payload".to_vec()),
+        ];
+
+        for packet in packets {
+            assert!(
+                studio_recording_packet(&packet, packet.id(), b"raw packet payload").is_none(),
+                "{} should be excluded from recordings",
+                packet.name()
+            );
+        }
+    }
+
+    #[test]
+    fn studio_recording_replaces_entity_uuids_but_keeps_entity_state() {
+        let original = play::AddEntity {
+            id: 18,
+            uuid: 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
+            kind: 42,
+            position: [1.0, 64.0, -2.0],
+            velocity: [0.0, 0.0, 0.0],
+            pitch: 1,
+            yaw: 2,
+            head_yaw: 3,
+            data: 4,
+        };
+        let packet = play::Clientbound::AddEntity(original.clone());
+        let (id, payload) = studio_recording_packet(&packet, packet.id(), b"unused").unwrap();
+        let play::Clientbound::AddEntity(recorded) =
+            play::Clientbound::decode(id, &payload).unwrap()
+        else {
+            panic!("sanitized packet changed type")
+        };
+
+        assert_ne!(recorded.uuid, original.uuid);
+        assert_eq!(recorded.id, original.id);
+        assert_eq!(recorded.kind, original.kind);
+        assert_eq!(recorded.position, original.position);
+        assert_eq!(recorded.velocity, original.velocity);
+        assert_eq!(recorded.pitch, original.pitch);
+        assert_eq!(recorded.yaw, original.yaw);
+        assert_eq!(recorded.head_yaw, original.head_yaw);
+        assert_eq!(recorded.data, original.data);
     }
 
     #[test]
@@ -1964,7 +2161,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&temp_dir);
         let mcpr_path = temp_dir.join("test_tap.mcpr");
 
-        let meta = Metadata::new("local".into(), true, "26.3".into());
+        let meta = Metadata::new("Singleplayer World".into(), true, "26.3".into());
         session.start_recording(&mcpr_path, meta).unwrap();
         assert!(session.is_recording());
 
@@ -2013,19 +2210,16 @@ mod tests {
 
         // Verify that the recording archive contains the clientbound packets.
         let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
-        assert_eq!(recording.total_packets(), 2);
-        assert_eq!(recording.metadata.server_name, "local");
+        assert_eq!(recording.total_packets(), 1);
+        assert_eq!(recording.metadata.server_name, "Singleplayer World");
         assert!(recording.metadata.singleplayer);
+        assert!(recording.metadata.players.is_empty());
 
         let packet1 = recording.next_packet().unwrap().unwrap();
-        let packet2 = recording.next_packet().unwrap().unwrap();
         assert!(recording.next_packet().unwrap().is_none());
 
         let decoded1 = play::Clientbound::decode(packet1.id, &packet1.payload).unwrap();
         assert_eq!(decoded1, pos_pkt);
-
-        let decoded2 = play::Clientbound::decode(packet2.id, &packet2.payload).unwrap();
-        assert_eq!(decoded2, disc_pkt);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

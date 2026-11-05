@@ -58,7 +58,7 @@
   "horizon.pages.music.empty": "No music tracks: the game's sounds are not loaded.",
   "horizon.pages.music.tooltip": "The built-in tracks, by situation: play one now, or turn any off so the game stops picking it.",
   "horizon.pages.settings.tooltip": "Horizon's own settings: graphics, controllers, extras and mods.",
-  "horizon.pages.studio.tooltip": "Browse saved recordings and launch into the 3D video editor.",
+  "horizon.pages.studio.tooltip": "Browse saved recordings and their metadata.",
   "horizon.pages.graphics.tooltip": "Graphics, simply: each setting says what it costs.",
   "horizon.pages.graphics_advanced.tooltip": "Every graphics setting, Horizon's included, with what each costs.",
   "horizon.pages.controller.tooltip": "Controllers: their buttons, sticks, vibration and menu navigation.",

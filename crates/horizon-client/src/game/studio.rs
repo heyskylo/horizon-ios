@@ -15,6 +15,19 @@ pub const HELP: &[&str] = &[
     "studio record status           show recording elapsed time, packets, and size",
 ];
 
+fn studio_recording_metadata(is_singleplayer: bool) -> Metadata {
+    let server_name = if is_singleplayer {
+        "Singleplayer World"
+    } else {
+        "Multiplayer Server"
+    };
+    Metadata::new(
+        server_name.into(),
+        is_singleplayer,
+        horizon_core::release::VERSION.into(),
+    )
+}
+
 impl Game<'_> {
     /// Handles Horizon's `/studio record` command without intercepting server
     /// commands that merely share its prefix.
@@ -112,16 +125,7 @@ impl Game<'_> {
         let path = recordings.join(generate_recording_filename(name));
         let is_singleplayer =
             remote.session.address.is_empty() || remote.session.address == "local";
-        let server_name = if is_singleplayer {
-            "Singleplayer World"
-        } else {
-            "Multiplayer Server"
-        };
-        let metadata = Metadata::new(
-            server_name.into(),
-            is_singleplayer,
-            horizon_core::release::VERSION.into(),
-        );
+        let metadata = studio_recording_metadata(is_singleplayer);
         match remote.session.start_recording(&path, metadata) {
             Ok(()) => Ok(json!({ "ok": true, "path": path.display().to_string() })),
             Err(error) => Ok(json!({ "ok": false, "error": error.to_string() })),
@@ -155,5 +159,21 @@ impl Game<'_> {
         } else {
             json!({ "ok": true, "active": false, "error": null })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::studio_recording_metadata;
+
+    #[test]
+    fn recording_metadata_does_not_store_server_addresses_or_player_names() {
+        let multiplayer = studio_recording_metadata(false);
+        assert_eq!(multiplayer.server_name, "Multiplayer Server");
+        assert!(multiplayer.players.is_empty());
+
+        let singleplayer = studio_recording_metadata(true);
+        assert_eq!(singleplayer.server_name, "Singleplayer World");
+        assert!(singleplayer.players.is_empty());
     }
 }
