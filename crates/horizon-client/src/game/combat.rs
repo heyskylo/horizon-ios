@@ -153,6 +153,9 @@ pub(super) struct CombatTracker {
     /// (`MobEvent::ExplosionSource`): their names, for the death messages of
     /// the mobs the blast killed.
     pub(super) exploded: Vec<(u32, Text)>,
+    /// The entity types of `exploded`: a player their blast killed is still
+    /// credited to them (`LivingEntity.getKillCredit` during the explosion).
+    pub(super) exploded_kinds: Vec<(u32, String)>,
     /// The player's fall distance before this tick's movement (as of the
     /// end of the last one).
     fall_before: f64,

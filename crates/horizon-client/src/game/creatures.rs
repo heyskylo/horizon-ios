@@ -973,6 +973,7 @@ impl Game<'_> {
         // waiting any more.
         self.combat.charged_exploders.clear();
         self.combat.exploded.clear();
+        self.combat.exploded_kinds.clear();
         // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
         let mut round = self.native_tick_round();
         if round.listening() {
@@ -2276,12 +2277,14 @@ impl Game<'_> {
                     charged,
                     name,
                     in_water,
+                    kind,
                 } => {
                     self.combat.explosion_source = Some(mob);
                     self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
+                    self.combat.exploded_kinds.push((mob, kind));
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
