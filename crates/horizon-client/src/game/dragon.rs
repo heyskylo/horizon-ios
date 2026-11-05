@@ -657,13 +657,13 @@ impl Dragon {
             if damage <= self.last_hurt {
                 return Hurt::Landed { full: false };
             }
-            self.health -= damage - self.last_hurt;
+            self.hurt_health(damage - self.last_hurt, source);
             self.last_hurt = damage;
             false
         } else {
             self.last_hurt = damage;
             self.invulnerable = 20;
-            self.health -= damage;
+            self.hurt_health(damage, source);
             self.hurt_time = 10;
             true
         };
@@ -704,6 +704,16 @@ impl Dragon {
             }
         }
         Hurt::Landed { full }
+    }
+    /// `LivingEntity.actuallyHurt` for the dragon, which has no armour or
+    /// absorption: a native mod's `LivingDamageEvent.Pre` may change what
+    /// comes off the health, and `.Post` hears what did.
+    fn hurt_health(&mut self, damage: f32, source: HurtSource<'_>) {
+        use horizon_client::health::{Hurting, damage_post, damage_pre};
+        let mut damage = damage;
+        damage_pre(Hurting::Dragon(self.id as i32, source), &mut damage);
+        self.health -= damage;
+        damage_post(Hurting::Dragon(self.id as i32, source), damage);
     }
     /// `EnderDragon.knockback`: `LivingEntity.knockback` only when the phase
     /// is not sitting. `(xd, zd)` points at the hit (`dealDefaultKnockback`:
@@ -5133,6 +5143,69 @@ mod tests {
         assert_eq!(d.hurt(0, 9.0, HIT, false), Hurt::Landed { full: true });
         assert_eq!(d.health, 1.0);
         assert!(matches!(d.phase, Phase::Dying { .. }));
+    }
+
+    /// What the `LivingDamageEvent` hooks of these tests were handed: the
+    /// dragon, Post (true) or Pre, and the amount.
+    static TAKEN: std::sync::Mutex<Vec<(i32, bool, f32)>> = std::sync::Mutex::new(Vec::new());
+    /// Sets the native `LivingDamageEvent.Pre` and `.Post` hooks for dragons
+    /// 9201 and 9202 (global, as `set_hook`'s): they record what they are
+    /// handed, and Pre halves 9202's amount.
+    fn set_damage_hooks() {
+        use horizon_client::health::{DAMAGE_POST, DAMAGE_PRE, Hurting};
+        fn pre(hurting: Hurting<'_>, amount: &mut f32) {
+            let Hurting::Dragon(entity @ 9201..=9202, _) = hurting else {
+                return;
+            };
+            TAKEN.lock().unwrap().push((entity, false, *amount));
+            if entity == 9202 {
+                *amount /= 2.0;
+            }
+        }
+        fn post(hurting: Hurting<'_>, amount: f32) {
+            if let Hurting::Dragon(entity @ 9201..=9202, _) = hurting {
+                TAKEN.lock().unwrap().push((entity, true, amount));
+            }
+        }
+        let installed = (
+            *DAMAGE_PRE.get_or_init(|| pre),
+            *DAMAGE_POST.get_or_init(|| post),
+        );
+        assert!(std::ptr::fn_addr_eq(
+            installed.0,
+            pre as fn(Hurting<'_>, &mut f32)
+        ));
+        assert!(std::ptr::fn_addr_eq(
+            installed.1,
+            post as fn(Hurting<'_>, f32)
+        ));
+    }
+    fn taken(entity: i32) -> Vec<(bool, f32)> {
+        let taken = TAKEN.lock().unwrap();
+        taken
+            .iter()
+            .filter(|t| t.0 == entity)
+            .map(|t| (t.1, t.2))
+            .collect()
+    }
+
+    #[test]
+    fn the_native_damage_hooks_see_and_change_what_a_dragons_health_takes() {
+        set_damage_hooks();
+        // The hit after the part's cut (20 / 4 + 1), then, within the
+        // cooldown, what a stronger one exceeds it by.
+        let mut d = dragon_as(9201);
+        assert_eq!(d.hurt(2, 20.0, HIT, false), Hurt::Landed { full: true });
+        assert_eq!(d.hurt(0, 10.0, HIT, false), Hurt::Landed { full: false });
+        assert_eq!(
+            taken(9201),
+            [(false, 6.0), (true, 6.0), (false, 4.0), (true, 4.0)]
+        );
+        assert_eq!(d.health, MAX_HEALTH - 10.0);
+        let mut d = dragon_as(9202);
+        assert_eq!(d.hurt(0, 9.0, HIT, false), Hurt::Landed { full: true });
+        assert_eq!(taken(9202), [(false, 9.0), (true, 4.5)]);
+        assert_eq!(d.health, MAX_HEALTH - 4.5);
     }
 
     #[test]
