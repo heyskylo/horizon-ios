@@ -3817,6 +3817,13 @@ pub fn cannot_replace_itself() -> bool {
     })
 }
 
+/// Classify the update target, rather than the executable inside an AppImage's mount.
+pub fn package_managed_launcher() -> bool {
+    let target = update_target();
+    let target = target.canonicalize().unwrap_or(target);
+    crate::update_recovery::package_managed(&target)
+}
+
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
     let made = fs::OpenOptions::new()
