@@ -1853,13 +1853,6 @@ mod tests {
         runs
     }
 
-    /// Ids, page counts, flags and changes against a plain list of what each id
-    /// holds: the lowest free id comes back, flagged only if inserted so, free
-    /// ids at the end leave, counts follow moves (to pages past the last too), a
-    /// move keeps the box and the flag, a free is a change, a flag set changes
-    /// its record only when it differs, the flagged ones are counted through
-    /// inserts, flags, removals and clears, and more changes than updates take
-    /// mark the whole table.
     /// The pass's module validates without the early depth test, and the
     /// occlusion test's (the pass's with `gpu_occlusion.wgsl`) with it.
     #[test]
@@ -1875,6 +1868,13 @@ mod tests {
         }
     }
 
+    /// Ids, page counts, flags and changes against a plain list of what each id
+    /// holds: the lowest free id comes back, flagged only if inserted so, free
+    /// ids at the end leave, counts follow moves (to pages past the last too), a
+    /// move keeps the box and the flag, a free is a change, a flag set changes
+    /// its record only when it differs, the flagged ones are counted through
+    /// inserts, flags, removals and clears, and more changes than updates take
+    /// mark the whole table.
     #[test]
     fn records_keep_ids_page_counts_and_moves() {
         let mut records = Records::default();
