@@ -89,6 +89,8 @@ pub struct Image {
 pub struct ComputeProgram {
     pub module: naga::Module,
     pub interface: Interface,
+    /// Non-fatal translation diagnostics, located in the authored source.
+    pub notes: Vec<Error>,
     pub work_groups: Option<[u32; 3]>,
     pub work_groups_render: [f32; 2],
 }
@@ -119,7 +121,7 @@ pub struct Sampler {
     pub binding: u32,
 }
 
-/// A program that failed, at a pack file and line.
+/// A translation diagnostic at a pack file and line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Error {
     pub file: String,
@@ -131,6 +133,8 @@ pub struct Program {
     pub vertex: naga::Module,
     pub fragment: naga::Module,
     pub interface: Interface,
+    /// Non-fatal translation diagnostics, located in the authored source.
+    pub notes: Vec<Error>,
 }
 
 /// Where the program draws, which decides the conventions of 5.5.
@@ -597,7 +601,7 @@ fn translate(
         (Ok(v), Ok(f)) => (v, f),
         (a, b) => return Err(a.err().into_iter().chain(b.err()).flatten().collect()),
     };
-    let initial_values = defaults::merge([(&v, &vertex), (&f, &fragment)])?;
+    let (initial_values, notes) = defaults::merge([(&v, &vertex), (&f, &fragment)])?;
     let (uniform_size, offsets) = block_layout(&fragment);
     let uniforms = offsets
         .into_iter()
@@ -619,6 +623,7 @@ fn translate(
     mark_atomic(&vertex, &mut images);
     mark_atomic(&fragment, &mut images);
     Ok(Program {
+        notes,
         interface: Interface {
             uniform_size,
             initial_values,
@@ -811,7 +816,7 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         std::mem::take(&mut errors)
     })?;
     let (uniform_size, offsets) = block_layout(&module);
-    let initial_values = defaults::merge([(&c, &module)])?;
+    let (initial_values, notes) = defaults::merge([(&c, &module)])?;
     let mut interface = Interface {
         uniform_size,
         initial_values,
@@ -838,6 +843,7 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     };
     mark_atomic(&module, &mut interface.images);
     Ok(ComputeProgram {
+        notes,
         module,
         interface,
         work_groups,
