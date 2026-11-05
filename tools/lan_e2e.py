@@ -11693,16 +11693,19 @@ def check_shulker_menu(host, guest, out):
         guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
         guest.wait(20)
         opened = {'guest': lid(guest, box), 'host': lid(host, box)}
+        host.shot(out, 'host-shulker-open')
+        guest.shot(out, 'guest-shulker-open')
         # The cobblestone goes in; the red shulker box stays on the cursor.
         mouse(guest, hotbar_slot(guest, 'minecraft:cobblestone'))
         mouse(guest, 301)
         mouse(guest, hotbar_slot(guest, 'minecraft:red_shulker_box'))
         mouse(guest, 300)
         guest.wait(10)
-        guest.shot(out, 'shulker-menu')
         guest.raw('key', 'esc', 'tap')
         guest.wait(20)
         closed = {'guest': lid(guest, box), 'host': lid(host, box)}
+        host.shot(out, 'host-shulker-closed')
+        guest.shot(out, 'guest-shulker-closed')
         inside, size = open_container(guest, box, out, 'shulker-menu-after')
         counts = guest('inventory')['counts']
         stored = host('command', command=f'data get block {box[0]} {box[1]} {box[2]} Items')
