@@ -2650,6 +2650,32 @@ mod tests {
         p.grant("minecraft:t", "b", "now");
         assert!(p.done(&a));
     }
+    /// `AdvancementProgress.isDone` answers true for an advancement with no
+    /// requirement groups (no criteria), which is what makes vanilla's
+    /// `PlayerAdvancements.checkForAutomaticTriggers` grant such an advancement
+    /// the moment progress loads; `Tree::automatic` is the list it walks.
+    #[test]
+    fn an_advancement_without_criteria_is_done_and_granted_automatically() {
+        let empty = parse("minecraft:free", &serde_json::json!({"criteria": {}})).unwrap();
+        assert!(
+            Progress::default().done(&empty),
+            "no groups, nothing to wait for"
+        );
+        let waiting = parse(
+            "minecraft:waits",
+            &serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+        )
+        .unwrap();
+        assert!(!Progress::default().done(&waiting));
+        let tree = tree_of(&[
+            (
+                "minecraft:waits",
+                serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+            ),
+            ("minecraft:free", serde_json::json!({"criteria": {}})),
+        ]);
+        assert_eq!(tree.automatic(), vec![1]);
+    }
     #[test]
     fn layout_spreads_children_like_tree_node_position() {
         let mut tree = Tree::default();
