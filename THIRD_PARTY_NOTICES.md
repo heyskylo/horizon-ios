@@ -183,6 +183,11 @@ ported to Rust; `invert_generic` and `pack_projection` drop JOML's property flag
 `pack_projection` works the formula in doubles. The copyright line and license notice also head
 both files.
 
+`camera.rs` also adapts `Quaternionf.rotationX`, `rotationY` and `rotationZ`,
+`Matrix4f.rotateAffine` and `Vector4f.mulAffine` (`joml::Quat::rotation_x`/`_y`/`_z`,
+`joml::Mat4::rotate_affine`, `transform_affine`), for the sky's positions shader packs read.
+Changes: ported to Rust; `rotate_affine` keeps only the affine case.
+
 ```
 The MIT License
 
