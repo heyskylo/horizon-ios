@@ -404,6 +404,18 @@ mod tests {
     }
 
     #[test]
+    fn a_noise_with_no_octaves_becomes_one_muted_octave() {
+        // How a void pack turns off vanilla's iceberg noises. The game's reader
+        // has a test for this form (`decode_noise`).
+        let (v, report) = up(
+            "data/x/worldgen/noise/n.json",
+            json!({"firstOctave": -1000, "amplitudes": []}),
+        );
+        assert_eq!(v, json!({"base_octave": 0, "amplitude_modifiers": [0.0]}));
+        assert!(report.lossy.is_empty(), "{:?}", report.lossy);
+    }
+
+    #[test]
     fn density_arguments_and_removed_types() {
         let (v, _) = up(
             "data/x/worldgen/density_function/f.json",
