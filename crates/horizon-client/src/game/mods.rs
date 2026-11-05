@@ -336,7 +336,10 @@ fn live_switch_of(
     let id = &package.manifest.id;
     content_ids.insert(id.clone());
     let content = horizon_mods::Content::read(path, &package.manifest);
-    match content.as_ref().map(horizon_client::mod_content::live_switch) {
+    match content
+        .as_ref()
+        .map(horizon_client::mod_content::live_switch)
+    {
         Ok(Ok(())) if package.wasm.is_none() => {
             live_ids.insert(id.clone());
         }
@@ -513,7 +516,9 @@ impl Game<'_> {
         }
         self.ui.options.mods_note = (!waiting.is_empty())
             .then(|| lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")]));
-        let changed = applied.symmetric_difference(&next).any(|id| content.contains(id));
+        let changed = applied
+            .symmetric_difference(&next)
+            .any(|id| content.contains(id));
         if !changed {
             self.mods.applied = Some(next);
             return;
