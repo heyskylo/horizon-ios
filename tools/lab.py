@@ -80,6 +80,9 @@ def game_env(base=None, **extra):
     env.update({key: str(value) for key, value in extra.items()})
     env["HORIZON_NO_AUDIO"] = "1"
     env["HORIZON_LAUNCHER_NO_SELF_UPDATE"] = "1"
+    # Local fixtures use real TCP, but need no inbound access from other machines.
+    # Network/discovery suites can explicitly set HORIZON_TEST_LOOPBACK=0.
+    env.setdefault("HORIZON_TEST_LOOPBACK", "1")
     # Never a real Discord's Rich Presence; tools/discord_presence_e2e.py points the game at a fake one.
     if not env.get("HORIZON_DISCORD_IPC_DIR"):
         env["HORIZON_NO_DISCORD"] = "1"

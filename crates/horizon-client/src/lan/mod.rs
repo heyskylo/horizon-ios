@@ -218,6 +218,15 @@ pub struct NetConfig {
     pub levels: crate::chunk::LevelShapes,
 }
 impl NetConfig {
+    /// A real TCP server confined to this machine, without multicast announcements.
+    /// Use this for socket tests; `lan` retains the public LAN behaviour.
+    pub fn loopback(port: u16, motd: String, max_players: usize) -> Self {
+        Self {
+            bind: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            announce: false,
+            ..Self::lan(port, motd, max_players)
+        }
+    }
     /// MinecraftServer.enforceSecureProfile.
     pub fn enforces_secure_chat(&self) -> bool {
         self.secure_chat.as_ref().is_some_and(|s| s.enforced())
@@ -635,7 +644,13 @@ impl Lan {
     /// The socket [`Lan::listen`] accepts on, bound ahead so that a failure
     /// can be reported before the hub is at hand.
     pub fn bind(address: Option<std::net::IpAddr>, port: u16) -> io::Result<TcpListener> {
-        let bind = address.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let bind = address.unwrap_or_else(|| {
+            if test_loopback() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv4Addr::UNSPECIFIED.into()
+            }
+        });
         let listener = TcpListener::bind((bind, port))?;
         listener.set_nonblocking(true)?;
         Ok(listener)
@@ -654,7 +669,7 @@ impl Lan {
         let thread = std::thread::Builder::new()
             .name("horizon-lan-accept".into())
             .spawn(move || accept_loop(listener, accept_shared, &accept_stop))?;
-        self._pinger = if announce {
+        self._pinger = if announce && !test_loopback() {
             discovery::Pinger::start(self.shared.motd(), port).ok()
         } else {
             None
@@ -931,13 +946,41 @@ fn handle(stream: TcpStream, addr: SocketAddr, counted: Counted) {
 
 /// HttpUtil.getAvailablePort: a free local port.
 pub fn available_port() -> u16 {
-    TcpListener::bind(("0.0.0.0", 0))
+    let bind = if cfg!(test) || test_loopback() {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
+    TcpListener::bind((bind, 0))
         .and_then(|l| l.local_addr())
         .map_or(25565, |a| a.port())
 }
 
+/// Same-machine harnesses opt in; real LAN runs keep the normal network interfaces.
+pub(super) fn test_loopback() -> bool {
+    std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_local_server_accepts_only_the_requested_loopback_address() {
+        let lan = super::Lan::start_with(
+            std::sync::Arc::new(super::data::SyncData::empty()),
+            super::NetConfig::loopback(0, "Local test".into(), 1),
+        )
+        .unwrap();
+        let local = std::net::TcpStream::connect(("127.0.0.1", lan.port)).unwrap();
+        let other = "127.0.0.2".parse::<std::net::IpAddr>().unwrap();
+        assert!(
+            std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::new(other, lan.port),
+                std::time::Duration::from_millis(500),
+            )
+            .is_err()
+        );
+        drop(local);
+    }
     use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
@@ -949,7 +992,7 @@ mod tests {
     fn a_flood_of_silent_sockets_is_turned_away() {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "Flood".into(), 1)
+            ..NetConfig::loopback(0, "Flood".into(), 1)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let address = (std::net::Ipv4Addr::LOCALHOST, lan.port);
@@ -994,7 +1037,7 @@ mod tests {
         let config = NetConfig {
             announce: false,
             listen: false,
-            ..NetConfig::lan(0, "Status".into(), 8)
+            ..NetConfig::loopback(0, "Status".into(), 8)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
@@ -1012,7 +1055,7 @@ mod tests {
         let config = NetConfig {
             announce: false,
             listen: false,
-            ..NetConfig::lan(0, "Share".into(), 20)
+            ..NetConfig::loopback(0, "Share".into(), 20)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
@@ -1046,7 +1089,7 @@ mod tests {
                 lang: Arc::new(Default::default()),
                 log_ips: true,
             }),
-            ..NetConfig::lan(0, "Room".into(), 1)
+            ..NetConfig::loopback(0, "Room".into(), 1)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let shared = &lan.shared;

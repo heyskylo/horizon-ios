@@ -1352,6 +1352,7 @@ impl Game<'_> {
                 "gpu_frame": r.gpu_frame(),
                 "gpu_fading": r.gpu_fading(),
                 "gpu_culling_offer": format!("{:?}", r.gpu_culling_offer()),
+                "gpu_occluding": r.gpu_occluding(),
                 "stats_lag": r.stats_lag(),
                 "uploaded_bytes": r.uploaded_bytes,
                 "resident_sections": r.resident_sections(),

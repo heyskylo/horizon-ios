@@ -94,10 +94,12 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             ("vaColor".into(), "hz_Color".into()),
             ("vaNormal".into(), "hz_Normal".into()),
         ],
-        // At the far plane: the sky shows only where nothing else drew, and it writes no depth.
-        after: "    gl_Position.z = gl_Position.w;\n".into(),
+        // Tested at the far plane: the sky shows only where nothing else drew, and it writes no
+        // depth. Its fragments read their own depth, as in Iris.
+        after: String::new(),
         alpha_test: None,
         item_id_declared: false,
+        far_depth: true,
     }
 }
 
@@ -121,9 +123,10 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
             ("vaColor".into(), "hz_Color".into()),
             ("vaNormal".into(), "hz_Normal".into()),
         ],
-        after: "    gl_Position.z = gl_Position.w;\n".into(),
+        after: String::new(),
         alpha_test: None,
         item_id_declared: false,
+        far_depth: true,
     }
 }
 
@@ -153,6 +156,38 @@ fn disc(y: f32, kind: u32, out: &mut Vec<Vertex>) {
     }
 }
 
+/// Cover the horizon and downward sky rays as well as the upper vanilla disc.
+/// Uncovered directions retain the buffer's clear colour, affecting later sky/fog
+/// compositing. Enclosing the camera gives the sky program fragments there too.
+/// Depth stays at the far plane through `inputs`, so terrain remains in front.
+fn horizon(out: &mut Vec<Vertex>) {
+    let corners = [
+        [-512.0, -512.0, -512.0],
+        [512.0, -512.0, -512.0],
+        [512.0, 512.0, -512.0],
+        [-512.0, 512.0, -512.0],
+        [-512.0, -512.0, 512.0],
+        [512.0, -512.0, 512.0],
+        [512.0, 512.0, 512.0],
+        [-512.0, 512.0, 512.0],
+    ];
+    for [a, b, c, d] in [
+        [0, 1, 2, 3],
+        [4, 7, 6, 5],
+        [0, 4, 5, 1],
+        [3, 2, 6, 7],
+        [0, 3, 7, 4],
+        [1, 5, 6, 2],
+    ] {
+        for i in [a, b, c, a, c, d] {
+            out.push(Vertex {
+                pos: corners[i],
+                kind: SKY,
+            });
+        }
+    }
+}
+
 pub(super) struct PackSky {
     vertices: wgpu::Buffer,
     celestial: wgpu::Buffer,
@@ -166,6 +201,7 @@ pub(super) struct PackSky {
 impl PackSky {
     pub fn new(device: &wgpu::Device) -> Self {
         let mut v = Vec::new();
+        horizon(&mut v);
         disc(16.0, SKY, &mut v);
         let sky = 0..v.len() as u32;
         let apex = Vertex {

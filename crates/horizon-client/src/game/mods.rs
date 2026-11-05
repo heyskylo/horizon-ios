@@ -447,16 +447,25 @@ pub(super) fn living_mod_types()
         r#""width":0.6,"height":1.95,"eye_height":1.74,"category":"monster","fire_immune":false"#;
     let villager =
         r#""width":0.6,"height":1.95,"eye_height":1.62,"category":"misc","fire_immune":false"#;
+    let trader =
+        r#""width":0.6,"height":1.95,"eye_height":1.62,"category":"creature","fire_immune":false"#;
     let table = format!(
         r#"{{"minecraft:zombie":{{{zombie},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.23000000417232513}}}},
         "minecraft:villager":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}}}},
+        "minecraft:wandering_trader":{{{trader},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.7}}}},
         "minecraft:snowball":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false}},
         "ruby:ghoul":{{{zombie},"attributes":{{"minecraft:max_health":40.0,"minecraft:movement_speed":0.23000000417232513}},"template":"minecraft:zombie"}},
         "ruby:settler":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}},"template":"minecraft:villager"}},
+        "ruby:merchant":{{{trader},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.7}},"template":"minecraft:wandering_trader"}},
         "ruby:bolt":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false,"template":"minecraft:snowball"}}}}"#
     );
-    let root =
-        std::env::temp_dir().join(format!("horizon-living-mod-types-{}", std::process::id()));
+    // A folder per call: tests run in parallel in one process, and each removes its own.
+    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "horizon-living-mod-types-{}-{call}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("entity-types.json"), table).unwrap();
     let types = horizon_client::mobs::MobTypes::load_for_server(&root).unwrap();
@@ -536,6 +545,42 @@ mod tests {
         );
     }
 
+    /// A content mod's type from the wandering trader, the neutral template
+    /// whose behaviour is all goals: a trader under its own id, with a
+    /// trader's goals, that saves what a trader saves and loads back.
+    #[test]
+    fn a_mod_trader_type_is_a_wandering_trader_under_its_own_id() {
+        use horizon_client::mobs::{Mob, Species};
+        use horizon_world::nbt::Tag;
+        let types = living_mod_types();
+        let merchant = &types["ruby:merchant"];
+        assert_eq!(merchant.species, Species::WanderingTrader);
+        assert_eq!(merchant.class_id(), "minecraft:wandering_trader");
+        let at = horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5);
+        let trader = Mob::new(1, types["minecraft:wandering_trader"].clone(), at, 0.0);
+        let merchant = Mob::new(2, merchant.clone(), at, 0.0);
+        assert!(merchant.ai.goals.has("Float") && trader.ai.goals.has("Float"));
+        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let keys = |tag: &Tag| -> Vec<String> {
+            let Tag::Compound(map) = tag else {
+                panic!("a mob saves a compound");
+            };
+            map.keys().map(|k| k.to_string_lossy()).collect()
+        };
+        let tag = saved(&merchant);
+        assert_eq!(
+            keys(&tag),
+            keys(&saved(&trader)),
+            "it saves what a trader saves"
+        );
+        let loaded =
+            horizon_client::entity_nbt::mob_from_nbt(&tag, &types, 3, None).expect("it loads back");
+        assert_eq!(
+            (loaded.kind.id.as_str(), loaded.species()),
+            ("ruby:merchant", Species::WanderingTrader)
+        );
+    }
+
     /// Only a build whose `native-mods.json` lists a mod counts as built with mods.
     #[test]
     fn only_a_listed_mod_makes_a_build_a_mod_build() {
@@ -609,5 +654,91 @@ mod tests {
         // No folder: no rows.
         assert!(not_built(&dir.join("missing"), "", &[]).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A trait mod's `register_goals` (`Mob.registerGoals`) gets every new
+    /// mob: the goals of its type replace its template's, its `Float` goal
+    /// floats the navigation as FloatGoal's constructor does, and the
+    /// template's other types keep their goals. The only test here that
+    /// installs the client library's hooks.
+    #[test]
+    fn a_mods_register_goals_replaces_its_types_goals() {
+        use horizon_client::mobs::{
+            Mob,
+            goals::{self, Cx, Goal},
+        };
+        use horizon_client::mod_api::{Hooks, RegisterGoalsEvent, dispatch_register_goals};
+        use horizon_client::native_client_hooks::{NativeClientHooks, install};
+        use horizon_core::geometry::Vec3;
+        // docs/native-mods.md's example.
+        #[derive(Clone, Debug)]
+        struct ToPost {
+            post: [f64; 3],
+        }
+        impl Goal for ToPost {
+            fn flags(&self) -> u8 {
+                goals::MOVE
+            }
+            fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                let [x, y, z] = self.post;
+                let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+                dx * dx + dy * dy + dz * dz > 16.0
+            }
+            fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                !m.ai.nav.is_done()
+            }
+            fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+                m.nav_move_to(cx.w, self.post, 1.0);
+            }
+            fn box_clone(&self) -> Box<dyn Goal> {
+                Box::new(self.clone())
+            }
+        }
+        struct Guards;
+        impl Hooks for Guards {
+            fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+                if event.mob.kind.id == "ruby:guard" {
+                    let ai = &mut event.mob.ai;
+                    ai.goals.clear();
+                    ai.targets.clear();
+                    ai.goals.add(0, goals::Float);
+                    ai.goals.add(
+                        1,
+                        ToPost {
+                            post: [0.5, 64.0, 0.5],
+                        },
+                    );
+                }
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
+        let installed = install(NativeClientHooks {
+            menu_slot_rules: |_, _, _, _, _| {},
+            living_heal: |_, _, _| {},
+            player_chat: |_, _, _, _, _| {},
+            living_breathe: |_, _, _, _, _| {},
+            living_drown: |_, _, _, _, _, _| {},
+            living_fall: |_, _, _, _, _| {},
+            living_jump: |_, _| {},
+            register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            ingredient: |_, _, _| {},
+            ingredient_test: |_, _, _, _| {},
+        });
+        assert!(installed.is_ok());
+
+        let types = living_mod_types();
+        let mut guard = (*types["ruby:ghoul"]).clone();
+        guard.id = "ruby:guard".into();
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        let guard = Mob::new(1, std::sync::Arc::new(guard), at, 0.0);
+        let ghoul = Mob::new(2, types["ruby:ghoul"].clone(), at, 0.0);
+        assert!(guard.ai.goals.has("Float") && guard.ai.goals.has("ToPost"));
+        assert!(!guard.ai.goals.has("RandomLookAround"));
+        assert!(!guard.ai.targets.has("NearestTarget"));
+        assert!(guard.ai.nav.can_float);
+        assert!(ghoul.ai.goals.has("RandomLookAround") && !ghoul.ai.goals.has("ToPost"));
+        assert!(ghoul.ai.targets.has("NearestTarget"));
+        assert!(!ghoul.ai.nav.can_float, "a zombie has no FloatGoal");
     }
 }

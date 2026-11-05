@@ -552,8 +552,14 @@ impl Default for NewServer {
 
 /// A port nobody listens on, from `from` up, and not one of `taken`.
 pub fn free_port(from: u16, taken: &[u16]) -> u16 {
+    let bind = if cfg!(test) || std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1")
+    {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
     (from..u16::MAX)
-        .find(|p| !taken.contains(p) && std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok())
+        .find(|p| !taken.contains(p) && std::net::TcpListener::bind((bind, *p)).is_ok())
         .unwrap_or(from)
 }
 

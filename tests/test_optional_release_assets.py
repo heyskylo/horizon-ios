@@ -41,8 +41,11 @@ class OptionalReleaseAssetsTests(unittest.TestCase):
                 script_dir = root / "tools/ci"
                 script_dir.mkdir(parents=True)
                 shutil.copy(ROOT / "tools/ci/sign_release.sh", script_dir)
-                env = dict(os.environ, EPHEMERAL="yes", SHA="0123456789abcdef", DATE="2026-11-04",
-                           SOURCE_TAG="nightly-test", RELEASE_SIGNING_KEY="", RELEASE_SIGNING_KEY_NEXT="")
+                # The steps' own env from nightly-build.yml: SHORT is the commit the title and
+                # SHA256SUMS.v2.sig name (ALSO_FOR, nightly-<date>-<short>).
+                env = dict(os.environ, EPHEMERAL="yes", SHA="0123456789abcdef", SHORT="0123456", DATE="2026-11-04",
+                           ALSO_FOR="nightly-2026-11-04-0123456", SOURCE_TAG="nightly-test",
+                           RELEASE_SIGNING_KEY="", RELEASE_SIGNING_KEY_NEXT="")
                 signed = subprocess.run(["bash", "-e", "-c", run_step("sign_release.sh nightly")],
                                         cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(signed.returncode, 0, signed.stderr)
@@ -50,6 +53,7 @@ class OptionalReleaseAssetsTests(unittest.TestCase):
                         (line.split() for line in (dist / "SHA256SUMS").read_text().splitlines())}
                 self.assertEqual(sums, {name: hashlib.sha256(name.encode()).hexdigest() for name in present})
                 self.assertTrue((dist / "SHA256SUMS.sig").stat().st_size)
+                self.assertTrue((dist / "SHA256SUMS.v2.sig").stat().st_size)
                 (dist / "smoke-test.json").write_text("{}")
                 (dist / "nightly-notes.md").write_text("test")
                 # Isolate GitHub and tag rotation; validate the exact attachment arguments
@@ -70,7 +74,8 @@ gh() {
                                            cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(published.returncode, 0, published.stderr)
                 files = {Path(name).name for name in (root / "published").read_text().splitlines()}
-                self.assertEqual(files, present | {"SHA256SUMS", "SHA256SUMS.sig", "smoke-test.json", "nightly-notes.md"})
+                self.assertEqual(files, present | {"SHA256SUMS", "SHA256SUMS.sig", "SHA256SUMS.v2.sig", "smoke-test.json",
+                                                   "nightly-notes.md"})
                 for name in set(OPTIONAL) - present:
                     self.assertIn(f"::warning::{name} is missing", signed.stdout)
                     self.assertIn(f"::warning::{name} is missing", published.stdout)

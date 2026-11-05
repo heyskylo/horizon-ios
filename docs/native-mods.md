@@ -2577,6 +2577,61 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
 
+### Mob goals
+
+**`horizon_client_lib::mobs::ai::native_register_goals(mob)`** (vanilla's `Mob.registerGoals`; a trait mod's
+`Hooks::register_goals(event)`, with `event.mob`) is asked for every new mob, after its species added its goals and before its
+saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
+([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a
+class whose `registerGoals` skips `super`'s, or add to them. A villager acts through its brain, which goals don't replace:
+a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. For a
+neutral mob whose goals are all the mod's, copy `minecraft:wandering_trader`. A goal is a
+Rust type implementing
+`horizon_client::mobs::goals::Goal` (a bundle compiles into the game, so nothing is loaded at run time): its `flags` (`MOVE`,
+`LOOK`, `JUMP`, `TARGET`), `can_use`, `can_continue`, `start`, `tick` and `stop` run by priority and flag as vanilla's
+`GoalSelector` runs them. The vanilla goals in that module (`Float`, `Stroll`, `LookAtPlayer`, `MeleeAttack`, `NearestTarget`
+and the rest) are there to reuse.
+
+```rust
+use horizon_client::mobs::{Mob, goals::{self, Cx, Goal}};
+use horizon_client::mod_api::{Hooks, RegisterGoalsEvent};
+
+/// Walks the mob back to its post when it is more than 4 blocks away.
+#[derive(Clone, Debug)]
+struct ToPost { post: [f64; 3] }
+impl Goal for ToPost {
+    fn flags(&self) -> u8 { goals::MOVE }
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        let [x, y, z] = self.post;
+        let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+        dx * dx + dy * dy + dz * dz > 16.0
+    }
+    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool { !m.ai.nav.is_done() }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) { m.nav_move_to(cx.w, self.post, 1.0); }
+    fn box_clone(&self) -> Box<dyn Goal> { Box::new(self.clone()) }
+}
+
+struct Guards;
+impl Hooks for Guards {
+    fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+        if event.mob.kind.id == "example:guard" {
+            let ai = &mut event.mob.ai;
+            ai.goals.clear();
+            ai.targets.clear();
+            ai.goals.add(0, goals::Float);
+            ai.goals.add(1, ToPost { post: [0.5, 64.0, 0.5] });
+        }
+    }
+}
+```
+
+From a goal, `mob.nav_move_to(cx.w, [x, y, z], speed)` walks the mob with the engine's pathfinding (`create_path_to` and
+`nav_move_to_path` to check a path first), and `mob.ai.mov.set_wanted(x, y, z, speed)` steps it toward a point, for a mod with
+pathfinding of its own. `goals::Float` keeps the navigation floating, as FloatGoal's constructor does. Each mob gets its own
+goals, so a goal's fields are that mob's state while it lives; state that is saved goes in an attachment on
+`Holder::Entity(mob.id)` ([Server attachments](#server-attachments)), from a hook with a host such as `native_entity_tick_pre`.
+The hook is asked on a client too, for its copies of a server's mobs; goals tick only where the mob's AI runs.
+
 ### Loot tables
 
 Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
@@ -2908,7 +2963,9 @@ These are what Create's drill, saw, harvester and deployer need.
   the players within 64 blocks. Pass a negative id of your own, the same each time; any other stage removes the crack.
 - `native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` is NeoForge's `FakePlayer`. It uses `stack` on a
   block (`useItemOn`), in the air (`useItem`) or on an entity (`interactOn`). The fake player is in survival and holds
-  nothing else. It has no connection: nothing it opens stays open, and its stats and advancements count for no one.
+  nothing else. It has no connection, so what it opens closes again before the call returns, through the same paths a
+  player's close takes: a lid opens and shuts, a trader is free for the next player, and the click still counts as used.
+  Its stats and advancements count for no one.
   The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
@@ -2931,6 +2988,29 @@ pieces.
   read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
+
+### Structure templates
+
+`crates/horizon-client/src/game/native_structures.rs`: a helper for server mods that reads a structure template without
+placing it, for a builder that places it a block at a time (a colony's builder, a schematic cannon). API
+@API:structure_template@.
+
+- `native_structure_template(id, at, rotation, mirror)` (`Host::structure_template`) finds template `id` (`mymod:hut`)
+  as vanilla's `StructureTemplateManager.get` does: the world's saved structures (`generated/<namespace>/structures/`,
+  what a structure block saves), then the game's and the content mods' (`data/<namespace>/structure/`). It answers what
+  `/place template id` would place at `at` with that `Rotation` and `Mirror`: `NativeStructureTemplate` holds the
+  template's `size` after the rotation and its `blocks`. Each block has its position in the level, its state after the
+  mirror and the rotation, as `native_set_block` takes it, and the block entity data the template saved with it (`nbt`:
+  a chest's items, a sign's text), for the mod to apply.
+- The blocks come in the order `StructureTemplate.placeInWorld` places them: full blocks, then the others, then those
+  with a block entity, each group by y, then x, then z. Of a template with several palettes, it is the one
+  `/place template` picks at `at`. No processor runs, nothing is placed, and the template's entities are left out.
+- It answers `None` on a client, for an id that doesn't parse or has a `.` or `..` part, and for a template the game
+  doesn't have.
+
+A builder reads the template once when it starts and keeps it. Then, each time it places a block, it walks there (its
+goals, [Mob goals](#mob-goals)) and calls `native_set_block(dimension, pos, state, 3)`, skipping blocks that are already
+right. It keeps how far it got in an attachment on the builder, so the build goes on after a save.
 
 ### Chunk tickets
 
