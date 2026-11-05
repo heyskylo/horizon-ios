@@ -103,6 +103,7 @@ mod creative_hotbar;
 mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
+mod custom_sky;
 mod debug_keys;
 mod debug_lines;
 mod debug_options;
@@ -2192,6 +2193,8 @@ pub struct PackResources {
     clouds: Arc<(u32, u32, Vec<bool>)>,
     /// misc/forcefield.png: (width, height, RGBA) for the world border wall.
     forcefield: Arc<(u32, u32, Vec<u8>)>,
+    /// OptiFine custom sky layers (`optifine/sky`) with their textures; empty without them.
+    custom_sky: Arc<horizon_client::custom_sky::CustomSky>,
 }
 impl PackResources {
     /// Everything a pack overlay at `root` provides, over `assets` and `render`
@@ -2267,6 +2270,7 @@ impl PackResources {
             names: Arc::new(Names::load(root)),
             clouds: Arc::new(load_clouds(root)),
             forcefield: Arc::new(load_forcefield(root)),
+            custom_sky: Arc::new(horizon_client::custom_sky::CustomSky::load(root)),
         }
     }
 }
@@ -2809,6 +2813,8 @@ struct Game<'a> {
     /// `ClientAvatarState`: walked distance and view bob.
     avatar: horizon_client::camera::AvatarBob,
     flash: u32,
+    /// OptiFine custom sky layers' eased brightness (`custom_sky.rs`).
+    custom_sky: custom_sky::CustomSkyView,
     /// `ClientLevel.rainSoundTime`: ticks of rain since the last rain sound.
     rain_sound_time: i32,
     /// Bolts that struck here and sky flashes they made, in total (`status`).
@@ -16420,6 +16426,7 @@ impl Game<'_> {
         } else {
             (Vec::new(), None)
         };
+        self.custom_sky_frame([camera.x, camera.y, camera.z], &sky, (rain, thunder), title);
         let (mut hand, hand_items) = if title || self.scoping() {
             Default::default()
         } else {
@@ -19553,6 +19560,7 @@ impl<'a> Game<'a> {
             dragging: false,
             avatar: Default::default(),
             flash: 0,
+            custom_sky: Default::default(),
             rain_sound_time: 0,
             lightning_seen: [0; 2],
             sleeping: None,
@@ -21207,6 +21215,7 @@ fn build_renderer(
     pack.item_renderer
         .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
+    renderer.set_custom_sky(&pack.custom_sky);
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
     renderer
         .hud

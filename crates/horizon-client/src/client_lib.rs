@@ -12,7 +12,7 @@ pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_edit, block_entities,
     block_entity_anim, block_entity_render, block_sprites, bluemap, bluemap_detect, border_render,
     breaking, brewing, camera, chat, chunk, chunk_map, cit, cit_armor, cit_assets, cit_glint,
-    clouds, collisions, command_block, containers, controller_ui, crash, datapack, dynamic_light,
+    clouds, collisions, command_block, containers, controller_ui, crash, custom_sky, datapack, dynamic_light,
     effects, environment, extras, fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui,
     hdr_calibration, hud, hud_layout, hud_overlays, inventory_effects, java_text, jigsaw_block,
     json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap, mipmap, mod_list,
