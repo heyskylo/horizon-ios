@@ -2893,13 +2893,13 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
 /// How many of the newest release versions stay installed when the player has not said.
 const KEEP_NEWEST: usize = 2;
 
-/// The release versions to delete: all but the `keep` newest of `installed` (newest first), and
-/// never one of `protected`. Nightly builds are left out: `nightly::after_update` removes the
-/// older ones.
+/// The release and dated Nightly versions to delete: all but the `keep` newest of `installed`
+/// (newest first), and never one of `protected`. The GUI calls this shared pruning path after
+/// an install, without going through the CLI's `nightly::after_update`.
 fn stale_versions(installed: &[String], keep: usize, protected: &[String]) -> Vec<String> {
     installed
         .iter()
-        .filter(|t| is_game_tag(t))
+        .filter(|t| is_game_tag(t) || crate::nightly::date_of(t).is_some())
         .skip(keep)
         .filter(|t| !protected.contains(t))
         .cloned()
@@ -6735,6 +6735,57 @@ pub fn {f}("
             tags(&["v0.2.88", "v0.2.85", "v0.2.80"])
         );
         assert!(stale_versions(&installed, 9, &[]).is_empty());
+    }
+
+    #[test]
+    fn pruning_removes_unused_nightlies_when_the_instance_follows_updates() {
+        let installed = [
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "nightly-2026-11-03-f42ef42",
+            "nightly-2026-10-31-d91cab6",
+        ]
+        .map(String::from);
+        // The default instance follows the selected version, so it adds no pin.
+        let protected = [installed[0].clone()];
+        assert_eq!(
+            stale_versions(&installed, 2, &protected),
+            ["nightly-2026-11-03-f42ef42", "nightly-2026-10-31-d91cab6"]
+        );
+    }
+
+    #[test]
+    fn pruning_keeps_selected_and_instance_pinned_nightlies() {
+        let installed = [
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "nightly-2026-11-03-f42ef42",
+            "nightly-2026-11-01-c9d474d",
+            "nightly-2026-10-31-d91cab6",
+        ]
+        .map(String::from);
+        // A manual selection and a different instance's pin both survive the keep limit.
+        let protected = [installed[2].clone(), installed[4].clone()];
+        assert_eq!(
+            stale_versions(&installed, 1, &protected),
+            ["nightly-2026-11-04-6475f62", "nightly-2026-11-01-c9d474d"]
+        );
+        assert!(stale_versions(&installed, 5, &protected).is_empty());
+    }
+
+    #[test]
+    fn pruning_counts_nightlies_and_releases_but_leaves_local_builds_alone() {
+        let installed = [
+            "native-local-build",
+            "imported-2026-11-05-abcdef0",
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "v0.2.91",
+            "v0.2.90",
+        ]
+        .map(String::from);
+        assert_eq!(stale_versions(&installed, 2, &[]), ["v0.2.91", "v0.2.90"]);
+        assert_eq!(stale_versions(&installed, 3, &[]), ["v0.2.90"]);
     }
 
     #[test]
