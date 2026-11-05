@@ -298,7 +298,7 @@ fn covered(m: &Mob, slot: Slot) -> bool {
             .chest
             .as_deref()
             .is_some_and(|c| c != "minecraft:elytra"),
-        Slot::NameTag => true,
+        Slot::NameTag | Slot::Emote => true,
     }
 }
 

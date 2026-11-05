@@ -1,5 +1,5 @@
 //! Cosmetic items that Horizon clients draw on players: hats, back items,
-//! shoulder pets, name tag styles. Only Horizon clients see them; the game protocol carries
+//! shoulder pets, name tag styles, emotes. Only Horizon clients see them; the game protocol carries
 //! nothing about them ([docs/cosmetics.md](../../../docs/cosmetics.md)).
 //!
 //! An item is a small model of boxes (Minecraft's box UV, as Blockbench's
@@ -9,6 +9,7 @@
 //! reads and checks items and poses them; the game draws them.
 
 pub mod account;
+mod emote;
 mod fetch;
 mod item;
 pub mod mark;
@@ -17,6 +18,10 @@ pub mod prefs;
 pub mod preview;
 pub mod viewer;
 
+pub use emote::{
+    BODY, Ease, Emote, Key, MAX_ALL_KEYS, MAX_KEYS, MAX_LENGTH, MAX_MOVE, MAX_ROOT_MOVE,
+    MAX_ROOT_TURN, MAX_TRACKS, MAX_TURN, Playing, Sample, Target, Track,
+};
 pub use fetch::{BATCH, Clock, Cosmetics, Frame, Http, Local, Transport, Worn};
 pub use item::{
     Animation, Axis, Bone, Error, FORMAT, Face, Item, MAX_MARK, MAX_PARTS, MAX_REACH, MAX_TEXTURE,

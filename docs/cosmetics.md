@@ -41,8 +41,8 @@ y points down, as in vanilla's `ModelPart`s and Blockbench's "Modded Entity" mod
 }
 ```
 
-- `slot`: `head`, `back`, `torso`, `shoulder` or `name_tag`; a player wears at most one item per
-  slot. A `torso` item is hidden under a chestplate (not an elytra).
+- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag` or `emote` (below); a player wears at
+  most one item per slot, and plays emotes. A `torso` item is hidden under a chestplate (not an elytra).
 - `bone`: the player model part the item follows (`head`, `body`, `left_arm`, `right_arm`,
   `left_leg`, `right_leg`; `head` if left out). The item sits at the bone's matrix times `attach` (offset in pixels,
   rotation in degrees, a uniform scale in (0, 2]).
@@ -75,6 +75,54 @@ Limits, checked when an item is read (`Item::parse`); an item past one is refuse
 | Reach | 24 pixels from the bone's pivot, animations included | items stay near their wearer |
 
 Unknown fields are refused, so a file never carries anything the game would silently ignore.
+
+## Emotes (`horizon_cosmetics::Emote`)
+
+An emote is an item of the `emote` slot: a short animation of the player model, owned like any
+item, never worn in a slot. Its `emote` block keyframes the bones; its `parts`, if any, are props
+(boxes on a bone, as any item's, with the item's texture; an emote without props needs no
+`texture`). Purely visual, nothing random, nothing sent to game servers.
+
+```json
+{
+  "format": 1, "id": "example_wave", "slot": "emote", "parts": [],
+  "emote": { "length": 40, "loop": false, "blend": 4, "tracks": [
+    { "part": "right_arm", "keys": [
+      { "t": 0 },
+      { "t": 8, "rotation": [0, 0, 150] },
+      { "t": 16, "rotation": [0, 0, 120], "ease": "linear" },
+      { "t": 40 } ] },
+    { "part": "root", "keys": [ { "t": 0 }, { "t": 6, "offset": [0, -2, 0] }, { "t": 12 } ] }
+  ] }
+}
+```
+
+- `length`: ticks; a one-shot ends there, a loop (`"loop": true`) repeats with that period and
+  wraps from its last key back to its first.
+- `blend`: ticks over which the emote fades in from the pose the player had (and a one-shot out
+  at its end; a cancelled emote fades out from where it was), at most half the length; 4 if left out.
+- `tracks`: one per thing moved. `part` is a bone (`head`, `body`, `right_arm`, `left_arm`,
+  `right_leg`, `left_leg`): the key's `rotation` (degrees) replaces the bone's own and its `offset`
+  (pixels) moves it from its rest; a bone no track names keeps vanilla's animation (the head
+  still looks around). `root` turns (`rotation`) and moves (`offset`) the whole body about the
+  feet. A prop's part name moves that part from its rest (in place of its own loop animations), and only a
+  prop's key may `scale` it (0 to 2: it may pop in from nothing). A missing value is the rest.
+- `ease`, from a key to the next: `smooth` (Catmull-Rom through the neighbouring keys: no corner
+  at a key; the default), `linear`, `in_out` (smoothstep) or `step` (held).
+
+Limits, checked by `Item::parse` with the item's own (vertices, parts, texture):
+
+| Limit | Value |
+|---|---|
+| Length | 4 to 200 ticks (10 s) |
+| Tracks | 16, one per part |
+| Keys | 32 a track, 192 in all, going forward in time within the length |
+| Turns | 360° about an axis (the root: 720°, two spins) |
+| Moves | 8 pixels from the rest (the root: 16, a block's hop) |
+| Props' reach | 24 pixels from their bone, through every key and 32 points of the length |
+
+`Emote::pose_body` poses the six bones at a time and weight (the blend), `Emote::pose_props` the
+props; `Playing` is an emote someone plays (its start, its cancel) and gives its time and weight.
 
 ## What other players wear (`horizon_cosmetics::Cosmetics`)
 
