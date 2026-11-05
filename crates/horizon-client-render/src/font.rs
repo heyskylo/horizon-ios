@@ -126,7 +126,8 @@ struct Cache {
     random: horizon_core::random::LegacyRandom,
 }
 pub struct Font {
-    /// The atlas rects of the sheets under `textures/font`.
+    /// The atlas rects of every texture, by resource name: a bitmap provider's
+    /// `file` may name any texture, not only one under `textures/font`.
     sheets: HashMap<String, Rect>,
     missing: Glyph,
     white: Rect,
@@ -290,9 +291,15 @@ fn load_bitmap(
     let mut out = HashMap::new();
     let file = p["file"].as_str().unwrap_or("");
     let (ns, name) = file.split_once(':').unwrap_or(("minecraft", file));
-    let in_atlas = (ns == "minecraft")
-        .then(|| sheets.get(name.trim_end_matches(".png")).copied())
-        .flatten();
+    let name = name.trim_end_matches(".png");
+    // The atlas names the default namespace's textures by their path and every
+    // other namespace's as `namespace:path` (HudAtlas::build).
+    let atlas_name = if ns == "minecraft" {
+        name.to_owned()
+    } else {
+        format!("{ns}:{name}")
+    };
+    let in_atlas = sheets.get(&atlas_name).copied();
     // The sheet: its size, and its pixels when they are not in the atlas.
     let (sw, sh, sheet) = match in_atlas {
         Some(rect) => {
@@ -627,11 +634,7 @@ impl Font {
         white: Rect,
         metrics_only: bool,
     ) -> Self {
-        let sheets = sprites
-            .iter()
-            .filter(|(k, _)| k.starts_with("font/"))
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
+        let sheets = sprites.clone();
         let font = Self {
             sheets,
             missing: Glyph {
@@ -1510,6 +1513,52 @@ mod tests {
         assert!(texels.iter().all(|t| t.iter().all(|v| *v == t[0])));
         assert!(texels.iter().all(|t| t[0] == 0 || t[0] >= 25));
         assert!(texels.iter().any(|t| t[0] == 255));
+    }
+
+    /// A bitmap provider's `file` can name any texture. When the atlas has that
+    /// texture (HUD packs keep their glyph sheets outside `textures/font`), the
+    /// glyphs are read from it instead of being copied into the small run-time
+    /// region one by one; the region then cannot fill up and turn later glyphs
+    /// into the missing one, whose advance shifts the rest of a HUD line.
+    #[test]
+    fn a_bitmap_sheet_outside_font_is_read_from_the_atlas() {
+        let sheet = png(16, 8, |x, _| x < 2 || (8..14).contains(&x));
+        let (_, _, pixels) = crate::hud::decode_bytes(&sheet).unwrap();
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 8,
+        };
+        for (ns, file, key) in [
+            ("minecraft", "minecraft:hud/sheet.png", "hud/sheet"),
+            (
+                "hudengine",
+                "hudengine:font/sheet.png",
+                "hudengine:font/sheet",
+            ),
+        ] {
+            let def = format!(
+                r#"{{"providers":[{{"type":"bitmap","file":"{file}","ascent":7,"chars":["ab"]}}]}}"#
+            );
+            // The image is only in the atlas: the pack's copy is not on disk.
+            let root = root(
+                ns,
+                &[("assets/minecraft/font/default.json", def.as_bytes())],
+            );
+            let sprites = HashMap::from([(key.to_string(), rect)]);
+            let font = Font::load(&root, &sprites, &pixels, (16, 8), (0, 8), white());
+            let _ = std::fs::remove_dir_all(&root);
+            assert_eq!(font.glyph('a').advance, 3.0, "{ns}");
+            assert_eq!(font.glyph('b').advance, 7.0, "{ns}");
+            assert!(font.glyph('a').rect.is_some(), "{ns}");
+            assert!(
+                font.take_patches().is_empty(),
+                "{ns}: the atlas sheet is not copied into the run-time region"
+            );
+        }
     }
 
     #[test]
