@@ -120,6 +120,9 @@ impl<'a> Game<'a> {
     /// Release the memory connection before dropping its renderer and client state.
     pub(super) fn stop_splitscreen(&mut self) {
         if let Some(mut guest) = self.splitscreen_guest.take() {
+            guest.clear_lod();
+            self.retired_far_terrain
+                .append(&mut guest.retired_far_terrain);
             if let Some(mut remote) = guest.remote.take() {
                 remote.session.disconnect();
             }
@@ -152,6 +155,9 @@ pub(super) fn update<'a>(host: &mut Game<'a>, guest: &mut Option<Box<Game<'a>>>)
     {
         // Dropping the guest closes its connection, and the server sees the player leave.
         if let Some(mut second) = guest.take() {
+            second.clear_lod();
+            host.retired_far_terrain
+                .append(&mut second.retired_far_terrain);
             if let Some(error) = second.error.take() {
                 log::warn!("Horizon: splitscreen guest: {error}");
             }

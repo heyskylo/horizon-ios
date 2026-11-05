@@ -352,6 +352,7 @@ impl RenderAssets {
         }
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
+            sprites.insert(root, &format!("minecraft:block/destroy_oit_stage_{stage}"))?;
         }
         let fusion = if draws {
             let _step = crate::spans::startup::step("core.fusion");

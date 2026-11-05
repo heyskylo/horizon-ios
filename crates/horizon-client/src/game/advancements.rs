@@ -218,12 +218,10 @@ impl adv::World for View<'_, '_> {
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
             "damage_type" => self
                 .0
-                .res
-                .stations()
-                .enchantments
-                .damage_tags
-                .get(tag)
-                .is_some_and(|t| t.contains(id)),
+                .health_resources
+                .damage
+                .id(id)
+                .is_some_and(|source| self.0.health_resources.damage.in_tag(source, tag)),
             _ => false,
         }
     }
@@ -442,16 +440,94 @@ impl Game<'_> {
     pub(super) fn player_entity(&self) -> EntityView {
         self.player_entity_looking(true)
     }
+    /// [`Self::entity_view_of`] for testing `predicate` (a predicate, a list
+    /// of conditions or an item modifier): the player with the level,
+    /// statistics, advancements and recipes it may ask for, and nothing
+    /// copied when it asks for none.
+    pub(super) fn entity_view_asked(
+        &self,
+        t: super::commands::Target,
+        predicate: &Value,
+    ) -> EntityView {
+        self.entity_view_asking(t, adv::facts_asked_in(predicate))
+    }
+    /// [`Self::entity_view_of`] with the player's records `asked` names.
+    pub(super) fn entity_view_asking(
+        &self,
+        t: super::commands::Target,
+        asked: adv::FactsAsked,
+    ) -> EntityView {
+        use super::commands::Target;
+        let mut view = self.entity_view_of(t);
+        match t {
+            Target::Player => view.player_facts = self.player_facts(asked),
+            Target::Guest(conn) => view.player_facts = self.guest_facts(conn, asked),
+            _ => {}
+        }
+        view
+    }
+    /// [`Self::player_facts`] of a server's player who is not in place
+    /// (selectors leave out the one in place): its own records, kept on the
+    /// hub while another acts.
+    fn guest_facts(&self, conn: u32, asked: adv::FactsAsked) -> adv::PlayerFacts {
+        let Some(host) = self.lan.as_ref() else {
+            return adv::PlayerFacts::default();
+        };
+        let Some(g) = host
+            .hub
+            .guest(conn)
+            .filter(|_| self.lan_acting != Some(conn))
+        else {
+            return adv::PlayerFacts::default();
+        };
+        let stats = (host.play.get(&conn).map(|p| &p.stats)).filter(|s| s.loaded);
+        adv::PlayerFacts {
+            level: asked.level.then_some(g.xp_level),
+            stats: stats.filter(|_| asked.stats).map(|s| s.values.clone()),
+            advancements: asked
+                .advancements
+                .then(|| (self.adv.tree.clone(), g.advancements.clone())),
+            recipes: asked.recipes.then(|| g.recipe_book.recipes.clone()),
+        }
+    }
     /// [`Self::player_entity`] for `trigger`'s criteria: what the player
-    /// looks at only when one of them may ask (a ray against every entity
-    /// otherwise).
-    /// The player's compound only when one of them may test `nbt`.
+    /// looks at, and its level, statistics, advancements and recipes, only
+    /// when one of them may ask (a ray against every entity and copies of
+    /// the player's records otherwise), and its compound only when one of
+    /// them may test `nbt`.
     pub(super) fn player_entity_for(&mut self, trigger: &str) -> EntityView {
-        let mut me = self.player_entity_looking(self.adv.tree.may_look(trigger));
+        let mut me = self.player_entity_for_any(&[trigger]);
         if self.adv.tree.may_test_nbt(trigger) {
             me.nbt = self.player_nbt();
         }
         me
+    }
+    /// [`Self::player_entity_for`] for the criteria of several triggers,
+    /// without the player's compound (building it needs `&mut self`).
+    pub(super) fn player_entity_for_any(&self, triggers: &[&str]) -> EntityView {
+        let tree = &self.adv.tree;
+        let mut me = self.player_entity_looking(triggers.iter().any(|t| tree.may_look(t)));
+        let asked = (triggers.iter()).fold(adv::FactsAsked::default(), |all, t| {
+            all.or(tree.player_facts_asked(t))
+        });
+        me.player_facts = self.player_facts(asked);
+        me
+    }
+    /// The player's level, statistics, advancements and recipes that
+    /// `asked` names, for `PlayerPredicate`; records not loaded stay `None`.
+    fn player_facts(&self, asked: adv::FactsAsked) -> adv::PlayerFacts {
+        if self.player.is_none() {
+            return adv::PlayerFacts::default();
+        }
+        adv::PlayerFacts {
+            level: asked.level.then_some(self.experience.level),
+            stats: (asked.stats && self.stats.loaded).then(|| self.stats.values.clone()),
+            advancements: (asked.advancements && self.adv.loaded)
+                .then(|| (self.adv.tree.clone(), self.adv.progress.clone())),
+            recipes: asked
+                .recipes
+                .then(|| self.level.recipe_book.recipes.clone()),
+        }
     }
     /// The player as predicates see it, with what it looks at when `looking`.
     pub(super) fn player_entity_looking(&self, looking: bool) -> EntityView {
@@ -909,6 +985,10 @@ impl Game<'_> {
         let tree = self.adv.tree.clone();
         let index = self.inventory_index();
         let list = index.candidates(stacks.iter().map(|s| s.id.as_str()));
+        if list.is_empty() {
+            return;
+        }
+        let me = self.player_entity_for("minecraft:inventory_changed");
         self.trigger_criteria(&tree, &list, move |c, w| {
             let slots = &c["slots"];
             let range = |k: &str, v: f64| {
@@ -929,7 +1009,19 @@ impl Game<'_> {
             for s in &stacks {
                 wanted.retain(|p| !adv::item(p, s, w));
             }
+            // `InventoryChangeTrigger.TriggerInstance`'s `player`
+            // (`ContextAwarePredicate`), tested by `SimpleCriterionTrigger.trigger`.
             wanted.is_empty()
+                && adv::conditions(
+                    &c["player"],
+                    &adv::Entities {
+                        this: Some(&me),
+                        origin: me.position,
+                        tool: None,
+                        block_pos: None,
+                    },
+                    w,
+                )
         });
     }
     /// `PlayerTrigger.LOCATION` every second, and the other per-tick checks.
@@ -1024,23 +1116,7 @@ impl Game<'_> {
         let target = target.clone();
         let blow = blow.cloned();
         self.trigger(name, move |c, w| {
-            let pctx = adv::Entities {
-                this: Some(&me),
-                origin: me.position,
-                tool: None,
-                block_pos: None,
-            };
-            let ectx = adv::Entities {
-                this: Some(&target),
-                ..pctx
-            };
-            let blow_ok = c["killing_blow"].is_null()
-                || blow
-                    .as_ref()
-                    .is_some_and(|d| adv::damage_source(&c["killing_blow"], d, w, me.position));
-            adv::conditions(&c["player"], &pctx, w)
-                && adv::conditions(&c["entity"], &ectx, w)
-                && blow_ok
+            adv::killed(c, &me, &target, blow.as_ref(), w)
         });
     }
     /// `KilledByArrowTrigger`: what the arrow killed and the weapon it came from.
@@ -1426,11 +1502,10 @@ impl Game<'_> {
     ) {
         let target = if thrower == self.acting_uuid() {
             // The player is the entity of both triggers.
-            let tree = &self.adv.tree;
-            let me = self.player_entity_looking(
-                tree.may_look("minecraft:thrown_item_picked_up_by_entity")
-                    || tree.may_look("minecraft:thrown_item_picked_up_by_player"),
-            );
+            let me = self.player_entity_for_any(&[
+                "minecraft:thrown_item_picked_up_by_entity",
+                "minecraft:thrown_item_picked_up_by_player",
+            ]);
             self.trigger_item_entity("minecraft:thrown_item_picked_up_by_entity", stack, &me);
             me
         } else if let Some(id) = self.mob_by_uuid(thrower) {
@@ -1744,6 +1819,18 @@ impl Game<'_> {
                 && adv::item(&c["item"], &tool, w)
                 && adv::range_i(&c["num_bees_inside"], bees)
                 && adv::conditions(&c["player"], &pctx, w)
+        });
+    }
+    /// `Entity.startRiding`'s `sendEventAndTriggers`: `START_RIDING_TRIGGER`
+    /// for every `ServerPlayer` in `entityToRide.getIndirectPassengersStream()`.
+    pub(super) fn trigger_started_riding(&mut self, vehicle: u32) {
+        let mounts: Vec<(u32, Option<u32>)> =
+            self.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+        let aboard = super::boarding::passenger_vehicles(vehicle, &mounts);
+        self.for_each_player(|g| {
+            if g.riding.is_some_and(|v| aboard.contains(&v)) {
+                g.trigger_player("minecraft:started_riding");
+            }
         });
     }
     /// A trigger with only the player condition (slept_in_bed, started_riding).

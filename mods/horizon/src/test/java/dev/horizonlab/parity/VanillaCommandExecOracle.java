@@ -129,7 +129,15 @@ public final class VanillaCommandExecOracle {
 
         @Override protected boolean initServer() {
             this.setPlayerList(new PlayerList(this, this.registries(), this.playerDataStorage, new EmptyNotificationService()) {});
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                this.getPlayerList().setViewDistance(2);
+                this.getPlayerList().setSimulationDistance(2);
+            }
             this.loadLevel();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                this.getPlayerList().setViewDistance(2);
+                this.getPlayerList().setSimulationDistance(2);
+            }
             return true;
         }
 
@@ -166,9 +174,31 @@ public final class VanillaCommandExecOracle {
                 }
             };
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
-            new EmbeddedChannel(connection);
+            EmbeddedChannel channel = new EmbeddedChannel(connection);
+            JsonObject login = new JsonObject();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
+                    @Override public void write(io.netty.channel.ChannelHandlerContext context, Object message,
+                            io.netty.channel.ChannelPromise promise) throws Exception {
+                        if (message instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket packet) {
+                            login.addProperty("view_distance", packet.chunkRadius());
+                            login.addProperty("simulation_distance", packet.simulationDistance());
+                        }
+                        super.write(context, message, promise);
+                    }
+                });
+            }
             this.getPlayerList().placeNewPlayer(connection, player, cookie);
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                new net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket().handle(player.connection);
+            }
             settle();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                login.addProperty("server_view", this.getPlayerList().getViewDistance());
+                login.addProperty("server_simulation", this.getPlayerList().getSimulationDistance());
+                login.addProperty("client_loaded", player.connection.hasClientLoaded());
+                Files.writeString(output.resolveSibling("client_config.json"), login.toString());
+            }
             StringBuilder out = new StringBuilder();
             Gson gson = new Gson();
             for (String line : Files.readAllLines(script, StandardCharsets.UTF_8)) {
@@ -200,6 +230,42 @@ public final class VanillaCommandExecOracle {
                             out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "server_distances" -> {
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#server_distances");
+                        record.add("messages", new JsonArray());
+                        JsonArray values = new JsonArray();
+                        for (int n : new int[] {getPlayerList().getViewDistance(), getPlayerList().getSimulationDistance()}) {
+                            JsonArray value = new JsonArray(); value.add(true); value.add(n); values.add(value);
+                        }
+                        record.add("results", values); out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "chunk_ready" -> {
+                        JsonArray p = op.getAsJsonArray("chunk");
+                        int x = p.get(0).getAsInt(), z = p.get(1).getAsInt();
+                        var chunk = player.level().getChunkSource().getChunkNow(x, z);
+                        boolean[] ready = {chunk != null, chunk != null && chunk.isLightCorrect(),
+                            player.level().areEntitiesLoaded(new net.minecraft.world.level.ChunkPos(x, z).pack())};
+                        JsonObject record = new JsonObject(); record.addProperty("cmd", "#chunk_ready " + x + " " + z);
+                        record.add("messages", new JsonArray()); JsonArray values = new JsonArray();
+                        for (boolean flag : ready) {JsonArray value = new JsonArray(); value.add(true); value.add(flag ? 1 : 0); values.add(value);}
+                        record.add("results", values); out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "wait_chunks" -> {
+                        long deadline = System.nanoTime() + 180_000_000_000L;
+                        while (true) {
+                            tick(); boolean ready = true;
+                            for (var target : op.getAsJsonArray("chunks")) {
+                                var p = target.getAsJsonArray(); int x = p.get(0).getAsInt(), z = p.get(1).getAsInt();
+                                var chunk = player.level().getChunkSource().getChunkNow(x, z);
+                                ready &= chunk != null && chunk.isLightCorrect()
+                                    && player.level().areEntitiesLoaded(new net.minecraft.world.level.ChunkPos(x, z).pack());
+                            }
+                            if (ready) break;
+                            if (System.nanoTime() > deadline) throw new IllegalStateException("initial target readiness timed out");
+                            try {Thread.sleep(2);} catch (InterruptedException error) {throw new RuntimeException(error);}
+                        }
+                    }
                     case "weather_state" -> {
                         // Read-only prerequisites for named weather predicates.
                         var data = level.getWeatherData();
@@ -229,9 +295,16 @@ public final class VanillaCommandExecOracle {
                         if (op.has("record")) {
                             try { Thread.sleep(300); } catch (InterruptedException e) { throw new RuntimeException(e); }
                         }
+                        long pacedStart = System.nanoTime();
                         for (int i = 0; i < n; i++) {
                             tick();
+                            if (op.has("pace_ms")) {
+                                long left = op.get("pace_ms").getAsLong() * (i + 1) * 1_000_000L - (System.nanoTime() - pacedStart);
+                                if (left > 0) try {Thread.sleep(left / 1_000_000L, (int)(left % 1_000_000L));}
+                                catch (InterruptedException error) {throw new RuntimeException(error);}
+                            }
                         }
+                        if (op.has("pace_ms")) System.err.println("harness paced wait: " + n + " ticks, " + ((System.nanoTime() - pacedStart) / 1_000_000L) + " ms");
                         if (op.has("record") && op.get("record").getAsBoolean()) {
                             JsonObject record = new JsonObject();
                             record.addProperty("cmd", "#tick");
@@ -413,6 +486,21 @@ public final class VanillaCommandExecOracle {
 
         void settle() {
             ServerLevel level = player.level();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                // Use the actual player tickets; no permanent fixture DRAGON tickets.
+                level.getChunkSource().move(player);
+                long deadline = System.nanoTime() + 120_000_000_000L;
+                while (true) {
+                    tick(); boolean ready = true;
+                    for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+                        var pos = new net.minecraft.world.level.ChunkPos(player.chunkPosition().x() + dx, player.chunkPosition().z() + dz);
+                        ready &= level.getChunkSource().getChunkNow(pos.x(), pos.z()) != null && level.areEntitiesLoaded(pos.pack());
+                    }
+                    if (ready) return;
+                    if (System.nanoTime() > deadline) throw new IllegalStateException("real player tickets did not load");
+                    try {Thread.sleep(5);} catch (InterruptedException error) {throw new RuntimeException(error);}
+                }
+            }
             int cx = player.chunkPosition().x(), cz = player.chunkPosition().z();
             for (int dz = -2; dz <= 2; dz++) {
                 for (int dx = -2; dx <= 2; dx++) {

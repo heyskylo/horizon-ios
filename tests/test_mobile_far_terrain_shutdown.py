@@ -1,0 +1,79 @@
+"""Actual supervisor readiness gate must include both far-terrain producers."""
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+from test_mobile_command_keyboard import method
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def program():
+    source = (ROOT / 'crates/horizon-client/src/game.rs').read_text()
+    start = source.index('                    let mut stopped = shader_packs::shutdown_parser();')
+    end = source.index('                    game.exiting(event_loop);', start)
+    gate = source[start:end]
+    a = source.index('struct FarTerrainWorkers {')
+    b = source.index('\n}', a) + 2
+    workers = source[a:b].replace('horizon_client::lod::Lod', 'Worker').replace('horizon_client::bluemap::BlueMap', 'Worker')
+    workers += '\nimpl FarTerrainWorkers {' + method(source[source.index('impl FarTerrainWorkers {'):], 'shutdown') + '}\n'
+    methods = ''.join(method(source, name) for name in ('shutdown_far_terrain', 'poll_retired_far_terrain', 'clear_lod'))
+    splitscreen = (ROOT / 'crates/horizon-client/src/game/splitscreen.rs').read_text()
+    methods += method(splitscreen, 'stop_splitscreen')
+    return STUBS + workers + '\nimpl Game {' + methods + '}\nfn poll(game:&mut Game,event_loop:&EventLoop){' + gate + 'READY.store(true,Ordering::SeqCst);}\n' + CASES
+
+
+STUBS = r'''
+#![allow(dead_code)]
+use std::{sync::{Arc,atomic::{AtomicBool,AtomicUsize,Ordering}},time::{Instant,Duration},thread::JoinHandle};
+static READY:AtomicBool=AtomicBool::new(false);
+struct Worker{ready:AtomicBool,stop:AtomicBool}
+impl Worker{fn new()->Self{Self{ready:AtomicBool::new(false),stop:AtomicBool::new(false)}}fn shutdown(&self)->bool{self.stop.store(true,Ordering::SeqCst);self.ready.load(Ordering::SeqCst)}}
+struct Session{cancels:AtomicUsize}impl Session{fn cancel_far_terrain(&self){self.cancels.fetch_add(1,Ordering::SeqCst);}fn disconnect(&mut self){}}
+struct Remote{session:Session}struct Renderer;impl Renderer{fn shutdown_pack_compiler(&mut self)->bool{true}fn clear_lods(&mut self){}}
+struct Rest{handle:JoinHandle<()>}
+struct Game{remote:Option<Remote>,lod:Option<Worker>,lod_blue_map:Option<Arc<Worker>>,renderer:Option<Renderer>,rest_loader:Option<Rest>,retired_far_terrain:Vec<FarTerrainWorkers>,lod_source_attempted:bool,lod_observe:Vec<()>,far_beacons:Vec<()>,lod_covered_at:Option<()>,splitscreen_guest:Option<Box<Game>>}
+impl Game{fn shutdown_server_pack_worker(&mut self)->bool{true}fn shutdown_culling_workers(&mut self)->bool{true}fn shutdown_integrated_workers(&mut self)->bool{true}fn end_splitscreen(&mut self){}}
+mod shader_packs{pub fn shutdown_parser()->bool{true}}
+mod world_loading{pub fn shutdown_preload()->bool{true}pub fn shutdown_prepared_files()->bool{true}}
+enum ControlFlow{WaitUntil(Instant)}struct EventLoop;impl EventLoop{fn set_control_flow(&self,_:ControlFlow){}}
+'''
+
+CASES = r'''
+fn game_with_workers()->Game{Game{remote:Some(Remote{session:Session{cancels:AtomicUsize::new(0)}}),lod:Some(Worker::new()),lod_blue_map:Some(Arc::new(Worker::new())),renderer:None,rest_loader:None,retired_far_terrain:Vec::new(),lod_source_attempted:true,lod_observe:vec![],far_beacons:vec![],lod_covered_at:None,splitscreen_guest:None}}
+fn main(){
+ let mut g=game_with_workers();
+ poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
+ assert!(g.lod.as_ref().unwrap().stop.load(Ordering::SeqCst));assert!(g.lod_blue_map.as_ref().unwrap().stop.load(Ordering::SeqCst),"stop must reach both producers without short circuiting");
+ g.lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst),"BlueMap outlived the game readiness gate");
+ g.lod_blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
+ assert_eq!(g.remote.as_ref().unwrap().session.cancels.load(Ordering::SeqCst),3);
+ // An ordinary world/source change retires workers without dropping them
+ // while unfinished, and later launcher shutdown also waits for that cohort.
+ g.lod=Some(Worker::new());g.lod_blue_map=Some(Arc::new(Worker::new()));g.clear_lod();
+ assert!(g.lod.is_none()&&g.lod_blue_map.is_none());assert_eq!(g.retired_far_terrain.len(),1);
+ READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
+ g.retired_far_terrain[0].lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
+ g.retired_far_terrain[0].blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_far_terrain.is_empty());
+ g.remote=None;g.lod=None;g.lod_blue_map=None;READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
+ // Removing the AirPlay guest transfers its unfinished cohorts to the host.
+ g.splitscreen_guest=Some(Box::new(game_with_workers()));g.stop_splitscreen();assert!(g.splitscreen_guest.is_none());assert_eq!(g.retired_far_terrain.len(),1);
+ READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
+ g.retired_far_terrain[0].lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);g.retired_far_terrain[0].blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_far_terrain.is_empty());
+}
+'''
+
+
+class FarTerrainShutdownTests(unittest.TestCase):
+    def test_supervisor_waits_for_both_far_terrain_producers(self):
+        compiler = shutil.which('rustc')
+        if compiler is None:
+            self.skipTest('rustc is required')
+        with tempfile.TemporaryDirectory(prefix='horizon-far-shutdown-') as folder:
+            source, binary = Path(folder) / 'probe.rs', Path(folder) / 'probe'
+            source.write_text(program())
+            build = subprocess.run([compiler, '--edition=2024', str(source), '-o', str(binary)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

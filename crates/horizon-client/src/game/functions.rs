@@ -119,7 +119,7 @@ pub(super) fn overlay_files(
     for (path, bytes) in contributed {
         // One bad file would fail its whole table and drop the world's pack
         // content with it, so it is skipped alone: every kind is JSON.
-        if let Err(e) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes) {
             log::warn!("Horizon: a native mod's data pack file {path} is not JSON, skipped: {e}");
             continue;
         }
@@ -999,7 +999,7 @@ impl Game<'_> {
                 .ok_or_else(|| err("argument.predicate.unknown", &[&id]))?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &json));
         Ok(self.conditions_hold(&json, view.as_ref(), source.pos))
     }
 }

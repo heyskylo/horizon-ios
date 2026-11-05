@@ -22,8 +22,12 @@ use crate::{
 };
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Condvar, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -696,11 +700,13 @@ struct Inner {
     palette: Palette,
     state: Mutex<State>,
     wake: Condvar,
+    stopping: AtomicBool,
 }
 /// One level's BlueMap: tiles are read from the disk cache on the far-terrain
 /// threads and downloaded on a worker of its own.
 pub struct BlueMap {
     inner: Arc<Inner>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// `https://map.example.net/#world:0:64:0...` → `https://map.example.net`.
@@ -771,20 +777,55 @@ impl BlueMap {
             palette,
             state: Mutex::default(),
             wake: Condvar::new(),
+            stopping: AtomicBool::new(false),
         });
         let map = inner.map_info(|_, name| std::fs::read(inner.dir.join(name)).ok());
         inner.state.lock().unwrap().map = map.map(Arc::new);
-        Self { inner }
-    }
-    /// Downloads what lookups want, on a thread that ends with the map.
-    pub fn start(&self) {
-        let inner = Arc::downgrade(&self.inner);
-        let spawned = std::thread::Builder::new()
-            .name("BlueMap".into())
-            .spawn(move || fetch(inner));
-        if let Err(e) = spawned {
-            log::warn!("Horizon: BlueMap worker: {e}");
+        Self {
+            inner,
+            worker: Mutex::new(None),
         }
+    }
+    /// Downloads what lookups want on one owned worker, until shutdown.
+    pub fn start(&self) {
+        let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+        if worker.is_some() || self.inner.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let inner = self.inner.clone();
+        match std::thread::Builder::new()
+            .name("BlueMap".into())
+            .spawn(move || fetch(inner))
+        {
+            Ok(thread) => *worker = Some(thread),
+            Err(e) => log::warn!("Horizon: BlueMap worker: {e}"),
+        }
+    }
+
+    fn request_shutdown(&self) {
+        // Never wait for the work/state lock here: a request may be in flight.
+        self.inner.stopping.store(true, Ordering::Release);
+        self.inner.wake.notify_all();
+    }
+
+    /// Stop future requests/cache publication and poll the owned HTTP worker.
+    /// An in-flight request remains owned until it returns (with the existing
+    /// timeout); joining only finished handles keeps the frame thread responsive.
+    pub fn shutdown(&self) -> bool {
+        self.request_shutdown();
+        let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(thread) = worker.as_ref() {
+            // Unlike a sleep, an unpark token also wakes a backoff that begins
+            // just after this request, without taking the work/state mutex.
+            thread.thread().unpark();
+            if !thread.is_finished() {
+                return false;
+            }
+        }
+        if let Some(thread) = worker.take() {
+            let _ = thread.join();
+        }
+        true
     }
     /// The player's block position: tiles are downloaded around it. Called
     /// every frame: it only wants the tiles come into reach, once the player
@@ -937,6 +978,23 @@ impl BlueMap {
             )
             .fold(i32::from(pixel.height) + 1, i32::min);
         Found::Ready(self.inner.palette.column(pixel, low))
+    }
+}
+
+impl Drop for BlueMap {
+    fn drop(&mut self) {
+        self.request_shutdown();
+        // Callers on a frame loop poll shutdown before dropping the map. Keep
+        // a blocking ownership fallback for callers that omit that protocol.
+        if let Some(worker) = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1176,10 +1234,48 @@ struct Worker {
     done: bool,
 }
 
+/// One cache directory's file transaction. Acquire only on a worker, and
+/// release between steps/backoff so independent maps of one server can progress.
+fn cache_gate(dir: &Path) -> Arc<Mutex<()>> {
+    type Gates = Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>;
+    static GATES: OnceLock<Gates> = OnceLock::new();
+    let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_owned());
+    // The cache may not exist yet, or may be unwritable. Resolve its existing
+    // ancestors without creating files or preventing in-memory map rendering.
+    let mut parent = absolute.as_path();
+    let mut missing = Vec::new();
+    let key = loop {
+        if let Ok(mut key) = std::fs::canonicalize(parent) {
+            for part in missing.iter().rev() {
+                key.push(part);
+            }
+            break key;
+        }
+        let (Some(name), Some(next)) = (parent.file_name(), parent.parent()) else {
+            break absolute.clone();
+        };
+        missing.push(name.to_owned());
+        parent = next;
+    };
+    let mut gates = GATES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gates.retain(|_, gate| gate.strong_count() != 0);
+    match gates.get(&key).and_then(Weak::upgrade) {
+        Some(gate) => gate,
+        None => {
+            let gate = Arc::new(Mutex::new(()));
+            gates.insert(key, Arc::downgrade(&gate));
+            gate
+        }
+    }
+}
+
 /// The download worker: settings first, then the wanted tile nearest the
 /// player, one request at a time. A failure leaves the server alone for a
 /// while, and lookups stop waiting for it meanwhile.
-fn fetch(inner: Weak<Inner>) {
+fn fetch(inner: Arc<Inner>) {
     let mut worker = Worker {
         agent: ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(10))
@@ -1192,12 +1288,22 @@ fn fetch(inner: Weak<Inner>) {
         claim: None,
         done: false,
     };
-    while !worker.done {
-        let Some(inner) = inner.upgrade() else { return };
-        let pause = worker.step(&inner);
-        drop(inner);
+    let cache = cache_gate(&inner.dir);
+    while !worker.done && !inner.stopping.load(Ordering::Acquire) {
+        let pause = {
+            let _cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.stopping.load(Ordering::Acquire) {
+                return;
+            }
+            worker.step(&inner)
+        };
+        if inner.stopping.load(Ordering::Acquire) {
+            return;
+        }
         if !pause.is_zero() {
-            std::thread::sleep(pause);
+            std::thread::park_timeout(pause);
+        } else {
+            std::thread::yield_now();
         }
     }
 }
@@ -1206,8 +1312,15 @@ impl Worker {
     /// `Err`: the server didn't answer; `Ok(None)`: it has nothing there.
     fn get(&self, inner: &Inner, path: &str) -> Result<Option<Vec<u8>>, ()> {
         use std::io::Read;
+        if inner.stopping.load(Ordering::Acquire) {
+            return Err(());
+        }
         let base = inner.base.get().ok_or(())?;
-        match self.agent.get(&format!("{base}/{path}")).call() {
+        let response = self.agent.get(&format!("{base}/{path}")).call();
+        if inner.stopping.load(Ordering::Acquire) {
+            return Err(());
+        }
+        match response {
             Ok(response) if response.status() == 204 => Ok(None),
             Ok(response) => {
                 let mut body = Vec::new();
@@ -1216,6 +1329,9 @@ impl Worker {
                     .take(8 << 20)
                     .read_to_end(&mut body)
                     .map_err(|_| ())?;
+                if inner.stopping.load(Ordering::Acquire) {
+                    return Err(());
+                }
                 Ok(Some(body))
             }
             Err(ureq::Error::Status(404, _)) => Ok(None),
@@ -1242,6 +1358,10 @@ impl Worker {
     }
     /// One request, or a wait for one; how long to pause after it.
     fn step(&mut self, inner: &Inner) -> Duration {
+        if inner.stopping.load(Ordering::Acquire) {
+            self.done = true;
+            return Duration::ZERO;
+        }
         {
             let mut state = inner.state.lock().unwrap();
             if let Some(until) = state.offline_until {
@@ -1269,6 +1389,10 @@ impl Worker {
                 files.push((name.to_owned(), body.clone()));
                 Some(body)
             });
+            if inner.stopping.load(Ordering::Acquire) {
+                self.done = true;
+                return Duration::ZERO;
+            }
             let Some(map) = map else {
                 // The server answered, with no map of this level: nothing to
                 // wait for on this visit.
@@ -1340,7 +1464,7 @@ impl Worker {
                 state.queue.remove(&key);
                 Some((map, key))
             });
-            if picked.is_none() {
+            if picked.is_none() && !inner.stopping.load(Ordering::Acquire) {
                 let _ = inner.wake.wait_timeout(state, Duration::from_secs(1));
             }
             picked
@@ -1471,7 +1595,12 @@ impl Worker {
         };
         self.probed += 1;
         let started = Instant::now();
-        if detect::probe(&self.agent, candidate) {
+        let found = detect::probe(&self.agent, candidate);
+        if inner.stopping.load(Ordering::Acquire) {
+            self.done = true;
+            return Duration::ZERO;
+        }
+        if found {
             log::info!("Horizon: found the server's BlueMap");
             log::debug!("Horizon: BlueMap at {candidate}");
             detect::remember(&inner.dir, Some(candidate), SystemTime::now());
@@ -1537,6 +1666,228 @@ fn prune(dir: &Path, keep: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_retains_inflight_http_until_finished_without_publishing_its_cache() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        let dir =
+            std::env::temp_dir().join(format!("horizon-bluemap-shutdown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for request in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut header = Vec::new();
+                loop {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if request == 1 {
+                    entered.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+                let body = if request == 0 {
+                    r#"{"maps":["world"]}"#
+                } else {
+                    r#"{"lowres":{}}"#
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let map = Arc::new(BlueMap::new(
+            &url,
+            "minecraft:overworld",
+            Vec::new(),
+            dir.clone(),
+            512,
+            palette(),
+        ));
+        map.start();
+        map.start(); // One visit owns one worker, even if requested twice.
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Cancellation must not take the work/state lock, which another source
+        // operation may still own. The polling call itself must return pending.
+        let state = map.inner.state.lock().unwrap();
+        let (polled, polled_rx) = mpsc::channel();
+        let polling_map = map.clone();
+        let poller = std::thread::spawn(move || polled.send(polling_map.shutdown()).unwrap());
+        let pending = polled_rx.recv_timeout(Duration::from_secs(2));
+        drop(state);
+        if pending.is_err() {
+            let _ = release.send(());
+        }
+        poller.join().unwrap();
+        assert!(!pending.unwrap(), "the HTTP response is still blocked");
+        release.send(()).unwrap();
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !map.shutdown() {
+            assert!(Instant::now() < deadline, "HTTP worker did not stop");
+            std::thread::yield_now();
+        }
+        assert!(map.worker.lock().unwrap().is_none());
+        assert!(!dir.join("settings.json").exists());
+        assert!(!dir.join("world.json").exists());
+        map.start(); // A terminated map cannot silently restart in the launcher.
+        assert!(map.worker.lock().unwrap().is_none());
+        assert!(map.shutdown());
+        drop(map);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retired_and_new_maps_serialize_steps_for_the_same_cache_directory() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        fn server(
+            name: &'static str,
+            pause: Option<mpsc::Receiver<()>>,
+        ) -> (String, mpsc::Receiver<usize>, std::thread::JoinHandle<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (entered, events) = mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                for request in 0..2 {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut header = Vec::new();
+                    loop {
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        header.push(byte[0]);
+                        if header.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let _ = entered.send(request);
+                    if request == 1
+                        && let Some(pause) = &pause
+                    {
+                        pause.recv().unwrap();
+                    }
+                    let body = if request == 0 {
+                        format!(r#"{{"maps":["{name}"]}}"#)
+                    } else {
+                        r#"{"lowres":{}}"#.into()
+                    };
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .unwrap();
+                }
+            });
+            (url, events, handle)
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-bluemap-retired-cache-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (release, release_rx) = mpsc::channel();
+        let (old_url, old_events, old_server) = server("old-world", Some(release_rx));
+        let old = Arc::new(BlueMap::new(
+            &old_url,
+            "minecraft:overworld",
+            Vec::new(),
+            dir.clone(),
+            512,
+            palette(),
+        ));
+        old.start();
+        assert_eq!(old_events.recv_timeout(Duration::from_secs(3)).unwrap(), 0);
+        assert_eq!(old_events.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
+        let (polled, polled_rx) = mpsc::channel();
+        let retiring = old.clone();
+        let poller = std::thread::spawn(move || polled.send(retiring.shutdown()).unwrap());
+        let pending = polled_rx.recv_timeout(Duration::from_secs(2));
+        if pending.is_err() {
+            let _ = release.send(());
+        }
+        poller.join().unwrap();
+        assert!(!pending.unwrap());
+        let (new_url, new_events, new_server) = server("new-world", None);
+        let new = BlueMap::new(
+            &new_url,
+            "minecraft:overworld",
+            Vec::new(),
+            dir.clone(),
+            512,
+            palette(),
+        );
+        new.start();
+        let escaped = new_events.recv_timeout(Duration::from_millis(50));
+        release.send(()).unwrap();
+        old_server.join().unwrap();
+        assert!(
+            matches!(escaped, Err(mpsc::RecvTimeoutError::Timeout)),
+            "new writer raced the retired cache transaction"
+        );
+        assert_eq!(new_events.recv_timeout(Duration::from_secs(3)).unwrap(), 0);
+        assert_eq!(new_events.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
+        new_server.join().unwrap();
+        let new_file = dir.join(format!(
+            "{}.json",
+            crate::server_terrain::server_folder("new-world")
+        ));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !new_file.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        while !old.shutdown() || !new.shutdown() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            std::fs::read_to_string(dir.join("settings.json"))
+                .unwrap()
+                .contains("new-world")
+        );
+        assert!(
+            !dir.join(format!(
+                "{}.json",
+                crate::server_terrain::server_folder("old-world")
+            ))
+            .exists()
+        );
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".part")
+        }));
+        drop(old);
+        drop(new);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     const LOWRES: Lowres = Lowres {
         tile: [32, 32],

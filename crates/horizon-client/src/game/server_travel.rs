@@ -140,6 +140,8 @@ pub(super) struct LevelTeleport {
     pub dim: Dim,
     pub at: [f64; 3],
     pub rotation: Option<[f32; 2]>,
+    /// `TeleportTransition.asPassenger`: the vehicle already moved with its tree.
+    pub vehicle: Option<u32>,
 }
 
 /// A teleport a command made inside a level: told to the mods once it has
@@ -313,7 +315,8 @@ impl Game<'_> {
         // EndGatewayBlock.entityInside: a gateway that is not cooling down
         // takes the player at once (no transition time) and cools down
         // (triggerCooldown), even for a player still on its own cooldown.
-        if let Some(g) = gateway
+        if !riding
+            && let Some(g) = gateway
             && self.gateway_available(g)
         {
             if self.portals.player.cooldown == 0 {
@@ -608,6 +611,7 @@ impl Game<'_> {
             dim: Dim::Overworld,
             at,
             rotation: None,
+            vehicle: None,
         });
         self.run_level_teleports(host);
         self.world_spawn_trip(conn);
@@ -858,11 +862,22 @@ impl Game<'_> {
             let origin = g.position;
             // A new body there: no fall distance or motion carried over, but
             // the player's attributes (ServerPlayer.teleport keeps the entity).
-            g.new_body(true);
+            let passenger_body = if t.vehicle.is_some() {
+                g.motion.take()
+            } else {
+                g.new_body(true);
+                None
+            };
             let cooldown = host.play.get(&t.conn).map_or(0, |p| p.portal.cooldown);
             let ctx = self.server_ctx();
             host.hub
                 .change_level(i, t.at, yaw, Some(pitch), false, cooldown, &ctx);
+            let g = &mut host.hub.guests[i];
+            g.vehicle = t.vehicle;
+            if let Some(mut body) = passenger_body {
+                body.position = Vec3::new(t.at[0], t.at[1], t.at[2]);
+                g.motion = Some(body);
+            }
             self.as_guest(host, t.conn, |g| {
                 g.trigger_dimension(source, t.dim, origin);
                 // The mods hear the teleport into another level, with the

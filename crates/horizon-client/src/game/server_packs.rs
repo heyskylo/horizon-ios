@@ -430,7 +430,7 @@ impl Game<'_> {
                     state
                         .notifiers
                         .push(PackNotifier::new(events, requests.len()));
-                    let failed = requests.iter().map(|r| r.id).collect();
+                    let failed = requests.iter().map(|r| (r.id, r.key)).collect();
                     state.packs.downloaded(horizon_client::server_packs::Batch {
                         downloaded: Vec::new(),
                         failed,

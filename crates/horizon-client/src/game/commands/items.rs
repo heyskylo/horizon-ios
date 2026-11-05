@@ -951,7 +951,7 @@ impl Game<'_> {
         };
         let modifier = self.item_modifier_arg(ctx, "modifier")?;
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as i64);
@@ -1094,7 +1094,7 @@ impl Game<'_> {
             if ctx.get("modifier").is_some() {
                 let modifier = self.item_modifier_arg(ctx, "modifier")?;
                 let source = self.command_source.unwrap_or_else(|| self.player_source());
-                let view = source.entity.map(|t| self.entity_view_of(t));
+                let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
                 let mut rng = horizon_core::random::LegacyRandom::new(0);
                 found = found
                     .into_iter()

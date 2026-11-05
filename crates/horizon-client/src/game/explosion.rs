@@ -454,14 +454,14 @@ impl Game<'_> {
             self.note_named_attacker(damage_type, *id, name.clone());
         }
         if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Some(id) = self.health_resources.damage.id(damage_type)
         {
             // Creative players are invulnerable to explosions.
             if !creative
                 && !spectator
                 && hurtable
                 && let Ok(o) = p.hurt_caused_by(
-                    &self.motion.health,
+                    &self.health_resources,
                     self.world.health_rules,
                     id,
                     amount,

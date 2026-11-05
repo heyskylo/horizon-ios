@@ -623,9 +623,14 @@ impl Game<'_> {
                     lines.push(format!("game {rest}"));
                 }
             }
-            for (sound, at, volume, pitch) in
-                self.audio.capture.replace(Vec::new()).unwrap_or_default()
-            {
+            for sound in self.audio.capture.replace(Vec::new()).unwrap_or_default() {
+                let horizon_client::audio::CapturedSound {
+                    event: sound,
+                    position: at,
+                    volume,
+                    pitch,
+                    ..
+                } = sound;
                 if CLIENT_SOUNDS.contains(&sound.as_str()) {
                     continue;
                 }
