@@ -284,14 +284,18 @@ impl Toolchain {
         cmd
     }
 
-    /// Adds the ARM64-specific Rust flag Cargo needs when crates import Windows APIs through
-    /// `raw-dylib`. A Cargo config value keeps paths with spaces intact.
+    /// Adds the ARM64-specific Rust flags Cargo needs for Windows imports and a self-contained
+    /// unwind runtime. A Cargo config value keeps paths with spaces intact.
     pub fn configure_cargo(&self, cmd: &mut Command) {
         if self.host.target != WINDOWS_ARM64_TARGET {
             return;
         }
         let dlltool = self.mingw_bin().join(exe("llvm-dlltool"));
         let rustflags = toml::Value::Array(vec![
+            toml::Value::String("-C".into()),
+            // Windows doesn't ship LLVM-MinGW's libunwind.dll. On this target, crt-static also
+            // makes Rust use the static unwinder so the built game has no extra runtime DLL.
+            toml::Value::String("target-feature=+crt-static".into()),
             toml::Value::String("-C".into()),
             toml::Value::String(format!("dlltool={}", dlltool.display())),
         ]);
@@ -1187,7 +1191,8 @@ mod tests {
             host,
         };
         fs::create_dir_all(toolchain.mingw_bin()).unwrap();
-        let cmd = toolchain.command(&toolchain.cargo());
+        let mut cmd = toolchain.command(&toolchain.cargo());
+        toolchain.configure_cargo(&mut cmd);
         let path = cmd
             .get_envs()
             .find(|(k, _)| *k == "PATH")
@@ -1198,6 +1203,10 @@ mod tests {
         assert!(!cmd
             .get_envs()
             .any(|(key, _)| matches!(key.to_string_lossy().as_ref(), "AR" | "WINDRES")));
+        assert!(cmd.get_args().next().is_none());
+        assert!(!cmd
+            .get_envs()
+            .any(|(key, _)| key == "CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1244,6 +1253,8 @@ mod tests {
             .collect();
         let dlltool = toolchain.mingw_bin().join(exe("llvm-dlltool"));
         let rustflags = toml::Value::Array(vec![
+            toml::Value::String("-C".into()),
+            toml::Value::String("target-feature=+crt-static".into()),
             toml::Value::String("-C".into()),
             toml::Value::String(format!("dlltool={}", dlltool.display())),
         ]);

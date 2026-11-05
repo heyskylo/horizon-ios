@@ -1748,7 +1748,8 @@ trusting native code is the player's decision, never an agent's.
    ARM64 `windres` and archive tools for Windows icon resources; its generic resource compiler can emit x64 objects on
    an ARM64 host. LLVM-MinGW is not an MSVC
    object-library toolchain: prebuilt MSVC static libraries in a native mod are not compatible. The output uses
-   UCRT, which is included with Windows 10 and later.
+   UCRT, which is included with Windows 10 and later. The ARM64 target statically links Rust's unwinder because
+   Windows does not include LLVM-MinGW's `libunwind.dll`; the resulting game imports only Windows system DLLs.
 
    Before building on Windows, the launcher reads the selected game's executable architecture. It refuses a game
    that does not match its managed compiler, so a build cannot install a binary for the wrong architecture. The
