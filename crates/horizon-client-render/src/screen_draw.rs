@@ -975,11 +975,32 @@ impl TextField {
     }
 }
 
+/// `ScreenRectangle.intersection`: the part of both rectangles, or
+/// `ScreenRectangle.empty()` (`0, 0, 0, 0`, which clips everything) when they
+/// do not overlap.
+fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
+    let rect = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    if rect[0] < rect[2] && rect[1] < rect[3] {
+        rect
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
 /// Draws the calls with the HUD batch: sprites nine-sliced, textures from
 /// the atlas (`textures/gui/x.png` is `gui/x`; tiled textures from their
 /// corner), scissor clipping, and the tooltip at the mouse.
 pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
-    let mut clip: Option<(usize, [i32; 4])> = None;
+    // `GuiGraphicsExtractor.ScissorStack`: a scissor clips what is drawn since
+    // it opened, cut to the screen while none is open and to the one around it
+    // otherwise; closing it puts the enclosing one back.
+    let screen = [0, 0, batch.width as i32, batch.height as i32];
+    let mut clips: Vec<(usize, [i32; 4])> = Vec::new();
     let mut tooltip = None;
     for d in draws {
         match d {
@@ -1083,10 +1104,11 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
                 );
             }
             Draw::Scissor { x0, y0, x1, y1 } => {
-                clip = Some((batch.vertices.len(), [*x0, *y0, *x1, *y1]))
+                let outer = clips.last().map_or(screen, |&(_, rect)| rect);
+                clips.push((batch.vertices.len(), intersect(outer, [*x0, *y0, *x1, *y1])));
             }
             Draw::NoScissor => {
-                if let Some((start, [x0, y0, x1, y1])) = clip.take() {
+                if let Some((start, [x0, y0, x1, y1])) = clips.pop() {
                     batch.clip_since(start, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
                 }
             }
