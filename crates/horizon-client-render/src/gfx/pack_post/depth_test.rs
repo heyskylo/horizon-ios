@@ -8,7 +8,7 @@ pub(super) const SIZE: [u32; 2] = [16, 16];
 pub(super) struct Gpu {
     adapter: wgpu::Adapter,
     pub(super) device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(super) queue: wgpu::Queue,
 }
 impl Gpu {
     pub(super) fn new() -> Option<Self> {
