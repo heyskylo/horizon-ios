@@ -3977,10 +3977,14 @@ fn blocks_and_items_declared_in_code_get_ids() {
         resource_root(&base, &mods, &scratch.join("cache")).unwrap(),
         root
     );
+    // Changed declarations build a root of their own: the old one stays as
+    // it was, for a switch back to that set.
     let stamp = fs::read(root.join(STAMP)).unwrap();
     mods[1].content.items[0].max_stack_size = Some(2);
-    resource_root(&base, &mods, &scratch.join("cache")).unwrap();
-    assert_ne!(fs::read(root.join(STAMP)).unwrap(), stamp);
+    let changed = resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    assert_ne!(changed, root);
+    assert_ne!(fs::read(changed.join(STAMP)).unwrap(), stamp);
+    assert_eq!(fs::read(root.join(STAMP)).unwrap(), stamp);
     let _ = fs::remove_dir_all(&scratch);
 }
 
