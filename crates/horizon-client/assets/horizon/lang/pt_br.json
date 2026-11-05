@@ -331,7 +331,6 @@
   "horizon.osk.close": "Fechar",
   "horizon.extras.chat_animation.tooltip": "Uma nova linha de bate-papo aparece da esquerda enquanto desaparece, em vez de aparecer inteira.",
   "horizon.extras.chat_indicator.tooltip": "A barra colorida à esquerda de uma linha de bate-papo.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "A roda de rolagem sobre um botão nas configurações altera seu valor, como no vanilla. Desligado, a roda apenas rola a lista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs obtém um botão Adicionar que pesquisa Modrinth e instala um pacote em sua pasta de pacotes. Desligado, o jogo nunca entra em contato com Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Num mundo, outro controlador pode entrar como novo jogador: pressione A quando solicitado e escolha um perfil e onde jogar.",
   "horizon.splitscreen.setup.monitor": "Monitorar %s",

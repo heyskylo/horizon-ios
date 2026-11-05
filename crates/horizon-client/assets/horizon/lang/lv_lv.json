@@ -313,7 +313,6 @@
   "horizon.osk.close": "Aizvērt",
   "horizon.extras.chat_animation.tooltip": "Jauna tērzēšanas līnija ieslīd no kreisās puses, kamēr tā pazūd, nevis tiek rādīta vesela.",
   "horizon.extras.chat_indicator.tooltip": "Krāsaina josla pa kreisi no tērzēšanas līnijas.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ritināšanas ritenītis virs pogas iestatījumos maina tās vērtību, tāpat kā vaniļas gadījumā. Izslēgts, ritenis tikai ritina sarakstu.",
   "horizon.extras.pack_browser.tooltip": "Atlasīt Resursu pakotnes saņem pogu Pievienot, kas meklē Modrinth un instalē pakotni jūsu pakotņu mapē. Izslēgts, spēle nekad nesazinās ar Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Pasaulē cits kontrolieris var pievienoties kā jauns spēlētājs: nospiediet A, kad tas jautā, pēc tam izvēlieties profilu un vietu, kur spēlēt.",
   "horizon.splitscreen.setup.monitor": "Monitors %s",

@@ -308,7 +308,6 @@
   "horizon.osk.close": "닫기",
   "horizon.extras.chat_animation.tooltip": "새 채팅 줄이 통째로 나타나는 대신 왼쪽에서 미끄러지듯 나타나며 서서히 페이드 인됩니다.",
   "horizon.extras.chat_indicator.tooltip": "채팅 줄 왼쪽에 있는 색상 바입니다.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "설정에서 버튼 위에 스크롤 휠을 올리면 바닐라처럼 값이 변경됩니다. 끄면 휠이 목록 스크롤만 수행합니다.",
   "horizon.extras.splitscreen.tooltip": "월드 내에서 다른 컨트롤러로 새 플레이어로 참여할 수 있습니다: 메시지가 나타날 때 A를 누르고 프로필과 플레이할 위치를 선택하세요.",
   "horizon.splitscreen.setup.monitor": "모니터 %s",
   "horizon.splitscreen.setup.monitor_unknown": "모니터",

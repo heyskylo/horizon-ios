@@ -317,7 +317,6 @@
   "horizon.osk.close": "Bağlayın",
   "horizon.extras.chat_animation.tooltip": "Yeni söhbət xətti bütöv görünmək əvəzinə soldan içəri sürüşür.",
   "horizon.extras.chat_indicator.tooltip": "Söhbət xəttinin solunda olan rəngli bar.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Parametrlərdəki düymənin üzərindəki sürüşdürmə çarxı vanildə olduğu kimi dəyərini dəyişir. Söndürülmüş, təkər yalnız siyahını sürüşdürür.",
   "horizon.extras.pack_browser.tooltip": "Resurs Paketlərini seçin Modrinth-də axtarış aparan və paketlər qovluğuna paket quraşdıran Əlavə et düyməsini alır. Off, oyun Modrinthlə heç vaxt əlaqə saxlamır.",
   "horizon.extras.splitscreen.tooltip": "Dünyada başqa bir nəzarətçi yeni oyunçu kimi qoşula bilər: soruşduqda A düyməsini basın, sonra profil və harada oynayacağınızı seçin.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

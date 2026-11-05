@@ -312,7 +312,6 @@
   "horizon.osk.close": "बंद करें",
   "horizon.extras.chat_animation.tooltip": "एक नई चैट लाइन पूरी तरह से प्रकट होने के बजाय फीका पड़ने के दौरान बाईं ओर से स्लाइड करती है।",
   "horizon.extras.chat_indicator.tooltip": "चैट लाइन के बाईं ओर रंगीन पट्टी।",
-  "horizon.extras.wheel_cycles_settings.tooltip": "सेटिंग्स में किसी बटन पर स्क्रॉल व्हील उसका मान बदलता है, जैसा कि वैनिला में होता है। बंद होने पर, व्हील केवल सूची को स्क्रॉल करता है।",
   "horizon.extras.splitscreen.tooltip": "एक दुनिया में, एक अन्य कंट्रोलर नए खिलाड़ी के रूप में जुड़ सकता है: पूछने पर A दबाएं, फिर एक प्रोफ़ाइल चुनें और कहाँ खेलना है।",
   "horizon.splitscreen.setup.monitor": "मॉनिटर %s",
   "horizon.splitscreen.setup.monitor_unknown": "एक मॉनिटर",

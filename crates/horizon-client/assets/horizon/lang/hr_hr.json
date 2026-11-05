@@ -306,7 +306,6 @@
   "horizon.osk.close": "Zatvori",
   "horizon.extras.chat_animation.tooltip": "Nova linija chata klizi s lijeve strane dok blijedi, umjesto da se pojavi cijela odjednom.",
   "horizon.extras.chat_indicator.tooltip": "Traka u boji s lijeve strane linije chata.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Kotačić miša preko gumba u postavkama mijenja njegovu vrijednost, kao u vanila verziji. Kada je isključeno, kotačić samo pomiče popis.",
   "horizon.extras.splitscreen.tooltip": "U svijetu se drugi upravljač može pridružiti kao novi igrač: pritisnite A kada se zatraži, zatim odaberite profil i mjesto igranja.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",
   "horizon.splitscreen.setup.window": "Prozor %s",

@@ -319,7 +319,6 @@
   "horizon.osk.close": "Tancar",
   "horizon.extras.chat_animation.tooltip": "Una nova línia de xat es desplaça des de l'esquerra mentre s'esvaeix, en lloc de semblar sencera.",
   "horizon.extras.chat_indicator.tooltip": "La barra de colors a l'esquerra d'una línia de xat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La roda de desplaçament sobre un botó a la configuració canvia el seu valor, com a la vainilla. Desactivada, la roda només desplaça la llista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs obté un botó Afegeix que cerca Modrinth i instal·la un paquet a la carpeta de paquets. Desactivat, el joc mai contacta amb Modrinth.",
   "horizon.extras.splitscreen.tooltip": "En un món, un altre controlador pot unir-se com a jugador nou: premeu A quan ho demani, després trieu un perfil i on jugar.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",

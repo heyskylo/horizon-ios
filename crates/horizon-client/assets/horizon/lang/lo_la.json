@@ -320,7 +320,6 @@
   "horizon.osk.close": "ປິດ",
   "horizon.extras.chat_animation.tooltip": "ແຖວສົນທະນາໃໝ່ເລື່ອນເຂົ້າມາຈາກຊ້າຍໃນຂະນະທີ່ມັນຈາງລົງ, ແທນທີ່ຈະປາກົດທັງໝົດ.",
   "horizon.extras.chat_indicator.tooltip": "ແຖບສີຢູ່ເບື້ອງຊ້າຍຂອງສາຍສົນທະນາ.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "ລໍ້ເລື່ອນຜ່ານປຸ່ມໃດນຶ່ງໃນການຕັ້ງຄ່າຈະປ່ຽນຄ່າຂອງມັນ, ຄືກັບໃນ vanilla. ປິດ, ລໍ້ພຽງແຕ່ເລື່ອນບັນຊີລາຍຊື່.",
   "horizon.extras.pack_browser.tooltip": "ເລືອກ Resource Packs ໄດ້ຮັບປຸ່ມ Add ທີ່ຊອກຫາ Modrinth ແລະຕິດຕັ້ງຊຸດໃສ່ໃນໂຟນເດີ packs ຂອງທ່ານ. ປິດ, ເກມບໍ່ເຄີຍຕິດຕໍ່ Modrinth.",
   "horizon.extras.splitscreen.tooltip": "ໃນໂລກ, ຜູ້ຄວບຄຸມອື່ນສາມາດເຂົ້າຮ່ວມເປັນຜູ້ນໃຫມ່: ກົດ A ເມື່ອມັນຖາມ, ຫຼັງຈາກນັ້ນເລືອກໂປຣໄຟລ໌ແລະບ່ອນທີ່ຈະຫຼິ້ນ.",
   "horizon.splitscreen.setup.monitor": "ຈໍພາບ %s",

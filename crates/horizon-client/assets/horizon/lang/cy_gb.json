@@ -317,7 +317,6 @@
   "horizon.osk.close": "Cau",
   "horizon.extras.chat_animation.tooltip": "Mae llinell sgwrsio newydd yn llithro i mewn o'r chwith tra mae'n pylu i mewn, yn lle ymddangos yn gyfan.",
   "horizon.extras.chat_indicator.tooltip": "Y bar lliw ar ochr chwith llinell sgwrsio.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Mae'r olwyn sgrolio dros fotwm yn y gosodiadau yn newid ei werth, fel yn y fanila. I ffwrdd, mae'r olwyn yn sgrolio'r rhestr yn unig.",
   "horizon.extras.pack_browser.tooltip": "Mae Dewis Pecynnau Adnoddau yn cael botwm Ychwanegu sy'n chwilio Modrinth ac yn gosod pecyn yn eich ffolder pecynnau. I ffwrdd, nid yw'r gêm byth yn cysylltu â Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Mewn byd, gall rheolydd arall ymuno fel chwaraewr newydd: pwyswch A pan fydd yn gofyn, yna dewiswch broffil a ble i chwarae.",
   "horizon.splitscreen.setup.monitor": "Monitro %s",

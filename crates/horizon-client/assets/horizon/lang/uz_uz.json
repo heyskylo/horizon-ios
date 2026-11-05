@@ -316,7 +316,6 @@
   "horizon.osk.close": "Yopish",
   "horizon.extras.chat_animation.tooltip": "Chapdan yangi chat chizig‘i to‘liq ko‘rinish o‘rniga o‘chib, chap tomondan siljiydi.",
   "horizon.extras.chat_indicator.tooltip": "Suhbat chizig'ining chap tomonidagi rangli chiziq.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Sozlamalardagi tugma ustidagi aylantirish g'ildiragi vanildagi kabi uning qiymatini o'zgartiradi. O'chirilgan, g'ildirak faqat ro'yxatni aylantiradi.",
   "horizon.extras.pack_browser.tooltip": "Resurs paketlarini tanlash Modrinth-ni qidiradigan va paketlar papkasiga paketni o'rnatadigan Qo'shish tugmachasini oladi. O'chirilgan, o'yin hech qachon Modrinth bilan aloqa qilmaydi.",
   "horizon.extras.splitscreen.tooltip": "Dunyoda boshqa boshqaruvchi yangi o'yinchi sifatida qo'shilishi mumkin: u so'raganda A tugmasini bosing, keyin profil va qayerda o'ynashni tanlang.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

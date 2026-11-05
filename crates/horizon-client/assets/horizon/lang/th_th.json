@@ -338,7 +338,6 @@
   "horizon.osk.close": "ปิด",
   "horizon.extras.chat_animation.tooltip": "บรรทัดแชทใหม่เลื่อนเข้ามาจากด้านซ้ายในขณะที่ค่อยๆ จางหายไป แทนที่จะปรากฏทั้งหมด",
   "horizon.extras.chat_indicator.tooltip": "แถบสีทางด้านซ้ายของแชท",
-  "horizon.extras.wheel_cycles_settings.tooltip": "ล้อเลื่อนเหนือปุ่มในการตั้งค่าจะเปลี่ยนค่าเช่นเดียวกับในวานิลลา ปิด วงล้อจะเลื่อนเฉพาะรายการเท่านั้น",
   "horizon.extras.pack_browser.tooltip": "เลือก Resource Packs จะได้รับปุ่มเพิ่มที่ค้นหา Modrinth และติดตั้งแพ็คลงในโฟลเดอร์แพ็คของคุณ ปิด เกมไม่เคยติดต่อกับ Modrinth",
   "horizon.extras.splitscreen.tooltip": "ในโลกหนึ่ง คอนโทรลเลอร์อื่นสามารถเข้าร่วมเป็นผู้เล่นใหม่ได้ โดยกด A เมื่อระบบถาม จากนั้นเลือกโปรไฟล์และสถานที่ที่จะเล่น",
   "horizon.splitscreen.setup.monitor": "มอนิเตอร์ %s",

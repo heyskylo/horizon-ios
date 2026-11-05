@@ -321,7 +321,6 @@
   "horizon.osk.close": "Zamknij",
   "horizon.extras.chat_animation.tooltip": "Nowo linijo czatu wsudzo sie z lewyj zajty, w czasie kej ôna blanknie, zamiast wydować sie cołko.",
   "horizon.extras.chat_indicator.tooltip": "Farbisty pas po lewyj zajcie linije czatu.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Koło ôbwijanio nad guzikiym we ustawiyniach zmiynio jego wert, jak we waniliji. Wyłōnczōne, koło ino przewijo lista.",
   "horizon.extras.pack_browser.tooltip": "Wybierz Pakiety zasobōw dostowo guzik Przidej, co wyszukuje Modrinth i instaluje pakiet we folderze pakietōw. Wyłōnczōne, gra nikej niy kōntaktuje sie Modrinth.",
   "horizon.extras.splitscreen.tooltip": "We świecie inkszy kōntroler może prziłōnczyć sie jako nowy ôdtworzac: naciśnij A, kej sie zapyto, a potym wybierz profil i kaj grać.",
   "horizon.splitscreen.setup.monitor": "Mōnitor %s",

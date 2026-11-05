@@ -312,7 +312,6 @@
   "horizon.osk.close": "Închide",
   "horizon.extras.chat_animation.tooltip": "O nouă linie de chat glisează din stânga în timp ce dispare, în loc să pară întreg.",
   "horizon.extras.chat_indicator.tooltip": "Bara colorată din stânga unei linii de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rotița de derulare deasupra unui buton din setări își schimbă valoarea, ca la vanilie. Oprit, roata derulează doar lista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs primește un buton Adaugă care caută în Modrinth și instalează un pachet în folderul pachetelor dvs. Dezactivat, jocul nu îl contactează niciodată pe Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Într-o lume, un alt controler se poate alătura ca jucător nou: apăsați A când vă cere, apoi alegeți un profil și unde să jucați.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",

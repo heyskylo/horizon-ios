@@ -322,7 +322,6 @@
   "horizon.osk.close": "Zapri",
   "horizon.extras.chat_animation.tooltip": "Nova vrstica za klepet zdrsne z leve, medtem ko zbledi, namesto da bi bila videti cela.",
   "horizon.extras.chat_indicator.tooltip": "Barvna vrstica na levi strani vrstice za klepet.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Kolešček nad gumbom v nastavitvah spremeni njegovo vrednost, kot pri vaniliji. Izklopljeno, kolesce samo pomika po seznamu.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs dobi gumb Dodaj, ki išče Modrinth in namesti paket v vašo mapo s paketi. Izklopljeno, igra nikoli ne vzpostavi stika z Modrinthom.",
   "horizon.extras.splitscreen.tooltip": "V svetu se lahko drugi krmilnik pridruži kot nov igralec: pritisnite A, ko vas vpraša, nato izberite profil in mesto igranja.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

@@ -325,7 +325,6 @@
   "horizon.osk.close": "Ябу",
   "horizon.extras.chat_animation.tooltip": "Яңа чат сызыгы сулдан кереп китә, ул бөтенләй күренми.",
   "horizon.extras.chat_indicator.tooltip": "Чат сызыгының сул ягында.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Көйләүләрдәге төймә өстендә әйләндерү тәгәрмәче ванилдагы кебек аның кыйммәтен үзгәртә. Сүндерелгән, тәгәрмәч исемлекне әйләндерә.",
   "horizon.extras.pack_browser.tooltip": "Ресурс пакетларын сайлагыз, эзләү төймәсен алаModrinthһәм пакетлар папкасына пакет урнаштыра. Өч, уен беркайчан да элемтәгә кермиModrinth.",
   "horizon.extras.splitscreen.tooltip": "Дөньяда бүтән контроллер яңа плейер булып кушылырга мөмкин: сорагач А басыгыз, аннары профиль сайлагыз һәм кая уйнарга.",
   "horizon.splitscreen.setup.monitor": "Монитор %s",

@@ -309,7 +309,6 @@
   "horizon.osk.close": "Lukk",
   "horizon.extras.chat_animation.tooltip": "En ny chat-linje glir inn fra venstre mens den toner inn, i stedet for å virke hel.",
   "horizon.extras.chat_indicator.tooltip": "Den fargede linjen til venstre for en chattelinje.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rullehjulet over en knapp i innstillingene endrer verdien, som i vanilje. Av, hjulet ruller bare listen.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs får en Legg til-knapp som søker i Modrinth og installerer en pakke i pakkemappen din. Av, spillet kontakter aldri Modrinth.",
   "horizon.extras.splitscreen.tooltip": "I en verden kan en annen kontroller bli med som en ny spiller: trykk A når den spør, velg deretter en profil og hvor du vil spille.",
   "horizon.splitscreen.setup.monitor": "Overvåk %s",

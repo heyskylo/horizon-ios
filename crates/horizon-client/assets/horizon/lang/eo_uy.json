@@ -322,7 +322,6 @@
   "horizon.osk.close": "Fermu",
   "horizon.extras.chat_animation.tooltip": "Nova babillinio glitas enen de maldekstre dum ĝi fadas, anstataŭ aperi tute.",
   "horizon.extras.chat_indicator.tooltip": "La kolora stango maldekstre de babillinio.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La rula rado super butono en la agordoj ŝanĝas sian valoron, kiel en vanilo. Malŝaltita, la rado nur rulumas la liston.",
   "horizon.extras.pack_browser.tooltip": "Elektu Rimedo-Pakojn ricevas butonon Aldoni, kiu serĉas Modrinth kaj instalas pakon en viajn pakajn dosierujojn. Malŝaltita, la ludo neniam kontaktas Modrinth.",
   "horizon.extras.splitscreen.tooltip": "En mondo, alia regilo povas aliĝi kiel nova ludanto: premu A kiam ĝi petas, tiam elektu profilon kaj kie ludi.",
   "horizon.splitscreen.setup.monitor": "Monitoro %s",

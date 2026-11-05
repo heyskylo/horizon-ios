@@ -321,7 +321,6 @@
   "horizon.osk.close": "סגור",
   "horizon.extras.chat_animation.tooltip": "קו צ'אט חדש גולש פנימה משמאל בזמן שהוא נמוג פנימה, במקום להיראות שלם.",
   "horizon.extras.chat_indicator.tooltip": "הסרגל הצבעוני בצד שמאל של קו צ'אט.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "גלגל הגלילה מעל כפתור בהגדרות משנה את ערכו, כמו בוניל. כבוי, הגלגל רק גולל את הרשימה.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs מקבל כפתור הוסף שמחפש את Modrinth ומתקין חבילה בתיקיית החבילות שלך. כבוי, המשחק אף פעם לא יוצר קשר עם Modrinth.",
   "horizon.extras.splitscreen.tooltip": "בעולם, בקר אחר יכול להצטרף כשחקן חדש: הקש A כאשר הוא שואל, ואז בחר פרופיל ואיפה לשחק.",
   "horizon.splitscreen.setup.monitor": "צג %s",

@@ -341,7 +341,6 @@
   "horizon.osk.close": "إغلاق",
   "horizon.extras.chat_animation.tooltip": "ينزلق خط الدردشة الجديد من اليسار بينما يتلاشى للداخل، بدلاً من أن يظهر كاملاً.",
   "horizon.extras.chat_indicator.tooltip": "الشريط الملون الموجود على يسار خط الدردشة.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "عجلة التمرير فوق زر في الإعدادات تغير قيمته، كما هو الحال في الفانيليا. مع إيقاف التشغيل، تقوم العجلة بتمرير القائمة فقط.",
   "horizon.extras.pack_browser.tooltip": "تحديد حزم الموارد يحصل على زر \"إضافة\" الذي يبحث في Modrinth ويقوم بتثبيت حزمة في مجلد الحزم الخاص بك. مع إيقاف التشغيل، لن تتصل اللعبة أبدًا بـ Modrinth.",
   "horizon.extras.splitscreen.tooltip": "في عالم ما، يمكن لوحدة تحكم أخرى الانضمام كلاعب جديد: اضغط على A عندما يُطلب منك ذلك، ثم اختر ملفًا شخصيًا ومكان اللعب.",
   "horizon.splitscreen.setup.monitor": "مراقب %s",

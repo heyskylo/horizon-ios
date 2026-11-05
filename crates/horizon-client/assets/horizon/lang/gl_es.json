@@ -318,7 +318,6 @@
   "horizon.osk.close": "Pechar",
   "horizon.extras.chat_animation.tooltip": "Unha nova liña de chat deslízase dende a esquerda mentres se esvae, en lugar de aparecer enteira.",
   "horizon.extras.chat_indicator.tooltip": "A barra de cores á esquerda dunha liña de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "A roda de desprazamento sobre un botón na configuración cambia o seu valor, como en vainilla. Desactivada, a roda só despraza a lista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs obtén un botón Engadir que busca en Modrinth e instala un paquete no cartafol de paquetes. Desactivado, o xogo nunca contacta con Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Nun mundo, outro controlador pode unirse como xogador novo: preme A cando o solicite, despois escolle un perfil e onde xogar.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",

@@ -285,7 +285,6 @@
   "horizon.osk.close": "Isara",
   "horizon.extras.chat_animation.tooltip": "Ang isang bagong linya ng chat ay dumudulas mula sa kaliwa habang ito ay nawawala, sa halip na lumabas nang buo.",
   "horizon.extras.chat_indicator.tooltip": "Ang may kulay na bar sa kaliwa ng isang chat line.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ang scroll wheel sa ibabaw ng isang button sa mga setting ay nagbabago ng halaga nito, tulad ng sa vanilla. Naka-off, ini-scroll lang ng gulong ang listahan.",
   "horizon.extras.pack_browser.tooltip": "Ang Select Resource Packs ay nakakakuha ng Add button na naghahanap sa Modrinth at nag-i-install ng pack sa iyong pack folder. Wala, ang laro ay hindi kailanman nakikipag-ugnayan sa Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Sa isang mundo, maaaring sumali ang isa pang controller bilang bagong player: pindutin ang A kapag nagtanong ito, pagkatapos ay pumili ng profile at kung saan maglaro.",
   "horizon.splitscreen.setup.monitor": "Subaybayan %s",

@@ -319,7 +319,6 @@
   "horizon.osk.close": "Lat aftur",
   "horizon.extras.chat_animation.tooltip": "Ein nýggj kjaklinja rennur inn frá vinstru, meðan hon doyvir inn, í staðin fyri at síggja heil út.",
   "horizon.extras.chat_indicator.tooltip": "Litaða strikan til vinstru á kjaklinju.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rulluhjólið yvir einum knøtti í innstillingunum broytir virðið, eins og í vanilju. Av, hjólið rullar bara listan.",
   "horizon.extras.pack_browser.tooltip": "Vel Tilfeingispakkar fær ein Legg til knøtt, sum leitar Modrinth og setur ein pakka upp í tína pakka mappu. Sløkt, spælið ongantíð kontaktar Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Í einum heimi kann ein annar stýrari melda seg til sum nýggjur spælari: trýst á A tá tað spyr, vel síðani ein profil og hvar tú skalt spæla.",
   "horizon.splitscreen.setup.monitor": "Skjár %s",

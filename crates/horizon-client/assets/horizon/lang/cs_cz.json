@@ -311,7 +311,6 @@
   "horizon.osk.close": "Zavřít",
   "horizon.extras.chat_animation.tooltip": "Nová čára chatu se vsune zleva, zatímco se mizí, místo aby vypadala celá.",
   "horizon.extras.chat_indicator.tooltip": "Barevný pruh nalevo od chatovací linky.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rolovací kolečko nad tlačítkem v nastavení mění jeho hodnotu, jako u vanilky. Vypnuto, kolečko pouze posouvá seznam.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs dostane tlačítko Přidat, které prohledá Modrinth a nainstaluje balíček do vaší složky balíčků. Vypnuto, hra nikdy nekontaktuje Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Ve světě se může jako nový hráč připojit další ovladač: stiskněte A, když se zeptá, pak vyberte profil a kde hrát.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",
