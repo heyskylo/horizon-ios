@@ -53,6 +53,17 @@ impl Stage<'_> {
         if self.tokens.iter().any(|t| DEPTH_NAMES.contains(t)) {
             p.push_str(DEPTH_FILTER);
         }
+        // Helpers for the integer samplers declared, where a texture call could read one.
+        if self.tokens.iter().any(|t| integer_call(t).is_some()) {
+            let mut types: Vec<_> = self
+                .tokens
+                .iter()
+                .filter_map(|t| integer_sampler(t))
+                .collect();
+            types.sort_unstable();
+            types.dedup();
+            p.push_str(&integer_texture(&types));
+        }
         if self.query_lod {
             p.push_str(&query_lod());
         }
@@ -492,6 +503,19 @@ impl Stage<'_> {
                 write!(out, "{t}, hz_s_{t}, {flag}").unwrap();
                 continue;
             }
+            // An integer sampler sampled as a float one is (`integer_call`): our helper takes its
+            // texture and sampler.
+            if let Some(ty) = sampler
+                && integer_sampler(ty).is_some()
+                && calls
+                    .last()
+                    .is_some_and(|&(callee, _, arg)| arg == 0 && integer_call(callee).is_some())
+                && prev(i).is_some_and(|j| self.tokens[j] == "(")
+                && next(i).is_some_and(|j| self.tokens[j] == ",")
+            {
+                write!(out, "{t}, hz_s_{t}").unwrap();
+                continue;
+            }
             if let Some(ty) = sampler {
                 let as_argument = calls.last().is_some_and(|(callee, _, arg)| {
                     self.sampler_functions
@@ -554,6 +578,23 @@ impl Stage<'_> {
                 && let Some(helper) = depth_call(t, depth_scope.contains(&self.tokens[a]))
                 && next(a).is_some_and(|j| self.tokens[j] == ",")
                 && depth_flag(a, &params, &hidden, &depth_scope).is_some()
+            {
+                out.push_str(helper);
+                continue;
+            }
+            if called
+                && let Some(helper) = integer_call(t)
+                && let Some(a) = next(i).and_then(next)
+                && next(a).is_some_and(|j| self.tokens[j] == ",")
+                && !hidden
+                    .iter()
+                    .any(|&(h, from, _)| h == self.tokens[a] && a >= from)
+                && params
+                    .get(self.tokens[a])
+                    .map(String::as_str)
+                    .or_else(|| sampler_ty.get(self.tokens[a]).copied())
+                    .and_then(integer_sampler)
+                    .is_some()
             {
                 out.push_str(helper);
                 continue;
@@ -922,6 +963,67 @@ fn trinary(name: &str) -> String {
         }
     }
     p
+}
+
+/// An integer sampler type's texture type and dimension count (`usampler2D` → `utexture2D`, 2).
+fn integer_sampler(ty: &str) -> Option<(&'static str, usize)> {
+    Some(match ty {
+        "usampler2D" => ("utexture2D", 2),
+        "isampler2D" => ("itexture2D", 2),
+        "usampler3D" => ("utexture3D", 3),
+        "isampler3D" => ("itexture3D", 3),
+        _ => return None,
+    })
+}
+
+/// The helper standing for a filtered read of an integer sampler (`integer_texture`).
+fn integer_call(callee: &str) -> Option<&'static str> {
+    Some(match callee {
+        "texture" | "texture2D" | "texture3D" => "hz_integerTexture",
+        "textureLod" | "texture2DLod" | "texture3DLod" => "hz_integerTextureLod",
+        _ => return None,
+    })
+}
+
+/// `texture` and `textureLod` of an integer sampler: GL drivers read an integer texture with
+/// nearest filtering (a linear filter would leave it incomplete), so the texel the point falls
+/// in, the edge texel past the edges. wgpu filters only float textures, so `texelFetch` it is.
+/// A bias changes nothing; `textureLod` reads the level it names.
+fn integer_texture(types: &[(&str, usize)]) -> String {
+    let mut out = String::new();
+    for &(ty, dims) in types {
+        let sampler = ty.replacen("texture", "sampler", 1);
+        let result = if ty.starts_with('u') {
+            "uvec4"
+        } else {
+            "ivec4"
+        };
+        let (fv, iv) = (format!("vec{dims}"), format!("ivec{dims}"));
+        let read = |level: &str| {
+            format!(
+                "{iv} size = textureSize({sampler}(t, s), {level}); \
+                 return texelFetch({sampler}(t, s), clamp({iv}(floor(p * {fv}(size))), {iv}(0), size - 1), {level});"
+            )
+        };
+        let lod = read("int(l)");
+        let base = read("0");
+        writeln!(
+            out,
+            "{result} hz_integerTexture({ty} t, sampler s, {fv} p) {{ {base} }}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "{result} hz_integerTexture({ty} t, sampler s, {fv} p, float b) {{ {base} }}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "{result} hz_integerTextureLod({ty} t, sampler s, {fv} p, float l) {{ {lod} }}"
+        )
+        .unwrap();
+    }
+    out
 }
 
 /// The depth samplers a plain `sampler2D` can name: `hz_depth_linear`'s x, y, z and w.
