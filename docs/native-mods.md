@@ -3549,7 +3549,7 @@ custom copy handler, conditional serialization, the `sendToPlayer` predicate,
 `Host` exposes the documented `Game` helpers listed under `helpers` in
 `native-hooks.json`, without their `native_` prefix. Each keeps the helper's
 receiver and documentation; a helper without `self` (`config_dir`) takes
-`&self` in `Host`. Level services stay on the level hosts above.
+`&self` in `Host`. Level services stay on the level hosts above, except `play_sound` and `send_particles`, which the table below carries for a block entity's own tick.
 A helper's `receiver` also exposes it on that handle. Receivers come from public
 `*Ref` structs in `mod_api.rs`: for example, a public `BlockEntityRef` struct registers
 `block_entity`. Adding a handle requires no separate generator registration.
@@ -3559,7 +3559,7 @@ go through `dyn Host` (`native_host_bridge.rs`):
 
 | `Host` method | For | What it does |
 |---|---|---|
-| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. |
+| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. On a client, `change_mod_block_entity` changes only the local copy, and the next update tag from the server replaces what it changed: change it on the server. |
 | `trigger_criterion(uuid, trigger, &test)` | `trigger_criterion` | The same call, with the test as `&dyn Fn`. |
 | `play_sound`, `send_particles` | `LevelWriteHost`'s methods | Work in the level in place, from any server hook, such as a block entity's tick. |
 | `block_name_in_tag(block, tag)` | `server_block_in_tag` | Takes a block name instead of a state. |

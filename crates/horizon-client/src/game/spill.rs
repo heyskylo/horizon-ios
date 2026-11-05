@@ -415,12 +415,12 @@ impl GameLevel<'_> {
         let dynamic = self.pending.dynamic(at);
         // Only the block a machine breaks: a neighbour that pops off with it
         // drops as with no tool, and pops (`Level.destroyBlock` for it).
-        let machine = self
+        let machine = self.drop_tool.as_ref().is_some_and(|(target, _)| *target == key);
+        let tool = self
             .drop_tool
             .as_ref()
-            .filter(|(target, _)| *target == key)
-            .map(|(_, tool)| tool.as_ref());
-        let tool = machine.flatten();
+            .filter(|_| machine)
+            .and_then(|(_, tool)| tool.as_ref());
         let silk = tool.is_some_and(|t| t.enchantment_level("minecraft:silk_touch") > 0);
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
@@ -440,7 +440,7 @@ impl GameLevel<'_> {
             if &*stack.item == "minecraft:air" || stack.count == 0 {
                 continue;
             }
-            match self.drop_into.as_mut().filter(|_| machine.is_some()) {
+            match self.drop_into.as_mut().filter(|_| machine) {
                 Some(kept) => {
                     self.pending.attach(at, &mut stack);
                     kept.push(stack);
