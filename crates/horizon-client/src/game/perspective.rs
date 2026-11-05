@@ -454,6 +454,7 @@ impl Game<'_> {
         // another player's does (`villager::sleep_pose`).
         let bed = self.sleeping.map_or(0, |head| self.bed_facing(head));
         let spectator = self.spectator();
+        let vehicle_yaw = self.ridden_vehicle_yaw();
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
@@ -465,7 +466,11 @@ impl Game<'_> {
         m.previous = from;
         m.position = at;
         let (dx, dz) = (at.x - m.previous.x, at.z - m.previous.z);
-        let walked = player_walk_distance(m.previous, at);
+        let walked = if riding {
+            0.0
+        } else {
+            player_walk_distance(m.previous, at)
+        };
         m.previous_yaw = m.yaw;
         m.previous_body_yaw = m.body_yaw;
         m.previous_head_yaw = m.head_yaw;
@@ -474,25 +479,33 @@ impl Game<'_> {
         m.head_yaw = yaw;
         m.head_pitch = pitch;
         let mut target = m.body_yaw;
-        if dx * dx + dz * dz > 0.002_500_000_2 {
-            // LivingEntity.tick: walking backwards the body faces away from
-            // the walk direction, not along it.
-            let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
-            let facing = (wrap(yaw) - walk).abs();
-            target = if 95.0 < facing && facing < 265.0 {
-                walk - 180.0
-            } else {
-                walk
-            };
-        }
-        if swinging {
-            target = yaw;
-        }
-        // tickHeadTurn: ease toward the target, within 50 degrees of the head.
-        m.body_yaw += wrap(target - m.body_yaw) * 0.3;
-        let diff = wrap(yaw - m.body_yaw);
-        if diff.abs() > 50.0 {
-            m.body_yaw += diff - diff.signum() * 50.0;
+        if let Some(v_yaw) = vehicle_yaw {
+            target = v_yaw;
+            let diff = wrap(yaw - v_yaw);
+            let clamped = diff.clamp(-85.0, 85.0);
+            target += diff - clamped;
+            m.body_yaw = target;
+        } else {
+            if dx * dx + dz * dz > 0.002_500_000_2 {
+                // LivingEntity.tick: walking backwards the body faces away from
+                // the walk direction, not along it.
+                let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
+                let facing = (wrap(yaw) - walk).abs();
+                target = if 95.0 < facing && facing < 265.0 {
+                    walk - 180.0
+                } else {
+                    walk
+                };
+            }
+            if swinging {
+                target = yaw;
+            }
+            // tickHeadTurn: ease toward the target, within 50 degrees of the head.
+            m.body_yaw += wrap(target - m.body_yaw) * 0.3;
+            let diff = wrap(yaw - m.body_yaw);
+            if diff.abs() > 50.0 {
+                m.body_yaw += diff - diff.signum() * 50.0;
+            }
         }
         // WalkAnimationState.update(min(distance * 4, 1), 0.4).
         m.previous_limb_speed = m.limb_speed;
@@ -578,6 +591,16 @@ impl Game<'_> {
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
             self.yaw += delta.clamp(-105.0, 105.0) - delta;
         }
+    }
+    fn ridden_vehicle_yaw(&self) -> Option<f32> {
+        let id = self.riding?;
+        self.boats
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| b.yaw)
+            .or_else(|| self.carts.iter().find(|c| c.id == id).map(|c| c.yaw))
+            .or_else(|| self.mobs.iter().find(|m| m.id == id).map(|m| m.body_yaw))
+            .or_else(|| self.cushions.iter().find(|c| c.id == id).map(|c| c.yaw))
     }
     /// `Entity.setOldRot` after a server sets the player's rotation
     /// (`handleRotatePlayer`): the model's head snaps to it instead of easing
@@ -1661,5 +1684,24 @@ mod preview_tests {
             entity_light_block(crouch_model, true, crouch_eye),
             [10, 67, -5]
         );
+    }
+
+    #[test]
+    fn riding_vehicle_body_yaw_follows_vehicle_clamped_to_head() {
+        let v_yaw = 40.0f32;
+        // Head looking near vehicle direction: body matches vehicle yaw exactly.
+        let head_yaw = 60.0f32;
+        let diff = wrap(head_yaw - v_yaw);
+        let clamped = diff.clamp(-85.0, 85.0);
+        let body_yaw = v_yaw + diff - clamped;
+        assert_eq!(body_yaw, 40.0);
+
+        // Head looking past 85 degrees: body is dragged to stay within 85 degrees.
+        let head_yaw = 140.0f32;
+        let diff = wrap(head_yaw - v_yaw);
+        let clamped = diff.clamp(-85.0, 85.0);
+        let body_yaw = v_yaw + diff - clamped;
+        assert_eq!(body_yaw, 55.0);
+        assert_eq!(head_yaw - body_yaw, 85.0);
     }
 }

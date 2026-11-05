@@ -520,6 +520,20 @@ impl Game<'_> {
 
     // ---- the player ----
 
+    /// Whether the local player is currently inside a portal or experiencing
+    /// the portal transition screen effect. Opening inventories is blocked
+    /// while transitioning.
+    pub(super) fn in_portal_transition(&self) -> bool {
+        self.portals.client_inside
+            || self.screen_fx.portal > 0.0
+            || self
+                .portals
+                .player
+                .process
+                .as_ref()
+                .is_some_and(|p| p.inside)
+    }
+
     /// The same on a server's client: `Entity.canUsePortal` (alive, not a
     /// passenger), then only the client's `setAsInsidePortal`, which drives
     /// the confusion effect (`client_portal_effect`). On a server's client
