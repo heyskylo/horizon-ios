@@ -490,7 +490,9 @@ impl Custom {
                         .copied()
                         .reduce(|p, q| p.zip(q, f64::max))
                         .unwrap_or(arg(0)),
-                    "clamp" => arg(0).zip(arg(1), f64::max).zip(arg(2), f64::min),
+                    // The upper bound first, then the lower: with min > max the lower wins, as
+                    // our probes read in Iris 1.11.7 (`clamp(5.0, 3.0, 1.0)` gives 3, #9307).
+                    "clamp" => arg(0).zip(arg(2), f64::min).zip(arg(1), f64::max),
                     "abs" => one(f64::abs),
                     "floor" => one(f64::floor),
                     "ceil" => one(f64::ceil),
@@ -525,7 +527,10 @@ impl Custom {
                         let fade_out = at(2).unwrap_or(fade_in);
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
-                        if fade > 0.0 {
+                        // A value it already holds stays as it is: an infinite one too, which
+                        // the step below would turn into NaN (inf - inf). Our probe read
+                        // `smooth(1.0 / 0.0, 5, 5)` as +inf in Iris 1.11.7.
+                        if fade > 0.0 && *state != val {
                             *state = val + (*state - val) * 0.5f64.powf(dt / (fade * FADE_UNIT));
                         } else {
                             *state = val;
@@ -1067,6 +1072,46 @@ mod tests {
                 "`BIOME_OLD` names no biome; it reads -1"
             ]
         );
+    }
+
+    /// Iris 1.11.7, read back with probe packs of our own in three scenes: with the lower bound
+    /// above the upper one, `clamp(5.0, 3.0, 1.0)`, `clamp(0.0, 3.0, 1.0)` and
+    /// `clamp(2.0, 3.0, 1.0)` read 3, and `clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))`
+    /// reads (3, 0.5).
+    #[test]
+    fn clamp_with_its_bounds_crossed_gives_the_lower_one() {
+        let mut c = custom(
+            "uniform.float.a = clamp(5.0, 3.0, 1.0)\n\
+             uniform.float.b = clamp(0.0, 3.0, 1.0)\n\
+             uniform.float.c = clamp(2.0, 3.0, 1.0)\n\
+             uniform.float.d = clamp(2.0, 1.0, 3.0)\n\
+             uniform.float.e = clamp(-2.0, 1.0, 3.0)\n\
+             uniform.vec2.f = clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let v = c.eval(0.016, &|_| None);
+        let x: Vec<f64> = v[..5].iter().map(|v| v.v[0]).collect();
+        assert_eq!(x, [3.0, 3.0, 3.0, 2.0, 1.0]);
+        assert_eq!(&v[5].v[..2], &[3.0, 0.5]);
+    }
+
+    /// Iris 1.11.7, read back with probe packs of our own after 3 s to 30 s in a scene:
+    /// `smooth(1.0 / 0.0, 5, 5)` reads +inf, `smooth(-1.0 / 0.0, 5, 5)` -inf and
+    /// `smooth(0.0 / 0.0, 5, 5)` NaN.
+    #[test]
+    fn smooth_keeps_an_infinite_value() {
+        let mut c = custom(
+            "uniform.float.a = smooth(1.0 / 0.0, 5, 5)\n\
+             uniform.float.b = smooth(-1.0 / 0.0, 5, 5)\n\
+             uniform.float.c = smooth(0.0 / 0.0, 5, 5)\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        for _ in 0..100 {
+            let v = c.eval(0.016, &|_| None);
+            assert_eq!(v[0].v[0], f64::INFINITY);
+            assert_eq!(v[1].v[0], f64::NEG_INFINITY);
+            assert!(v[2].v[0].is_nan());
+        }
     }
 
     #[test]

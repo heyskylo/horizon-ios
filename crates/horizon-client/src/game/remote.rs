@@ -6367,6 +6367,7 @@ impl Game<'_> {
         if running {
             self.tick_particles();
         }
+        self.tick_frame_visuals(running);
         // Under `HORIZON_STILL` they wait for the world too: endermen's and blazes' particles
         // draw on the particles' random, and effects count down, on every tick a frozen
         // client runs, as many as the run took to get there.

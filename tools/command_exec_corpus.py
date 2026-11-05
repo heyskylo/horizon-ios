@@ -642,11 +642,13 @@ def entities():
         # So is a falling block, named after its block (`getTypeName`).
         cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
         cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
-        cmd('/tag @e[type=minecraft:falling_block,limit=1] list'),
-        cmd('/data get entity @e[type=minecraft:falling_block,limit=1] BlockState.Name'),
-        cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
-        cmd('/kill @e[type=minecraft:falling_block]'),
-        cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # Near the fixture only: terrain the Rust side ticks and the oracle never loads has its own
+        # falling gravel (see piglin_pickups).
+        cmd('/tag @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] BlockState.Name'),
+        cmd('/tp @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
+        cmd('/execute if entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
         # A firework rocket, with what `addAdditionalSaveData` writes.
         cmd('/summon minecraft:firework_rocket 4.5 210 8.5 {LifeTime:2000,NoGravity:1b,Tags:["r"]}'),
         cmd('/execute if entity @e[type=minecraft:firework_rocket,tag=r]'),
@@ -966,7 +968,9 @@ def execute():
         cmd('/execute facing 0 230 0 run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute facing entity @e[tag=ex,limit=1] feet run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute in minecraft:the_nether run setblock 0 200 0 minecraft:stone'),
-        cmd('/execute in minecraft:the_end if block 0 64 0 minecraft:air'),
+        # Far from the End's centre: the oracle's settles keep their tickets for the rest of the run, so a
+        # group that settles in the End (gateway passengers) leaves 0 64 0 loaded on the Java side only.
+        cmd('/execute in minecraft:the_end if block 1000 64 1000 minecraft:air'),
         cmd('/execute in minecraft:the_end run say elsewhere'),
         cmd('/execute in minecraft:nowhere run say nowhere'),
         cmd('/execute in minecraft:overworld run setblock 5 210 5 minecraft:dirt'),
@@ -2464,6 +2468,10 @@ def creative_shulker_drops():
 
 def piglin_pickups():
     """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    # The item checks look in the pen only: the Rust side block-ticks a wider ring of terrain than the
+    # oracle loads, where generated kelp breaks and gravel falls into flooded caves (as vanilla's own
+    # would once ticked), and those drops are no piglin's.
+    PEN = 'x=4.5,y=210,z=4.5,distance=..16'
     ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
                   '/fill 3 209 3 5 209 5 minecraft:stone')]
     for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
@@ -2484,15 +2492,15 @@ def piglin_pickups():
                    '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
             {'op': 'tick', 'n': 40},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             {'op': 'tick', 'n': 140},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
             # A baby drops nothing. What an adult's barter throws comes from the level's random (vanilla's is
             # unseeded), and the piglin picks some of it back up, so only the gold's fate is fixed: none of it lies
             # on the ground.
-            cmd('/execute if entity @e[type=minecraft:item]' if baby
-                else '/execute if items entity @e[type=minecraft:item] contents minecraft:gold_ingot'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]' if baby
+                else f'/execute if items entity @e[type=minecraft:item,{PEN}] contents minecraft:gold_ingot'),
         ]
         if baby:
             ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
@@ -2507,7 +2515,7 @@ def piglin_pickups():
                    '/summon minecraft:item 4.5 210 4.5 '
                    '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
             {'op': 'tick', 'n': 40},
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
         ]
     ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
@@ -3591,7 +3599,7 @@ def allay_invalid_brain_retention():
             ops.append(cmd('/scoreboard players get success h226', expect_result=success))
     ops += setup('/execute store result score after h226 run time query gametime')
     ops.append(cmd('/execute if score after h226 = before h226', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h226')
 
 
 def large_fireball_fire():
@@ -3680,7 +3688,8 @@ def mob_partial_block_suffocation():
             ops += setup(f'/kill @e[tag={eye}]')
         ops += setup(f'/kill {target}')
         ops.append({'op': 'tick', 'n': 25})
-    return ops
+    # Later groups run with the world's rules: piglins pick nothing up without mob_griefing.
+    return ops + setup('/gamerule mob_griefing true', '/gamerule random_tick_speed 3')
 
 
 
@@ -3729,7 +3738,7 @@ def mob_baby_attribute_reads():
     reads(subject, False)
     ops.extend(setup('/execute store result score after h227 run time query gametime'))
     ops.append(cmd('/execute if score after h227 = before h227', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h227')
 
 
 
@@ -4835,7 +4844,10 @@ def crafter_map_extension():
     ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
     ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
             cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
-    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map')
+    # Later groups build on the setup's empty, creative world: take the room, its floor and its chunk back.
+    return ops + setup('/setblock 4 200 3 air', '/setblock 4 200 4 air', '/setblock 4 200 5 air',
+                       '/fill 0 199 0 15 199 15 air', '/gamemode creative', '/clear @s',
+                       '/scoreboard objectives remove crafter_map', '/forceload remove 0 0 15 15')
 
 
 def advancement_loot_fixtures(group_names):
@@ -4916,7 +4928,8 @@ def advancement_world_loot_rewards(named_table=False, include_missing_ack=False)
                  '/scoreboard players operation elapsed reward_loot -= clock reward_loot')
     ops += [cmd('/scoreboard players get identity_changed reward_loot', expect_result=0),
             cmd('/scoreboard players get elapsed reward_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s')
+    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s',
+                       '/forceload remove 0 0 15 15')
 
 
 def advancement_empty_loot_reference():
@@ -4944,7 +4957,7 @@ def advancement_empty_loot_reference():
                  '/scoreboard players operation elapsed empty_loot -= clock empty_loot')
     ops += [cmd('/scoreboard players get identity_changed empty_loot', expect_result=0),
             cmd('/scoreboard players get elapsed empty_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove empty_loot')
+    return ops + setup('/scoreboard objectives remove empty_loot', '/forceload remove 0 0 15 15')
 
 
 def bell_server_glow():
@@ -5491,8 +5504,17 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
     return ops
 
 
+# Groups the full run leaves out: each runs alone in its own world (--only), so
+# what they leave behind reaches no other group.
+ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
+# These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
+ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES
+
+
 def groups():
     try:
+        from .allay_damage_corpus import allay_player_damage
         from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
@@ -5501,6 +5523,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
+        from allay_damage_corpus import allay_player_damage
         from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
@@ -5510,6 +5533,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('allay player damage immunity', allay_player_damage(cmd, setup)),
         ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
 
