@@ -244,6 +244,13 @@ impl Custom {
         self.smooth.clear();
     }
 
+    /// Restarts `smooth` and `random` for a frame of the world's tick `tick`, so a frame drawn
+    /// again at that tick evaluates the same (`HORIZON_STILL`).
+    pub fn restart_at(&mut self, tick: u64) {
+        self.restart_smoothing();
+        self.seed = (0x9e37_79b9_7f4a_7c15 ^ tick.wrapping_mul(0xbf58_476d_1ce4_e5b9)).max(1);
+    }
+
     /// Names the game's biomes (registry identifiers, in id order) for `BIOME_*`.
     pub fn set_biomes(&mut self, biomes: &[&str]) {
         self.constants = crate::biomes::constants(biomes);
@@ -1197,6 +1204,20 @@ mod tests {
         assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
         c.restart_smoothing();
         assert_eq!(eval(&mut c, 0.6), 0.6);
+    }
+
+    #[test]
+    fn a_restart_at_a_tick_evaluates_that_tick_the_same_again() {
+        let mut c = custom("uniform.float.r = random()\nuniform.float.s = smooth(target, 1000)\n");
+        let eval = |c: &mut Custom, tick: u64, t: f64| {
+            c.restart_at(tick);
+            c.eval(0.05, &|n: &str| (n == "target").then(|| Val::scalar(t)))
+        };
+        let first = eval(&mut c, 7, 0.0);
+        let other = eval(&mut c, 8, 0.6);
+        assert_eq!(eval(&mut c, 7, 0.0), first);
+        assert_ne!(other[0], first[0], "another tick draws another random");
+        assert_eq!(other[1].v[0], 0.6, "smooth starts at its target");
     }
 
     /// Iris 1.11.7, with a probe pack of our own: a first argument written as a number is the

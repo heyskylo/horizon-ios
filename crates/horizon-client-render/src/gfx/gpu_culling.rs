@@ -31,6 +31,12 @@
 //! walk's would and a thin shell more, alike on every backend; a frame whose
 //! sums could leave i32 is drawn by the CPU (`Prepared::Cpu`).
 //!
+//! Its statistics, the sections the pass kept and their draws (`counts[0]`,
+//! `counts[1]`), are copied after the pass into one of `READBACKS` small
+//! buffers with the CPU's part of the same frame (`copy_stats`), mapped once the
+//! frame is submitted (`submitted`, from the frame's after-submit hook) and
+//! taken in a frame or a few later (`collect`); nothing waits for them.
+//!
 //! A record also holds where its section's buckets of solid quads by the side
 //! they face end, and what `mesher::Sides::visible_from` compares the eye with
 //! for each, its margin in (`Sides::thresholds`); the tables hold the eye less
@@ -70,9 +76,17 @@ use super::{
     submit::Queue,
     upload::Uploads,
 };
-use crate::mesher::Sides;
+use crate::{graphics::GpuCullingOffer, mesher::Sides};
 use glam::{DVec3, DVec4, Vec3};
-use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
+use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Instant,
+};
 
 /// One section (`gpu_culling.wgsl`'s `Section`).
 #[repr(C)]
@@ -265,6 +279,15 @@ struct Params {
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
 /// and the draws, fewer only where a region was short.
 const STATS: u64 = 2;
+/// Statistics on their way back at once, a frame or a few late so the CPU never
+/// waits (as `cull`'s results).
+const READBACKS: usize = 3;
+const FREE: u8 = 0;
+const PENDING: u8 = 1;
+const MAPPED: u8 = 2;
+/// Its mapping failed or the device lost its buffer: never copied into or
+/// unmapped again, so the statistics stop (as `timing::GpuTimer`'s).
+const FAILED: u8 = 3;
 /// In `Params::flags` (the shader's `REACH`): cave culling's graph is in
 /// `reach`.
 const REACH: u32 = 1;
@@ -475,10 +498,31 @@ pub(super) fn supported(
         // The pass binds 8, the last cave culling's graph.
         && limits.max_storage_buffers_per_shader_stage >= 8
         && !super::flat::is_broken_intel_vulkan(info)
-        // DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
-        // pulled solid pipelines (those of a device with flat page groups) read the page.
-        // shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
-        && !(info.backend == wgpu::Backend::Dx12 && flat_min_sections.is_some())
+        && !loses_base_vertex(info, flat_min_sections.is_some())
+}
+
+/// DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
+/// pulled solid pipelines (those of a device with flat page groups) read the page.
+/// shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
+pub(super) fn loses_base_vertex(info: &wgpu::AdapterInfo, flat_page_groups: bool) -> bool {
+    info.backend == wgpu::Backend::Dx12 && flat_page_groups
+}
+
+/// What the settings offer (`graphics::GpuCullingOffer`): where `supported`
+/// holds, but not on a software adapter (WARP, lavapipe), whose pass would run
+/// on the CPU beside the frame, as occlusion culling's default has it; where it
+/// doesn't, DX12 with flat page groups says why (`loses_base_vertex`).
+pub(super) fn offer(
+    info: &wgpu::AdapterInfo,
+    supported: bool,
+    flat_page_groups: bool,
+) -> GpuCullingOffer {
+    match (supported, super::is_software(info.device_type)) {
+        (false, _) if loses_base_vertex(info, flat_page_groups) => GpuCullingOffer::Dx12,
+        (false, _) => GpuCullingOffer::Unsupported,
+        (true, true) => GpuCullingOffer::Software,
+        (true, false) => GpuCullingOffer::Offered,
+    }
 }
 
 /// A buffer that is recreated larger when it must hold more.
@@ -653,6 +697,7 @@ impl Records {
         self.fading = 0;
     }
     /// The sections with a record.
+    #[cfg(any(test, debug_assertions))]
     pub fn live(&self) -> usize {
         let free: u32 = self.free.iter().map(|word| word.count_ones()).sum();
         self.records.len() - free as usize
@@ -730,6 +775,18 @@ impl Fades {
     }
 }
 
+/// One GPU frame's statistics on their way back: `counts[..STATS]`, and what
+/// the CPU drew of the same frame.
+struct Readback {
+    buffer: wgpu::Buffer,
+    state: Arc<AtomicU8>,
+    /// Its frame (gfx.rs `frame_serial`), and the CPU's part of its statistics:
+    /// the sections it drew that the pass didn't count, its section draws, and
+    /// every draw call.
+    frame: u64,
+    cpu: [usize; 3],
+}
+
 /// The pass, its buffers and the records it draws from: made when GPU culling
 /// is switched on, dropped when it is switched off.
 pub(super) struct GpuCulling {
@@ -769,6 +826,11 @@ pub(super) struct GpuCulling {
     /// This frame's updates and table words, kept for their room.
     scratch: Vec<Update>,
     words: Vec<u32>,
+    /// The statistics on their way back (`Readback`), the next one to copy
+    /// into, and this frame's copy.
+    readbacks: Vec<Readback>,
+    next: usize,
+    current: Option<usize>,
 }
 
 impl GpuCulling {
@@ -828,6 +890,21 @@ impl GpuCulling {
             return None;
         }
         use wgpu::BufferUsages as U;
+        let readbacks = (0..READBACKS)
+            .map(|_| {
+                Some(Readback {
+                    buffer: try_create(
+                        device,
+                        "GPU culling statistics",
+                        STATS * 4,
+                        U::MAP_READ | U::COPY_DST,
+                    )?,
+                    state: Arc::new(AtomicU8::new(FREE)),
+                    frame: 0,
+                    cpu: [0; 3],
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(Self {
             pipelines,
             layout,
@@ -859,7 +936,8 @@ impl GpuCulling {
                 device,
                 "GPU culling counts",
                 (STATS + 64) * 4,
-                U::STORAGE | U::INDIRECT | U::COPY_DST | TEST_READ,
+                // The counts are copied out for the statistics (`copy_stats`).
+                U::STORAGE | U::INDIRECT | U::COPY_DST | U::COPY_SRC,
             )?,
             draws: Grown::new(
                 device,
@@ -891,6 +969,9 @@ impl GpuCulling {
             pass_pages: 1,
             scratch: Vec::new(),
             words: Vec::new(),
+            readbacks,
+            next: 0,
+            current: None,
         })
     }
 
@@ -1130,6 +1211,78 @@ impl GpuCulling {
     /// Draw calls `draw` makes.
     pub fn draw_calls(&self) -> usize {
         self.pages.len()
+    }
+
+    /// After `dispatch`, in the same encoder: the pass's counts copied out with
+    /// the CPU's part of frame `frame` (`Readback::cpu`), into the next readback
+    /// if it is free. While three frames' are on their way, this one's
+    /// statistics are never shown.
+    pub fn copy_stats(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, cpu: [usize; 3]) {
+        let r = &mut self.readbacks[self.next];
+        if r.state.load(Ordering::Acquire) != FREE {
+            return;
+        }
+        encoder.copy_buffer_to_buffer(&self.counts.buffer, 0, &r.buffer, 0, STATS * 4);
+        (r.frame, r.cpu) = (frame, cpu);
+        self.current = Some(self.next);
+    }
+
+    /// The frame's statistics to read back, started by calling it right after
+    /// the frame's submission (gfx's after-submit hook, on the submit thread
+    /// when the frame goes there), as `cull::Cull::submitted`.
+    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+        let i = self.current.take()?;
+        let r = &self.readbacks[i];
+        let (buffer, state) = (r.buffer.clone(), r.state.clone());
+        state.store(PENDING, Ordering::Release);
+        self.next = (i + 1) % READBACKS;
+        Some(move || {
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    state.store(
+                        if result.is_ok() { MAPPED } else { FAILED },
+                        Ordering::Release,
+                    );
+                });
+        })
+    }
+
+    /// The statistics that came back, their readbacks freed: the newest
+    /// frame's, as (frame, [sections drawn, section draws, draw calls]), the
+    /// pass's counts added to the CPU's part. Called as a frame starts, so a
+    /// copy no submission took (a frame that failed on the way) is dropped.
+    pub fn collect(&mut self, device: &wgpu::Device) -> Option<(u64, [usize; 3])> {
+        self.current = None;
+        if device.poll(wgpu::PollType::Poll).is_err() {
+            return None;
+        }
+        let mut newest: Option<(u64, [usize; 3])> = None;
+        for r in &self.readbacks {
+            if r.state.load(Ordering::Acquire) != MAPPED {
+                continue;
+            }
+            {
+                let Ok(data) = r.buffer.slice(..).get_mapped_range() else {
+                    // Device loss can destroy a buffer after its mapping
+                    // succeeded; unmapping it would panic (`timing::GpuTimer`).
+                    r.state.store(FAILED, Ordering::Release);
+                    continue;
+                };
+                // The mapping need not be 4-byte aligned: read the words unaligned.
+                let [kept, draws]: [u32; 2] = bytemuck::pod_read_unaligned(&data[..8]);
+                let [sections, cpu_draws, calls] = r.cpu;
+                if newest.is_none_or(|(frame, _)| r.frame > frame) {
+                    newest = Some((
+                        r.frame,
+                        [sections + kept as usize, cpu_draws + draws as usize, calls],
+                    ));
+                }
+            }
+            r.buffer.unmap();
+            r.state.store(FREE, Ordering::Release);
+        }
+        newest
     }
 }
 
@@ -2581,8 +2734,12 @@ mod tests {
                 }
             }
             gpu.dispatch(&mut encoder, None);
+            // Its statistics come back with a CPU part of the case's own.
+            let cpu = [case * 7, case * 3, case];
+            gpu.copy_stats(&mut encoder, case as u64, cpu);
             uploads.finish(&encoder);
             queue.submit([encoder.finish()]);
+            gpu.submitted().expect("a readback free")();
             let pages = u64::from(gpu.pass_pages);
             let counts = read(device, queue, &gpu.counts.buffer, (STATS + pages) * 4);
             let draws = read(device, queue, &gpu.draws.buffer, gpu.draws.bytes);
@@ -2619,6 +2776,13 @@ mod tests {
                 [kept_sections, draw_count],
                 "case {case}: sections kept, draws"
             );
+            // The reads above waited for the GPU.
+            let (kept, drawn) = (kept_sections as usize, draw_count as usize);
+            assert_eq!(
+                gpu.collect(device),
+                Some((case as u64, [cpu[0] + kept, cpu[1] + drawn, cpu[2]])),
+                "case {case}: statistics"
+            );
             compared += kept_sections as usize;
         }
         // Not a comparison of empty lists, nor of a test that keeps everything.
@@ -2643,6 +2807,73 @@ mod tests {
             band[0] > 0 && band[1] > 0,
             "the sky band left out and kept {band:?}"
         );
+    }
+
+    /// The statistics come back with their frame, in place and from the submit
+    /// thread, submitted as gfx.rs submits frames (`submit_later`, or in place
+    /// with its `after` handed back): three frames on their way fill the ring, a
+    /// fourth's are skipped, `collect` takes in the newest; and a readback whose
+    /// buffer the device lost after its mapping goes `FAILED`, never copied into
+    /// or unmapped again (as `timing::GpuTimer`'s), so the statistics stop.
+    #[test]
+    fn the_statistics_come_back_with_their_frame() {
+        use super::super::submit::{AfterSubmit, Job};
+        on_each_device(|device, queue| {
+            for threaded in [false, true] {
+                let queue = Queue::new((**queue).clone(), threaded);
+                let mut gpu = GpuCulling::new(device).expect("the pass");
+                // As if the pass kept 5 sections and drew 7 times.
+                queue.write_buffer(&gpu.counts.buffer, 0, bytemuck::cast_slice(&[5_u32, 7]));
+                // Whether the frame's statistics went out.
+                let frame = |gpu: &mut GpuCulling, f: u64| {
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    gpu.copy_stats(&mut encoder, f, [f as usize, 10, 3]);
+                    let after = gpu.submitted().map(|g| Box::new(g) as AfterSubmit);
+                    let sent = after.is_some();
+                    let job = Job {
+                        encoder,
+                        surface: None,
+                        after,
+                    };
+                    if let Err(back) = queue.submit_later(job) {
+                        queue.submit([back.encoder.finish()]);
+                        if let Some(read) = back.after {
+                            read();
+                        }
+                    }
+                    sent
+                };
+                let landed = |gpu: &mut GpuCulling| {
+                    queue.landed();
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    gpu.collect(device)
+                };
+                for f in 1..=3 {
+                    assert!(frame(&mut gpu, f), "frame {f}, threaded {threaded}");
+                }
+                assert!(!frame(&mut gpu, 4), "a full ring, threaded {threaded}");
+                assert_eq!(landed(&mut gpu), Some((3, [3 + 5, 10 + 7, 3])));
+                assert_eq!(gpu.collect(device), None);
+                assert!(frame(&mut gpu, 5));
+                assert_eq!(landed(&mut gpu), Some((5, [5 + 5, 10 + 7, 3])));
+                // Frame 6's buffer destroyed after its mapping (#6320).
+                let lost = gpu.next;
+                assert!(frame(&mut gpu, 6));
+                queue.landed();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                gpu.readbacks[lost].buffer.destroy();
+                assert_eq!(gpu.collect(device), None);
+                for f in 7..=12 {
+                    let sent = frame(&mut gpu, f);
+                    let back = landed(&mut gpu);
+                    let state = gpu.readbacks[lost].state.load(Ordering::Acquire);
+                    assert_eq!(state, FAILED, "frame {f}, threaded {threaded}");
+                    // The two other readbacks, then none.
+                    assert_eq!(sent, f <= 8, "frame {f}, threaded {threaded}");
+                    assert_eq!(back.is_some(), f <= 8, "frame {f}, threaded {threaded}");
+                }
+            }
+        });
     }
 
     /// `draw`'s count draws draw what the pass kept, page by page: each kept

@@ -416,6 +416,23 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
+                    case "light" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#light " + p);
+                        record.add("messages", new JsonArray());
+                        JsonArray results = new JsonArray();
+                        for (var layer : new net.minecraft.world.level.LightLayer[]{
+                            net.minecraft.world.level.LightLayer.BLOCK, net.minecraft.world.level.LightLayer.SKY}) {
+                            JsonArray value = new JsonArray();
+                            value.add(true);
+                            value.add(player.level().getBrightness(layer, pos));
+                            results.add(value);
+                        }
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
@@ -425,6 +442,14 @@ public final class VanillaCommandExecOracle {
                             net.minecraft.core.Direction.from3DDataValue(face), pos, false);
                         player.gameMode.useItemOn(player, player.level(), player.getMainHandItem(),
                             net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                    }
+                    case "crafter_tick" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        var state = player.level().getBlockState(pos);
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
+                            throw new IllegalStateException("crafter tick without a crafter");
+                        state.tick(player.level(), pos, player.level().getRandom());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");

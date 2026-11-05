@@ -355,7 +355,8 @@ fn passed_cells_count_toward_the_budget() {
     }
 }
 
-/// Columns whose x + z is odd are missing; sections from 4 up (block y 64 and above) hold only
+/// Every third column along x is missing (chunk x mod 3 = 2), so rows cross both loaded
+/// neighbours and missing columns; sections from 4 up (block y 64 and above) hold only
 /// air; below, a full block stands wherever x + y + z is a multiple of 7. With `hooks` it says so
 /// (`section_is_empty`, `missing_chunks_stay_missing`); without, it is walked cell by cell.
 struct Sparse {
@@ -372,7 +373,7 @@ impl BlockCollisionWorld for Sparse {
     type Chunk = ChunkPos;
     fn collision_chunk(&mut self, p: ChunkPos) -> io::Result<Option<ChunkPos>> {
         self.queries += 1;
-        Ok(((p.x + p.z) & 1 == 0).then_some(p))
+        Ok((p.x.rem_euclid(3) != 2).then_some(p))
     }
     fn collision_block(&mut self, chunk: ChunkPos, p: BlockPos) -> io::Result<CollisionBlock> {
         assert_eq!(chunk, p.chunk());
@@ -447,7 +448,9 @@ fn passing_missing_chunks_and_empty_sections_changes_nothing() {
         // Thin, along x through many columns.
         Aabb::new(Vec3::new(-100.5, 62.4, 7.2), Vec3::new(140.5, 64.6, 7.8)),
         // Inside one missing column.
-        Aabb::new(Vec3::new(17.0, 10.0, 0.5), Vec3::new(30.0, 12.0, 12.5)),
+        Aabb::new(Vec3::new(33.0, 10.0, 0.5), Vec3::new(46.0, 12.0, 12.5)),
+        // Across two loaded neighbours, sections 3 and 4: rows go back and forth between them.
+        Aabb::new(Vec3::new(5.3, 60.2, 2.5), Vec3::new(27.6, 67.5, 9.4)),
     ];
     for bounds in boxes {
         for suffocating in [false, true] {
