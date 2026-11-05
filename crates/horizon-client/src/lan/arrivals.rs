@@ -1,14 +1,17 @@
 //! Players that are about to arrive from another server, and a connected
 //! player read out of this one and sent away: the control endpoint's
-//! `player-expect`, `player-export` and `player-release`
+//! `player-expect`, `player-drop`, `player-export` and `player-release`
 //! (`game/dedicated/transfer.rs` runs them).
 //!
 //! A proxy that moves a player between two servers first tells the target
-//! server who is coming (`player-expect <uuid>`), and reads the player out of
-//! the source (`player-export <uuid> [freeze]`). Nothing here may last without
-//! bound, because a proxy that dies in the middle of a move leaves its
-//! expectations and its freezes behind: every expectation expires, the table
-//! has a size cap, and a freeze is let go by itself.
+//! server who is coming (`player-expect <uuid>`); the player's next login is then
+//! taken in as a *held* player: connected, receiving the world, but not
+//! simulated, shown or announced until the hand-over finishes. It reads the
+//! player out of the source (`player-export <uuid> [freeze]`). Nothing here may
+//! last without bound, because a proxy that dies in the middle of a move leaves
+//! its expectations, its held players and its freezes behind: every expectation
+//! expires, the table has a size cap, a held player is dropped and a freeze is
+//! let go by themselves.
 //!
 //! All of it is off unless `server.toml`'s `[transfer]` turns it on
 //! (horizon-server passes it to the game as `--transfers`, [`Settings`]). While
@@ -21,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// `server.toml`'s `[transfer]`, as horizon-server passes it: `--transfers
-/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30`.
+/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60`.
 /// A key left out keeps its default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -34,6 +37,9 @@ pub struct Settings {
     /// Server ticks a player may stay frozen for a hand-over: a proxy that dies
     /// in the middle of one must not leave the player stuck.
     pub max_freeze_ticks: u64,
+    /// Server ticks a held player may wait for its hand-over before the server
+    /// drops it.
+    pub max_hold_ticks: u64,
 }
 
 impl Default for Settings {
@@ -43,6 +49,7 @@ impl Default for Settings {
             max_expect: Duration::from_secs(60),
             max_expected: 64,
             max_freeze_ticks: 20 * 30,
+            max_hold_ticks: 20 * 60,
         }
     }
 }
@@ -68,6 +75,9 @@ impl Settings {
                 "max_expect_seconds" => s.max_expect = Duration::from_secs(n),
                 "max_expected" => {
                     s.max_expected = usize::try_from(n).map_err(|_| "max_expected is too large")?
+                }
+                "max_hold_seconds" => {
+                    s.max_hold_ticks = n.checked_mul(20).ok_or("max_hold_seconds is too large")?
                 }
                 "max_freeze_seconds" => {
                     s.max_freeze_ticks =
@@ -174,6 +184,11 @@ impl Expectations {
         }
     }
 
+    /// Forgets the expectation of `uuid`. Returns whether there was one.
+    pub fn forget(&mut self, uuid: u128) -> bool {
+        self.until.remove(&uuid).is_some()
+    }
+
     /// Drops the expectations whose time has passed and returns them, so the
     /// caller can log that the player never came.
     pub fn expire(&mut self, now: Instant) -> Vec<u128> {
@@ -240,6 +255,12 @@ fn new_handover_id() -> Result<u128, String> {
     Ok(u128::from_le_bytes(bytes))
 }
 
+/// Whether a held player that joined at tick `since` has waited too long at tick
+/// `now` for its hand-over, for a wait of at most `max` ticks.
+pub fn held_too_long(since: u64, now: u64, max: u64) -> bool {
+    now.saturating_sub(since) >= max
+}
+
 /// Whether a player frozen at tick `since` has been frozen too long at tick
 /// `now`, for a freeze of at most `max` ticks.
 pub fn frozen_too_long(since: u64, now: u64, max: u64) -> bool {
@@ -247,13 +268,15 @@ pub fn frozen_too_long(since: u64, now: u64, max: u64) -> bool {
 }
 
 /// Why the connected player `uuid` cannot be exported now, or the index of its
-/// guest.
+/// guest. A held player is not exportable: it has no state of its own yet.
 pub fn check_exportable(hub: &Hub, uuid: u128) -> Result<usize, &'static str> {
     let Some(i) = hub.guests.iter().position(|g| g.uuid == uuid) else {
         return Err("that player is not connected to this server");
     };
     let g = &hub.guests[i];
-    if !g.placed {
+    if g.held {
+        Err("that player is held: it has not been handed over yet")
+    } else if !g.placed {
         Err("that player has not finished joining")
     } else if !g.left_reason.is_empty() {
         Err("that player is leaving")
@@ -356,6 +379,17 @@ pub fn export_reply(hub: &Hub, i: usize, record: serde_json::Value) -> serde_jso
     reply
 }
 
+/// The line written when a player is held: it logged in as the player a proxy expected.
+pub fn held_line(name: &str) -> String {
+    format!("{name} is held: it arrives from another server")
+}
+
+/// The line written when a held player's connection ends before it was placed: it was
+/// never announced, so it has no "left the game".
+pub fn dropped_line(name: &str, reason: &str) -> String {
+    format!("{name} was dropped while held: {reason}")
+}
+
 /// A unique id as text, with or without dashes.
 pub fn parse_uuid(text: &str) -> Option<u128> {
     let plain: String = text.chars().filter(|c| *c != '-').collect();
@@ -407,6 +441,30 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
         }),
         Err(ExpectError::Full) => error("too many players are expected at once"),
     }
+}
+
+/// `player-drop <uuid>`: forgets the expectation of that player, and
+/// disconnects it if it is already held, without a save or a word to anyone.
+pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
+    if hub.transfers.is_none() {
+        return error(OFF);
+    }
+    let mut parts = args.split_whitespace();
+    let Some(uuid) = parts.next().and_then(parse_uuid) else {
+        return error("player-drop needs the player's unique id");
+    };
+    if parts.next().is_some() {
+        return error("player-drop takes only a unique id");
+    }
+    let held = hub.drop_held(uuid);
+    let expected = hub
+        .transfers
+        .as_ref()
+        .is_some_and(|t| t.table().forget(uuid));
+    if !held && !expected {
+        return error("no player with that unique id is held or expected");
+    }
+    serde_json::json!({ "ok": true, "held": held, "expected": expected })
 }
 
 /// `player-release <uuid> <hand-over> moved [announce]` or `player-release <uuid> <hand-over>
@@ -502,6 +560,27 @@ mod tests {
         e.expect(A, secs(5), t0).unwrap();
         assert_eq!(e.expect(A, secs(30), t0 + secs(4)), Ok(true));
         assert!(e.take(A, t0 + secs(20)));
+    }
+
+    #[test]
+    fn a_held_player_waits_one_minute_of_ticks() {
+        let max = Settings::default().max_hold_ticks;
+        assert_eq!(max, 1200);
+        assert!(!held_too_long(100, 100 + 1199, max));
+        assert!(held_too_long(100, 100 + 1200, max));
+        // A clock that went backwards never drops anyone.
+        assert!(!held_too_long(500, 100, max));
+    }
+
+    #[test]
+    fn forgetting_removes_only_that_player() {
+        let t0 = Instant::now();
+        let mut e = Expectations::default();
+        e.expect(A, secs(10), t0).unwrap();
+        e.expect(B, secs(10), t0).unwrap();
+        assert!(e.forget(A));
+        assert!(!e.forget(A));
+        assert!(e.take(B, t0));
     }
 
     #[test]
@@ -715,6 +794,15 @@ mod hub_tests {
         packets(rx).into_iter().map(|(id, _)| id).collect()
     }
 
+    /// What the network thread does as a login starts (`lan/conn.rs`): the login
+    /// uses up the player's expectation, if there is one.
+    fn login_starts(hub: &mut Hub, uuid: u128) {
+        let taken = table(hub).take(uuid, Instant::now());
+        if let Some(g) = hub.guests.iter_mut().find(|g| g.uuid == uuid) {
+            g.expected = taken;
+        }
+    }
+
     fn place(hub: &mut Hub, conn: u32) {
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
         let border = crate::worldborder::WorldBorder::default();
@@ -783,39 +871,263 @@ mod hub_tests {
         assert!(table(&hub).is_empty());
     }
 
-    /// A login takes the expectation from the table the network threads share
-    /// with the hub (`lan/conn.rs`, as the login starts), so nothing is reported
-    /// when its time would have run out; another player's stays.
+    /// The control: a player nobody expected is announced as always, to the
+    /// others by a chat line and a player-list entry.
     #[test]
-    fn a_login_uses_up_the_expectation_of_that_player_only() {
+    fn an_ordinary_login_is_announced_to_the_others() {
         let mut hub = hub();
-        let now = Instant::now();
-        table(&hub).expect(2, Duration::from_secs(10), now).unwrap();
-        table(&hub).expect(3, Duration::from_secs(10), now).unwrap();
-        let shared = hub.transfers.as_ref().unwrap().expected.clone();
-        assert!(shared.lock().unwrap().take(2, now));
-        let (mut newcomer, _mine) = guest(2, 2, "Newcomer");
-        newcomer.expected = true;
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
         hub.guests.push(newcomer);
         place(&mut hub, 2);
-        assert!(hub.guests[0].placed);
-        assert_eq!(table(&hub).len(), 1, "the other player is still expected");
-        assert!(table(&hub).take(3, now));
+        let told = ids(&seen);
+        assert!(told.contains(&id::SYSTEM_CHAT), "{told:?}");
+        assert!(told.contains(&id::PLAYER_INFO_UPDATE), "{told:?}");
+        assert!(hub.guests[1].placed && !hub.guests[1].held);
+        assert_eq!(ids(&mine)[0], id::LOGIN);
     }
 
-    /// While `[transfer]` is off every request is refused, there is no table,
-    /// and a tick does nothing for transfers.
+    /// A player the proxy announced is held: it gets the whole join sequence,
+    /// and the player already there is told nothing at all.
     #[test]
-    fn with_transfers_off_every_request_is_refused() {
+    fn an_expected_player_is_held_and_no_one_else_hears_of_it() {
         let mut hub = hub();
-        hub.transfers = None;
-        let reply = super::expect_request(&mut hub, UUID, Instant::now());
-        assert_eq!(reply["error"], super::OFF);
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        table(&hub)
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+        let g = &hub.guests[1];
+        assert!(g.held && !g.placed);
+        assert!(table(&hub).is_empty(), "the login used up the expectation");
+        let sent = ids(&mine);
+        assert_eq!(sent[0], id::LOGIN);
+        for wanted in [id::PLAYER_INFO_UPDATE, id::SET_CHUNK_CACHE_CENTER] {
+            assert!(
+                sent.contains(&wanted),
+                "packet {wanted} missing from {sent:?}"
+            );
+        }
+        // The held player is in its own list but did not announce itself.
+        assert!(!sent.contains(&id::SYSTEM_CHAT), "{sent:?}");
+    }
+
+    /// An expectation is for one player: another uuid logs in as usual.
+    #[test]
+    fn the_expectation_of_one_player_does_not_hold_another() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, _mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        table(&hub)
+            .expect(3, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        assert!(hub.guests[1].placed && !hub.guests[1].held);
+        assert!(ids(&seen).contains(&id::SYSTEM_CHAT));
+        assert_eq!(table(&hub).len(), 1, "the other player is still expected");
+    }
+
+    /// A held player whose hand-over never finishes is dropped after a minute of
+    /// ticks, and the players in the world are told nothing about it.
+    #[test]
+    fn a_held_player_that_is_never_imported_is_dropped_without_a_word() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        table(&hub)
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        let _ = (ids(&seen), ids(&mine));
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        // Two ticks short of the limit (poll counts one): still waiting.
+        hub.ticks = hub.guests[1].held_since + super::Settings::default().max_hold_ticks - 2;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        let events = hub.poll(&mut ctx);
+        assert!(!events.iter().any(|e| is_warn(e, "dropped")));
+        // At the limit it is kicked, with a warning in the log.
+        let events = hub.poll(&mut ctx);
+        assert!(
+            events
+                .iter()
+                .any(|e| is_warn(e, "Newcomer") && is_warn(e, "dropped"))
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The connection closes: the hub removes the guest.
+        let gone = hub.remove_guest(1, "Timed out");
+        assert!(gone.held && !gone.placed);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+    }
+
+    /// The control for the one above: when a placed player leaves, the others
+    /// are told.
+    #[test]
+    fn a_placed_player_leaving_is_announced() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (mut leaver, _mine) = guest(2, 2, "Leaver");
+        leaver.placed = true;
+        hub.guests.push(leaver);
+        hub.remove_guest(1, "bye");
+        let told = ids(&seen);
+        assert!(told.contains(&id::PLAYER_INFO_REMOVE), "{told:?}");
+        assert!(told.contains(&id::SYSTEM_CHAT), "{told:?}");
+    }
+
+    /// A held player is sent the chunks and the entities around it, and takes
+    /// nothing from the players in the world: they still get their chunks, and
+    /// never learn the held player's entity.
+    #[test]
+    fn a_held_player_sees_the_world_without_the_world_seeing_it() {
+        let mut hub = hub();
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        for x in -5..=5 {
+            for z in -5..=5 {
+                // Only a lit column is sent.
+                let mut chunk = crate::chunk::Chunk::empty(x, z);
+                chunk.lit = true;
+                world.chunks.insert((x, z), std::sync::Arc::new(chunk));
+            }
+        }
+        let border = crate::worldborder::WorldBorder::default();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        // A second player in the world, to show that players are tracked at all.
+        let (mut other, _other_rx) = guest(3, 3, "Other");
+        other.placed = true;
+        hub.guests.push(other);
+        table(&hub)
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        // The server has run a few ticks since they joined.
+        hub.ticks = 10;
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        let (mut held_chunks, mut watcher_chunks) = (0, 0);
+        let (mut held_adds, mut watcher_adds) = (Vec::new(), Vec::new());
+        for _ in 0..30 {
+            hub.tick_level(&mut ctx);
+            hub.end_tick();
+            let mine_now = packets(&mine);
+            let seen_now = packets(&seen);
+            held_chunks += mine_now
+                .iter()
+                .filter(|p| p.0 == id::LEVEL_CHUNK_WITH_LIGHT)
+                .count();
+            watcher_chunks += seen_now
+                .iter()
+                .filter(|p| p.0 == id::LEVEL_CHUNK_WITH_LIGHT)
+                .count();
+            held_adds.extend(added_of(&mine_now));
+            watcher_adds.extend(added_of(&seen_now));
+        }
+        assert!(
+            held_chunks > 0,
+            "the held player is sent chunks (held {held_chunks}, watcher {watcher_chunks})"
+        );
+        assert!(watcher_chunks > 0, "the placed player is still sent chunks");
+        assert!(
+            watcher_adds.contains(&3),
+            "players are tracked at all: {watcher_adds:?}"
+        );
+        assert!(
+            held_adds.contains(&1),
+            "the held player sees the watcher: {held_adds:?}"
+        );
+        assert!(
+            !watcher_adds.contains(&2),
+            "the watcher must not see the held player: {watcher_adds:?}"
+        );
+    }
+
+    /// The entity ids in the Add Entity packets among some packets.
+    fn added_of(packets: &[(i32, Vec<u8>)]) -> Vec<i32> {
+        packets
+            .iter()
+            .filter(|(i, _)| *i == id::ADD_ENTITY)
+            .map(|(_, payload)| {
+                horizon_protocol::buf::Reader::new(payload)
+                    .varint()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    /// A held player's acknowledgements are handled (they keep the chunks
+    /// coming), and nothing else it sends reaches the world.
+    #[test]
+    fn a_held_player_is_heard_only_when_it_acknowledges() {
+        use horizon_protocol::packets::play::{ChunkBatchReceived, MovePlayerPos, Serverbound};
+        let mut hub = hub();
+        let (newcomer, _mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        table(&hub)
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        let g = &mut hub.guests[0];
+        g.unacknowledged = 3;
+        let before = g.position;
+        g.inbox.push_back((
+            Serverbound::MovePlayerPos(MovePlayerPos {
+                x: before[0] + 40.0,
+                y: before[1],
+                z: before[2],
+                flags: 1,
+            }),
+            10,
+        ));
+        g.inbox.push_back((
+            Serverbound::ChunkBatchReceived(ChunkBatchReceived {
+                chunks_per_tick: 12.0,
+            }),
+            5,
+        ));
+        g.inbox_bytes = 15;
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
         let border = crate::worldborder::WorldBorder::default();
         let mut next = 100;
         let mut ctx = tick_context(&mut world, &border, &mut next);
-        assert!(hub.poll(&mut ctx).is_empty());
+        hub.drain_packets(&mut ctx);
+        let g = &hub.guests[0];
+        assert_eq!(g.position, before, "a held player does not move");
+        assert_eq!(g.unacknowledged, 2, "its acknowledgement was handled");
+        assert_eq!(g.chunks_per_tick, 12.0);
+        assert_eq!(g.inbox_bytes, 0);
     }
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
@@ -914,6 +1226,69 @@ mod hub_tests {
         );
     }
 
+    /// Dropping a held player disconnects it and says nothing to the world.
+    #[test]
+    fn player_drop_removes_a_held_player_without_a_word_to_anyone() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        // The proxy announces the player first; then the player logs in.
+        assert_eq!(
+            super::expect_request(&mut hub, UUID, Instant::now())["ok"],
+            true
+        );
+        let (newcomer, mine) = guest(2, UUID_N, "Newcomer");
+        hub.guests.push(newcomer);
+        login_starts(&mut hub, UUID_N);
+        place(&mut hub, 2);
+        let _ = (ids(&seen), ids(&mine));
+        let reply = super::drop_request(&mut hub, UUID);
+        assert_eq!(
+            (reply["held"].as_bool(), reply["expected"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The connection closes and the hub forgets the guest.
+        let gone = hub.remove_guest(1, "dropped");
+        assert!(gone.held && !gone.placed);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+    }
+
+    #[test]
+    fn player_drop_forgets_an_expectation_and_refuses_a_stranger() {
+        let mut hub = hub();
+        super::expect_request(&mut hub, UUID, Instant::now());
+        let reply = super::drop_request(&mut hub, UUID);
+        assert_eq!(
+            (reply["held"].as_bool(), reply["expected"].as_bool()),
+            (Some(false), Some(true))
+        );
+        assert!(table(&hub).is_empty());
+        let reply = super::drop_request(&mut hub, UUID);
+        assert!(reply["error"].is_string(), "{reply}");
+        assert!(super::drop_request(&mut hub, "nonsense")["error"].is_string());
+    }
+
+    /// A placed player cannot be dropped this way: only a held one.
+    #[test]
+    fn player_drop_leaves_a_placed_player_alone() {
+        let mut hub = hub();
+        let (mut here, rx) = guest(1, UUID_N, "Here");
+        here.placed = true;
+        hub.guests.push(here);
+        let reply = super::drop_request(&mut hub, UUID);
+        assert!(reply["error"].is_string(), "{reply}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a placed player must not be disconnected"
+        );
+    }
+
     /// The keys a vanilla server writes in every player's file, read with `javap` from the
     /// 26.3 server jar: `Player.addAdditionalSaveData` (Inventory, SelectedItemSlot,
     /// EnderItems, XpLevel, XpP, XpTotal, XpSeed, abilities), `FoodData` (foodLevel,
@@ -996,6 +1371,13 @@ mod hub_tests {
         hub.guests[0].sleeping = false;
         hub.guests[0].dead = true;
         assert_eq!(expect(&hub), Err("that player is dead"));
+        hub.guests[0].dead = false;
+        hub.guests[0].placed = false;
+        hub.guests[0].held = true;
+        assert_eq!(
+            expect(&hub),
+            Err("that player is held: it has not been handed over yet")
+        );
     }
 
     #[test]
@@ -1381,5 +1763,146 @@ mod hub_tests {
                 .any(|e| is_warn(e, "died while frozen"))
         );
         assert!(hub.guests[1].handover.is_none());
+    }
+
+    // ---- the world is loaded for a held player; how a held player's connection ended --
+
+    // ---- the world loaded around a held player; how its connection ended ----
+
+    #[test]
+    fn the_world_is_loaded_around_the_players_placed_and_the_held_ones_only() {
+        let mut hub = hub();
+        let overworld = |mut g: Guest, at: [f64; 3]| {
+            g.position = at;
+            g
+        };
+        // Placed in the level in place.
+        let (mut placed, _a) = guest(1, 1, "Placed");
+        placed.placed = true;
+        hub.guests.push(overworld(placed, [8.0, 64.0, 8.0]));
+        // Held: sent the level too, so the level must be loaded around it.
+        let (mut held, _b) = guest(2, 2, "Held");
+        held.held = true;
+        hub.guests.push(overworld(held, [100.5, 64.0, -3.0]));
+        // Neither (still logging in): nothing to load for it.
+        let (idle, _c) = guest(3, 3, "Idle");
+        hub.guests.push(overworld(idle, [500.0, 64.0, 500.0]));
+        // Placed in another level.
+        let (mut elsewhere, _d) = guest(4, 4, "Elsewhere");
+        elsewhere.placed = true;
+        elsewhere.dimension = "minecraft:the_nether".into();
+        hub.guests.push(overworld(elsewhere, [900.0, 64.0, 900.0]));
+        assert_eq!(hub.loading_chunks(|_| true), vec![(0, 0), (6, -1)]);
+        // The caller can leave a player out (a spectator that may not load chunks).
+        assert_eq!(hub.loading_chunks(|g| g.name != "Held"), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn a_dropped_held_player_keeps_how_its_connection_really_ended() {
+        let mut hub = hub();
+        let (mut held, _rx) = guest(2, UUID_N, "Held");
+        held.held = true;
+        hub.guests.push(held);
+        assert!(super::drop_request(&mut hub, UUID)["ok"] == true);
+        let gone = hub.remove_guest(0, "Invalid packet 0: unexpected end of data");
+        assert_eq!(
+            gone.left_reason,
+            "dropped before its hand-over (the connection ended: Invalid packet 0: unexpected end of data)"
+        );
+    }
+
+    #[test]
+    fn a_held_player_whose_connection_ends_by_itself_logs_the_real_reason() {
+        let mut hub = hub();
+        let (mut held, _rx) = guest(2, UUID_N, "Held");
+        held.held = true;
+        hub.guests.push(held);
+        let gone = hub.remove_guest(0, "Invalid packet 0: unexpected end of data");
+        assert_eq!(gone.left_reason, "Invalid packet 0: unexpected end of data");
+    }
+
+    /// The control: a placed player keeps the reason it was kicked with, as vanilla logs it.
+    #[test]
+    fn a_placed_player_keeps_the_reason_it_was_kicked_with() {
+        let mut hub = hub();
+        let (mut placed, _rx) = guest(2, UUID_N, "Placed");
+        placed.placed = true;
+        placed.left_reason = "Timed out".into();
+        hub.guests.push(placed);
+        let gone = hub.remove_guest(0, "Disconnected");
+        assert_eq!(gone.left_reason, "Timed out");
+    }
+
+    // ---- the held player's limits and its picture of the others ------------
+
+    /// A held player held under the hub's own settings.
+    fn held_with_a_watcher(settings: super::Settings) -> (Hub, Receiver<Out>, Receiver<Out>) {
+        let mut hub = hub();
+        hub.transfers = Some(super::Transfers::new(settings));
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        table(&hub)
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        login_starts(&mut hub, 2);
+        place(&mut hub, 2);
+        assert!(hub.guests[1].held);
+        let _ = (ids(&seen), ids(&mine));
+        (hub, seen, mine)
+    }
+
+    /// `[transfer]`'s `max_hold_seconds` sets the wait, and a held player whose
+    /// connection is slow to close is kicked and reported once, not on every tick.
+    #[test]
+    fn a_held_player_waits_the_servers_time_and_is_dropped_once() {
+        let settings = super::Settings {
+            max_hold_ticks: 40,
+            ..super::Settings::default()
+        };
+        let (mut hub, _seen, _mine) = held_with_a_watcher(settings);
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.ticks = hub.guests[1].held_since + 38;
+        assert!(!hub.poll(&mut ctx).iter().any(|e| is_warn(e, "dropped")));
+        assert!(hub.poll(&mut ctx).iter().any(|e| is_warn(e, "dropped")));
+        // The guest stays until its connection closes: no second kick.
+        assert_eq!(hub.guests.len(), 2);
+        for _ in 0..5 {
+            assert!(!hub.poll(&mut ctx).iter().any(|e| is_warn(e, "dropped")));
+        }
+    }
+
+    /// A player who joins while another is held is in the held one's list, or
+    /// the held client drops its entity; and one who leaves goes from that list.
+    #[test]
+    fn a_held_player_hears_of_the_players_who_join_and_leave() {
+        let (mut hub, seen, mine) = held_with_a_watcher(super::Settings::default());
+        let (late, _late_rx) = guest(3, 3, "Late");
+        hub.guests.push(late);
+        place(&mut hub, 3);
+        let told = ids(&mine);
+        assert!(told.contains(&id::PLAYER_INFO_UPDATE), "{told:?}");
+        assert!(
+            !told.contains(&id::SYSTEM_CHAT),
+            "the held player is not in the chat yet: {told:?}"
+        );
+        let _ = ids(&seen);
+        let i = hub.guests.iter().position(|g| g.uuid == 1).unwrap();
+        hub.remove_guest(i, "Disconnected");
+        let told = ids(&mine);
+        assert!(told.contains(&id::PLAYER_INFO_REMOVE), "{told:?}");
+        assert!(told.contains(&id::REMOVE_ENTITIES), "{told:?}");
+    }
+
+    #[test]
+    fn player_drop_is_refused_with_transfers_off() {
+        let mut hub = hub();
+        hub.transfers = None;
+        assert_eq!(super::drop_request(&mut hub, UUID)["error"], super::OFF);
     }
 }

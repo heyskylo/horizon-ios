@@ -346,6 +346,12 @@ pub struct Guest {
     /// Its login started while a proxy said it would arrive from another
     /// server, and used that expectation up (`player-expect`).
     pub expected: bool,
+    /// A player arriving from another server (`arrivals`): connected and
+    /// receiving the world, but not placed, so no one else sees, hears or
+    /// hurts it until the hand-over finishes.
+    pub held: bool,
+    /// The hub tick at which it was held, to drop it if its hand-over never comes.
+    pub held_since: u64,
     /// Leaving for another server (`player-release moved`) without the "left the
     /// game" line.
     pub quiet_leave: bool,
@@ -529,6 +535,8 @@ impl Guest {
             placed: false,
             handover: None,
             expected: j.expected,
+            held: false,
+            held_since: 0,
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),
