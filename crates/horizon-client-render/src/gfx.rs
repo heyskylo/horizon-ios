@@ -50,11 +50,13 @@ mod inter_stage_tests;
 #[cfg(test)]
 pub(crate) mod test_gpu;
 mod weather;
+mod world_text;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
     DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY,
     TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
-    TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, mark_oit,
+    TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
+    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -1167,6 +1169,7 @@ pub struct Renderer {
     /// Native mods' world primitives (`Frame::world_primitives`).
     world_primitives: world_primitives::WorldPrimitives,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
+    world_text_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
@@ -1391,6 +1394,8 @@ pub struct Renderer {
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
+    /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
+    pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
     /// Vanilla's menu background blur, made on first use.
     menu_blur: Option<crate::menu_blur::MenuBlur>,
@@ -3731,6 +3736,12 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        let world_text_pipeline = world_text::pipeline(
+            &device,
+            Some(&entity_layout),
+            &entity_shader,
+            config.format.remove_srgb_suffix(),
+        );
         // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
         // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
         // ground it is stopped by, #5950). Terrain and entities are separate draw
@@ -4553,6 +4564,7 @@ impl Renderer {
             see_through_pipeline,
             world_primitives,
             text_polygon_offset_pipeline,
+            world_text_pipeline,
             celestial_pipeline,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
@@ -4682,6 +4694,7 @@ impl Renderer {
             pack_material_atlases: None,
             pack_terrain_flat: false,
             separate_ao: false,
+            pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
             post_effects: None,
@@ -6395,6 +6408,10 @@ impl Renderer {
             }
         }
     }
+    /// Lava's sprite layers (still and flowing), whose faces a pack's solid terrain draws.
+    pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
+        self.pack_lava_layers = layers;
+    }
     /// Runs the sky, material and post stages of one of Horizon's own shader packs from now
     /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
     /// stages' labels; on an error the pack that ran keeps running.
@@ -6458,6 +6475,9 @@ impl Renderer {
                 }
             });
         horizon_shaders::GameInputs {
+            terrain_parts: terrain
+                .as_ref()
+                .map(|t| pack_atlas::terrain_parts(t, &self.pack_lava_layers)),
             terrain,
             terrain_geometry,
             entity_geometry: Some(pack_entities::geometry_inputs()),
@@ -8242,6 +8262,8 @@ impl Renderer {
             translucent_particle_quads,
             translucent_item_quads,
             oit_entity_quads,
+            world_text_quads,
+            world_text_offset_quads,
         ] = self.entity_batch.update(
             entities,
             frame.additive,
@@ -8267,11 +8289,14 @@ impl Renderer {
             + shadow_quads
             + translucent_particle_quads
             + translucent_item_quads
-            + oit_entity_quads;
+            + oit_entity_quads
+            + world_text_quads
+            + world_text_offset_quads;
         laps.lap("r_draw_lists");
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
-        let base_quads = world_quads - oit_entity_quads;
+        let base_quads =
+            world_quads - oit_entity_quads - world_text_quads - world_text_offset_quads;
         let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
@@ -10007,6 +10032,29 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // Native world text is an ordinary depth-tested overlay, after
+            // particles (also after the OIT composite) and before the hand.
+            // Its own geometry is independent of block-entity lifetime.
+            if world_text_quads + world_text_offset_quads > 0 {
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                let first = base_quads + oit_entity_quads;
+                for (pipeline, count, offset) in [
+                    (&self.world_text_pipeline, world_text_quads, first),
+                    (
+                        &self.text_polygon_offset_pipeline,
+                        world_text_offset_quads,
+                        first + world_text_quads,
+                    ),
+                ] {
+                    if count > 0 {
+                        pass.set_pipeline(pipeline);
+                        pass.draw_indexed(0..count * 6, (offset * 4) as i32, 0..1);
+                    }
+                }
+                pass.set_bind_group(0, &self.group, &[]);
+            }
             // LevelRenderer.executeClassicTransparency: translucent targets'
             // outlines follow terrain, so its blending cannot wash them out.
             if outline_edges > 0 && frame.outline_after_terrain && !pack_draws_outline {
@@ -11718,7 +11766,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()

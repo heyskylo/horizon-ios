@@ -1,11 +1,12 @@
 //! Compiled material rule composition, sharing the condition worker's context.
 use super::{
-    Compiled, Context, Facts, MaterialCondition, MaterialConditions, MaterialSurfaceQueries,
-    density::MaterialDensitySources,
+    CachedNoise, Compiled, Context, Facts, MaterialCondition, MaterialConditions,
+    MaterialSurfaceQueries, PossibleBiomes, density::MaterialDensitySources,
 };
 use crate::{registry::BlockStateId, worldgen::DecodeError};
 use horizon_core::{
     density::DensitySampler,
+    noise::Noise,
     position::BlockPos,
     random::{PositionalRandom, RandomSource},
 };
@@ -285,6 +286,56 @@ where
             }
         }
     }
+    /// This rule as `compile` makes it for a chunk with `possible` biomes
+    /// (a copy without them): the biome conditions they decide are constant,
+    /// and folded away as `compile` folds them.
+    fn fold_biomes(&self, possible: Option<&PossibleBiomes>) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Block(block) => Self::Block(*block),
+            Self::Bandlands => Self::Bandlands,
+            Self::OreVein {
+                blocks,
+                raw_ore_chance,
+                densities,
+                random,
+                positive_y,
+            } => Self::OreVein {
+                blocks: *blocks,
+                raw_ore_chance: *raw_ore_chance,
+                densities: *densities,
+                random: random.clone(),
+                positive_y: *positive_y,
+            },
+            Self::Condition { condition, rule } => {
+                let condition = match possible {
+                    Some(possible) => condition.fold_biomes(possible),
+                    None => condition.clone(),
+                };
+                let rule = rule.fold_biomes(possible);
+                match condition.constant_result() {
+                    Some(false) => Self::Empty,
+                    Some(true) => rule,
+                    None => Self::Condition {
+                        condition,
+                        rule: Box::new(rule),
+                    },
+                }
+            }
+            Self::Sequence(children) => {
+                let mut result: Vec<_> = children
+                    .iter()
+                    .map(|child| child.fold_biomes(possible))
+                    .filter(|child| !matches!(child, Self::Empty))
+                    .collect();
+                match result.len() {
+                    0 => Self::Empty,
+                    1 => result.pop().unwrap(),
+                    _ => Self::Sequence(result),
+                }
+            }
+        }
+    }
     /// Whether applying this rule never gives `None` (only an error).
     fn always_produces(&self) -> bool {
         match self {
@@ -458,6 +509,133 @@ where
         };
         variants.rules[slot] = Some(rule);
         rule
+    }
+}
+/// A world's surface rule compiled once for every chunk of a generator
+/// worker: the rule before any chunk's possible biomes fold it, the noises it
+/// bound, and the densities (ore veins) it binds to each chunk's volume, in
+/// the order it bound them.
+pub struct CompiledSurfaceRule<R: RandomSource> {
+    rule: CompiledRule<R>,
+    noises: Vec<((String, bool), Arc<dyn Noise>)>,
+    densities: Vec<(Arc<dyn DensitySampler>, bool)>,
+}
+/// The densities `CompiledRule::compile` binds for `rule`, in its order,
+/// with whether it samples each over the volume now.
+fn density_bindings(rule: &MaterialRule, out: &mut Vec<(Arc<dyn DensitySampler>, bool)>) {
+    match rule {
+        MaterialRule::Reference(value) => density_bindings(value, out),
+        MaterialRule::OreVein {
+            density,
+            richness,
+            filler_gap,
+            ..
+        } => out.extend([
+            (Arc::clone(density), true),
+            (Arc::clone(richness), true),
+            (Arc::clone(filler_gap), false),
+        ]),
+        MaterialRule::Condition { then_run, .. } => density_bindings(then_run, out),
+        MaterialRule::Sequence(children) => {
+            for child in children {
+                density_bindings(child, out);
+            }
+        }
+        MaterialRule::Block(_) | MaterialRule::Bandlands => {}
+    }
+}
+impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
+where
+    R::Positional: Clone,
+{
+    /// `add_rule`, compiling `rule` only the first time `shared` is used:
+    /// later workers take the compiled rule and its noises, bind its densities
+    /// to their own volume in the same order, and fold it with their own
+    /// possible biomes as `compile` does. A worker that already holds rules or
+    /// noises, or a possible biome the surface doesn't number, compiles as
+    /// `add_rule` does.
+    pub fn add_shared_rule(
+        &mut self,
+        rule: &MaterialRule,
+        shared: &mut Option<CompiledSurfaceRule<R>>,
+    ) -> Result<usize, DecodeError> {
+        let fresh = self.rules.is_empty() && self.context.noises.is_empty();
+        if !fresh || self.rules.len() >= 8192 {
+            return self.add_rule(rule.clone());
+        }
+        let mut ids = Vec::new();
+        if let Some(names) = &self.context.possible_biomes {
+            for name in names {
+                let Some(Some(id)) = self.context.surface.biome_index(name) else {
+                    return self.add_rule(rule.clone());
+                };
+                let word = id as usize / 64;
+                if ids.len() <= word {
+                    ids.resize(word + 1, 0);
+                }
+                ids[word] |= 1 << (id % 64);
+            }
+        }
+        match shared {
+            Some(shared) => {
+                for (key, sampler) in &shared.noises {
+                    let is_3d = key.1;
+                    let index = self.context.noises.len();
+                    self.context.noises.push(CachedNoise {
+                        sampler: Arc::clone(sampler),
+                        is_3d,
+                        revision: if is_3d {
+                            self.context.block_revision
+                        } else {
+                            self.context.column_revision
+                        }
+                        .wrapping_sub(1),
+                        value: 0.0,
+                    });
+                    self.context.noise_indices.insert(key.clone(), index);
+                }
+                for (sampler, eager) in &shared.densities {
+                    self.context
+                        .surface
+                        .bind_density(Arc::clone(sampler), *eager)?;
+                }
+            }
+            None => {
+                let possible = self.context.possible_biomes.take();
+                let compiled =
+                    CompiledRule::compile(rule.clone(), &self.root, &mut self.context, 0, &mut 0);
+                self.context.possible_biomes = possible;
+                let compiled = compiled?;
+                let mut noises: Vec<_> = self
+                    .context
+                    .noise_indices
+                    .iter()
+                    .map(|(key, &index)| (index, key.clone()))
+                    .collect();
+                noises.sort_unstable_by_key(|(index, _)| *index);
+                let noises = noises
+                    .into_iter()
+                    .map(|(index, key)| (key, Arc::clone(&self.context.noises[index].sampler)))
+                    .collect();
+                let mut densities = Vec::new();
+                density_bindings(rule, &mut densities);
+                *shared = Some(CompiledSurfaceRule {
+                    rule: compiled,
+                    noises,
+                    densities,
+                });
+            }
+        }
+        let shared = shared.as_ref().expect("compiled above");
+        let possible = self
+            .context
+            .possible_biomes
+            .as_ref()
+            .map(|names| PossibleBiomes { names, ids });
+        let folded = shared.rule.fold_biomes(possible.as_ref());
+        let index = self.rules.len();
+        self.rules.push(folded);
+        Ok(index)
     }
 }
 impl<R: RandomSource, T: MaterialSurfaceQueries> MaterialConditions<R, MaterialDensitySources<T>> {
