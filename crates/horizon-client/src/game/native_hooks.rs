@@ -1024,6 +1024,7 @@ use horizon_client::{
     music::{Music, MusicLayer},
     particles::{ParticleOptions, ParticleType},
     text::Text,
+    world_primitives::WorldPrimitives,
 };
 use horizon_core::{
     geometry::Direction,
@@ -2753,6 +2754,20 @@ impl Game<'_> {
     /// (`native_shake_matrix`). API 82.
     pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
         mod_api::dispatch_camera_shake(self, mod_api::mods(), partial, shake);
+    }
+    /// Once a frame while the world is drawn, `partial` ticks past the last tick (0 to 1), the
+    /// camera at `camera`: add lines, box outlines, filled boxes, beacon-style beams and text
+    /// facing the camera, in world coordinates, to `primitives`, each depth tested or seen
+    /// through walls (`horizon_client::world_primitives`). Horizon draws them with its own
+    /// pipelines after the entities and before the first-person hand, at the world's
+    /// resolution, depth and TAA. Not on the title screen. API @API:world_primitives@.
+    pub(super) fn native_world_primitives(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        primitives: &mut WorldPrimitives,
+    ) {
+        mod_api::dispatch_world_primitives(self, mod_api::mods(), partial, camera, primitives);
     }
     /// Name tag visibility and optional replacement text. API 372.
     pub(super) fn native_render_name_tag(

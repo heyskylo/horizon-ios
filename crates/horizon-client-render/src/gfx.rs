@@ -209,6 +209,7 @@ mod view;
 mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
+pub mod world_primitives;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
 /// its fixed-point UVs (`terrain.wgsl`'s `terrain_uv`).
@@ -935,6 +936,9 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// Native mods' lines, boxes, beams and text (`native_world_primitives`), drawn at the end
+    /// of the world pass, before the first-person hand.
+    pub world_primitives: world_primitives::Batch<'a>,
     /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
     /// person).
     pub shadow_only: &'a [Vertex],
@@ -1160,6 +1164,8 @@ pub struct Renderer {
     lightning_pipeline: wgpu::RenderPipeline,
     lightning: lightning::Renderer,
     see_through_pipeline: wgpu::RenderPipeline,
+    /// Native mods' world primitives (`Frame::world_primitives`).
+    world_primitives: world_primitives::WorldPrimitives,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
@@ -4457,6 +4463,7 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
+        let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
         Ok(Self {
             display: DisplayWatch::default(),
             display_fresh: false,
@@ -4544,6 +4551,7 @@ impl Renderer {
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
             see_through_pipeline,
+            world_primitives,
             text_polygon_offset_pipeline,
             celestial_pipeline,
             celestial_buffer,
@@ -8122,6 +8130,19 @@ impl Renderer {
             frame.weather,
             frame.weather_time,
         );
+        // Native mods' world primitives, drawn as the world is: its jittered projection, the
+        // line widths in the frame's pixels as the gizmo lines'.
+        let world_primitives = !frame.title && {
+            let (uploads, encoder) = (&mut self.uploads, &mut encoder);
+            self.world_primitives.prepare(
+                &self.device,
+                &mut |buffer, bytes| uploads.buffer(encoder, buffer, 0, bytes),
+                &frame.world_primitives,
+                jittered,
+                [self.config.width, self.config.height],
+                &self.entity_atlas,
+            )
+        };
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
@@ -10044,6 +10065,11 @@ impl Renderer {
                     ((world_quads + additive_quads + hand_quads) * 4) as i32,
                     0..1,
                 );
+            }
+            // Native mods' primitives: after the entities and the rest of the world, into its
+            // targets (its resolution, reversed depth and TAA), before the hand.
+            if world_primitives {
+                self.world_primitives.draw(&mut pass);
             }
             if hand_in_world {
                 pass.set_pipeline(&self.depth_reset);

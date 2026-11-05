@@ -3006,6 +3006,35 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
 
+### World primitives
+
+`native_world_primitives(partial, camera, primitives)` (the trait's `Hooks::world_primitives`) runs once a frame while
+the world is drawn, on the client, not on the title screen. A mod adds to `primitives`
+(`horizon_client::world_primitives::WorldPrimitives`) in world coordinates, with ARGB colours:
+
+- `line(from, to, color, width)`: a line `width` pixels wide;
+- `box_outline(min, max, color, width)` and `filled_box(min, max, color)`;
+- `beam(base, height, color)`: a beacon's beam from the centre of its foot, rotating and scrolling as a beacon's; the
+  colour's alpha scales the beacon's own;
+- `text(at, text, color, scale)`: text in the game's font facing the camera, centred on `at`, a name tag's size at
+  scale 1; `.scale_with_distance()` keeps the size on screen it has 8 blocks away, `.background()` puts a name tag's
+  background behind it.
+
+Each returns the primitive, which `.through_walls()` makes seen through walls (no depth test); the others are hidden
+by the world in front of them. Horizon draws them with its own pipelines after the entities and before the
+first-person hand, into the world's targets: its reversed depth, its resolution (Resolution Scale) and TAA's jitter.
+They blend over the world and write no depth. A mod never needs wgpu for them.
+
+```rust,ignore
+fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_>) {
+    let home = [100.0, 64.0, -20.0];
+    event.primitives.beam(home, 256, 0xFF55_FFFF);
+    event.primitives.text([100.5, 66.0, -19.5], "Home", 0xFFFF_FFFF, 1.0)
+        .through_walls()
+        .scale_with_distance();
+}
+```
+
 ### Block textures
 
 `crates/horizon-client/src/game/native_block_sprites.rs` and `WorldDrawn::block_sprites`: for a client mod drawing
