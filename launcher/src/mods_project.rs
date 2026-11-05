@@ -403,12 +403,15 @@ impl Launcher {
         wrap
     }
 
-    /// The filter bar: sort always; loader, version, environment and categories when shown.
+    /// The filter bar: sort always (Horizon's registry has its own bar); loader, version,
+    /// environment and categories when shown, only categories for the registry.
     pub(super) fn mods_filters(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
         let sorts = self.mods_sorts();
-        let sort = (!t.glass).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
+        let registry =
+            self.mods.source == SourceId::Horizon && self.mods.java_for(self.mods.kind).is_none();
+        let sort = (!t.glass && !registry).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
             + f.loader.is_some() as usize
@@ -526,11 +529,10 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        bar = bar
-            .child(loaders)
-            .child(versions)
-            .child(environment)
-            .child(categories);
+        if !registry {
+            bar = bar.child(loaders).child(versions).child(environment);
+        }
+        bar = bar.child(categories);
         if active > 0 {
             bar = bar.child(div().flex().child(clear));
         }
@@ -578,6 +580,17 @@ impl Launcher {
         let authors = match &details {
             Some(Ok(d)) if !d.authors.is_empty() => d.authors.join(", "),
             _ => p.author.clone(),
+        };
+        // The project's categories, as its source lists them.
+        let categories = match &details {
+            Some(Ok(d)) if !d.categories.is_empty() => Some(
+                div().flex().flex_wrap().gap(px(6.)).children(
+                    d.categories
+                        .iter()
+                        .map(|c| blocks::badge(c.replace('-', " "), t.muted, &t)),
+                ),
+            ),
+            _ => None,
         };
         let icon = self.mods_icon(&p, 72.);
         let busy = self.mods.busy.as_ref().map(|b| b.0.clone());
@@ -644,7 +657,8 @@ impl Launcher {
                         text(theme::CAPTION)
                             .text_color(t.muted)
                             .child(meta.join(" · ")),
-                    ),
+                    )
+                    .children(categories),
             )
             .child(action);
         let mut page = div()

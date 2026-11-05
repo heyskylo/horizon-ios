@@ -1064,10 +1064,10 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
-        // The registry lists only what was made for Horizon: no "everything", no Modrinth filters,
-        // only its sort.
+        // The registry lists only what was made for Horizon: no "everything", and of the filters
+        // only its categories.
         let registry = self.mods.source == SourceId::Horizon && !java;
-        let filters = (!registry).then(|| self.mods_filters(cx));
+        let filters = self.mods_filters(cx);
         // The registry's sort sits below the GitHub row, above the list it orders.
         let registry_sort = registry.then(|| self.mods_sort_bar(cx));
         let controls = div()
@@ -1084,7 +1084,7 @@ impl Launcher {
                     .when(!registry && !java, |d| d.child(toggle)),
             )
             .children(source_note)
-            .children(filters)
+            .child(filters)
             .children(self.mods_target_line(cx));
         // The kinds are inventory tabs on the panel that holds the open one.
         let body = blocks::panel(&t).flex().flex_col().gap(px(24.)).p(px(20.));
@@ -1873,7 +1873,7 @@ impl Launcher {
 }
 
 /// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
-/// the rest (data packs are only there).
+/// the rest.
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
         PackKind::Mod | PackKind::Shader => SourceId::Horizon,
@@ -1881,14 +1881,10 @@ fn source_for(kind: PackKind) -> SourceId {
     }
 }
 
-/// Whether a kind's tab picks its source: mods, modpacks and resource packs are on both Horizon's
-/// registry and Modrinth; Horizon's shader packs are on its registry only, data packs on Modrinth
-/// only.
+/// Whether a kind's tab picks its source: mods, modpacks, resource packs and data packs are on
+/// both Horizon's registry and Modrinth; Horizon's shader packs are on its registry only.
 pub(super) fn switches(kind: PackKind) -> bool {
-    matches!(
-        kind,
-        PackKind::Mod | PackKind::ResourcePack | PackKind::Modpack
-    )
+    kind != PackKind::Shader
 }
 
 impl Launcher {
