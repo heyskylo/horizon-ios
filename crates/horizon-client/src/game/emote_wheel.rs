@@ -180,6 +180,8 @@ impl Game<'_> {
     }
 
     pub(super) fn draw_emote_wheel(&mut self, batch: &mut HudBatch) {
+        self.refresh_owned_emotes();
+        let load_status = self.emotes.catalogue.status();
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new("emote_wheel", "horizon.emote_wheel.title")
         });
@@ -250,7 +252,7 @@ impl Game<'_> {
             batch.text(atlas, &label, x - lw / 2.0, y - 4.0, colour, true);
         }
         let title = match (n, hovered) {
-            (0, _) => Text::translate("horizon.emote_wheel.empty", &[]),
+            (0, _) => Text::translate(load_status.unwrap_or("horizon.emote_wheel.empty"), &[]),
             (_, Some(i)) => Text::literal(&names[i]),
             _ => Text::translate("horizon.emote_wheel.title", &[]),
         };
@@ -284,7 +286,12 @@ impl Game<'_> {
             true,
             horizon_client::ui::hovered(self.cursor, cancel[0], cancel[1], cancel[2], cancel[3]),
         );
-        let help = Text::translate("horizon.emote_wheel.help", &[]);
+        let help_key = if n > 0 {
+            load_status.unwrap_or("horizon.emote_wheel.help")
+        } else {
+            "horizon.emote_wheel.help"
+        };
+        let help = Text::translate(help_key, &[]);
         let hw = HudBatch::text_width(atlas, &help.plain());
         batch.text_styled(
             atlas,
@@ -294,6 +301,85 @@ impl Game<'_> {
             0xFFA0_A0A8,
             true,
         );
+    }
+}
+
+// Isolated actual-Game fixture: dummy UUIDs and already-completed producer
+// channels, with no authentication or service calls. No world tick is invoked.
+impl Game<'_> {
+    pub(super) fn emote_catalogue_fixture(&mut self) -> horizon_client::Result<serde_json::Value> {
+        use horizon_cosmetics::account::OwnedEmotes;
+        use std::sync::mpsc;
+        let item = || {
+            horizon_cosmetics::Item::parse(br#"{"format":1,"id":"wave","slot":"emote","parts":[],"emote":{"length":20,"tracks":[{"part":"head","keys":[{"t":0}]}]}}"#).unwrap()
+        };
+        let completed = |answer| {
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(answer)).unwrap();
+            rx
+        };
+        let now = Instant::now();
+        self.screen = Screen::Paused;
+        self.open_emote_wheel();
+        assert!(self.emote_wheel_pauses());
+        let ages: Vec<_> = self.mobs.iter().map(|m| m.age).collect();
+        self.apply_owned_emotes(Some(101), now);
+        self.emotes.catalogue.loading = Some(completed(OwnedEmotes {
+            emotes: vec![(item(), Default::default())],
+            complete: true,
+        }));
+        // This is the same completion application called by cosmetics_frame and
+        // wheel refresh, using an injected owner snapshot instead of credentials.
+        self.apply_owned_emotes(Some(101), now);
+        self.draw_emote_wheel(&mut HudBatch::new([480, 320]));
+        assert_eq!(self.emote_wheel.displayed, ["wave"]);
+        assert!(self.emote_wheel_pauses());
+        assert_eq!(self.mobs.iter().map(|m| m.age).collect::<Vec<_>>(), ages);
+        let loaded = serde_json::json!({"case":"paused_success","displayed":self.emote_wheel.displayed,"paused":true,"worldAgesUnchanged":true});
+
+        self.emotes.catalogue.loading = Some(completed(OwnedEmotes {
+            emotes: vec![],
+            complete: false,
+        }));
+        self.apply_owned_emotes(Some(101), now);
+        self.draw_emote_wheel(&mut HudBatch::new([480, 320]));
+        assert_eq!(self.emote_wheel.displayed, ["wave"]);
+        assert!(!self.emotes.catalogue.due(now));
+        assert!(self.emotes.catalogue.due(now + Duration::from_secs(15)));
+        assert_eq!(
+            self.emotes.catalogue.status(),
+            Some("horizon.emote_wheel.retry")
+        );
+        let incomplete = serde_json::json!({"case":"incomplete_retains_good","displayed":self.emote_wheel.displayed,"retryAfter15s":true,"status":self.emotes.catalogue.status()});
+
+        let (tx, rx) = mpsc::channel();
+        self.emotes.catalogue.loading = Some(rx);
+        self.apply_owned_emotes(Some(202), now);
+        assert!(
+            tx.send(Ok(OwnedEmotes {
+                emotes: vec![(item(), Default::default())],
+                complete: true
+            }))
+            .is_err()
+        );
+        self.draw_emote_wheel(&mut HudBatch::new([480, 320]));
+        assert!(self.emote_wheel.displayed.is_empty());
+        assert!(self.emotes.names.is_empty());
+        let changed = serde_json::json!({"case":"owner_change","displayed":self.emote_wheel.displayed,"staleResultDiscarded":true});
+
+        self.emotes.catalogue.loading = Some(completed(OwnedEmotes {
+            emotes: vec![],
+            complete: true,
+        }));
+        self.apply_owned_emotes(Some(202), now);
+        self.draw_emote_wheel(&mut HudBatch::new([480, 320]));
+        assert!(self.emote_wheel.displayed.is_empty());
+        assert!(!self.emotes.catalogue.due(now + Duration::from_secs(599)));
+        assert_eq!(self.emotes.catalogue.status(), None);
+        let empty = serde_json::json!({"case":"complete_empty","displayed":self.emote_wheel.displayed,"freshFor600s":true});
+        self.apply_owned_emotes(None, now);
+        assert!(!self.emotes.catalogue.due(now + Duration::from_secs(9999)));
+        Ok(serde_json::json!([loaded, incomplete, changed, empty]))
     }
 }
 

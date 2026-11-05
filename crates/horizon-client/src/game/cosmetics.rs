@@ -110,21 +110,25 @@ fn send_emote(
 /// The emotes the signed-in account owns, for the wheel (none signed in: none).
 fn load_owned_emotes(
     kept: &std::sync::Mutex<horizon_cosmetics::account::Kept>,
+    publish_session: &std::sync::Mutex<horizon_cosmetics::account::Kept>,
     service: &horizon_cosmetics::Http,
     cancellation: &Arc<horizon_cosmetics::transport::Cancellation>,
-) -> Result<Vec<horizon_cosmetics::account::OwnedEmote>, String> {
-    let Some(session) = horizon_client::auth::current() else {
-        return Ok(Vec::new());
-    };
+    session: &horizon_client::auth::AuthSession,
+) -> Result<horizon_cosmetics::account::OwnedEmotes, String> {
+    // Preserve the existing serialization with emote publishing while keeping
+    // this catalogue's actual service session bound to its captured owner.
+    let _publish_guard = publish_session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut kept = kept
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    horizon_cosmetics::account::owned_emotes(
+    horizon_cosmetics::account::owned_emotes_catalogue(
         &mut kept,
         service,
         &session.name,
         |id| {
-            horizon_client::auth::join_server_managed(&session, id, cancellation.clone())
+            horizon_client::auth::join_server_managed(session, id, cancellation.clone())
                 .map_err(|e| format!("{e:?}"))
         },
         |path| horizon_cosmetics::Transport::get(service, path),
@@ -437,6 +441,7 @@ impl Game<'_> {
     /// Once a frame, before drawing: starts the service's client on first use and puts the
     /// textures the last frame wanted into the atlas.
     pub(super) fn cosmetics_frame(&mut self) {
+        self.settle_owned_emotes();
         self.update_others_emote_visibility();
         if !horizon_cosmetics::enabled() {
             return;
@@ -657,24 +662,34 @@ impl Game<'_> {
     /// Asks the service which emotes the account owns, for the wheel: when it opens, at most
     /// every 10 minutes (a folder's emotes need no asking; an offline account has none).
     pub(super) fn refresh_owned_emotes(&mut self) {
-        const AGAIN: Duration = Duration::from_secs(600);
+        let session = horizon_client::auth::current();
+        if std::env::var_os("HORIZON_COSMETICS_LOCAL").is_none() {
+            self.apply_owned_emotes(session.as_ref().map(|s| s.uuid), Instant::now());
+        }
+        let Some(session) = session else {
+            return;
+        };
         let e = &mut self.emotes;
         if self.cosmetics.workers.closed()
             || self.cosmetics.local
+            || std::env::var_os("HORIZON_COSMETICS_LOCAL").is_some()
             || !horizon_cosmetics::enabled()
-            || horizon_client::auth::current().is_none()
-            || e.loading.is_some()
-            || e.loaded.is_some_and(|at| at.elapsed() < AGAIN)
+            || !e.catalogue.due(Instant::now())
         {
             return;
         }
-        let kept = self.cosmetics.emote_out.kept.clone();
+        let kept = e.catalogue.kept.clone();
+        let publish_session = self.cosmetics.emote_out.kept.clone();
         let cancel = self.cosmetics.workers.cancellation();
-        e.loading = Some(
-            self.cosmetics
-                .workers
-                .spawn(move || load_owned_emotes(&kept, &managed_http(cancel.clone()), &cancel)),
-        );
+        e.catalogue.loading = Some(self.cosmetics.workers.spawn(move || {
+            load_owned_emotes(
+                &kept,
+                &publish_session,
+                &managed_http(cancel.clone()),
+                &cancel,
+                &session,
+            )
+        }));
     }
 
     /// Items from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins are dressed and marked too.

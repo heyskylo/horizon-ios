@@ -313,6 +313,11 @@ impl Game<'_> {
             directory.join("emote_visibility.json"),
             serde_json::to_vec_pretty(&visibility)?,
         )?;
+        let catalogue = self.emote_catalogue_fixture()?;
+        std::fs::write(
+            directory.join("emote_catalogue.json"),
+            serde_json::to_vec_pretty(&catalogue)?,
+        )?;
         std::fs::write(
             directory.join("rust.json"),
             serde_json::to_vec_pretty(&output)?,

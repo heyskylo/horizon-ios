@@ -123,6 +123,17 @@ def verify_emote_visibility(rows):
         assert row['worldAges'] == [10, 10], row
 
 
+def verify_emote_catalogue(rows):
+    cases = {row['case']: row for row in rows}
+    assert set(cases) == {'paused_success', 'incomplete_retains_good', 'owner_change', 'complete_empty'}, rows
+    assert cases['paused_success'] == {'case':'paused_success','displayed':['wave'],'paused':True,'worldAgesUnchanged':True}, rows
+    assert cases['incomplete_retains_good']['displayed'] == ['wave'], rows
+    assert cases['incomplete_retains_good']['retryAfter15s'], rows
+    assert cases['incomplete_retains_good']['status'] == 'horizon.emote_wheel.retry', rows
+    assert cases['owner_change']['displayed'] == [] and cases['owner_change']['staleResultDiscarded'], rows
+    assert cases['complete_empty']['displayed'] == [] and cases['complete_empty']['freshFor600s'], rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path)
@@ -154,6 +165,7 @@ def main():
         verify_crouch(crouch)
         verify_emotes(json.loads((args.output / 'emotes.json').read_text()))
         verify_emote_visibility(json.loads((args.output / 'emote_visibility.json').read_text()))
+        verify_emote_catalogue(json.loads((args.output / 'emote_catalogue.json').read_text()))
         print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases, 4 visual-crouch cases and 8 posed-emote/frustum cases passed')
 
 

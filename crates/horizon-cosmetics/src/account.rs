@@ -175,15 +175,48 @@ pub fn owned_emotes(
     join: impl FnMut(&str) -> Result<(), String>,
     get: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<OwnedEmote>, String> {
+    owned_emotes_catalogue(kept, service, name, join, get).map(|answer| answer.emotes)
+}
+
+/// A catalogue with all readable emotes. `complete` is false when a transient
+/// download failure left an item unresolved; permanent missing/invalid files
+/// are still skipped, just as `owned_emotes` has always done.
+pub struct OwnedEmotes {
+    pub emotes: Vec<OwnedEmote>,
+    pub complete: bool,
+}
+
+/// Like `owned_emotes`, retaining completeness for callers with a refresh cache.
+pub fn owned_emotes_catalogue(
+    kept: &mut Kept,
+    service: &impl Call,
+    name: &str,
+    join: impl FnMut(&str) -> Result<(), String>,
+    get: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<OwnedEmotes, String> {
     let me = kept.call(service, name, join, "GET", "/v1/me", &Value::Null)?;
     let mut emotes = Vec::new();
+    let mut complete = true;
     for e in me["emotes"].as_array().into_iter().flatten() {
         let (Some(id), Some(hash)) = (e["id"].as_str(), e["hash"].as_str()) else {
             continue;
         };
-        let item = get(&format!("/v1/items/{id}?hash={hash}"))
+        let bytes = match get(&format!("/v1/items/{id}?hash={hash}")) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                // A catalogued file can have been removed or refused. Transport
+                // errors, rate limiting and server failures require another try.
+                let status = error
+                    .strip_prefix("HTTP ")
+                    .and_then(|s| s.parse::<u16>().ok());
+                let permanent =
+                    status.is_some_and(|s| (400..500).contains(&s) && s != 408 && s != 429);
+                complete &= permanent;
+                continue;
+            }
+        };
+        let item = crate::Item::parse(&bytes)
             .ok()
-            .and_then(|bytes| crate::Item::parse(&bytes).ok())
             .filter(|i| i.slot == crate::Slot::Emote && i.id == id);
         let Some(item) = item else {
             continue;
@@ -196,7 +229,7 @@ pub fn owned_emotes(
             .collect();
         emotes.push((item, names));
     }
-    Ok(emotes)
+    Ok(OwnedEmotes { emotes, complete })
 }
 
 /// Whether the account `name` owns at least one cosmetic (signed in as `set_visible` does).
@@ -234,6 +267,50 @@ pub fn set_visible(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn transient_item_failures_leave_the_catalogue_incomplete_but_keep_readable_items() {
+        let wave = br#"{"format":1,"id":"wave","slot":"emote","parts":[],"emote":{"length":20,"tracks":[{"part":"head","keys":[{"t":0}]}]}}"#;
+        for failure in ["timed out", "HTTP 503", "HTTP 429", "HTTP 408"] {
+            let service = Service::default();
+            let answer = owned_emotes_catalogue(
+                &mut Kept::default(),
+                &service,
+                "Dummy",
+                |id| {
+                    *service.joined.borrow_mut() = Some(id.into());
+                    Ok(())
+                },
+                |path| match path {
+                    "/v1/items/wave?hash=h1" => Ok(wave.to_vec()),
+                    "/v1/items/gone?hash=h1" => Err(failure.into()),
+                    _ => Ok(b"not a valid item".to_vec()),
+                },
+            )
+            .unwrap();
+            assert!(
+                !answer.complete,
+                "{failure} must not become a fresh empty catalogue"
+            );
+            assert_eq!(answer.emotes.len(), 1);
+            assert_eq!(answer.emotes[0].0.id, "wave");
+        }
+    }
+
+    #[test]
+    fn missing_and_invalid_files_are_complete_skips_while_valid_emotes_survive() {
+        let service = Service::default();
+        let answer = owned_emotes_catalogue(&mut Kept::default(), &service, "Dummy", |id| {
+            *service.joined.borrow_mut() = Some(id.into()); Ok(())
+        }, |path| match path {
+            "/v1/items/wave?hash=h1" => Ok(br#"{"format":1,"id":"wave","slot":"emote","parts":[],"emote":{"length":20,"tracks":[{"part":"head","keys":[{"t":0}]}]}}"#.to_vec()),
+            "/v1/items/gone?hash=h1" => Err("HTTP 404".into()),
+            _ => Ok(b"not a valid item".to_vec()),
+        }).unwrap();
+        assert!(answer.complete);
+        assert_eq!(answer.emotes.len(), 1);
+        assert_eq!(answer.emotes[0].0.id, "wave");
+    }
 
     /// The service, as far as this call goes: what it was sent, and whether the id was joined.
     #[derive(Default)]

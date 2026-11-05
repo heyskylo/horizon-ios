@@ -561,6 +561,8 @@
   "key.emote": "Emote Wheel",
   "horizon.emote_wheel.title": "Emotes",
   "horizon.emote_wheel.empty": "No emotes yet",
+  "horizon.emote_wheel.loading": "Loading emotes…",
+  "horizon.emote_wheel.retry": "Could not load all emotes. Retrying shortly…",
   "horizon.emote_wheel.help": "Release or click to play · 1–8 · Esc closes",
   "horizon.extras.cosmetics_others": "Other players' cosmetics",
   "horizon.extras.cosmetics_others.tooltip": "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden unless you own cosmetics, until you choose. Hidden, the game never asks what they wear.",

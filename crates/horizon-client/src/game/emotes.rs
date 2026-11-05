@@ -6,7 +6,7 @@
 
 use super::Game;
 use super::perspective::CameraType;
-use horizon_cosmetics::account::OwnedEmote;
+use horizon_cosmetics::account::{Kept, OwnedEmotes};
 use horizon_cosmetics::{Item, Playing, Slot};
 use std::sync::Arc;
 
@@ -19,9 +19,8 @@ pub(super) struct Emotes {
     pub(super) owned: Vec<Arc<Item>>,
     /// Their names by locale, by id (the service's), when known.
     pub(super) names: std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
-    /// The account's emotes on their way from the service, and when they last came.
-    pub(super) loading: Option<std::sync::mpsc::Receiver<Result<Vec<OwnedEmote>, String>>>,
-    pub(super) loaded: Option<std::time::Instant>,
+    /// Owner-bound catalogue requests, freshness, and bounded retry state.
+    pub(super) catalogue: Catalogue,
     /// `owned` was read from `HORIZON_COSMETICS_LOCAL`'s folder.
     local_read: bool,
     playing: Option<Playing>,
@@ -41,6 +40,89 @@ impl Emotes {
     }
 }
 
+// BEGIN OWNED_CATALOGUE_STATE
+/// The service session and cache lifetime belong to one signed-in UUID. Replacing
+/// the owner drops only the receiver; its producer remains owned by Workers.
+#[derive(Default)]
+pub(super) struct Catalogue {
+    owner: Option<u128>,
+    pub(super) loading: Option<std::sync::mpsc::Receiver<Result<OwnedEmotes, String>>>,
+    loaded: Option<std::time::Instant>,
+    retry: Option<(std::time::Instant, std::time::Duration)>,
+    pub(super) kept: Arc<std::sync::Mutex<Kept>>,
+}
+
+impl Catalogue {
+    pub(super) fn set_owner(&mut self, owner: Option<u128>) -> bool {
+        if self.owner == owner {
+            return false;
+        }
+        *self = Self {
+            owner,
+            ..Self::default()
+        };
+        true
+    }
+
+    fn failed(&mut self, now: std::time::Instant) {
+        use std::time::Duration;
+        let wait = self.retry.map_or(Duration::from_secs(15), |(_, wait)| {
+            (wait * 2).min(Duration::from_secs(600))
+        });
+        self.retry = Some((now + wait, wait));
+    }
+
+    /// Poll from a frame as well as ticks; disconnected producers settle too.
+    pub(super) fn poll(&mut self, now: std::time::Instant) -> Option<OwnedEmotes> {
+        use std::sync::mpsc::TryRecvError;
+        let done = match self.loading.as_ref()?.try_recv() {
+            Ok(done) => done,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                Err("cosmetics catalogue worker disconnected".into())
+            }
+        };
+        self.loading = None;
+        match done {
+            Ok(answer) => {
+                if answer.complete {
+                    self.loaded = Some(now);
+                    self.retry = None;
+                } else {
+                    self.failed(now);
+                }
+                Some(answer)
+            }
+            Err(_) => {
+                self.failed(now);
+                None
+            }
+        }
+    }
+
+    pub(super) fn due(&self, now: std::time::Instant) -> bool {
+        self.owner.is_some()
+            && self.loading.is_none()
+            && match self.retry {
+                Some((at, _)) => now >= at,
+                None => self.loaded.is_none_or(|at| {
+                    now.saturating_duration_since(at) >= std::time::Duration::from_secs(600)
+                }),
+            }
+    }
+
+    pub(super) fn status(&self) -> Option<&'static str> {
+        if self.loading.is_some() {
+            Some("horizon.emote_wheel.loading")
+        } else if self.retry.is_some() {
+            Some("horizon.emote_wheel.retry")
+        } else {
+            None
+        }
+    }
+}
+// END OWNED_CATALOGUE_STATE
+
 /// The emotes among a folder's item files, by id.
 fn read_folder(dir: &std::path::Path) -> Vec<Arc<Item>> {
     let mut emotes: Vec<Arc<Item>> = std::fs::read_dir(dir)
@@ -56,9 +138,43 @@ fn read_folder(dir: &std::path::Path) -> Vec<Arc<Item>> {
 }
 
 impl Game<'_> {
+    /// Account completion belongs to rendered UI, independent of animation ticks.
+    pub(super) fn settle_owned_emotes(&mut self) {
+        if std::env::var_os("HORIZON_COSMETICS_LOCAL").is_some() {
+            return;
+        }
+        let owner = horizon_client::auth::current().map(|session| session.uuid);
+        self.apply_owned_emotes(owner, std::time::Instant::now());
+    }
+
+    pub(super) fn apply_owned_emotes(&mut self, owner: Option<u128>, now: std::time::Instant) {
+        if self.emotes.catalogue.set_owner(owner) {
+            self.emotes.owned.clear();
+            self.emotes.names.clear();
+            self.stop_emote();
+        }
+        let Some(answer) = self.emotes.catalogue.poll(now) else {
+            return;
+        };
+        if answer.complete {
+            self.emotes.owned.clear();
+            self.emotes.names.clear();
+        }
+        for (item, names) in answer.emotes {
+            self.emotes.names.insert(item.id.clone(), names);
+            let item = Arc::new(item);
+            if let Some(old) = self.emotes.owned.iter_mut().find(|old| old.id == item.id) {
+                *old = item;
+            } else {
+                self.emotes.owned.push(item);
+            }
+        }
+    }
+
     /// The emotes the wheel offers: a local folder's (`HORIZON_COSMETICS_LOCAL`), else those the
     /// account owns.
     pub(super) fn owned_emotes(&mut self) -> &[Arc<Item>] {
+        self.settle_owned_emotes();
         if !self.emotes.local_read {
             self.emotes.local_read = true;
             if let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") {
@@ -192,23 +308,7 @@ impl Game<'_> {
 
     /// Once a tick: my emote, then the other players'.
     pub(super) fn tick_emotes(&mut self) {
-        if let Some(done) = self
-            .emotes
-            .loading
-            .as_ref()
-            .and_then(|rx| rx.try_recv().ok())
-        {
-            self.emotes.loading = None;
-            if let Ok(owned) = done {
-                self.emotes.loaded = Some(std::time::Instant::now());
-                self.emotes.names.clear();
-                self.emotes.owned.clear();
-                for (item, names) in owned {
-                    self.emotes.names.insert(item.id.clone(), names);
-                    self.emotes.owned.push(Arc::new(item));
-                }
-            }
-        }
+        self.settle_owned_emotes();
         self.tick_emote();
         self.tick_others_emotes();
     }
@@ -317,5 +417,113 @@ impl Game<'_> {
             }
         }
         Ok(serde_json::json!(rows))
+    }
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    fn answer(complete: bool) -> OwnedEmotes {
+        let item = Item::parse(br#"{"format":1,"id":"wave","slot":"emote","parts":[],"emote":{"length":20,"tracks":[{"part":"head","keys":[{"t":0}]}]}}"#).unwrap();
+        OwnedEmotes {
+            emotes: vec![(item, Default::default())],
+            complete,
+        }
+    }
+    fn ready(value: Result<OwnedEmotes, String>) -> mpsc::Receiver<Result<OwnedEmotes, String>> {
+        let (tx, rx) = mpsc::channel();
+        tx.send(value).unwrap();
+        rx
+    }
+    #[test]
+    fn completion_is_applied_without_a_world_or_animation_tick() {
+        let now = Instant::now();
+        let mut state = Catalogue::default();
+        state.set_owner(Some(1));
+        state.loading = Some(ready(Ok(answer(true))));
+        let result = state.poll(now).unwrap();
+        assert_eq!(result.emotes[0].0.id, "wave");
+        assert!(!state.due(now + Duration::from_secs(599)));
+        assert!(state.due(now + Duration::from_secs(600)));
+        assert_eq!(state.status(), None);
+    }
+    #[test]
+    fn many_frames_and_reopens_do_not_bypass_failure_backoff() {
+        let now = Instant::now();
+        let mut state = Catalogue::default();
+        state.set_owner(Some(1));
+        let mut requests = 1;
+        state.loading = Some(ready(Err("HTTP 503".into())));
+        state.poll(now);
+        for frame in 1..=1000 {
+            assert!(
+                !state.set_owner(Some(1)),
+                "reopening preserves the owner and its deadline"
+            );
+            let frame_time = now + Duration::from_millis(frame);
+            state.poll(frame_time);
+            if state.due(frame_time) {
+                requests += 1;
+            }
+        }
+        assert_eq!(requests, 1);
+        assert!(state.due(now + Duration::from_secs(15)));
+        state.loading = Some(ready(Err("HTTP 503".into())));
+        requests += 1;
+        state.poll(now + Duration::from_secs(15));
+        assert_eq!(requests, 2);
+        assert!(!state.due(now + Duration::from_secs(44)));
+        assert!(state.due(now + Duration::from_secs(45)));
+    }
+    #[test]
+    fn incomplete_answer_is_retryable_without_a_ten_minute_freshness_stamp() {
+        let now = Instant::now();
+        let mut state = Catalogue::default();
+        state.set_owner(Some(1));
+        state.loading = Some(ready(Ok(answer(false))));
+        assert!(!state.poll(now).unwrap().complete);
+        assert_eq!(state.loaded, None);
+        assert!(state.due(now + Duration::from_secs(15)));
+        assert_eq!(state.status(), Some("horizon.emote_wheel.retry"));
+    }
+    #[test]
+    fn owner_change_drops_stale_results_and_replaces_the_service_session() {
+        let mut state = Catalogue::default();
+        state.set_owner(Some(1));
+        let previous = state.kept.clone();
+        let (tx, rx) = mpsc::channel();
+        state.loading = Some(rx);
+        assert!(state.set_owner(Some(2)));
+        assert!(tx.send(Ok(answer(true))).is_err());
+        assert!(!Arc::ptr_eq(&previous, &state.kept));
+        assert!(state.loading.is_none());
+        assert!(state.due(Instant::now()));
+        state.set_owner(None);
+        assert!(!state.due(Instant::now()));
+    }
+    #[test]
+    fn bounded_refusal_and_disconnection_settle_to_the_same_retry_policy() {
+        let now = Instant::now();
+        let workers = horizon_cosmetics::workers::Workers::default();
+        assert!(workers.shutdown());
+        let mut state = Catalogue::default();
+        state.set_owner(Some(1));
+        state.loading = Some(workers.spawn(|| Ok(answer(true))));
+        assert!(state.poll(now).is_none());
+        assert!(state.loading.is_none());
+        assert!(!state.due(now));
+        assert!(state.due(now + Duration::from_secs(15)));
+        let (tx, rx) = mpsc::channel();
+        state.loading = Some(rx);
+        drop(tx);
+        assert!(state.poll(now + Duration::from_secs(15)).is_none());
+        assert!(state.loading.is_none());
+        assert!(!state.due(now + Duration::from_secs(44)));
+        assert!(state.due(now + Duration::from_secs(45)));
     }
 }
