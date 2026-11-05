@@ -263,7 +263,10 @@ impl Game<'_> {
     /// block within the block reach (`getHitEntitiesAlong`'s block result,
     /// kept by `filterHitResult`); `None` on a miss, where the plain pick
     /// decides.
-    fn attack_range_pick(&self, range: &serde_json::Value) -> Option<Option<(usize, f64)>> {
+    fn attack_range_pick(
+        &self,
+        range: &serde_json::Value,
+    ) -> Option<Option<(usize, f64, [f64; 3])>> {
         let eye = v3(self.eye_position()?);
         let look = v3(super::view_vector(self.yaw, self.pitch));
         let reach = attack_reach(range, self.creative);
@@ -283,7 +286,14 @@ impl Game<'_> {
         let movement = self.known_player_movement();
         let nearest = super::spear::hits_in_reach(&boxes, eye, look, movement, reach, clip)
             .into_iter()
-            .map(|(i, at)| (i, eye.distance_squared(at).sqrt()))
+            .map(|(i, at)| {
+                let feet = self.mobs[i].position;
+                (
+                    i,
+                    eye.distance_squared(at).sqrt(),
+                    super::interact_location(at, feet),
+                )
+            })
             .reduce(|a, b| if b.1 < a.1 { b } else { a });
         if nearest.is_some() {
             return Some(nearest);

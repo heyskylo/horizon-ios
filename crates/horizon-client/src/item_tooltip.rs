@@ -2,8 +2,9 @@
 //! and lines without player context for the recipe book's search tree.
 use crate::text::{GRAY, Text};
 use crate::{
+    bundle::TooltipLayout,
     hud::rgba,
-    items::{ItemInfo, ItemStack},
+    items::{ItemInfo, ItemStack, Items},
 };
 use horizon_world::nbt::Tag;
 
@@ -313,6 +314,23 @@ pub fn rarity<'a>(stack: &ItemStack, default: &'a str) -> &'a str {
             r => r,
         }
     }
+}
+
+/// `BundleItem.getTooltipImage`: the contents grid of a bundle, or None when
+/// the stack is not one or `minecraft:tooltip_display` hides
+/// `minecraft:bundle_contents` - the image is that component's tooltip
+/// detail, so a display that hides the component hides the grid too.
+pub fn bundle_tooltip(
+    items: &Items,
+    stack: &ItemStack,
+    x: f32,
+    y: f32,
+    box_width: f32,
+) -> Option<TooltipLayout> {
+    TooltipDisplay::for_stack(stack)
+        .shows("minecraft:bundle_contents")
+        .then(|| crate::bundle::tooltip_layout(items, stack, x, y, box_width))
+        .flatten()
 }
 
 fn is_beehive(path: &str) -> bool {
@@ -1230,6 +1248,45 @@ mod tests {
         assert!(!display.name_visible(false));
         assert!(display.name_visible(true));
         assert!(!display.shows("minecraft:attribute_modifiers"));
+    }
+
+    /// `BundleItem.getTooltipImage` is a tooltip detail of
+    /// `minecraft:bundle_contents`, so a `minecraft:tooltip_display` that
+    /// hides the component - or the whole tooltip - takes the contents grid
+    /// with it. The draw path asks for the grid through the same function.
+    #[test]
+    fn a_bundle_contents_grid_follows_the_tooltip_display() {
+        let items = Items::for_tests(Default::default());
+        let mut bundle = ItemStack::new("minecraft:bundle", 1);
+        bundle.data_mut().bundle_contents = vec![ItemStack::new("minecraft:stone", 3)];
+        assert!(bundle_tooltip(&items, &bundle, 0.0, 0.0, 96.0).is_some());
+        // A stack that is not a bundle has no grid.
+        let stone = ItemStack::new("minecraft:stone", 1);
+        assert!(bundle_tooltip(&items, &stone, 0.0, 0.0, 96.0).is_none());
+        // A display that hides the contents component hides the grid.
+        bundle.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([(
+                "hidden_components",
+                Tag::List(vec![Tag::String("minecraft:bundle_contents".into())]),
+            )])),
+        );
+        assert!(bundle_tooltip(&items, &bundle, 0.0, 0.0, 96.0).is_none());
+        // So does one that hides the whole tooltip.
+        bundle.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([("hide_tooltip", Tag::Byte(1))])),
+        );
+        assert!(bundle_tooltip(&items, &bundle, 0.0, 0.0, 96.0).is_none());
+        // A component the display does not name leaves the grid alone.
+        bundle.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([(
+                "hidden_components",
+                Tag::List(vec![Tag::String("minecraft:lore".into())]),
+            )])),
+        );
+        assert!(bundle_tooltip(&items, &bundle, 0.0, 0.0, 96.0).is_some());
     }
 
     #[test]

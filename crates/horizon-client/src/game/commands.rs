@@ -1106,7 +1106,7 @@ impl Game<'_> {
             "seed" => {
                 let seed = self.level.seed.to_string();
                 let value = Text::copyable(seed);
-                self.system_message(Text::translate("commands.seed.success", &[value]));
+                self.feedback_unbroadcast(Text::translate("commands.seed.success", &[value]));
                 Ok(self.level.seed as i32)
             }
             "spawnpoint" => self.cmd_spawnpoint(ctx),
@@ -1205,7 +1205,7 @@ impl Game<'_> {
                 let usage = d.smart_usage(0, level);
                 let n = usage.len() as i32;
                 for (_, line) in usage {
-                    self.system_message(Text::literal(format!("/{line}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{line}")));
                 }
                 Ok(n)
             }
@@ -1218,10 +1218,10 @@ impl Game<'_> {
                 let usage = d.smart_usage(last, level);
                 let prefix = &command[..parse.context.range.1.min(command.len())];
                 for (_, line) in &usage {
-                    self.system_message(Text::literal(format!("/{prefix} {line}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{prefix} {line}")));
                 }
                 if usage.is_empty() {
-                    self.system_message(Text::literal(format!("/{prefix}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{prefix}")));
                 }
                 Ok(usage.len().max(1) as i32)
             }
@@ -2051,7 +2051,7 @@ impl Game<'_> {
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
         if id == "time.query.gametime" {
             let t = self.world.game_time;
-            self.system_message(Text::tr("commands.time.query.gametime", &[&t]));
+            self.feedback_unbroadcast(Text::tr("commands.time.query.gametime", &[&t]));
             return Ok((t % i64::from(i32::MAX)) as i32);
         }
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
@@ -2167,7 +2167,10 @@ impl Game<'_> {
                 Ok(1)
             }
             "time.query.time" => {
-                self.system_message(Text::tr("commands.time.query.absolute", &[&clock, &total]));
+                self.feedback_unbroadcast(Text::tr(
+                    "commands.time.query.absolute",
+                    &[&clock, &total],
+                ));
                 Ok((total % i64::from(i32::MAX)) as i32)
             }
             "time.query.timeline" | "time.query.repetition" => {
@@ -2185,14 +2188,14 @@ impl Game<'_> {
                 };
                 if id == "time.query.timeline" {
                     let ticks = period.map_or(total, |p| total.rem_euclid(p));
-                    self.system_message(Text::tr(
+                    self.feedback_unbroadcast(Text::tr(
                         "commands.time.query.timeline",
                         &[&timeline, &ticks],
                     ));
                     Ok(ticks as i32)
                 } else {
                     let reps = period.map_or(0, |p| total / p);
-                    self.system_message(Text::tr(
+                    self.feedback_unbroadcast(Text::tr(
                         "commands.time.query.timeline.repetitions",
                         &[&timeline, &reps],
                     ));
@@ -3245,7 +3248,7 @@ impl Game<'_> {
                     }
                 })
                 .unwrap_or(0);
-            self.system_message(Text::translate(
+            self.feedback_unbroadcast(Text::translate(
                 &format!("commands.experience.query.{unit}"),
                 &[self.target_name(target), Text::literal(value.to_string())],
             ));
@@ -3334,7 +3337,10 @@ impl Game<'_> {
             Some(Arg::Bool(b)) => Value::Bool(*b),
             Some(Arg::Int(i)) => Value::Int(*i),
             _ => {
-                self.system_message(Text::tr("commands.gamerule.query", &[&rule.name, &current]));
+                self.feedback_unbroadcast(Text::tr(
+                    "commands.gamerule.query",
+                    &[&rule.name, &current],
+                ));
                 return Ok(match current {
                     Value::Bool(b) => i32::from(b),
                     Value::Int(i) => i,
@@ -3360,7 +3366,7 @@ impl Game<'_> {
         };
         let Some(i) = DIFFICULTIES.iter().position(|d| ctx.has(d)) else {
             let current = self.ui.difficulty;
-            self.system_message(Text::translate(
+            self.feedback_unbroadcast(Text::translate(
                 "commands.difficulty.query",
                 &[name(current)],
             ));
@@ -3978,7 +3984,7 @@ impl Game<'_> {
             }
         }
         let count = players.len();
-        self.system_message(Text::translate(
+        self.feedback_unbroadcast(Text::translate(
             "commands.list.players",
             &[
                 Text::literal(count.to_string()),
@@ -4527,5 +4533,75 @@ mod selector_bounds_tests {
                 count
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod query_feedback_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_silent_source_drops_query_results_but_still_stores_them() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("time set 1234"));
+        assert!(game.run_command("scoreboard objectives add q dummy"));
+        let queries = [
+            "time query time",
+            "time query day",
+            "time query day repetition",
+            "time query gametime",
+            "seed",
+            "gamerule keep_inventory",
+            "difficulty",
+            "list",
+            "help seed",
+        ];
+        // A function's source (silent, like `run_command_quietly`) is told nothing.
+        for command in queries {
+            game.chat_capture = Some(Vec::new());
+            assert!(game.run_command_quietly(command), "{command}");
+            let lines = game.chat_capture.take().unwrap();
+            assert!(lines.is_empty(), "{command}: {:?}", lines[0].plain());
+        }
+        // The player's own source still sees each result.
+        for command in queries {
+            game.chat_capture = Some(Vec::new());
+            assert!(game.run_command(command), "{command}");
+            assert_eq!(game.chat_capture.take().unwrap().len(), 1, "{command}");
+        }
+        // The result still reaches `execute store`.
+        assert!(game.run_command_quietly("execute store result score #t q run time query day"));
+        game.chat_capture = Some(Vec::new());
+        assert!(game.run_command("scoreboard players get #t q"));
+        let lines = game.chat_capture.take().unwrap();
+        assert!(lines[0].plain().contains("1234"), "{:?}", lines[0].plain());
     }
 }
