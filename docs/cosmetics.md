@@ -160,6 +160,13 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
 - **Name tag styles** (`game/names.rs`): the badge, 8 text pixels square, after the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
   (the badge is in the atlas like the other items' textures). Horizon's mark goes before the name.
+- **Over tall items** (`names::cosmetic_lift`, Horizon only): a player wearing an item whose
+  highest point (`Item::top`: pixels above the model's neck with the bones at rest, animations
+  included, found when the item is read) passes the tag's lowest pixel (2.05 blocks up, standing)
+  has the whole tag, mark and badge included, lifted to one text pixel over it. Everyone else's
+  tag stays at vanilla's height, as does the tag of anyone whose items aren't drawn (others'
+  cosmetics on *Name tags only* or *Hidden*, *My cosmetics* hidden, a helmet over a hat). Cost:
+  one max over the worn items per tag drawn, inside the look the mark already does.
 - **Drawing** (`game/cosmetics.rs`): an item's texture takes one of the skin atlas's 64×64 slots
   and its boxes are posed on the wearer's bone each frame, through the same GPU skin path as the
   player model (the CPU path where that is off), lit and culled with the player. A helmet hides a
@@ -219,10 +226,13 @@ page stays hidden.
   it, with your name tag over the head as others see it (Horizon's mark unless the game's *Show me
   as Horizon* is off, your style's badge after the name) (`horizon_cosmetics::preview`); **what you own for the
   chosen slot**, "Nothing" first. Equipping shows at once.
-- **The shop is on the website**: an *Open the shop* button by the page's title opens
-  `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim, purchases through
-  Paddle). An account that owns nothing yet sees "You don't own any cosmetics yet." with that button
-  instead. **Your purchases** lists the account's orders (date, item, price, state, order number).
+- **The shop is on the website only** (Ludovic, 2026-11-05): the launcher has no prices, product
+  lists or checkout. One plain button by the page's title, *Get more cosmetics on playhorizon.dev*,
+  opens `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim,
+  purchases through Paddle); no badge, reminder or pop-up points to it. An account that owns
+  nothing yet sees "You don't own any cosmetics yet." with that button instead. The one exception
+  is the founder set's free *Claim for free* where Paddle doesn't sell (`Claim::here`): the site
+  sends those players to the Wardrobe, since only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:

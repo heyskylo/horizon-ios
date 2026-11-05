@@ -98,6 +98,17 @@ pub(super) struct Integrated {
     pub world_name: String,
 }
 impl Integrated {
+    /// Queue every change, even if the currently published tree still has the requested state:
+    /// an earlier update may be waiting for a busy server thread.
+    fn queue_pregen_option(&self, enabled: bool) {
+        let _ = self.tasks.send(Box::new(move |g| {
+            use horizon_client::command::vanilla;
+            if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
+                vanilla::set_horizon_commands(enabled);
+                g.resend_commands_filtered();
+            }
+        }));
+    }
     /// The generator of the server's level in `dimension`, once it has run.
     pub fn terrain(
         &self,
@@ -138,6 +149,11 @@ impl Integrated {
     pub fn set_paused(&self, paused: bool) {
         let split = !self.flags.split_players.lock().unwrap().is_empty();
         self.flags.paused.store(paused && !split, Ordering::Relaxed);
+    }
+    /// Whether splitscreen players are joined: while any is, the game runs even behind a
+    /// pause menu, so no window may stop ticking for one (`set_paused`, `pauses_game`).
+    pub fn has_split_players(&self) -> bool {
+        !self.flags.split_players.lock().unwrap().is_empty()
     }
     /// Splitscreen: `name` left; the game pauses again once every such player has. The owner's
     /// permissions it was given go with it (a LAN player could otherwise join under that name).
@@ -326,6 +342,18 @@ struct Launch {
 }
 
 impl Game<'_> {
+    /// Only the owner window changes its integrated server's command tree. A remote
+    /// server (or a splitscreen guest) keeps its own choice and permissions.
+    pub(super) fn sync_pregen_option(&self) {
+        let Some(server) = &self.integrated else {
+            return;
+        };
+        let enabled = self.options.pregen || self.settings.extras.pregen;
+        // Check on the server, after earlier updates have run, so a later toggle
+        // wins. Do not block the window when an unrelated setting changes.
+        server.queue_pregen_option(enabled);
+    }
+
     /// `Minecraft.hasSingleplayerServer`: a world of this window's own, run
     /// in the frame or on its server thread.
     pub(super) fn has_singleplayer_server(&self) -> bool {
@@ -339,6 +367,13 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|s| s.published().is_some())
     }
+    /// Splitscreen: players joined through memory play on while one opens a pause menu;
+    /// the world keeps ticking for them (`set_paused`), so this window must keep ticking too.
+    pub(super) fn has_split_players(&self) -> bool {
+        self.integrated
+            .as_ref()
+            .is_some_and(|s| s.has_split_players())
+    }
     /// `Minecraft.doWorldLoad`: start the server thread on the world; the
     /// window joins it through memory once it is ready (`poll_integrated_start`).
     pub(super) fn open_integrated(
@@ -351,6 +386,9 @@ impl Game<'_> {
     ) -> Result<()> {
         // The window's mod configs before the server's, as on NeoForge.
         self.native_configs_client_start();
+        horizon_client::command::vanilla::set_horizon_commands(
+            self.options.pregen || self.settings.extras.pregen,
+        );
         let auth = horizon_client::auth::current();
         let player = auth
             .as_ref()
@@ -909,7 +947,7 @@ impl Game<'_> {
             // Commands.performCommand runs in the player's level.
             let (back, theirs) = (self.dim, super::Dim::from_id(&g.dimension));
             let entered = theirs == back || self.enter_level(Some(&mut host), theirs).is_ok();
-            if entered && let Some(swap) = self.enter_guest(&mut host, conn) {
+            if entered && let Some(swap) = self.enter_guest(&mut host, conn, back) {
                 let command = command.trim_start_matches('/').to_owned();
                 // The hub is back in place while the command runs, as for a
                 // guest's own (`run_guest_commands`): selectors see every
@@ -1270,6 +1308,27 @@ fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pregen_toggle_back_is_queued_while_server_is_busy() {
+        let (tasks, waiting_server) = channel();
+        let server = Integrated {
+            flags: Arc::new(Flags::default()),
+            thread: None,
+            tasks,
+            world_name: String::new(),
+        };
+        // The receiver deliberately does not run either task between the updates. In particular,
+        // the dispatcher can still show the old value when the owner toggles back.
+        server.queue_pregen_option(true);
+        server.queue_pregen_option(false);
+        assert!(
+            waiting_server.try_recv().is_ok(),
+            "enable must reach the server"
+        );
+        assert!(waiting_server.try_recv().is_ok(), "disable must follow it");
+        assert!(waiting_server.try_recv().is_err());
+    }
 
     #[test]
     fn the_owner_and_splitscreen_seats_are_let_in_only_through_memory() {

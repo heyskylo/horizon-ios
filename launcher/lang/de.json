@@ -1146,7 +1146,7 @@
   "Move…": "Verschieben…",
   "Move and restart": "Verschieben und neu starten",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Shop öffnen",
+  "Get more cosmetics on playhorizon.dev": "Mehr Kosmetik auf playhorizon.dev",
   "You don't own any cosmetics yet.": "Du besitzt noch keine Kosmetik.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatisch übernimmt die Architektur dieses Launchers. Unter Windows ARM können Sie x64 oder ARM64 wählen. Versionen ohne ARM64 verwenden den signierten x64-Build.",
   "Game architecture": "Spielarchitektur",
@@ -1176,5 +1176,10 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "Builds on the Horizon you play": "Lässt sich mit deinem Horizon bauen",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Braucht native Hook-Punkte v{needs}, dein Horizon hat v{has}: aktualisiere zuerst Horizon",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Für Horizon {pin} gemacht, aber {mods} sind an einen anderen Commit gebunden: der Build fragt nach „Trotzdem bauen“ und kompiliert vielleicht nicht",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Für Horizon {pin} gemacht, du spielst {yours}: der Launcher baut dein Spiel auf {pin}",
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Tags"
 }

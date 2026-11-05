@@ -340,8 +340,7 @@ hints, "Press X to dismount") only while the pad is the last-used input.
 ## Options and remapping
 
 Controller settings are Horizon's own: **Options → Controls → Controller
-Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
-a screen in the graphics settings' style with a search field and General, Bindings and Device pages. It
+Settings...**, a screen in the graphics settings' style with a search field and General, Bindings and Device pages. It
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
 product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
 while something differs from when the screen opened, and **Done** (B) leaves. They live in

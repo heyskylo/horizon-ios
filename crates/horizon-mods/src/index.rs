@@ -180,6 +180,11 @@ pub struct Version {
     /// built before levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_level: Option<u32>,
+    /// A native mod's hook points version (`horizon-native.json`'s `hooks`): it builds on any
+    /// Horizon whose `NATIVE_HOOKS_API` is this or later. None for a native mod that pins its
+    /// commit, other kinds, and indexes built before it was listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<u32>,
     /// The Minecraft version it is for.
     pub game: String,
     /// A modpack's mods, as its manifest lists them.
@@ -541,6 +546,8 @@ pub struct Facts {
     pub capabilities: Vec<Capability>,
     /// The mod API level a mod's code needs, from the functions it imports.
     pub api_level: Option<u32>,
+    /// A native mod's hook points version.
+    pub hooks: Option<u32>,
     /// The Minecraft version, when the file names one (a modpack does).
     pub game: Option<String>,
     pub requires: Vec<Requirement>,
@@ -558,6 +565,7 @@ impl Facts {
             || self.side != version.side
             || caps != listed
             || version.api_level.is_some() && self.api_level != version.api_level
+            || version.hooks.is_some() && self.hooks != version.hooks
             || self.game.as_ref().is_some_and(|g| *g != version.game)
             || self.requires != version.requires;
         if !differs {

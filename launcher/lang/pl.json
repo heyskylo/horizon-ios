@@ -1146,7 +1146,7 @@
   "Move…": "Przenieś…",
   "Move and restart": "Przenieś i uruchom ponownie",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Otwórz sklep",
+  "Get more cosmetics on playhorizon.dev": "Więcej kosmetyków na playhorizon.dev",
   "You don't own any cosmetics yet.": "Nie masz jeszcze żadnych kosmetyków.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatycznie używa architektury tego launchera. W systemie Windows ARM możesz wybrać x64 lub ARM64. Wydania bez ARM64 używają podpisanej kompilacji x64.",
   "Game architecture": "Architektura gry",
@@ -1176,5 +1176,10 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "Builds on the Horizon you play": "Buduje się na Twojej wersji Horizon",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Wymaga natywnych punktów zaczepienia v{needs}, Twoja wersja Horizon ma v{has}: najpierw zaktualizuj Horizon",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Stworzony dla Horizon {pin}, ale {mods} są przypięte do innego commita: kompilacja poprosi o „Mimo to zbuduj” i może się nie udać",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Stworzony dla Horizon {pin}, grasz na {yours}: launcher zbuduje Twoją grę na {pin}",
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Tagi"
 }

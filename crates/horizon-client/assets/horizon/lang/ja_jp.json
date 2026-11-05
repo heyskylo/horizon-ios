@@ -425,6 +425,7 @@
   "Frame Generation": "フレーム生成",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "2 つの実際のフレームの間に構成されたフレームを表示します。よりスムーズで、少し遅れが生じます。",
   "Shadow Cache": "シャドウキャッシュ",
+  "Shader Packs...": "シェーダーパック...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "太陽、ビュー、ワールドが一致する場合、パック シャドウ マップを再利用します。デフォルトではオフです。",
   "Find BlueMap": "ブルーマップを探す",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "サーバー上で、遠方の地形用の BlueMap Web マップを検索します。次に参加します。",

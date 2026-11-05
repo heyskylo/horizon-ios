@@ -999,7 +999,20 @@ impl Game<'_> {
             xp.progress = 0.0;
             xp.total = 0;
         }
+        let level = xp.level;
+        self.play_level_up(levels, level);
         self.native_player_level_changed(old_level);
+    }
+    /// `Player.giveExperienceLevels`: all players near its feet hear the sound.
+    pub(super) fn play_level_up(&mut self, amount: i32, level: i32) {
+        if let Some(volume) = self.level_up_sound.give_levels(amount, level) {
+            let at = self
+                .player
+                .as_ref()
+                .map(|p| [p.position.x, p.position.y, p.position.z]);
+            self.audio
+                .play("minecraft:entity.player.levelup", at, volume, 1.0);
+        }
     }
     /// Whether the result slot may be taken (`mayPickup`).
     fn may_take_result(&self) -> bool {

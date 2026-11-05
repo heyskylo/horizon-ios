@@ -185,7 +185,9 @@ impl Game<'_> {
             ..horizon_client::chunk::MIN_Y + horizon_client::chunk::HEIGHT)
             .contains(&pos[1])
         {
-            return false;
+            // ItemFrameItem.mayPlace's FAIL.
+            self.use_failed = true;
+            return true;
         }
         let frame = ItemFrame {
             id: self.next_entity + 1,
@@ -200,8 +202,10 @@ impl Game<'_> {
             check_interval: 0,
             custom_name,
         };
+        // HangingEntity.survives false: CONSUME, which ItemStack.useOn still counts as a use.
         if !self.frame_survives(&frame) {
-            return false;
+            self.award_stat("used", &stack.item, 1);
+            return true;
         }
         let kind = if glow {
             "minecraft:glow_item_frame"
@@ -214,11 +218,16 @@ impl Game<'_> {
         self.next_entity += 1;
         self.audio
             .play(&sound(&frame, "place"), Some(center(&frame)), 1.0, 1.0);
+        // HangingEntityItem.useOn: ENTITY_PLACE at the frame, by the player, before it is
+        // added; ItemStack.useOn then counts the use.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", center(&frame), ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         self.item_frames.push(frame);
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         true
     }
     /// The frame under the crosshair within reach and its distance.

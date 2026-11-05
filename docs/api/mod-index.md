@@ -50,6 +50,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
 | `downloads` | How many times its files were downloaded, every version together: GitHub's count of each release asset, summed by the publish job, which runs every hour. Absent until a file is downloaded. Read-only: never in an entry. |
 | `stars` | The GitHub stars of its `source` repository (`https://github.com/<owner>/<repo>`), read by the publish job every hour. Absent when it has none or its source isn't on GitHub. Read-only: never in an entry. The launcher shows it on the project's page with a "Star on GitHub" button that opens the repository. |
 | `api` | A mod's API line (its manifest's `api`); a native mod's pinned revisions (`native-1/<horizon>/<mixins>`); a modpack's manifest format (`1`). |
+| `hooks` | A native mod's hook points version (`hooks` in its `horizon-native.json`), read from the file by CI: it builds on any Horizon with that `NATIVE_HOOKS_API` or a later one. Absent, the mod pins the Horizon commit in `api` (or the index predates the field). The launcher compares it, or the pin, with the Horizon the player plays before install. |
 | `side`, `capabilities` | A mod's, read from its manifest by CI, never typed by hand. |
 | `api_level` | A legacy field in old entries; the launcher ignores it. |
 | `game` | The Minecraft version it is for. |

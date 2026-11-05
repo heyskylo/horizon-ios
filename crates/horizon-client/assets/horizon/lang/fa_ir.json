@@ -413,6 +413,7 @@
   "Frame Generation": "نسل فریم",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "یک قاب ساخته شده را بین هر دو قاب واقعی نشان می دهد: صاف تر، کمی تاخیر بیشتر.",
   "Shadow Cache": "کش سایه",
+  "Shader Packs...": "بسته های سایه زن...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "هنگامی که خورشید، نما و جهان مطابقت دارند، از نقشه سایه بسته دوباره استفاده می کند. به طور پیش فرض خاموش است.",
   "Find BlueMap": "BlueMap را پیدا کنید",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "در سرورها، نقشه وب BlueMap خود را برای مناطق دوردست پیدا می کند. عضویت بعدی",
