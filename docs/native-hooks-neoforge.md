@@ -13,8 +13,8 @@ Why NeoForge:
 - Its events already answer the questions each of our hooks asks again: where exactly it fires, on which side,
   what it can cancel, what it is handed.
 - Mod authors know them. A Java mod's `@SubscribeEvent` methods map to hook names, which helps porting by
-  hand. [horizon-port-pack](modpacks.md) may suggest mappings for a human to review, not translate listeners
-  automatically.
+  hand. `horizon-port-pack events` lists a mod's listeners with the hooks for each ([modpacks.md](modpacks.md)),
+  for a human to review; it doesn't translate them.
 
 What we take is event names and their documented contracts, from NeoForge's public user documentation
 (<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code-or-code-whose-license-allows-it) allows. Nobody
