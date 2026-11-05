@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "รับฟรี",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ผู้ให้บริการชำระเงินของร้านค้าไม่ให้บริการในประเทศของคุณ คุณจึงรับชุดผู้ก่อตั้งได้ที่นี่ฟรี",
-  "The Founder Set is yours.": "ชุดผู้ก่อตั้งเป็นของคุณแล้ว"
+  "The Founder Set is yours.": "ชุดผู้ก่อตั้งเป็นของคุณแล้ว",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "مفت حاصل کریں",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "دکان کا ادائیگی فراہم کنندہ آپ کے ملک میں خدمات نہیں دیتا، اس لیے آپ بانی سیٹ یہاں مفت حاصل کر سکتے ہیں۔",
-  "The Founder Set is yours.": "بانی سیٹ اب آپ کا ہے۔"
+  "The Founder Set is yours.": "بانی سیٹ اب آپ کا ہے۔",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

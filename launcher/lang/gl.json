@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Obter de balde",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagos da tenda non opera no teu país, así que podes obter o Set fundador aquí de balde.",
-  "The Founder Set is yours.": "O Set fundador é teu."
+  "The Founder Set is yours.": "O Set fundador é teu.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

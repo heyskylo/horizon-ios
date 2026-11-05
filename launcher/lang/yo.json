@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Gbà á lọ́fẹ̀ẹ́",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Olùpèsè ìsanwó ṣọ́ọ̀bù kò ṣiṣẹ́ ní orílẹ̀-èdè rẹ, nítorí náà o lè gba Oludasile ṣeto níbí lọ́fẹ̀ẹ́.",
-  "The Founder Set is yours.": "Oludasile ṣeto jẹ́ tìrẹ."
+  "The Founder Set is yours.": "Oludasile ṣeto jẹ́ tìrẹ.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

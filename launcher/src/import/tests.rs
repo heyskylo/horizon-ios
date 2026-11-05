@@ -34,7 +34,7 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
     move |name: &str| {
         let home = root.join(crate::modpacks::slug(name));
         if home.exists() {
-            return Err(format!("There is already an instance called {name}."));
+            return Err(instances::name_taken(name));
         }
         fs::create_dir_all(&home).unwrap();
         Ok(Instance {

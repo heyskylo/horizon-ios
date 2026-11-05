@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Ħudu b'xejn",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il-fornitur tal-ħlas tal-ħanut ma jaqdix lil pajjiżek, għalhekk tista' tieħu s-Sett tal-fundatur hawn b'xejn.",
-  "The Founder Set is yours.": "Is-Sett tal-fundatur huwa tiegħek."
+  "The Founder Set is yours.": "Is-Sett tal-fundatur huwa tiegħek.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

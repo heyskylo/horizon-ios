@@ -2802,7 +2802,17 @@ pub fn resolve_version(requested: Option<&str>) -> Result<String, String> {
     let selected = Settings::load().selected.filter(|s| installed.contains(s));
     selected
         .or_else(|| installed.first().cloned())
-        .ok_or_else(|| "No version is installed yet.".into())
+        .ok_or_else(no_version_installed)
+}
+
+/// What a command that needs an installed version says when there is none: the way to get one.
+pub fn no_version_installed() -> String {
+    use crate::i18n::tr;
+    format!(
+        "{} {}",
+        tr("No version is installed yet."),
+        tr("Run `horizon-launcher install latest` to get one.")
+    )
 }
 
 /// Removes an installed version, unless a program runs from it, and moves the selection to the
@@ -2927,6 +2937,9 @@ pub fn client(tag: &str) -> Result<Command, String> {
     client_as(tag, None)
 }
 
+/// What the command line adds to a refusal to play for want of an account.
+pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.";
+
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
     if let Some(error) = game_architecture_launch_error(tag) {
@@ -2936,7 +2949,7 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
-    .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
+    .map_err(|refused| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT)))?;
     if let Err(e) = need_prepared(tag) {
         account::discard_unread_sessions();
         return Err(e);

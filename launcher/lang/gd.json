@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Faigh an-asgaidh",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Chan eil solaraiche pàighidh a' bhùtha a' frithealadh na dùthcha agad, mar sin gheibh thu an Seata stèidheadair an-seo an-asgaidh.",
-  "The Founder Set is yours.": "'S ann leatsa a tha an Seata stèidheadair."
+  "The Founder Set is yours.": "'S ann leatsa a tha an Seata stèidheadair.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

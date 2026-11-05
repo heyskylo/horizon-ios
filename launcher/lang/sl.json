@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Prevzemi brezplačno",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ponudnik plačil trgovine ne deluje v vaši državi, zato lahko Ustanoviteljski set tukaj prevzamete brezplačno.",
-  "The Founder Set is yours.": "Ustanoviteljski set je vaš."
+  "The Founder Set is yours.": "Ustanoviteljski set je vaš.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }

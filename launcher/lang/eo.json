@@ -1132,5 +1132,11 @@
   "Unknown": "Unknown",
   "Claim for free": "Ricevi senpage",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "La pagoservo de la vendejo ne servas vian landon, do vi povas ricevi la Fondinto-aron ĉi tie senpage.",
-  "The Founder Set is yours.": "La Fondinto-aro estas via."
+  "The Founder Set is yours.": "La Fondinto-aro estas via.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}.": "There is already an instance called {name}.",
+  "Choose another name.": "Choose another name.",
+  "Choose another name with `--as NAME`.": "Choose another name with `--as NAME`.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`."
 }
