@@ -2,8 +2,9 @@
 //! and lines without player context for the recipe book's search tree.
 use crate::text::{GRAY, Text};
 use crate::{
+    bundle::TooltipLayout,
     hud::rgba,
-    items::{ItemInfo, ItemStack},
+    items::{ItemInfo, ItemStack, Items},
 };
 use horizon_world::nbt::Tag;
 
@@ -313,6 +314,23 @@ pub fn rarity<'a>(stack: &ItemStack, default: &'a str) -> &'a str {
             r => r,
         }
     }
+}
+
+/// `BundleItem.getTooltipImage`: the contents grid of a bundle, or None when
+/// the stack is not one or `minecraft:tooltip_display` hides
+/// `minecraft:bundle_contents` - the image is that component's tooltip
+/// detail, so a display that hides the component hides the grid too.
+pub fn bundle_tooltip(
+    items: &Items,
+    stack: &ItemStack,
+    x: f32,
+    y: f32,
+    box_width: f32,
+) -> Option<TooltipLayout> {
+    TooltipDisplay::for_stack(stack)
+        .shows("minecraft:bundle_contents")
+        .then(|| crate::bundle::tooltip_layout(items, stack, x, y, box_width))
+        .flatten()
 }
 
 fn is_beehive(path: &str) -> bool {
