@@ -4384,8 +4384,8 @@ impl PackPost {
         shadow.interval.to_bits().hash(&mut hasher);
         shadow.sun_path_rotation.to_bits().hash(&mut hasher);
         shadow.fov.map(|f| f.to_bits()).hash(&mut hasher);
-        shadow.near.to_bits().hash(&mut hasher);
-        shadow.far.to_bits().hash(&mut hasher);
+        shadow.near.map(f32::to_bits).hash(&mut hasher);
+        shadow.far.map(f32::to_bits).hash(&mut hasher);
         for hf in &shadow.hardware_filtering {
             hf.hash(&mut hasher);
         }
