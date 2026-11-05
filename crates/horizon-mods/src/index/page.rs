@@ -3,7 +3,7 @@
 //! the submission service and the index's readers.
 use super::Kind;
 
-/// At most this many categories, at least one once [`REQUIRED`].
+/// At most this many categories, at least one ([`check_required`]).
 pub const MAX_CATEGORIES: usize = 3;
 pub const MAX_TAGS: usize = 10;
 pub const MAX_TAG: usize = 24;
@@ -17,9 +17,6 @@ pub const SCREENSHOT_MIN: (u32, u32) = (320, 180);
 pub const SCREENSHOT_MAX: (u32, u32) = (3840, 2160);
 /// An icon is square, this many pixels a side.
 pub const ICON_SIDE: std::ops::RangeInclusive<u32> = 64..=1024;
-/// Whether a page must have a description, a category and an icon. Off until
-/// every listed project has them (the rollout's step 4).
-pub const REQUIRED: bool = false;
 
 const MODS: &[&str] = &[
     "adventure",
@@ -154,15 +151,8 @@ pub fn check(
         errors.push(format!(
             "the description is {length} characters: at most {MAX_DESCRIPTION}"
         ));
-    } else if REQUIRED && length < MIN_DESCRIPTION {
-        errors.push(format!(
-            "the description is {length} characters: write at least {MIN_DESCRIPTION} (what it does, how to use it)"
-        ));
     }
     let known = self::categories(kind);
-    if REQUIRED && categories.is_empty() {
-        errors.push(format!("pick 1 to {MAX_CATEGORIES} categories"));
-    }
     if categories.len() > MAX_CATEGORIES {
         errors.push(format!(
             "{} categories: pick at most {MAX_CATEGORIES}",
@@ -195,6 +185,44 @@ pub fn check(
         } else if tags[..i].contains(t) {
             errors.push(format!("tag {t:?} is listed twice"));
         }
+    }
+    errors
+}
+
+/// What every listed page must have: a description of [`MIN_DESCRIPTION`] characters or more, a
+/// category, and an icon kept in the registry (`icons/`), screenshots too: the site and the launcher
+/// load images only from the registry's own host.
+pub fn check_required(
+    id: &str,
+    description: &str,
+    categories: &[String],
+    icon: Option<&str>,
+    screenshots: &[String],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let length = description.trim().chars().count();
+    if length < MIN_DESCRIPTION {
+        errors.push(format!(
+            "the description is {length} characters: write at least {MIN_DESCRIPTION} (what it does, how to use it)"
+        ));
+    }
+    if categories.is_empty() {
+        errors.push(format!("pick 1 to {MAX_CATEGORIES} categories"));
+    }
+    match icon {
+        None => errors.push("has no icon: icons/<id>.png, a square PNG".into()),
+        Some(icon) if icon != format!("icons/{id}.png") => errors.push(format!(
+            "its icon {icon:?} must be kept in the registry as icons/{id}.png"
+        )),
+        Some(_) => {}
+    }
+    for s in screenshots
+        .iter()
+        .filter(|s| !s.starts_with("screenshots/"))
+    {
+        errors.push(format!(
+            "screenshot {s:?} must be kept in the registry, screenshots/<id>/"
+        ));
     }
     errors
 }
@@ -337,6 +365,31 @@ mod tests {
         assert!(casino[0].contains("gambling"), "{casino:?}");
         let eleven: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
         assert_eq!(check(&Kind::Mod, "", &[], &eleven), ["11 tags: at most 10"]);
+    }
+
+    #[test]
+    fn a_listed_page_is_complete_and_its_images_are_ours() {
+        let text = "x".repeat(MIN_DESCRIPTION);
+        let ok = check_required(
+            "a",
+            &text,
+            &strings(&["mobs"]),
+            Some("icons/a.png"),
+            &strings(&["screenshots/a/1.png"]),
+        );
+        assert!(ok.is_empty(), "{ok:?}");
+        let all = check_required("a", "short", &[], None, &[]);
+        assert_eq!(all.len(), 3, "{all:?}");
+        let far = check_required(
+            "a",
+            &text,
+            &strings(&["mobs"]),
+            Some("https://x.test/i.png"),
+            &strings(&["https://x.test/1.png"]),
+        );
+        assert_eq!(far.len(), 2, "{far:?}");
+        let other_icon = check_required("a", &text, &strings(&["mobs"]), Some("icons/b.png"), &[]);
+        assert_eq!(other_icon.len(), 1, "{other_icon:?}");
     }
 
     #[test]
