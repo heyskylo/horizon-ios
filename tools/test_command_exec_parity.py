@@ -88,6 +88,8 @@ def main():
     parser.add_argument('--loaded-block-diagnostic', action='store_true', help='retain separate FULL block-access observations')
     parser.add_argument('--mob-quad-fixture', action='store_true', help='guarded live mob quad-leash scene')
     parser.add_argument('--mob-quad-raw-diagnostic', action='store_true', help='retain full-precision leash diagnostic')
+    parser.add_argument('--item-merge-diagnostic', action='store_true',
+                        help='retain the original two-tag and spectator-selector item-merge diagnostic')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -132,6 +134,14 @@ def main():
         except ImportError:
             from mob_quad_leash_corpus import mob_quad_leash
         groups = [('setup', corpus_module.group_setup()), ('mob quad leash dispatch', mob_quad_leash(args.mob_quad_raw_diagnostic))]
+    if args.item_merge_diagnostic:
+        try:
+            from .item_merge_corpus import stack_limit_merges
+        except ImportError:
+            from item_merge_corpus import stack_limit_merges
+        groups = [('setup', corpus_module.group_setup()),
+                  ('item stack-size override merges',
+                   stack_limit_merges(corpus_module.cmd, corpus_module.setup, diagnostic=True))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
