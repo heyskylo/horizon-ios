@@ -2795,6 +2795,22 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+### Fluid currents
+
+`native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
+push an item there gets. It is zero for still water and for no fluid, and none where the chunk isn't loaded or the
+dimension isn't available (a client has only the level it is in), so a water wheel on a chunk edge can keep its last
+speed rather than stop.
+
+### A mod's own fluids in tanks
+
+Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water and lava: any id in a namespace other
+than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
+and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
+a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
+cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
+mod's fluid yet, and no buckets of one.
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
@@ -2947,13 +2963,17 @@ player whose state is (inside `native_perform_command`): call them from a menu h
 
 - `native_draw_text(draw, text, at, color, glowing, outline)` draws a `Text` under a block entity's pose, as a sign
   draws its lines. One unit is one font pixel and y points down, so scale the pose by `[1/64, -1/64, 1/64]` as a sign
-  does. Each span keeps its own colour, and glowing text is full bright. It returns the width, for centring.
+  does. Each span keeps its own colour, and glowing text is full bright. It returns the width, for centring. Only the
+  spans' text and colour are drawn, in the default font: no bold, italic or other font yet. Clamp text read from NBT,
+  since an outlined glyph costs nine quads, and widen `native_block_entity_render_bounding_box` for a long line, which
+  the one-block default bounds cull while it is still on screen.
 - `BlockEntityDraw::spin(axis, pivot, degrees_per_tick, phase)` makes what is drawn next turn by itself, and `still`
-  ends it. The game works out the angle from the game time each frame. With `keep`, a shaft turning at a steady speed
+  ends it. The game works out the angle from the game time each frame (`game_time * degrees_per_tick + phase`), so a
+  new speed needs a new phase to carry on from the current angle. With `keep`, a shaft turning at a steady speed
   is drawn again with no call of `native_block_entity_submit` until its block entity changes. This stands in for
   Flywheel's rotating instances, on the CPU.
 - `native_block_face_sprite(state, side)` names the texture a block state shows on a side, as `native_draw_cube`
-  takes it. With it, a copycat block draws its material's textures on its own shape and keeps the result.
+  takes it (`block/oak_planks`: vanilla's without the namespace). With it, a copycat block draws its material's textures on its own shape and keeps the result.
 - Connected textures (casings, framed glass) need no code. A content mod ships OptiFine CTM rules under
   `assets/<id>/optifine/ctm/`, and the mesher reads them as it reads a resource pack's.
 
@@ -3473,8 +3493,8 @@ The following documented `Game` helpers are not in the trait yet:
 - `spawn_mob`, `mob`, `mobs`, `block_in_tag`, `item_in_tag`,
   `server_block_in_tag`, `server_block`,
   `set_display`, `sidebar`, `experience_orbs`,
-  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`,
-  `fluid_tanks` and `container_slots` use gameplay-private types.
+  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`
+  and `container_slots` use gameplay-private types.
 - `with_mod_block_entity` and `trigger_criterion` are generic or take
   `impl Trait`, so their signatures cannot be called through `dyn Host`;
   the forms above stand in for them.

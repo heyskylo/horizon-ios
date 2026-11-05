@@ -3900,6 +3900,10 @@ impl Game<'_> {
             if here {
                 self.tell_neutral_mobs_player_died(at, Some(conn), &host.mob_players);
             }
+            // The death's last blow, read before the death message empties the
+            // combat record: ServerPlayer.die's triggers read it from a record
+            // that CombatTracker.recheckStatus clears only at the end of die.
+            let blow = self.guest_combat.get(&conn).and_then(|c| c.killing_blow());
             // ServerPlayer.die: with showDeathMessages, the message goes to
             // the dying player's death screen and to everyone the team lets
             // see it; without it, the death screen gets an empty one.
@@ -3960,15 +3964,19 @@ impl Game<'_> {
             // CatalystListener: with experience to take, the player who last
             // hurt them gets KILL_MOB_NEAR_SCULK_CATALYST.
             if consumed && catalyst_xp > 0 {
-                self.guest_catalyst_trigger(host, gi, conn, at);
+                self.guest_catalyst_trigger(host, gi, conn, at, blow.clone());
             }
             // ServerPlayer.die: the drops, then the deathCount objectives, then
-            // the `deaths` statistic and the two timers it resets.
+            // the killer's awardKillScore, then the `deaths` statistic and the
+            // two timers it resets.
             self.as_guest(host, conn, |game| {
                 if let Some(eyes) = drops {
                     game.drop_inventory(eyes, (uuid, id));
                 }
                 game.score_player_died();
+            });
+            self.guest_killed_player_trigger(host, conn, at, blow);
+            self.as_guest(host, conn, |game| {
                 game.award_custom_stat("deaths", 1);
                 game.stats.reset_death_timers();
             });
@@ -3983,7 +3991,15 @@ impl Game<'_> {
     /// `SculkCatalystBlockEntity.CatalystListener`'s trigger on a player's
     /// death: for the player the dying guest's combat record credits
     /// (`LivingEntity.getKillCredit`), with the death's `killing_blow`.
-    fn guest_catalyst_trigger(&mut self, host: &mut LanHost, gi: usize, conn: u32, at: [f64; 3]) {
+    fn guest_catalyst_trigger(
+        &mut self,
+        host: &mut LanHost,
+        gi: usize,
+        conn: u32,
+        at: [f64; 3],
+        blow: Option<(String, Option<u32>)>,
+    ) {
+        const TRIGGER: &str = "minecraft:kill_mob_near_sculk_catalyst";
         let now = self.world.game_time;
         let combat = self.guest_combat.get(&conn);
         let who = combat.and_then(|c| c.kill_credit(now)).and_then(|id| {
@@ -4003,9 +4019,15 @@ impl Game<'_> {
             }
         });
         let Some(who) = who else { return };
-        let (damage, attacker) = combat
-            .and_then(|c| c.killing_blow())
-            .unwrap_or_else(|| ("minecraft:player_attack".into(), None));
+        let blow = self
+            .guest_killing_blow(host, blow, at, TRIGGER)
+            .unwrap_or_else(|| {
+                horizon_client::advancements::recorded_blow(
+                    "minecraft:player_attack".into(),
+                    None,
+                    at,
+                )
+            });
         let g = &host.hub.guests[gi];
         let view = horizon_client::advancements::EntityView {
             kind: "minecraft:player".into(),
@@ -4023,73 +4045,98 @@ impl Game<'_> {
             ),
             ..Default::default()
         };
-        // The damage's causing entity: the player in place, another guest, or
-        // a mob (`DamageSource.getEntity`).
-        let source = attacker.and_then(|id| {
-            if self.lan_acting.is_none()
-                && self
-                    .player
-                    .as_ref()
-                    .is_some_and(|p| p.entity_id as u32 == id)
-            {
-                Some(self.player_entity_for("minecraft:kill_mob_near_sculk_catalyst"))
-            } else {
-                host.hub
-                    .guests
-                    .iter()
-                    .find(|g| g.entity_id as u32 == id)
-                    .map(|g| horizon_client::advancements::EntityView {
-                        kind: "minecraft:player".into(),
-                        position: g.position,
-                        sneaking: g.sneaking,
-                        input_sneak: g.input & 32 != 0,
-                        ..Default::default()
-                    })
-                    .or_else(|| {
-                        self.mobs
-                            .iter()
-                            .find(|m| m.id == id)
-                            .map(|m| self.mob_entity(m))
-                    })
-            }
-        });
-        let projectile = match damage.as_str() {
-            "minecraft:arrow" => Some("minecraft:arrow"),
-            "minecraft:fireball" | "minecraft:small_fireball" => Some("minecraft:fireball"),
-            "minecraft:wither_skull" => Some("minecraft:wither_skull"),
-            "minecraft:fireworks" => Some("minecraft:firework_rocket"),
-            _ => None,
-        };
-        let blow = horizon_client::advancements::DamageView {
-            kind: damage,
-            // DamageSource.isDirect: the causing entity is the direct one.
-            is_direct: projectile.is_none(),
-            direct: match projectile {
-                Some(kind) => Some(horizon_client::advancements::EntityView {
-                    kind: kind.into(),
-                    position: at,
-                    ..Default::default()
-                }),
-                None => source.clone(),
-            },
-            source,
-            ..Default::default()
-        };
         // CatalystListener: trigger(player, killedEntity, damageSource).
         match who {
-            None => {
-                self.trigger_killed_as("minecraft:kill_mob_near_sculk_catalyst", &view, Some(&blow))
-            }
+            None => self.trigger_killed_as(TRIGGER, &view, Some(&blow)),
             Some(kconn) => {
                 self.as_guest(host, kconn, |g| {
-                    g.trigger_killed_as(
-                        "minecraft:kill_mob_near_sculk_catalyst",
-                        &view,
-                        Some(&blow),
-                    );
+                    g.trigger_killed_as(TRIGGER, &view, Some(&blow));
                 });
             }
         }
+    }
+
+    /// `ServerPlayer.die` → `Entity.awardKillScore` on the entity the dying
+    /// guest's combat record credits (`LivingEntity.getKillCredit`): the
+    /// guest's `entity_killed_player`, with that entity and the death's
+    /// `killing_blow`. Nothing credited, nothing fires.
+    fn guest_killed_player_trigger(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        at: [f64; 3],
+        blow: Option<(String, Option<u32>)>,
+    ) {
+        const TRIGGER: &str = "minecraft:entity_killed_player";
+        let now = self.world.game_time;
+        let Some(id) = self
+            .guest_combat
+            .get(&conn)
+            .and_then(|c| c.kill_credit(now))
+        else {
+            return;
+        };
+        let Some(killer) = self.guest_entity_view(host, id, TRIGGER) else {
+            return;
+        };
+        let blow = self.guest_killing_blow(host, blow, at, TRIGGER);
+        self.as_guest(host, conn, |g| {
+            g.trigger_killed_as(TRIGGER, &killer, blow.as_ref());
+        });
+    }
+
+    /// The dying guest's last blow (`LivingEntity.getLastDamageSource`), its
+    /// damage type and causing entity as the combat record held them, as a
+    /// damage source: the projectile as the direct entity.
+    fn guest_killing_blow(
+        &self,
+        host: &LanHost,
+        blow: Option<(String, Option<u32>)>,
+        at: [f64; 3],
+        trigger: &str,
+    ) -> Option<horizon_client::advancements::DamageView> {
+        let (damage, attacker) = blow?;
+        // The damage's causing entity: the player in place, another guest, or
+        // a mob (`DamageSource.getEntity`).
+        let source = attacker.and_then(|id| self.guest_entity_view(host, id, trigger));
+        Some(horizon_client::advancements::recorded_blow(
+            damage, source, at,
+        ))
+    }
+
+    /// The entity behind a combat record's id, as `trigger`'s predicates see
+    /// it: the player in place, a guest, or a mob.
+    fn guest_entity_view(
+        &self,
+        host: &LanHost,
+        id: u32,
+        trigger: &str,
+    ) -> Option<horizon_client::advancements::EntityView> {
+        if self.lan_acting.is_none()
+            && self
+                .player
+                .as_ref()
+                .is_some_and(|p| p.entity_id as u32 == id)
+        {
+            return Some(self.player_entity_for(trigger));
+        }
+        host.hub
+            .guests
+            .iter()
+            .find(|g| g.entity_id as u32 == id)
+            .map(|g| horizon_client::advancements::EntityView {
+                kind: "minecraft:player".into(),
+                position: g.position,
+                sneaking: g.sneaking,
+                input_sneak: g.input & 32 != 0,
+                ..Default::default()
+            })
+            .or_else(|| {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(|m| self.mob_entity(m))
+            })
     }
 
     /// `ServerPlayer.die`'s message from a guest's own `CombatTracker`, which
