@@ -6349,6 +6349,9 @@ impl Game<'_> {
                 // NetherPortalBlock.entityInside on the client's own level:
                 // the portal overlay and its trigger sound (the server moves
                 // the player).
+                horizon_client::motion::MotionEvent::PowderSnowMelt { pos } => {
+                    self.powder_snow_melt(pos);
+                }
                 horizon_client::motion::MotionEvent::InsidePortal { .. } => {
                     self.client_inside_nether_portal();
                 }

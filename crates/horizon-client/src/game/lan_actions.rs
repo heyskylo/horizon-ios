@@ -4710,8 +4710,10 @@ impl Game<'_> {
             let mut events = std::mem::take(&mut w.player.events);
             // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
             for event in &events {
-                if let MotionEvent::CauldronExtinguish { pos } = event {
-                    game.cauldron_extinguish(*pos);
+                match event {
+                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
+                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
+                    _ => {}
                 }
             }
             // Entity.baseTick: rain puts out a burning player.
