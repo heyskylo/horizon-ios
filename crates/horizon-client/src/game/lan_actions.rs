@@ -1512,6 +1512,21 @@ impl Game<'_> {
         self.player_menu_closing(host, conn);
     }
 
+    pub(super) fn vehicle_has_other_viewers(
+        container: Option<(i32, i32, i32)>,
+        guests: &[horizon_client::lan::guest::Guest],
+        closing_conn: Option<u32>,
+        key: (i32, i32, i32),
+    ) -> bool {
+        container == Some(key)
+            || guests.iter().any(|g| {
+                Some(g.conn) != closing_conn
+                    && g.menu
+                        .as_ref()
+                        .is_some_and(|m| m.slots == Slots::Block(key))
+            })
+    }
+
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
     /// (`AbstractChestBoat.stopOpen` / `MinecartChest.stopOpen`): the menu's
     /// slots go back to the vehicle, the shared placeholder leaves
@@ -1521,7 +1536,11 @@ impl Game<'_> {
     /// `ServerPlayer.tick` reach/destroyed close.
     fn close_guest_vehicle_menu(&mut self, host: &LanHost, conn: u32, key: (i32, i32, i32)) {
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        let other_viewers =
+            Self::vehicle_has_other_viewers(self.container, &host.hub.guests, Some(conn), key);
+        if !other_viewers {
+            self.world.block_entities.remove(&key);
+        }
         let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
             Some([b.position.x, b.position.y, b.position.z])
         } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
