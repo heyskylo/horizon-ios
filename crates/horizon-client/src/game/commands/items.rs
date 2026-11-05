@@ -1133,12 +1133,10 @@ impl Game<'_> {
                 return Err(match &sources[..] {
                     // ItemCommands.getContainer: a block entity that is no Container
                     // (a sign, a lectern, a beacon) is no source either.
-                    [Owner::Block(p)] if self.block_container_size(*p).is_none() => {
-                        err(
-                            "commands.item.source.not_a_container",
-                            &[&p[0], &p[1], &p[2]],
-                        )
-                    }
+                    [Owner::Block(p)] if self.block_container_size(*p).is_none() => err(
+                        "commands.item.source.not_a_container",
+                        &[&p[0], &p[1], &p[2]],
+                    ),
                     _ if source_slots.starts_with('{') || source_slots.starts_with('[') => {
                         err("commands.item.source.no_such_slot.unnamed", &[])
                     }
