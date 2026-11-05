@@ -760,8 +760,8 @@ fn run(
         }
     };
     status(send, &tr(lang, "connect.joining"));
-    c.send(&cfg::Serverbound::ClientInformation(info).encode())
-        .map_err(e)?;
+    // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
+    // the client information.
     c.send(
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
@@ -770,6 +770,8 @@ fn run(
         .encode(),
     )
     .map_err(e)?;
+    c.send(&cfg::Serverbound::ClientInformation(info).encode())
+        .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(
@@ -1304,11 +1306,7 @@ mod tests {
                 login::Serverbound::decode(id, &body).unwrap(),
                 login::Serverbound::LoginAcknowledged(_)
             ));
-            let (id, body) = server.recv().unwrap();
-            assert!(matches!(
-                cfg::Serverbound::decode(id, &body).unwrap(),
-                cfg::Serverbound::ClientInformation(_)
-            ));
+            // handleLoginFinished: the brand first, then the information.
             let (id, body) = server.recv().unwrap();
             assert_eq!(
                 cfg::Serverbound::decode(id, &body).unwrap(),
@@ -1317,6 +1315,11 @@ mod tests {
                     data: b"\x07vanilla".to_vec(),
                 })
             );
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::ClientInformation(_)
+            ));
             server
                 .send(
                     &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
