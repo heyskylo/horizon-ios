@@ -344,6 +344,17 @@ fn set_peek(m: &mut Mob, amount: i32, events: &mut Vec<MobEvent>) {
         1.0,
         1.0,
     ));
+    // Shulker.setRawPeekAmount: CONTAINER_CLOSE as the lid shuts, CONTAINER_OPEN as it opens.
+    events.push(MobEvent::GameEvent {
+        event: if amount == 0 {
+            "minecraft:container_close"
+        } else {
+            "minecraft:container_open"
+        },
+        at: [m.position.x, m.position.y, m.position.z],
+        source: m.id,
+        state: horizon_world::registry::BlockStateId(0),
+    });
     m.extra.counter = amount;
 }
 /// `Shulker.updatePeekAmount`/`updatePeekAmountO`: the eased peek.
@@ -779,6 +790,28 @@ mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
+
+    /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
+    /// CONTAINER_CLOSE, for the sculk sensors and wardens nearby.
+    #[test]
+    fn the_lid_posts_container_open_and_close() {
+        let posted = |events: &[MobEvent]| -> Vec<&'static str> {
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::GameEvent { event, .. } => Some(*event),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut m = shulker();
+        let mut events = Vec::new();
+        set_peek(&mut m, 30, &mut events);
+        assert_eq!(posted(&events), ["minecraft:container_open"]);
+        let mut events = Vec::new();
+        set_peek(&mut m, 0, &mut events);
+        assert_eq!(posted(&events), ["minecraft:container_close"]);
+    }
 
     /// A shulker fixed to a block face.
     pub(super) fn shulker() -> Mob {

@@ -157,6 +157,9 @@ pub struct Config {
     /// The game reads this section itself (docs/chat-filter.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "chat_filter_default")]
     pub chat_filter: horizon_chat_filter::Config,
+    /// A one-time prune of barely visited chunks before a start (prune.rs); written only when set.
+    #[serde(default, skip_serializing_if = "crate::prune::Settings::is_default")]
+    pub prune_chunks: crate::prune::Settings,
 }
 
 /// The game reads this section itself too (docs/chat-filter.md).
@@ -481,6 +484,7 @@ impl Config {
         self.discord.check()?;
         self.anticheat.check()?;
         self.chat_filter.check()?;
+        self.prune_chunks.check()?;
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());
         }
@@ -598,7 +602,7 @@ pub fn render(config: &Config) -> String {
         set(&mut doc, section, field, &table[section][field]);
     }
     let mut text = doc.to_string();
-    for section in ["anticheat", "chat_filter"] {
+    for section in ["anticheat", "chat_filter", "prune_chunks"] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();
             only.insert(section.into(), settings.clone());

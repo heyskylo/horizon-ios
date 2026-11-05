@@ -35,6 +35,8 @@ sha2 = "0.10"
 sha1 = "0.10"
 base64 = "0.22"
 horizon-core = { path = "../horizon-core" }
+# [prune_chunks]: region files read and rewritten as vanilla's RegionFile does (prune.rs).
+horizon-world = { path = "../horizon-world" }
 # Its TLS (on by default, as vanilla's): rustls on ring, both already in the lockfile through ureq; the keystore
 # is a PKCS12 file, as vanilla's, and one is generated (self-signed) when the owner sets none.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

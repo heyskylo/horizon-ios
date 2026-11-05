@@ -345,8 +345,13 @@ Tiles are sampled again for each player who asks (there is no cache yet). Vanill
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
 sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
-can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
+settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
+share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
+tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
+a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
+hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
+`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
+it is. Nothing restarts: the report runs beside the game.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
@@ -541,6 +546,28 @@ and the oldest automatic ones beyond `keep` are deleted. Backups you make by han
 world aside to `backups/replaced-<time>/` (never deleted), puts the backup in place, and restarts the server if
 it was running. Add `--dimension ID` (like `minecraft:the_nether`) to bring back only that dimension and leave
 the rest of the world as it is. The panel does the same with one click.
+
+### A smaller world: `[prune_chunks]`
+
+Players who travel far leave a trail of chunks nobody comes back to. This deletes the chunks players spent
+less than a minute near (vanilla's `InhabitedTime`, 1200 ticks), so they generate again from the seed, as they
+were, if someone returns. Back up first. Add to `server.toml`, then restart:
+
+```toml
+[prune_chunks]
+mode = "dry-run"             # "dry-run": only the report, the game starts at once; "delete": before the game starts
+min_inhabited_ticks = 1200   # chunks players spent less than this near go
+spawn_radius = 32            # chunks this close to the spawn stay (0 0 in the Nether and the End)
+ring = 1                     # chunks this close to a kept chunk stay, so no seam opens beside a build
+keep_files = ["horizon-smp/claims.json", "horizon-smp/places.json"]   # in the world folder: claims, homes
+```
+
+After the run, `mode` is set back to `"off"` and `logs/prune-chunks-<time>.txt` says, per dimension, how many
+chunks went (or would go) and how much disk was freed. The chunk's entities and points of interest go with it;
+region files are rewritten compacted (vanilla still reads them) and a file left empty is deleted. Chunks that
+can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
+`x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
+stops the prune before anything is deleted.
 
 ## 8. Start it with the computer
 

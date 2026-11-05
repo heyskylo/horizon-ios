@@ -126,7 +126,7 @@ impl Split<'_> {
             self.fresh.clear();
             self.lost.clear();
             self.p1_pad = P1Pad::default();
-            self.pads = PadRouter::default();
+            self.pads.hand_back(&mut self.host.pad);
         }
     }
 
@@ -155,6 +155,7 @@ impl Split<'_> {
         let offers_before = self.offers.len();
         let mut joins = Vec::new();
         let mut presses = Vec::new();
+        self.pads.adopt(&mut self.host.pad);
         for event in self.pads.events() {
             match event {
                 PadEvent::Press(id, button) => presses.push((id, button)),

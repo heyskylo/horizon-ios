@@ -425,6 +425,7 @@
   "Frame Generation": "Generacija okvira",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Prikazuje napravljeni okvir između svaka dva stvarna: glatkiji, malo više zaostajanja.",
   "Shadow Cache": "Shadov Cache",
+  "Shader Packs...": "Shader paketi...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ponovo koristi mapu senki paketa kada se poklope sunce, pogled i svet. Podrazumevano isključeno.",
   "Find BlueMap": "Pronađite BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na serverima pronalazi njihovu BlueMap veb mapu za daleki teren. Sledeće pridruživanje.",
@@ -486,8 +487,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Skriveno: svaki Horizon igrač vas vidi bez kozmetike, uključujući i vas. Isti prekidač kao Garderoba u pokretaču.",
   "horizon.extras.cosmetics_others": "Kozmetika drugih igrača",
   "horizon.extras.cosmetics_others.tooltip": "Šta nose drugi Horizon igrači: sve, samo stilove oznaka imena ili ništa. Kada je skriveno, igra nikada ne pita šta nose.",
-  "horizon.extras.cosmetics_auras": "Aure i tragovi drugih",
-  "horizon.extras.cosmetics_auras.tooltip": "Aure i staze koje drugi igrači nose. Podrazumevano isključeno.",
+  "horizon.extras.cosmetics_hide_fx": "Sakrij tragove i aure drugih igrača",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Tragovi i aure drugih igrača ostaju skriveni; njihova ostala kozmetika se i dalje vidi. Isključeno po zadanom.",
   "horizon.extras.cosmetics.shown": "Pokazano",
   "horizon.extras.cosmetics.hidden": "Skriveno",
   "horizon.extras.cosmetics.name_tags": "Samo oznake sa imenom"

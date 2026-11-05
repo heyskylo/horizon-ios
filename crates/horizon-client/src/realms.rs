@@ -13,7 +13,7 @@ use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
     PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmWorldOptions,
-    RealmsClient, RealmsError, Subscription,
+    RealmsClient, RealmsError, RegionDataDto, RegionSelectionPreferenceDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +35,8 @@ const INFO: u32 = 0xFFBE_887D;
 const REALMS_INVITE_CODE: crate::clipboard::FieldId = ("realms.invite_code", 0);
 const REALMS_PLAYER_NAME: crate::clipboard::FieldId = ("realms.player_name", 0);
 const REALMS_SLOT_NAME: crate::clipboard::FieldId = ("realms.slot_name", 0);
+const REALMS_SETTINGS_NAME: crate::clipboard::FieldId = ("realms.settings_name", 0);
+const REALMS_SETTINGS_DESC: crate::clipboard::FieldId = ("realms.settings_desc", 0);
 
 /// `RealmsSlotOptionsScreen.DIFFICULTIES` and `GAME_MODES`, in menu order (the index
 /// is what the service stores).
@@ -164,6 +166,85 @@ fn extend_link(server: &RealmServer, profile: u128) -> String {
             format!("{EXTEND_REALMS}?subscriptionId={sub}&profileId={profile:032x}&ref={reference}")
         }
     }
+}
+
+/// `RealmsSettingsTab`'s fields: the name, the description and the region preference,
+/// as the player is editing them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsDraft {
+    pub name: String,
+    pub description: String,
+    /// `RegionSelectionPreference`'s id: [`client::AUTOMATIC_PLAYER`],
+    /// [`client::AUTOMATIC_OWNER`] or [`client::MANUAL`].
+    pub preference: i32,
+    /// The `RealmsRegion`'s `nameId`, while `preference` is `MANUAL`.
+    pub region: Option<String>,
+    /// The field with the caret: the name (false) or the description (true).
+    pub on_description: bool,
+}
+
+impl SettingsDraft {
+    /// The draft the tab opens with (`RealmsSettingsTab.updateData`): a Realm without a
+    /// preference has `RegionSelectionPreferenceDto.DEFAULT`, automatic by owner.
+    fn of(server: &RealmServer) -> Self {
+        let (preference, region) = server.region_selection_preference.as_ref().map_or(
+            (client::AUTOMATIC_OWNER, None),
+            |p| {
+                (
+                    p.region_selection_preference,
+                    p.preferred_region.clone().filter(|r| !r.is_empty()),
+                )
+            },
+        );
+        Self {
+            name: server.name.clone(),
+            description: server.motd.clone(),
+            preference,
+            region,
+            on_description: false,
+        }
+    }
+    /// The preference as `RegionSelectionPreferenceDto`: the region only for `MANUAL`.
+    fn preference_dto(&self) -> RegionSelectionPreferenceDto {
+        RegionSelectionPreferenceDto {
+            region_selection_preference: self.preference,
+            preferred_region: self
+                .region
+                .clone()
+                .filter(|_| self.preference == client::MANUAL),
+        }
+    }
+}
+
+/// `RealmsSettingsTab.getTranslatableFromPreference`: a manual choice shows its region,
+/// the automatic ones their own name.
+fn preference_label(preference: i32, region: Option<&str>) -> String {
+    let t = crate::lang::get;
+    match (preference, region) {
+        (client::MANUAL, Some(region)) => {
+            client::region_translation_key(region).map_or_else(|| region.to_owned(), t)
+        }
+        (client::AUTOMATIC_PLAYER, _) => {
+            t("realms.configuration.region_preference.automatic_player")
+        }
+        _ => t("realms.configuration.region_preference.automatic_owner"),
+    }
+}
+
+/// `RealmsPreferredRegionSelectionScreen.RegionSelectionList`'s rows: automatic by player,
+/// automatic by owner, then every region as a manual choice.
+fn region_rows(regions: &[RegionDataDto]) -> Vec<(i32, Option<String>)> {
+    [
+        (client::AUTOMATIC_PLAYER, None),
+        (client::AUTOMATIC_OWNER, None),
+    ]
+    .into_iter()
+    .chain(
+        regions
+            .iter()
+            .map(|r| (client::MANUAL, Some(r.region.clone()))),
+    )
+    .collect()
 }
 
 /// `RealmsConfigureWorldScreen`'s tabs, in `MenuTabBar` order.
@@ -338,6 +419,13 @@ pub enum SubScreen {
         deleting: Option<Job<Result<(), RealmsError>>>,
         /// `RealmsClient.op`/`deop`/`uninvite` on a worker, from the players tab.
         member_job: Option<Job<Result<(), RealmsError>>>,
+        /// The settings tab's editable fields, once the tab has been opened.
+        settings: Option<SettingsDraft>,
+        /// `RealmsClient.preferredRegions` for the region preference screen.
+        regions: Option<Result<Vec<RegionDataDto>, RealmsError>>,
+        regions_job: Option<Job<Result<Vec<RegionDataDto>, RealmsError>>>,
+        /// `RealmsClient.updateConfiguration` on a worker.
+        saving: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
         /// `RealmsClient.open`/`close` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
@@ -354,6 +442,15 @@ pub enum SubScreen {
         /// `RealmsClient.updateSlot` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
+    },
+    /// `RealmsPreferredRegionSelectionScreen`: the region preference list.
+    RegionPreference {
+        server: RealmServer,
+        /// The settings tab's draft, which Done writes the choice back to.
+        settings: SettingsDraft,
+        regions: Vec<RegionDataDto>,
+        /// The highlighted row: `(preference, region)`.
+        selected: Option<(i32, Option<String>)>,
     },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
@@ -499,6 +596,7 @@ impl Screen {
         let mut refresh = false;
         let mut refetch_detail = false;
         let mut slot_options_saved = false;
+        let mut open_region_screen = false;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -528,6 +626,10 @@ impl Screen {
                 detail_job,
                 deleting,
                 member_job,
+                settings,
+                regions,
+                regions_job,
+                saving,
                 error,
                 job,
                 ..
@@ -556,6 +658,31 @@ impl Screen {
                     match result {
                         // `updateOps`: the list reads again with the new operators.
                         Ok(()) => refetch_detail = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+                if let Some(result) = regions_job.as_ref().and_then(take) {
+                    *regions_job = None;
+                    match result {
+                        Ok(list) => {
+                            *regions = Some(Ok(list));
+                            open_region_screen = true;
+                        }
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+                if let Some(result) = saving.as_ref().and_then(take) {
+                    *saving = None;
+                    match result {
+                        // `saveSettings` updates the screen's own copy and reads again.
+                        Ok(()) => {
+                            if let Some(draft) = settings.as_ref() {
+                                server.name = draft.name.trim().to_owned();
+                                server.motd = draft.description.clone();
+                                server.region_selection_preference = Some(draft.preference_dto());
+                            }
+                            refetch_detail = true;
+                        }
                         Err(e) => *error = Some(e.text()),
                     }
                 }
@@ -601,6 +728,10 @@ impl Screen {
                                 detail_job: None,
                                 deleting: None,
                                 member_job: None,
+                                settings: None,
+                                regions: None,
+                                regions_job: None,
+                                saving: None,
                                 error: None,
                                 job: None,
                             };
@@ -613,6 +744,9 @@ impl Screen {
             }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
+        }
+        if open_region_screen {
+            self.open_region_preference();
         }
         if slot_options_saved {
             self.back_to_worlds();
@@ -688,6 +822,18 @@ impl Screen {
             SubScreen::JoinCode { .. } => Some([(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0]),
             SubScreen::Invite { .. } => Some([(w / 2.0).floor() - 100.0, 62.0, 200.0, 20.0]),
             SubScreen::SlotOptions { .. } => Some([(w / 2.0).floor() - 154.0, 62.0, 152.0, 20.0]),
+            SubScreen::Configure {
+                tab: ConfigureTab::Settings,
+                settings: Some(draft),
+                ..
+            } => {
+                let left = (w / 2.0).floor() - 106.0;
+                Some(if draft.on_description {
+                    [left, 86.0, 212.0, 20.0]
+                } else {
+                    [left, 46.0, 212.0, 20.0]
+                })
+            }
             _ => None,
         }
     }
@@ -697,6 +843,15 @@ impl Screen {
             SubScreen::JoinCode { code, .. } => Some((REALMS_INVITE_CODE, code, 128)),
             SubScreen::Invite { name, .. } => Some((REALMS_PLAYER_NAME, name, 16)),
             SubScreen::SlotOptions { name, .. } => Some((REALMS_SLOT_NAME, name, 16)),
+            SubScreen::Configure {
+                tab: ConfigureTab::Settings,
+                settings: Some(draft),
+                ..
+            } => Some(if draft.on_description {
+                (REALMS_SETTINGS_DESC, &mut draft.description, 32)
+            } else {
+                (REALMS_SETTINGS_NAME, &mut draft.name, 32)
+            }),
             _ => None,
         }
     }
@@ -714,6 +869,7 @@ impl Screen {
     }
 
     fn back_to_list(&mut self) {
+        self.save_settings_tab();
         if let Some((_, aborted)) = self.joining.take() {
             aborted.store(true, Ordering::Relaxed);
         }
@@ -829,6 +985,94 @@ impl Screen {
         }
     }
 
+    /// A chosen region preference: back to the settings tab with it.
+    fn back_to_settings(&mut self, server: RealmServer, settings: SettingsDraft) {
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Settings,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: Some(settings),
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
+    /// `RealmsSettingsTab.onDeselected`: the edited name, description and region preference,
+    /// saved through `RealmsClient.updateConfiguration` when any of them changed.
+    fn save_settings_tab(&mut self) {
+        let SubScreen::Configure {
+            tab: ConfigureTab::Settings,
+            server,
+            detail,
+            settings: Some(draft),
+            saving,
+            ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if saving.is_some() {
+            return;
+        }
+        let wanted = draft.preference_dto();
+        let region_changed = server.region_selection_preference.as_ref().map_or(
+            wanted.region_selection_preference != client::AUTOMATIC_OWNER,
+            |p| *p != wanted,
+        );
+        let changed =
+            draft.name.trim() != server.name || draft.description != server.motd || region_changed;
+        if !changed {
+            return;
+        }
+        let Some(Ok(detail)) = detail else {
+            return;
+        };
+        let Some(slot) = detail.slots.get(&detail.active_slot).cloned() else {
+            return;
+        };
+        if let Some(client) = client() {
+            let (id, name, description) = (
+                server.id,
+                draft.name.trim().to_owned(),
+                draft.description.clone(),
+            );
+            *saving = Some(spawn(move || {
+                client.update_configuration(id, &name, &description, &wanted, &slot)
+            }));
+        }
+    }
+
+    /// `RealmsSettingsTab.openPreferenceSelector`, once the region list is there.
+    fn open_region_preference(&mut self) {
+        let SubScreen::Configure {
+            server,
+            settings: Some(draft),
+            regions: Some(Ok(list)),
+            ..
+        } = &self.subscreen
+        else {
+            return;
+        };
+        let (server, settings, regions) = (server.clone(), draft.clone(), list.clone());
+        let selected = Some((settings.preference, settings.region.clone()));
+        self.subscreen = SubScreen::RegionPreference {
+            server,
+            settings,
+            regions,
+            selected,
+        };
+    }
+
     /// `RealmsSlotOptionsScreen.onClose`: back to the worlds tab.
     fn back_to_worlds(&mut self) {
         let SubScreen::SlotOptions { server, .. } = &self.subscreen else {
@@ -844,6 +1088,10 @@ impl Screen {
             detail_job: None,
             deleting: None,
             member_job: None,
+            settings: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
             error: None,
             job: None,
         };
@@ -929,6 +1177,10 @@ impl Screen {
             detail_job: None,
             deleting: None,
             member_job: None,
+            settings: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
             error: None,
             job: None,
         };
@@ -951,6 +1203,10 @@ impl Screen {
                         detail_job: None,
                         deleting: None,
                         member_job: None,
+                        settings: None,
+                        regions: None,
+                        regions_job: None,
+                        saving: None,
                         error: None,
                         job: None,
                     };
@@ -1111,6 +1367,71 @@ impl Screen {
                 }
                 Outcome::None
             }
+            // RealmsPreferredRegionSelectionScreen.onDone / onClose.
+            Some(87) => {
+                if let SubScreen::RegionPreference {
+                    server,
+                    settings,
+                    selected,
+                    ..
+                } = &self.subscreen
+                    && let Some((preference, region)) = selected
+                {
+                    let server = server.clone();
+                    let mut settings = settings.clone();
+                    settings.preference = *preference;
+                    settings.region = region.clone();
+                    self.back_to_settings(server, settings);
+                }
+                Outcome::None
+            }
+            Some(86) => {
+                if let SubScreen::RegionPreference {
+                    server, settings, ..
+                } = &self.subscreen
+                {
+                    let server = server.clone();
+                    let settings = settings.clone();
+                    self.back_to_settings(server, settings);
+                }
+                Outcome::None
+            }
+            // RealmsSettingsTab.openPreferenceSelector: the region list, then the screen.
+            Some(89) => {
+                if let SubScreen::Configure {
+                    server,
+                    settings: Some(draft),
+                    regions,
+                    ..
+                } = &self.subscreen
+                {
+                    let draft = draft.clone();
+                    let server = server.clone();
+                    let loaded = matches!(regions, Some(Ok(_)));
+                    if loaded {
+                        if let SubScreen::Configure {
+                            regions: Some(Ok(regions)),
+                            ..
+                        } = &self.subscreen
+                        {
+                            let regions = regions.clone();
+                            let selected = Some((draft.preference, draft.region.clone()));
+                            self.subscreen = SubScreen::RegionPreference {
+                                server,
+                                settings: draft,
+                                regions,
+                                selected,
+                            };
+                        }
+                    } else if let SubScreen::Configure { regions_job, .. } = &mut self.subscreen
+                        && regions_job.is_none()
+                        && let Some(client) = client()
+                    {
+                        *regions_job = Some(spawn(move || client.preferred_regions()));
+                    }
+                }
+                Outcome::None
+            }
             // RealmsSlotOptionsScreen: cycle, toggle, Done and Cancel.
             Some(95) => {
                 if let SubScreen::SlotOptions {
@@ -1261,11 +1582,64 @@ impl Screen {
                 let (bar_x, tab_w) = tab_geometry(w);
                 if y < TAB_HEIGHT && x >= bar_x {
                     let index = ((x - bar_x) / tab_w).floor() as usize;
-                    if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
+                    let current = match &self.subscreen {
+                        SubScreen::Configure { tab, .. } => Some(*tab),
+                        _ => None,
+                    };
+                    if let (Some(current), Some(wanted)) = (current, ConfigureTab::ALL.get(index))
+                        && *wanted != current
+                        && current == ConfigureTab::Settings
+                    {
+                        self.save_settings_tab();
+                    }
+                    if let SubScreen::Configure {
+                        server,
+                        tab,
+                        settings,
+                        ..
+                    } = &mut self.subscreen
                         && let Some(wanted) = ConfigureTab::ALL.get(index)
                         && wanted.enabled(server.expired)
                     {
+                        if *wanted == ConfigureTab::Settings && settings.is_none() {
+                            *settings = Some(SettingsDraft::of(server));
+                        }
                         *tab = *wanted;
+                    }
+                    return Outcome::None;
+                }
+                // RealmsSettingsTab's two fields: the click moves the caret between them.
+                if let SubScreen::Configure {
+                    tab: ConfigureTab::Settings,
+                    settings: Some(draft),
+                    ..
+                } = &mut self.subscreen
+                {
+                    let left = (w / 2.0).floor() - 106.0;
+                    if (left..left + 212.0).contains(&x) {
+                        if (46.0..66.0).contains(&y) {
+                            draft.on_description = false;
+                            return Outcome::None;
+                        }
+                        if (86.0..106.0).contains(&y) {
+                            draft.on_description = true;
+                            return Outcome::None;
+                        }
+                    }
+                }
+                // RealmsPreferredRegionSelectionScreen: a row is the preference (the region
+                // rows are MANUAL + that region).
+                if let SubScreen::RegionPreference {
+                    regions, selected, ..
+                } = &mut self.subscreen
+                {
+                    let rows = region_rows(regions);
+                    let top = 40.0;
+                    let row = ((y - top) / 16.0).floor() as usize;
+                    if y >= top
+                        && let Some(pick) = rows.get(row)
+                    {
+                        *selected = Some(pick.clone());
                     }
                     return Outcome::None;
                 }
@@ -1370,6 +1744,10 @@ impl Screen {
                     detail_job: None,
                     deleting: None,
                     member_job: Some(spawn(move || client.switch_slot(id, slot).map(drop))),
+                    settings: None,
+                    regions: None,
+                    regions_job: None,
+                    saving: None,
                     error: None,
                     job: None,
                 };
@@ -1393,6 +1771,10 @@ impl Screen {
                     detail_job: None,
                     deleting: None,
                     member_job: Some(spawn(move || client.uninvite_player(id, &uuid))),
+                    settings: None,
+                    regions: None,
+                    regions_job: None,
+                    saving: None,
                     error: None,
                     job: None,
                 };
@@ -1417,6 +1799,10 @@ impl Screen {
                     detail_job: None,
                     deleting: Some(spawn(move || client.delete_realm(id))),
                     member_job: None,
+                    settings: None,
+                    regions: None,
+                    regions_job: None,
+                    saving: None,
                     error: None,
                     job: None,
                 };
@@ -1533,7 +1919,7 @@ impl Screen {
                 // The footer: Play, the open/close toggle (vanilla keeps it on the settings
                 // tab; it stays here until that tab lands) and Back.
                 buttons.push((
-                    cx - 155.0,
+                    cx - 102.0,
                     h - 26.0,
                     100.0,
                     t("mco.selectServer.play"),
@@ -1541,13 +1927,26 @@ impl Screen {
                     64,
                     None,
                 ));
-                let toggle = if server.is_open() {
-                    t("mco.configure.world.buttons.close")
-                } else {
-                    t("mco.configure.world.buttons.open")
-                };
-                buttons.push((cx - 50.0, h - 26.0, 100.0, toggle, job.is_none(), 30, None));
-                buttons.push((cx + 55.0, h - 26.0, 100.0, t("gui.back"), true, 32, None));
+                buttons.push((cx + 2.0, h - 26.0, 100.0, t("gui.back"), true, 32, None));
+                // RealmsSettingsTab: the region preference and the open/close toggle
+                // (vanilla keeps the toggle on this tab).
+                if *tab == ConfigureTab::Settings {
+                    buttons.push((
+                        cx - 106.0,
+                        146.0,
+                        212.0,
+                        t("mco.configure.world.buttons.region_preference"),
+                        true,
+                        89,
+                        None,
+                    ));
+                    let toggle = if server.is_open() {
+                        t("mco.configure.world.buttons.close")
+                    } else {
+                        t("mco.configure.world.buttons.open")
+                    };
+                    buttons.push((cx - 106.0, 174.0, 212.0, toggle, job.is_none(), 30, None));
+                }
                 // RealmsSubscriptionTab's own two buttons.
                 if *tab == ConfigureTab::Subscription && matches!(subscription, Some(Ok(_))) {
                     buttons.push((
@@ -1625,6 +2024,10 @@ impl Screen {
                         None,
                     ));
                 }
+            }
+            SubScreen::RegionPreference { .. } => {
+                buttons.push((cx - 102.0, h - 36.0, 100.0, t("gui.done"), true, 87, None));
+                buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 86, None));
             }
             SubScreen::SlotOptions {
                 server,
@@ -1978,6 +2381,9 @@ impl Screen {
                 tab,
                 subscription,
                 detail,
+                settings,
+                regions,
+                saving,
                 deleting,
                 error,
                 job,
@@ -2187,16 +2593,77 @@ impl Screen {
                             u32::MAX,
                         ),
                     },
-                    // The Worlds and Settings tabs land in follow-ups; vanilla shows this
-                    // while its own fetches run.
-                    _ => centered(
-                        batch,
-                        atlas,
-                        &t("mco.configure.world.loading"),
-                        cx,
-                        60.0,
-                        u32::MAX,
-                    ),
+                    ConfigureTab::Settings => match settings {
+                        Some(draft) => {
+                            // `RealmsSettingsTab`: the name and description fields, the
+                            // region preference line and the open/close button.
+                            let left = cx - 106.0;
+                            batch.text(
+                                atlas,
+                                &t("mco.configure.world.name"),
+                                left,
+                                34.0,
+                                GREY,
+                                true,
+                            );
+                            caret.draw(
+                                batch,
+                                atlas,
+                                (REALMS_SETTINGS_NAME, &draft.name, 32),
+                                [left, 46.0, 212.0, 20.0],
+                                !draft.on_description,
+                                focused_at,
+                            );
+                            batch.text(
+                                atlas,
+                                &t("mco.configure.world.description"),
+                                left,
+                                74.0,
+                                GREY,
+                                true,
+                            );
+                            caret.draw(
+                                batch,
+                                atlas,
+                                (REALMS_SETTINGS_DESC, &draft.description, 32),
+                                [left, 86.0, 212.0, 20.0],
+                                draft.on_description,
+                                focused_at,
+                            );
+                            batch.text(
+                                atlas,
+                                &t("mco.configure.world.region_preference"),
+                                left,
+                                114.0,
+                                GREY,
+                                true,
+                            );
+                            let current =
+                                preference_label(draft.preference, draft.region.as_deref());
+                            batch.text(atlas, &current, left, 126.0, GREY, true);
+                            if saving.is_some() {
+                                centered(
+                                    batch,
+                                    atlas,
+                                    &t("mco.configure.world.loading"),
+                                    cx,
+                                    200.0,
+                                    u32::MAX,
+                                );
+                            }
+                            if regions.is_none() {
+                                // The region list is loading: the button says so when clicked.
+                            }
+                        }
+                        None => centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.loading"),
+                            cx,
+                            60.0,
+                            u32::MAX,
+                        ),
+                    },
                 }
                 let status = if job.is_some() {
                     Some((
@@ -2216,6 +2683,34 @@ impl Screen {
                     for (i, line) in wrap_lines(&text, atlas, w - 40.0).iter().enumerate() {
                         centered(batch, atlas, line, cx, h - 60.0 + i as f32 * 10.0, color);
                     }
+                }
+            }
+            SubScreen::RegionPreference {
+                regions, selected, ..
+            } => {
+                // `RealmsPreferredRegionSelectionScreen`: the preference rows, then the
+                // MANUAL rows per region.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.region_preference.title"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                let top = 40.0;
+                let rows = region_rows(regions);
+                let left = ((w - 300.0) / 2.0).floor();
+                for (i, (preference, region)) in rows.iter().enumerate() {
+                    let y = top + i as f32 * 16.0;
+                    let picked = selected
+                        .as_ref()
+                        .is_some_and(|(p, r)| p == preference && *r == *region);
+                    let label = preference_label(*preference, region.as_deref());
+                    if picked {
+                        batch.fill(atlas, left, y, 300.0, 14.0, 0xFF30_3030);
+                    }
+                    batch.text(atlas, &label, left + 5.0, y + 2.0, u32::MAX, true);
                 }
             }
             SubScreen::SlotOptions {
@@ -2733,6 +3228,31 @@ mod tests {
         let enabled = |id| buttons.iter().find(|b| b.5 == id).map(|b| b.4);
         assert_eq!(enabled(14), Some(false), "Join Realm");
         assert_eq!(enabled(15), Some(false), "invites");
+    }
+
+    /// `RealmsSettingsTab.updateData`: the draft starts from the Realm's own name,
+    /// description and region preference; a Realm without one is automatic by owner
+    /// (`RegionSelectionPreferenceDto.DEFAULT`), and only a manual choice sends its region.
+    #[test]
+    fn the_settings_draft_starts_from_the_realm() {
+        let server: RealmServer = serde_json::from_str(
+            r#"{"id":7,"name":"Mine","motd":"Hello",
+                "regionSelectionPreference":{"regionSelectionPreference":2,"preferredRegion":"EastUs2"}}"#,
+        )
+        .unwrap();
+        let mut draft = SettingsDraft::of(&server);
+        assert_eq!(
+            (draft.name.as_str(), draft.description.as_str()),
+            ("Mine", "Hello")
+        );
+        assert_eq!(
+            (draft.preference, draft.region.as_deref()),
+            (2, Some("EastUs2"))
+        );
+        draft.preference = client::AUTOMATIC_PLAYER;
+        assert_eq!(draft.preference_dto().preferred_region, None);
+        let bare = SettingsDraft::of(&RealmServer::default());
+        assert_eq!((bare.preference, bare.region), (1, None));
     }
 
     /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else

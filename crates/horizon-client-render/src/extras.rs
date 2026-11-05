@@ -164,10 +164,10 @@ pub struct Extras {
     /// Cosmetics (`horizon_cosmetics`, off unless enabled), the lines `horizon_cosmetics::prefs`
     /// shares with the launcher's Wardrobe: Show my cosmetics (the account's, sent to the service;
     /// on by default), how much of other players' to show (no line until chosen:
-    /// `effective_others`), and their auras and trails (off by default).
+    /// `effective_others`), and whether their trails and auras are hidden (off by default).
     pub cosmetics_mine: bool,
     pub cosmetics_others: Option<horizon_cosmetics::prefs::Others>,
-    pub cosmetics_auras: bool,
+    pub cosmetics_hide_fx: bool,
     /// My cosmetics in single player too (`cosmeticsSolo`, off by default): the window's own server
     /// names the player by their offline profile, which the service doesn't know, so their own
     /// cosmetics and name tag style show only with this on.
@@ -235,7 +235,7 @@ impl Default for Extras {
             music_page: false,
             cosmetics_mine: true,
             cosmetics_others: None,
-            cosmetics_auras: false,
+            cosmetics_hide_fx: false,
             cosmetics_solo: false,
             cosmetics_owner: false,
             horizon_marks: true,
@@ -353,7 +353,7 @@ impl Extras {
                     e.cosmetics_others =
                         horizon_cosmetics::prefs::Others::parse(value).or(e.cosmetics_others)
                 }
-                "cosmeticsAuras" => e.cosmetics_auras = flag(e.cosmetics_auras),
+                "cosmeticsHideFx" => e.cosmetics_hide_fx = flag(e.cosmetics_hide_fx),
                 "cosmeticsSolo" => e.cosmetics_solo = flag(e.cosmetics_solo),
                 horizon_cosmetics::prefs::MARKS => e.horizon_marks = flag(e.horizon_marks),
                 horizon_cosmetics::prefs::LISTED => e.horizon_listed = flag(e.horizon_listed),
@@ -367,7 +367,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsAuras:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
             bool_text(self.fullbright),
@@ -421,7 +421,7 @@ impl Extras {
             // Written once the player chose.
             self.cosmetics_others
                 .map_or(String::new(), |o| format!("cosmeticsOthers:{}\n", o.name())),
-            bool_text(self.cosmetics_auras),
+            bool_text(self.cosmetics_hide_fx),
             bool_text(self.cosmetics_solo),
             horizon_cosmetics::prefs::MARKS,
             bool_text(self.horizon_marks),
@@ -602,7 +602,7 @@ pub enum Item {
     /// Shown only while cosmetics are enabled (`horizon_cosmetics::enabled`).
     CosmeticsMine,
     CosmeticsOthers,
-    CosmeticsAuras,
+    CosmeticsHideFx,
     CosmeticsSolo,
     HorizonMarks,
     HorizonMe,
@@ -612,14 +612,11 @@ pub enum Item {
 /// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
+    // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
+    // are on the graphics screen's Quality page (`graphics_ui::rows`), not here.
     let mut rows = vec![
-        Err("horizon.extras.header.lighting"),
-        Ok(Fullbright),
-        Ok(DynamicLights),
         Err("horizon.extras.header.third_person"),
         Ok(OwnNameTag),
-        Err("horizon.extras.header.particles"),
-        Ok(HideBlockParticles),
         Err("horizon.extras.header.inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
@@ -645,7 +642,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
             Ok(CosmeticsMine),
             Ok(CosmeticsSolo),
             Ok(CosmeticsOthers),
-            Ok(CosmeticsAuras),
+            Ok(CosmeticsHideFx),
             Ok(HorizonMarks),
             Ok(HorizonMe),
         ]);
@@ -679,7 +676,7 @@ impl Item {
             Item::Pregen => "horizon.extras.pregen",
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine",
             Item::CosmeticsOthers => "horizon.extras.cosmetics_others",
-            Item::CosmeticsAuras => "horizon.extras.cosmetics_auras",
+            Item::CosmeticsHideFx => "horizon.extras.cosmetics_hide_fx",
             Item::CosmeticsSolo => "horizon.extras.cosmetics_solo",
             Item::HorizonMarks => "horizon.extras.horizon_marks",
             Item::HorizonMe => "horizon.extras.horizon_me",
@@ -712,7 +709,7 @@ impl Item {
             Item::Pregen => "horizon.extras.pregen.tooltip",
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
             Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
-            Item::CosmeticsAuras => "horizon.extras.cosmetics_auras.tooltip",
+            Item::CosmeticsHideFx => "horizon.extras.cosmetics_hide_fx.tooltip",
             Item::CosmeticsSolo => "horizon.extras.cosmetics_solo.tooltip",
             Item::HorizonMarks => "horizon.extras.horizon_marks.tooltip",
             Item::HorizonMe => "horizon.extras.horizon_me.tooltip",
@@ -754,7 +751,7 @@ impl Item {
             Item::Pregen => "Chunk pregeneration",
             Item::CosmeticsMine => "My cosmetics",
             Item::CosmeticsOthers => "Other players' cosmetics",
-            Item::CosmeticsAuras => "Others' auras and trails",
+            Item::CosmeticsHideFx => "Hide other players' trails and auras",
             Item::CosmeticsSolo => "In single player",
             Item::HorizonMarks => "Horizon logos",
             Item::HorizonMe => "Show me as Horizon",
@@ -773,7 +770,7 @@ impl Item {
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
             | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
-            | CosmeticsOthers | CosmeticsAuras | CosmeticsSolo | HorizonMarks | HorizonMe
+            | CosmeticsOthers | CosmeticsHideFx | CosmeticsSolo | HorizonMarks | HorizonMe
             | Pregen => {
                 return None;
             }
@@ -841,7 +838,9 @@ impl Item {
             Item::CosmeticsOthers => {
                 "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden unless you own cosmetics, until you choose. Hidden, the game never asks what they wear."
             }
-            Item::CosmeticsAuras => "Auras and trails other players wear. Off by default.",
+            Item::CosmeticsHideFx => {
+                "Other players' trails and auras stay hidden; their other cosmetics still show. Off by default."
+            }
             Item::CosmeticsSolo => {
                 "Show your cosmetics and your name tag's badge in your single-player worlds too (your name tag with Own name tag). Off: only on servers."
             }
@@ -879,7 +878,7 @@ impl Item {
             | Item::PackBrowser => Some(Cost::None),
             Item::CosmeticsMine
             | Item::CosmeticsOthers
-            | Item::CosmeticsAuras
+            | Item::CosmeticsHideFx
             | Item::CosmeticsSolo
             | Item::HorizonMarks
             | Item::HorizonMe => Some(Cost::Low),
@@ -909,7 +908,7 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
             Item::Pregen => e.pregen,
-            Item::CosmeticsAuras => e.cosmetics_auras,
+            Item::CosmeticsHideFx => e.cosmetics_hide_fx,
             Item::CosmeticsSolo => e.cosmetics_solo,
             Item::HorizonMarks => e.horizon_marks,
             Item::HorizonMe => e.horizon_listed,
@@ -974,7 +973,7 @@ impl Item {
                 let o = e.effective_others();
                 e.cosmetics_others = Some(if back { o.next().next() } else { o.next() });
             }
-            Item::CosmeticsAuras => e.cosmetics_auras = !e.cosmetics_auras,
+            Item::CosmeticsHideFx => e.cosmetics_hide_fx = !e.cosmetics_hide_fx,
             Item::CosmeticsSolo => e.cosmetics_solo = !e.cosmetics_solo,
             Item::HorizonMarks => e.horizon_marks = !e.horizon_marks,
             Item::HorizonMe => e.horizon_listed = !e.horizon_listed,
@@ -1003,7 +1002,7 @@ mod tests {
             ..Extras::default()
         };
         assert_eq!(
-            (e.effective_others(), e.cosmetics_auras, e.cosmetics_mine),
+            (e.effective_others(), e.cosmetics_hide_fx, e.cosmetics_mine),
             (Others::Shown, false, true)
         );
         Item::CosmeticsOthers.cycle(&mut e, false);

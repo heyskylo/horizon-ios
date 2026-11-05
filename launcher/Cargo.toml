@@ -70,6 +70,8 @@ getrandom = "0.3"
 # Players' heads on the Servers page, from the default skins in the player's own game files (already
 # in the lockfile through gpui).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Screenshots read a row at a time and shrunk as they come (`pictures`): the version `image` uses.
+png = "0.18"
 
 # Native builds at low priority (rust_toolchain::low_priority); already in the lockfile.
 [target.'cfg(unix)'.dependencies]

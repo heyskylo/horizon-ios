@@ -316,6 +316,7 @@
   "Frame Generation": "Генерація кадрів",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Показує згенерований кадр між кожними двома справжніми: плавніше, трохи більша затримка.",
   "Shadow Cache": "Кеш тіней",
+  "Shader Packs...": "Пакети шейдерів…",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Повторно використовує карту тіней пакета, коли сонце, вигляд і світ збігаються. Типово вимкнено.",
   "Synchronous": "Синхронно",
   "Asynchronous": "Асинхронно",
