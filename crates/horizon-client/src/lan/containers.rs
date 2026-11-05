@@ -16,10 +16,58 @@ use horizon_protocol::{
 use horizon_world::nbt::Tag;
 use std::collections::HashMap;
 
+/// Encode a captured level sound and its broadcast radius without a live hub.
+/// Entity-bound events use the entity packet; ordinary level sounds retain
+/// their fixed-point coordinates. The caller supplies the synced registry id.
+pub fn captured_sound_packet(
+    sound: &crate::audio::CapturedSound,
+    sound_id: Option<i32>,
+    seed: i64,
+) -> (C, f64) {
+    let holder = match sound_id {
+        Some(id) => (id, None),
+        None => (-1, Some((sound.event.clone(), None))),
+    };
+    let packet = match sound.entity {
+        Some(id) => C::SoundEntity(play::SoundEntity {
+            sound: holder,
+            source: sound.source as i32,
+            id: id as i32,
+            volume: sound.volume,
+            pitch: sound.pitch,
+            seed,
+        }),
+        None => C::Sound(play::Sound {
+            sound: holder,
+            source: sound.source as i32,
+            x: (sound.position[0] * 8.0) as i32,
+            y: (sound.position[1] * 8.0) as i32,
+            z: (sound.position[2] * 8.0) as i32,
+            volume: sound.volume,
+            pitch: sound.pitch,
+            seed,
+        }),
+    };
+    (packet, captured_sound_range(sound))
+}
+
+pub(super) fn captured_sound_range(sound: &crate::audio::CapturedSound) -> f64 {
+    // SoundEvent.getRange multiplies as floats before the broadcast widens it.
+    f64::from(if sound.volume > 1.0 {
+        16.0 * sound.volume
+    } else {
+        16.0
+    })
+}
+
 impl Hub {
     pub fn send_to(&self, conn: u32, packet: &C) {
         if let Some(g) = self.guest(conn) {
-            g.send(packet);
+            if let C::RemoveEntities(p) = packet {
+                self.send_ordered_removal(g, &p.ids);
+            } else {
+                g.send(packet);
+            }
         }
     }
 
@@ -80,6 +128,26 @@ impl Hub {
     /// Draw the next seed from the server sound source.
     pub fn next_sound_seed(&self) -> i64 {
         next_sound_seed(&mut *self.sound_seeds.lock().unwrap())
+    }
+
+    /// The entity overload of `ServerLevel.playSeededSound`. The emitter stays
+    /// an entity id on the wire; clients which do not know it drop the sound.
+    pub fn captured_sound(&self, sound: &crate::audio::CapturedSound, except: Option<u32>) {
+        let except = except.or_else(|| {
+            sound.except_entity.and_then(|id| {
+                self.guests
+                    .iter()
+                    .find(|g| g.entity_id as u32 == id)
+                    .map(|g| g.conn)
+            })
+        });
+        let seed = self.next_sound_seed();
+        let (packet, range) = captured_sound_packet(
+            sound,
+            self.sync.id("minecraft:sound_event", &sound.event),
+            seed,
+        );
+        self.broadcast_near(sound.position, range, &packet, except);
     }
 
     pub fn sound(
@@ -909,7 +977,7 @@ fn next_sound_seed(g: &mut impl RandomSource) -> i64 {
 
 /// `PlayerList.broadcast`'s distance test: the summed squared axis distances
 /// against the squared radius, and a player exactly at the radius is out.
-fn within_range(at: [f64; 3], pos: [f64; 3], range: f64) -> bool {
+pub(super) fn within_range(at: [f64; 3], pos: [f64; 3], range: f64) -> bool {
     let d: f64 = (0..3).map(|k| (pos[k] - at[k]).powi(2)).sum();
     d < range * range
 }

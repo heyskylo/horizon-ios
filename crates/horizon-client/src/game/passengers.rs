@@ -55,6 +55,8 @@ impl Game<'_> {
             return false;
         }
         riders::link(&mut self.mobs, rider, vehicle);
+        // sendEventAndTriggers: the server players already on the vehicle.
+        self.note_started_riding(vehicle);
         true
     }
     /// Riders sit on their vehicles (`Entity.positionRider`), mobs or boats,
@@ -167,6 +169,15 @@ impl Game<'_> {
                         aboard.len(),
                         animal,
                     );
+                }
+                if vehicle.species() == horizon_client::mobs::Species::HappyGhast {
+                    // EntityType.HAPPY_GHAST: four seats, by the rider's place
+                    // in `getPassengers`.
+                    let seat = self.mobs[..i]
+                        .iter()
+                        .filter(|r| r.extra.mount == Some(v))
+                        .count();
+                    attach = riders::happy_ghast_attachment(seat);
                 }
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);

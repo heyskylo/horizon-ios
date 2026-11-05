@@ -877,6 +877,81 @@ fn encode_all(packets: &[play::Clientbound], bodies: &mut Vec<Vec<u8>>) {
 }
 
 impl Entities {
+    /// `ChunkMap.addEntity` after this tick's tracking pass: pair now without
+    /// running sendChanges or advancing either clock. The first sendChanges
+    /// belongs to the next pass, including for an arrow that lands meanwhile.
+    pub fn pair_after_tick(
+        &mut self,
+        entities: &[EntityState],
+        riding: &Riding,
+        viewers: &mut [Viewer],
+        mut kind: impl FnMut(&str) -> Option<i32>,
+    ) {
+        for e in entities {
+            if self.states.contains_key(&e.id) {
+                continue;
+            }
+            let mut s = ServerEntity::new(e, kind(&e.kind), riding);
+            s.seen = self.tick;
+            // Pairing has already happened by the time the next pass runs.
+            s.added = false;
+            let mut range = s.range;
+            let mut pending = riding.passengers(e.id).to_vec();
+            while let Some(id) = pending.pop() {
+                if let Some(passenger) = self.states.get(&id) {
+                    range = range.max(passenger.range);
+                } else if let Some(passenger) = entities.iter().find(|p| p.id == id) {
+                    range = range.max(i32::from(tracking::settings(&passenger.kind).0));
+                }
+                pending.extend_from_slice(riding.passengers(id));
+            }
+            let probe = Probe {
+                x: e.position[0],
+                z: e.position[2],
+                id: e.id,
+                range: self
+                    .range_percent
+                    .map_or(range * 16, |p| p * (range * 16) / 100),
+                chunk: 0,
+                spectator: e.spectator,
+                watching: e.watching,
+                hidden: e.hidden,
+            };
+            let chunks = [(
+                (e.position[0].floor() as i32) >> 4,
+                (e.position[2].floor() as i32) >> 4,
+            )];
+            let mut bodies = None;
+            for v in &mut *viewers {
+                if v.entity_id == e.id
+                    || v.tracker.is_tracking(e.id)
+                    || !sees(v, &probe, &chunks, &mut [0])
+                {
+                    continue;
+                }
+                let Some(kind) = s.kind else {
+                    continue;
+                };
+                let bodies = bodies.get_or_insert_with(|| {
+                    let mut packets = Vec::new();
+                    s.pairing(e, kind, riding, &mut packets);
+                    packets
+                        .iter()
+                        .map(play::Clientbound::encode)
+                        .collect::<Vec<_>>()
+                });
+                v.out.extend(bodies.iter().cloned());
+                v.tracker.seen.insert(e.id, Arc::clone(&s.tracked));
+                v.tracker.events.push(TrackEvent {
+                    start: true,
+                    entity: e.id,
+                    tracked: Arc::clone(&s.tracked),
+                });
+            }
+            self.states.insert(e.id, s);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.states.len()
     }
@@ -1219,6 +1294,9 @@ impl Entities {
         self.states.retain(|_, s| s.seen == now);
     }
 }
+
+#[cfg(test)]
+mod late_pair_tests;
 
 #[cfg(test)]
 mod tests {

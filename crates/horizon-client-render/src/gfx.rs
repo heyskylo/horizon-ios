@@ -211,6 +211,7 @@ mod view;
 mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
+pub mod world_primitives;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
 /// its fixed-point UVs (`terrain.wgsl`'s `terrain_uv`).
@@ -885,6 +886,8 @@ pub struct Frame<'a> {
     pub outline_after_terrain: bool,
     /// `BlockOutlineRenderState.highContrast`: a thick black outline under a bright one.
     pub outline_high_contrast: bool,
+    /// The PvP & HUD page's outline and hit colour (`pvp::Frame`; default: vanilla's).
+    pub pvp: crate::pvp::Frame,
     /// `lines` with a colour and pixel width (`gizmos::camera_relative`):
     /// the fishing line and debug gizmos, depth tested, then gizmos drawn
     /// over everything.
@@ -935,6 +938,9 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// Native mods' lines, boxes, beams and text (`native_world_primitives`), drawn at the end
+    /// of the world pass, before the first-person hand.
+    pub world_primitives: world_primitives::Batch<'a>,
     /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
     /// person).
     pub shadow_only: &'a [Vertex],
@@ -1160,6 +1166,8 @@ pub struct Renderer {
     lightning_pipeline: wgpu::RenderPipeline,
     lightning: lightning::Renderer,
     see_through_pipeline: wgpu::RenderPipeline,
+    /// Native mods' world primitives (`Frame::world_primitives`).
+    world_primitives: world_primitives::WorldPrimitives,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     world_text_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
@@ -4464,6 +4472,7 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
+        let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
         Ok(Self {
             display: DisplayWatch::default(),
             display_fresh: false,
@@ -4551,6 +4560,7 @@ impl Renderer {
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
             see_through_pipeline,
+            world_primitives,
             text_polygon_offset_pipeline,
             world_text_pipeline,
             celestial_pipeline,
@@ -7262,8 +7272,10 @@ impl Renderer {
             },
             colored_count: [
                 frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
-                0,
-                0,
+                // PvP & HUD's hit colour: entity.wgsl's hurt texel, 0 for vanilla's.
+                frame.pvp.hurt_texel,
+                // PvP & HUD's glint colour: entity.wgsl's `tinted_glint`, 0 for vanilla's.
+                frame.pvp.glint,
                 0,
             ],
             emissive_layers: {
@@ -8128,6 +8140,19 @@ impl Renderer {
             frame.weather,
             frame.weather_time,
         );
+        // Native mods' world primitives, drawn as the world is: its jittered projection, the
+        // line widths in the frame's pixels as the gizmo lines'.
+        let world_primitives = !frame.title && {
+            let (uploads, encoder) = (&mut self.uploads, &mut encoder);
+            self.world_primitives.prepare(
+                &self.device,
+                &mut |buffer, bytes| uploads.buffer(encoder, buffer, 0, bytes),
+                &frame.world_primitives,
+                jittered,
+                [self.config.width, self.config.height],
+                &self.entity_atlas,
+            )
+        };
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
@@ -8143,12 +8168,14 @@ impl Renderer {
                     line
                 })
             };
+            // A custom outline (PvP & HUD) takes the bright stroke's colour, scales both widths.
+            let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
             let lines: Vec<[f32; 8]> = if frame.outline_high_contrast {
-                stroke(0xff00_0000, 7.0)
-                    .chain(stroke(0xff57_ffe1, width))
+                stroke(0xff00_0000, 7.0 * scale)
+                    .chain(stroke(custom.unwrap_or(0xff57_ffe1), width * scale))
                     .collect()
             } else {
-                stroke(0x6600_0000, width).collect()
+                stroke(custom.unwrap_or(0x6600_0000), width * scale).collect()
             };
             self.uploads
                 .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(&lines));
@@ -10076,6 +10103,11 @@ impl Renderer {
                     ((world_quads + additive_quads + hand_quads) * 4) as i32,
                     0..1,
                 );
+            }
+            // Native mods' primitives: after the entities and the rest of the world, into its
+            // targets (its resolution, reversed depth and TAA), before the hand.
+            if world_primitives {
+                self.world_primitives.draw(&mut pass);
             }
             if hand_in_world {
                 pass.set_pipeline(&self.depth_reset);
