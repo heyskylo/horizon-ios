@@ -1,6 +1,7 @@
 //! An installer shaped like Forge's whose processor runs on a stand-in `java`, served by a fetch
 //! that never reaches the network, and the real ones.
 use super::*;
+#[cfg(unix)]
 use crate::loaders::Loader;
 use crate::sources::sha1_hex;
 use std::io::Write;

@@ -1,5 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "the player's IP address on `NativeServerPlayer` (`address`).",
-  "doc_summary": "`NativeServerPlayer.address` is the IP address the player connects from, without the port (behind a Velocity proxy, the address the proxy forwards; empty when not known), for per-IP limits and sessions. Bundles need \"hooks\": @API:server_player_address@."
-}

@@ -68,6 +68,9 @@ pub(crate) struct TestLevel {
     pub openers: HashMap<BlockPos, (i32, i32)>,
     /// Every position whose container openers were recounted, in order.
     pub opener_rechecks: Vec<BlockPos>,
+    /// `ShulkerBoxBlockEntity.isClosed` at a position: `true` for a shut lid,
+    /// `false` for an open box. Positions not listed have no block entity.
+    pub shulker_closed: HashMap<BlockPos, bool>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -88,6 +91,7 @@ impl TestLevel {
             smoke_sources: HashMap::new(),
             openers: HashMap::new(),
             opener_rechecks: Vec::new(),
+            shulker_closed: HashMap::new(),
         }
     }
 }
@@ -95,6 +99,9 @@ impl LevelAccess for TestLevel {
     fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
         self.opener_rechecks.push(pos);
         self.openers.get(&pos).copied()
+    }
+    fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
+        self.shulker_closed.get(&pos).copied()
     }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
         vanilla || self.analog_states.contains(&state)
@@ -2716,6 +2723,102 @@ fn using_storage_and_interactable_blocks_succeeds() {
 }
 
 #[test]
+fn open_shulker_box_supports_only_through_its_base_plate() {
+    let mut w = world!();
+    let pos = BlockPos::new(0, 1, 0);
+    for facing in Direction::ALL {
+        let prop = match facing {
+            Direction::Down => "down",
+            Direction::Up => "up",
+            Direction::North => "north",
+            Direction::South => "south",
+            Direction::West => "west",
+            Direction::East => "east",
+        };
+        w.put(pos, w.id("shulker_box", &[("facing", prop)]));
+        w.level.shulker_closed.remove(&pos);
+        // A shut box, and a box whose block entity the level doesn't keep,
+        // both read as a closed full cube.
+        {
+            let sim = w.b().sim(&mut w.level, &mut w.ticks);
+            assert!(
+                sim.sturdy(pos, Direction::Up),
+                "closed box facing {facing:?}"
+            );
+            assert!(
+                sim.sturdy(pos, Direction::Down),
+                "closed box facing {facing:?}"
+            );
+            assert!(
+                sim.can_support_rigid_block(pos),
+                "closed box facing {facing:?}"
+            );
+            assert!(
+                sim.can_support_center(pos, Direction::Up),
+                "closed box facing {facing:?}"
+            );
+        }
+
+        w.level.shulker_closed.insert(pos, false);
+        let plate = facing.opposite();
+        let sim = w.b().sim(&mut w.level, &mut w.ticks);
+        assert!(
+            sim.sturdy(pos, plate),
+            "open box facing {facing:?} keeps its base plate"
+        );
+        assert!(
+            !sim.sturdy(pos, facing),
+            "open box facing {facing:?} has no support on its lid side"
+        );
+        assert_eq!(
+            sim.can_support_rigid_block(pos),
+            plate == Direction::Up,
+            "open box facing {facing:?}"
+        );
+        assert!(
+            sim.can_support_center(pos, plate),
+            "open box facing {facing:?} base plate"
+        );
+        assert!(
+            !sim.can_support_center(pos, facing),
+            "open box facing {facing:?} lid side"
+        );
+    }
+}
+
+#[test]
+fn torch_survives_on_a_box_opening_down_but_not_on_an_open_lid() {
+    let mut w = world!();
+    let box_pos = BlockPos::new(0, 1, 0);
+    let torch_pos = BlockPos::new(0, 2, 0);
+    w.put(torch_pos, w.id("torch", &[]));
+    let torch = w.get(torch_pos);
+    // Facing up, the lid is the top face: open, the torch above loses support.
+    w.put(box_pos, w.id("shulker_box", &[("facing", "up")]));
+    assert!(
+        w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(torch, torch_pos),
+        "a torch stands on a closed box"
+    );
+    w.level.shulker_closed.insert(box_pos, false);
+    assert!(
+        !w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(torch, torch_pos),
+        "an open lid doesn't hold a torch"
+    );
+    // Facing down, the base plate is the top face, so the torch stands.
+    w.put(box_pos, w.id("shulker_box", &[("facing", "down")]));
+    assert!(
+        w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(torch, torch_pos),
+        "the base plate of a box opening down still holds a torch"
+    );
+}
+
+#[test]
 fn creative_breaking_piston_head_does_not_drop_piston() {
     for (piston_name, head_type) in [("piston", "normal"), ("sticky_piston", "sticky")] {
         let mut w = world!();
@@ -2898,6 +3001,36 @@ fn a_candle_on_an_uneaten_cake_makes_a_candle_cake() {
         InteractionResult::Success
     );
     assert_eq!(w.get(pos), bitten);
+}
+
+#[test]
+fn water_douses_a_lit_campfire_with_the_extinguish_sound() {
+    // CampfireBlock.placeLiquid: a lit campfire that takes water goes out
+    // and plays GENERIC_EXTINGUISH_FIRE, `entity.generic.extinguish_fire`.
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    w.put(at, w.id("campfire", &[("lit", "true")]));
+    w.level.events.clear();
+    let placed = w.f.behaviours.bucket_empty(
+        &mut w.level,
+        &mut w.ticks,
+        at,
+        None,
+        BucketContent::Fluid(crate::fluid::FluidKind::Water),
+        "minecraft:item.bucket.empty",
+        false,
+        false,
+    );
+    assert_eq!(placed, Some(at));
+    assert_eq!(w.prop(at, "lit"), "false");
+    assert_eq!(w.prop(at, "waterlogged"), "true");
+    assert!(
+        w.level.events.iter().any(|e| matches!(
+            e,
+            LevelEvent::Sound { sound, .. } if &**sound == "minecraft:entity.generic.extinguish_fire"
+        )),
+        "the extinguish sound"
+    );
 }
 
 #[test]

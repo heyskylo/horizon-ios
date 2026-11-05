@@ -57,8 +57,8 @@ TagValueOutput.ListWrapper	skip:java		NBT write wrapper
 TagValueOutput.TypedListWrapper	skip:java		NBT write wrapper
 WorldData	skip:debug		crash report category
 BuiltInLootTables.register	skip:data		registers built-in loot table keys; Horizon reads tables from data files
-ContainerComponentManipulator	missing		minor: set_contents and modify_contents, which no vanilla loot table uses
-ContainerComponentManipulator.ComponentSlotCollection	missing		minor: slot helpers of set_contents and modify_contents, which no vanilla loot table uses
+ContainerComponentManipulator	missing		remaining loot setContents/modifyItems; live command component-slot methods mapped individually in contents-slots.tsv
+ContainerComponentManipulator.ComponentSlotCollection	skip:java		record wrapper represented by native parent/component slots; its command operations are mapped individually in contents-slots.tsv
 FloatRangePredicate.Line.createPredicate	missing		minor: float range with number-provider bounds; Horizon does not evaluate these bounds
 FloatRangePredicate.Line.test	missing		minor: float range check with number-provider bounds
 FloatRangePredicate.Line.validate	skip:data		validation at datapack load

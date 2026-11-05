@@ -48,9 +48,13 @@ pub struct Ai {
     /// `Mob.homePosition` and `homeRadius`: where a restricted mob stays
     /// (a lead's holder, a happy ghast's float area).
     pub home: Option<([i32; 3], i32)>,
+    /// Mob keeps homePosition even when clearHome makes homeRadius -1.
+    /// Active homes still use `home`; this only retains its hidden position.
+    last_home_position: [i32; 3],
     pub goals: GoalSelector,
     pub targets: GoalSelector,
     pub nav: Navigation,
+    pub(super) navigation_redirect: Option<Box<super::nav::Redirect>>,
     pub mov: MoveControl,
     pub look: LookControl,
     pub body: BodyRotation,
@@ -83,6 +87,22 @@ pub struct Ai {
     pub swing_duration: i32,
     /// Walked distance and the next footstep.
     pub steps: super::living::Steps,
+}
+impl Ai {
+    /// `Mob.getHomePosition`, including the position retained by clearHome.
+    pub fn home_position(&self) -> [i32; 3] {
+        self.home.map_or(self.last_home_position, |(pos, _)| pos)
+    }
+    /// Adopt only the two persistent home fields after loading Mob data.
+    pub fn restore_home(&mut self, pos: [i32; 3], radius: i32) {
+        self.last_home_position = pos;
+        self.home = (radius != -1).then_some((pos, radius));
+    }
+    /// `Mob.clearHome`: clear the radius, retaining the position.
+    pub fn clear_home(&mut self) {
+        self.last_home_position = self.home_position();
+        self.home = None;
+    }
 }
 impl Mob {
     /// `LivingEntity.getCurrentSwingDuration`: 6 ticks unless a swing set its own.
@@ -1872,7 +1892,7 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::ElderGuardian => super::guardian::elder_server_ai_step(m, cx),
         Species::Wither if m.alive() => super::wither::custom_server_ai_step(m, cx.w, cx.events),
         // SpellcasterIllager.customServerAiStep.
-        Species::Evoker if m.extra.counter > 0 => m.extra.counter -= 1,
+        Species::Evoker | Species::Illusioner if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Bee => super::bee::server_ai_step(m, cx),
         Species::Frog => super::frog::server_ai_step(m, cx.w),
@@ -2436,6 +2456,7 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
+        Species::Breeze => super::breeze::accepts_damage(m, source),
         // Allay.hurtServer: its liked player cannot hurt it.
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
@@ -2526,7 +2547,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     }
     let mut amount = super::gear::attack_damage(m, cx.w.items);
     let from = [m.position.x, m.position.y, m.position.z];
-    let source = Damage::mob(m.id, from);
+    let source = Damage::mob(m.id, from).with_species(m.species());
     let first_event = cx.events.len();
     // `CaveSpider`, `Husk` and `WitherSkeleton.doHurtTarget` all test
     // `target instanceof LivingEntity`, so the effect reaches a mob the hit

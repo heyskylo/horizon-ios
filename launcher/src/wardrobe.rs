@@ -1,7 +1,9 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
 //! the catalogue, the account's own items and purchase history, what each slot wears and whether
 //! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
-//! claiming happen on the website ([`SHOP_URL`]), never here.
+//! claiming happen on the website ([`SHOP_URL`]), except the founder set's free claim for players
+//! in countries Paddle, the shop's payment provider, doesn't serve (`Claim::here`,
+//! `Service::claim`): the service decides who that is, by country.
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -64,6 +66,10 @@ pub enum ClaimState {
     NotYet,
     Open,
     Closed,
+    /// A state this launcher doesn't know, from a newer service: the answer still reads, and the
+    /// rest of it (`open`, the dates) decides.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The founder set: free to claim between `starts_at` and `ends_at` (Unix seconds, `[start,
@@ -84,6 +90,18 @@ pub struct Claim {
     /// Open only because the account is on the service's preview list.
     #[serde(default)]
     pub preview: bool,
+    /// The service grants the set to this player from the Wardrobe (`POST /v1/claim`): Paddle
+    /// doesn't sell where they are, so the site's checkout can't (in `me` only).
+    #[serde(default)]
+    pub one_click: bool,
+}
+
+impl Claim {
+    /// Whether the Wardrobe offers "Claim for free": open for this account, not claimed yet, and
+    /// the service says the checkout isn't for this player.
+    pub fn here(&self) -> bool {
+        self.open && self.one_click && self.claimed == Some(false)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -125,6 +143,16 @@ impl Entry {
             .get(lang)
             .or_else(|| self.names.get("en_us"))
             .map_or(&self.id, String::as_str)
+    }
+
+    /// Whether the id and hash are plain parts of a file name, by the game's rule
+    /// (`horizon_cosmetics::fetch`): the cache's paths are made of them.
+    fn plain(&self) -> bool {
+        [&self.id, &self.hash].into_iter().all(|t| {
+            !t.is_empty()
+                && t.len() <= 64
+                && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
     }
 }
 
@@ -387,6 +415,15 @@ impl Service {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
     }
 
+    /// Claim the founder set here (only where `Claim::here`): the account's answer after it. One
+    /// the service already recorded is no failure.
+    pub fn claim(&self, session: &Session) -> Result<Me, Error> {
+        match self.call("POST", "/v1/claim", Some(session), Some(json!({}))) {
+            Err(Error::Service(409)) => self.me(session),
+            other => parse(other?),
+        }
+    }
+
     /// Wear `item` in `slot`, or nothing there (`None`).
     pub fn equip(&self, session: &Session, slot: &str, item: Option<&str>) -> Result<Me, Error> {
         let body = json!({ "slot": slot, "item": item });
@@ -420,12 +457,16 @@ impl Service {
     }
 
     /// An item's file, from `cache` (`<id>-<hash>.json`, kept by hash: it never changes for one)
-    /// or the service, then kept there.
+    /// or the service, then kept there. An entry whose id or hash isn't `Entry::plain` is refused
+    /// before the disk or the service is touched.
     pub fn item_cached(
         &self,
         entry: &Entry,
         cache: &Path,
     ) -> Result<horizon_cosmetics::Item, Error> {
+        if !entry.plain() {
+            return Err(Error::Service(200));
+        }
         let path = cache.join(format!("{}-{}.json", entry.id, entry.hash));
         if let Some(item) = std::fs::read(&path)
             .ok()

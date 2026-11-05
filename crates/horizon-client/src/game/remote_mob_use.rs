@@ -12,7 +12,7 @@ use horizon_client::{
 impl Game<'_> {
     /// Whether mob `i` takes a right click with `hand`'s item on this
     /// client (`Mob.interact`'s result consumes the action).
-    pub(super) fn remote_mob_takes(&self, i: usize, hand: Hand) -> bool {
+    pub(super) fn remote_mob_takes(&mut self, i: usize, hand: Hand) -> bool {
         let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return false;
         };
@@ -68,7 +68,7 @@ impl Game<'_> {
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
-            Species::Allay => allay_takes(hand, item, m.extra.main_hand.is_some(), m.extra.flag),
+            Species::Allay => self.predict_allay_interaction(i, hand, stack.cloned()),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
                 !baby
@@ -78,7 +78,7 @@ impl Game<'_> {
                     ) || m.extra.variant == 1
                         && horizon_client::flowers::stew_effect(item).is_some())
             }
-            Species::Sheep => item == "minecraft:shears" || item.ends_with("_dye"),
+            Species::Sheep => item == "minecraft:shears" || self.interact_sheep_dye(i, hand, true),
             // SnowGolem.mobInteract: shears take the pumpkin off.
             Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
             // AbstractNautilus.mobInteract: an untamed adult only answers its
@@ -175,21 +175,6 @@ fn iron_golem_takes(item: &str, health: f32, max_health: f32) -> bool {
 /// axes return `PASS` here because the waxing and scraping run on the server.
 fn copper_golem_takes(item: &str, holding: bool, shearable: bool) -> bool {
     (item.is_empty() && holding) || (item == "minecraft:shears" && shearable)
-}
-
-/// `Allay.mobInteract` on the client's copy: a dancing allay with a
-/// `#minecraft:duplicates_allays` item duplicates, an empty-handed one takes
-/// what the used hand offers, and one that holds something gives it back only
-/// to a **main hand** that is empty (vanilla compares the hand and returns
-/// `PASS` otherwise, which lets the item be used).
-fn allay_takes(hand: Hand, item: &str, holding: bool, dancing: bool) -> bool {
-    if dancing && item == "minecraft:amethyst_shard" {
-        return true;
-    }
-    if !holding {
-        return !item.is_empty();
-    }
-    hand == Hand::Main && item.is_empty()
 }
 
 /// `AbstractHorse.handleEating` (and the llama and camel variants): this
@@ -311,36 +296,6 @@ mod tests {
         assert!(
             !copper_golem_takes("minecraft:iron_axe", false, true),
             "scraping too"
-        );
-    }
-
-    /// `Allay.mobInteract` (#8629): a holding allay gives its item back only to
-    /// an empty **main** hand, so an item in hand is still used and an empty
-    /// off hand does not take the item.
-    #[test]
-    fn a_holding_allay_only_answers_an_empty_main_hand() {
-        assert!(allay_takes(Hand::Main, "", true, false), "main hand, empty");
-        assert!(!allay_takes(Hand::Off, "", true, false), "off hand, empty");
-        assert!(
-            !allay_takes(Hand::Main, "minecraft:bread", true, false),
-            "item in hand"
-        );
-        assert!(!allay_takes(Hand::Off, "minecraft:bread", true, false));
-        assert!(
-            allay_takes(Hand::Main, "minecraft:stick", false, false),
-            "give it one"
-        );
-        assert!(
-            allay_takes(Hand::Off, "minecraft:stick", false, false),
-            "either hand gives"
-        );
-        assert!(
-            !allay_takes(Hand::Main, "", false, false),
-            "empty hand gives nothing"
-        );
-        assert!(
-            allay_takes(Hand::Main, "minecraft:amethyst_shard", true, true),
-            "a dancing allay duplicates"
         );
     }
 

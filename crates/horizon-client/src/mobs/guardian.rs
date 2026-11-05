@@ -140,6 +140,7 @@ impl Goal for GuardianAttack {
                         kind: DamageKind::Magic,
                         attacker: Some(Who::Mob(m.id)),
                         from: Some(from),
+                        attacker_species: Some(m.species()),
                     },
                 }),
             }
@@ -313,6 +314,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                     kind: DamageKind::Thorns,
                     attacker: Some(Who::Mob(m.id)),
                     from: Some(from),
+                    attacker_species: Some(m.species()),
                 },
             }),
             None => {}

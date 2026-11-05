@@ -152,7 +152,8 @@ pub struct GbuffersInputs {
     /// `hz_MultiTexCoord1` and `hz_Normal` (the compatibility inputs), run first in `main`.
     pub body: String,
     /// The value of each attribute a pack may declare (`mc_Entity`, `vaPosition`...), as a GLSL
-    /// expression of the declared type's size; an attribute not listed reads zero.
+    /// expression of the declared type's size; an attribute not listed reads zero. Terrain
+    /// also supplies `mc_chunkFade`, an implicit float input rather than a declared attribute.
     pub attributes: Vec<(String, String)>,
     /// GLSL statements run last in `main`, with `gl_Position` in wgpu's clip space.
     pub after: String,
@@ -338,6 +339,12 @@ fn translate(
         {
             uniforms.remove(normal);
         }
+        // The fragment stage's own `textureMatrix` keeps its frame slot (it reads zero).
+        if !f.uniforms.iter().any(|(n, _, _)| n == "textureMatrix")
+            && uniforms.get("textureMatrix").is_some_and(|ty| ty == "mat4")
+        {
+            uniforms.remove("textureMatrix");
+        }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
     let alpha_test_ref = gbuffers
@@ -426,6 +433,12 @@ fn translate(
         }
     }
 
+    // Terrain's fade input is supplied without a pack declaration. Inject it only when
+    // the renderer provides the actual value; other geometry and authored globals keep
+    // their existing behavior.
+    let chunk_fade = gbuffers
+        .and_then(|g| g.attributes.iter().find(|(n, _)| n == "mc_chunkFade"))
+        .filter(|_| uses_name(&vertex.code, "mc_chunkFade") && !v.globals.contains("mc_chunkFade"));
     let header = |stage: &Stage| {
         let mut h = resources(&uniforms, &samplers, &images);
         if let Some(reference) = alpha_test_ref {
@@ -456,6 +469,9 @@ fn translate(
         if let (Some(inputs), ShaderStage::Vertex) = (gbuffers, stage.kind) {
             h.push_str(&inputs.declarations);
             h.push('\n');
+            if chunk_fade.is_some() {
+                h.push_str("float mc_chunkFade;\n");
+            }
         }
         h.push_str(&stage.prelude());
         h
@@ -473,6 +489,9 @@ fn translate(
             vertex_main.push_str(&matrices);
             vertex_main.push_str(&inputs.body);
         }
+    }
+    if let Some((_, value)) = chunk_fade {
+        writeln!(vertex_main, "    mc_chunkFade = {value};").unwrap();
     }
     for (name, value, ty) in &v.attributes {
         let value = match gbuffers {
@@ -1634,6 +1653,43 @@ mod tests {
                 .any(|u| u.name == "normalMatrix");
             assert_eq!(uniform, !core, "{profile}");
         }
+    }
+
+    /// `textureMatrix` in the vertex stage is the texture matrix state, not a frame uniform the
+    /// game has no value for; the fragment stage's own one keeps its slot (Iris 1.11.7 reads
+    /// zero there in our probe, #9080).
+    #[test]
+    fn vertex_texture_matrix_is_not_a_frame_uniform() {
+        let vertex = "#version 460 core\nuniform mat4 textureMatrix;\nin vec2 vaUV0;\nout vec2 uv;\n\
+                      void main() { uv = mat2(textureMatrix) * vaUV0 + textureMatrix[3].xy; gl_Position = vec4(1.0); }";
+        let p = core_matrix_program(vertex, false).unwrap();
+        assert!(
+            !p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix")
+        );
+        let fragment = "#version 460 core\nuniform mat4 textureMatrix;\nout vec4 color;\n\
+                        void main() { color = textureMatrix[0]; }";
+        let files = [
+            ("shaders/gbuffers_terrain.vsh", vertex),
+            ("shaders/gbuffers_terrain.fsh", fragment),
+        ];
+        let pack = Pack::from_zip_bytes("texture-matrix.zip", zip(&files)).unwrap();
+        let macros = Macros::standard();
+        let p = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_terrain.vsh", &macros),
+            &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        assert!(
+            p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix" && u.ty == "mat4")
+        );
     }
 
     #[test]
