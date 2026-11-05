@@ -89,6 +89,14 @@ box's quads. With nothing changing, a frame allocates nothing.
 
 Each `hud…` option has a `hud…Corner` beside it. With every widget off, a frame costs one test of the options.
 
+Style, for every widget: **Background opacity** (`hudOpacity`, 0 to 100, default 47, under the background
+switch), **Text colour** (`hudTextColour`, default white; coloured lines such as durability keep their colour)
+and **Text shadow** (`hudShadow`, default on).
+
+Layout: a widget moved by hand stays where it was put, as `hudPlace:<widget>,<x>,<y>,<scale>` lines (`x` and `y`
+are fractions of the room the screen leaves beside the widget, so it stays on screen after a resize; `corner` instead of them keeps the corner; scale in
+percent, 50 to 200). Widgets without such a line keep their corner. `pvp_hud::Layout`, `pvp_hud::snap`.
+
 ## Enchantment levels as numbers (`numericEnchants`, default off)
 
 `Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
