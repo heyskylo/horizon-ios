@@ -767,10 +767,11 @@ impl Game<'_> {
         }
         out
     }
-    /// `EntityType.getYOffset(level, pos, false, box)`: the entity box set on
+    /// `EntityType.getYOffset(level, pos, movedUp, box)`: the entity box set on
     /// top of the block (`setPos(x + 0.5, y + 1, z + 0.5)`) falls one block
-    /// against the collision shapes overlapping that block alone.
-    fn drop_offset(&self, width: f64, height: f64, p: Pos) -> f64 {
+    /// against the collision shapes overlapping that block, or, `moved_up`, two
+    /// blocks against those of the block and the one under it.
+    pub(super) fn drop_offset(&self, width: f64, height: f64, p: Pos, moved_up: bool) -> f64 {
         use horizon_world::{
             block_collision_scan::BlockCollisionScan, collision_context::CollisionContext,
         };
@@ -782,7 +783,11 @@ impl Game<'_> {
             Vec3::new(x + h, y + height, z + h),
         );
         let cell = Aabb::new(
-            Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),
+            Vec3::new(
+                f64::from(p.0),
+                f64::from(p.1) - if moved_up { 1.0 } else { 0.0 },
+                f64::from(p.2),
+            ),
             Vec3::new(
                 f64::from(p.0) + 1.0,
                 f64::from(p.1) + 1.0,
@@ -794,7 +799,7 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        let mut amount = -1.0;
+        let mut amount = if moved_up { -2.0 } else { -1.0 };
         // Level.getCollisions(null, aabb): CollisionContext.empty().
         if let Ok(scan) = BlockCollisionScan::new(
             &mut scene,
@@ -820,7 +825,7 @@ impl Game<'_> {
         };
         let t = self.res.mob_types().get(&name)?.clone();
         let y_off = if try_move_down {
-            self.drop_offset(t.width, t.height, p)
+            self.drop_offset(t.width, t.height, p, false)
         } else {
             0.0
         };

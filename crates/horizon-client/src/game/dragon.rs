@@ -3658,7 +3658,10 @@ impl Game<'_> {
         if self.entity_in(room) {
             return false;
         }
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
+        let time = super::dispenser::entity_random()
+            .next_int_bound(100_000)
+            .unwrap_or(0);
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
@@ -3670,6 +3673,8 @@ impl Game<'_> {
             beam: None,
             invulnerable: false,
         });
+        // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
+        self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
         if self.dim == Dim::End {
             self.try_respawn();
@@ -3677,6 +3682,8 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
