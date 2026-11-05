@@ -302,9 +302,9 @@ entity cutout draws them, seen from a `preview::Camera` (turn, tilt, zoom).
 ## The Wardrobe's account check (`launcher/src/wardrobe.rs`)
 
 The launcher talks to the same service for the player's own items: the catalogue, what the account
-owns, its purchase history, what each slot wears and whether other players see it. Buying and
-claiming the founder set happen on the website's shop (https://playhorizon.dev/shop), never in the
-launcher.
+owns, its purchase history, what each slot wears and whether other players see it. Paying happens
+on the website: the launcher's Shop tab starts the checkout and opens https://playhorizon.dev/shop/pay
+in the browser; no card is ever typed into the launcher.
 
 - **Who the player is**: the service hands out a one-time server id (`POST /v1/auth/start`), the
   launcher tells Mojang's session server that the account joins it
@@ -344,13 +344,12 @@ page stays hidden.
   *Reset view* (the live view above, `launcher/src/wardrobe_page/viewer.rs`); **what you own for
   the chosen slot**, "Nothing" first. Hovering a card tries its item on the player (or, for
   "Nothing", takes the slot's item off) until the pointer leaves; equipping shows at once.
-- **The shop is on the website only** (Ludovic, 2026-11-05): the launcher has no prices, product
-  lists or checkout. One plain button by the page's title, *Get more cosmetics on playhorizon.dev*,
-  opens `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim,
-  purchases through Paddle); no badge, reminder or pop-up points to it. An account that owns
-  nothing yet sees "You don't own any cosmetics yet." with that button instead. The one exception
-  is the founder set's free *Claim for free* where Paddle doesn't sell (`Claim::here`): the site
-  sends those players to the Wardrobe, since only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
+- **One way to the Shop tab**: a plain button by the page's title, *Get more
+  cosmetics*, opens the launcher's Shop tab (below; paying happens on the website); no badge,
+  reminder or pop-up points to it. An account that owns nothing yet sees "You don't own any
+  cosmetics yet." with that button instead. The founder set's free *Claim for free* where Paddle
+  doesn't sell (`Claim::here`) stays here too: the site sends those players to the Wardrobe, since
+  only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
@@ -364,3 +363,24 @@ page stays hidden.
 - `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build shows the page for a made-up account
   wearing `HORIZON_COSMETICS_LOCAL`'s items; `HORIZON_WARDROBE_STATE=offline|failed|empty`
   shows that state.
+
+## The Shop page (`launcher/src/wardrobe_page/shop.rs`, `launcher/src/shop.rs`)
+
+A plain top-bar tab beside the Wardrobe, shown under the same rule. Ludovic (2026-11-05): not in your
+face, people play without pop-ups. So the tab has no badge, dot, count or "New"; it never opens by
+itself and is never the start page; nothing anywhere (launcher or game) points to it; Play never waits
+for it. No countdowns, scarcity, buyer counts, "limited" wording or loot boxes.
+
+- **Everything comes from `GET /v1/catalogue`** (the Wardrobe's own trip): `currencies`, each item's
+  `prices` (minor units per currency, only while on sale), `sets`, `collections` and `supporter`.
+  What the catalogue doesn't price isn't sold, so items the service puts on sale
+  (`COSMETICS_ON_SALE`) show up by themselves. The currency is guessed from the system locale
+  (francs in CH/LI, pounds in GB, euros in the euro area, else dollars) and can be switched.
+- **Cards** per collection (sets first), the founder set while it can be claimed, the Supporter badge.
+  Choosing a card tries it on the account's own skin, over what it wears (`shop::try_on`), in the
+  Wardrobe's 3D view (the live view above, a camera of its own): drag to turn, scroll to zoom.
+- **The founder set**: *Claim for free* where Paddle doesn't sell (`Claim::here`), else Paddle's free
+  checkout in the browser (`POST /v1/web/checkout` with `founder_set`).
+- **A catalogue that doesn't load** shows "The shop didn't load." with *Retry*; nothing else changes.
+- `HORIZON_LAUNCHER_PAGE=shop` in a development build shows it for the made-up account of the
+  Wardrobe's preview, the founder set tried on.

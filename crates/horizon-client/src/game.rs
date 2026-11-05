@@ -201,6 +201,7 @@ mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
+mod mod_browser;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -3170,7 +3171,7 @@ struct Game<'a> {
     /// The mob of that `hitResult`, picked with the item held at the pick
     /// (`LocalPlayer.raycastHitResult`: a spear's `attack_range`), before the
     /// tick's number keys change it.
-    tick_mob: Option<Option<(usize, f64)>>,
+    tick_mob: Option<Option<(usize, f64, [f64; 3])>>,
     /// Number keys since the last tick (`keyHotbarSlots[i].consumeClick`):
     /// `Minecraft.handleKeybinds` selects them after the tick's pick.
     hotbar_presses: Vec<usize>,
@@ -3411,6 +3412,12 @@ fn facing_offset(facing: &str) -> [i32; 3] {
         "up" => [0, 1, 0],
         _ => [0, -1, 0],
     }
+}
+/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
+/// - entity.position()`, measured from the entity's feet, as
+/// `MultiPlayerGameMode.interact` computes it.
+fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
+    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
 }
 /// How far along `dir` (within `reach`) a ray from `eye` enters `b`.
 fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
@@ -11947,13 +11954,16 @@ impl Game<'_> {
         self.sky_darken_memo.set(Some((key, darken)));
         darken
     }
-    fn mob_hit(&self) -> Option<(usize, f64)> {
+    /// The mob hit along the view, the distance to it and the point the ray
+    /// met its box at, measured from the mob's feet (`EntityHitResult
+    /// .getLocation() - entity.position()`, the interact packet's location).
+    fn mob_hit(&self) -> Option<(usize, f64, [f64; 3])> {
         if let Some(hit) = self.tick_mob {
             return hit;
         }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
-        let mut best: Option<(usize, f64)> = None;
+        let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, m) in self.mobs.iter().enumerate() {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
             // shares its root vehicle and is never the hit, nor is the
@@ -11966,7 +11976,12 @@ impl Game<'_> {
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
                 && best.is_none_or(|b| t < b.1)
             {
-                best = Some((i, t));
+                let point = Vec3::new(
+                    eye[0] + dir[0] * t,
+                    eye[1] + dir[1] * t,
+                    eye[2] + dir[2] * t,
+                );
+                best = Some((i, t, interact_location(point, m.position)));
             }
         }
         best
@@ -12180,7 +12195,7 @@ impl Game<'_> {
         {
             return true;
         }
-        let Some((index, distance)) = self.mob_hit() else {
+        let Some((index, distance, _)) = self.mob_hit() else {
             return false;
         };
         if !self.before_block(distance) || !self.held_range_allows(distance) {
@@ -22919,6 +22934,28 @@ mod tests {
         assert!(!named_mob_pickable(true, 17, None, Some(17)));
         // Another mob being ridden or watched does not block this one.
         assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
+    }
+
+    /// The packet's location is `EntityHitResult.getLocation() -
+    /// entity.position()`, the point the view ray met the box at measured
+    /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed
+    /// [0, 1, 0] was a point inside every mob, which the server's
+    /// `interactAt` paths (armour stands, saddles, leashes) read as the click.
+    #[test]
+    fn an_interact_packet_carries_the_point_the_ray_hit() {
+        let feet = Vec3::new(0.5, 0.0, 2.0);
+        let eye = [0.5, 1.5, 1.0];
+        let dir = [0.0, 0.0, 1.0];
+        let box_at = Aabb::new(feet, Vec3::new(1.5, 2.0, 3.0));
+        let t = ray_box(eye, dir, 3.0, box_at).unwrap();
+        let point = Vec3::new(
+            eye[0] + dir[0] * t,
+            eye[1] + dir[1] * t,
+            eye[2] + dir[2] * t,
+        );
+        // The ray enters the box's near face halfway up it, directly above
+        // the feet: not the old centre point of the entity.
+        assert_eq!(interact_location(point, feet), [0.0, 1.5, 0.0]);
     }
 
     /// A mod screen on a hopper or dispenser menu owns its slots: the stock

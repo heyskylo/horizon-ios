@@ -496,10 +496,19 @@ impl Game<'_> {
         if diff.abs() > 50.0 {
             m.body_yaw += diff - diff.signum() * 50.0;
         }
-        // WalkAnimationState.update(min(distance * 4, 1), 0.4).
-        m.previous_limb_speed = m.limb_speed;
-        m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
-        m.limb_position += m.limb_speed;
+        if riding {
+            // LivingEntity.calculateEntityAnimation: a passenger stops the
+            // walk animation (WalkAnimationState.stop), so the seat moving with
+            // the vehicle does not swing the legs.
+            m.previous_limb_speed = 0.0;
+            m.limb_speed = 0.0;
+            m.limb_position = 0.0;
+        } else {
+            // WalkAnimationState.update(min(distance * 4, 1), 0.4).
+            m.previous_limb_speed = m.limb_speed;
+            m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
+            m.limb_position += m.limb_speed;
+        }
         // Its idle swing holds with the world under `HORIZON_STILL`.
         if self.clock.runs_normally() || !self.clock.still() {
             m.age = m.age.wrapping_add(1);

@@ -1,7 +1,9 @@
 //! The selected instance's screenshots on Home (`horizon_launcher::screenshots`): the newest as
 //! thumbnails, all of them on request, and a viewer (← and → step through) with Copy, Open,
-//! Show in folder and Delete (to the trash, after a confirmation).
+//! Show in folder and Delete (to the trash, after a confirmation). Pictures are drawn at their
+//! shown size (`picture_cache`), never decoded whole.
 use super::*;
+use crate::picture_cache::{self, Look};
 use gpui::{ClipboardItem, Image, ImageFormat};
 use horizon_launcher::screenshots::{self, Shot};
 use std::path::PathBuf;
@@ -146,31 +148,39 @@ impl Launcher {
             tab_action("screenshots-folder", "Open folder", &t)
                 .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
         );
-        let grid = div().flex().flex_wrap().gap(px(10.)).children(
-            list.into_iter().take(shown).enumerate().map(|(i, shot)| {
-                div()
-                    .id(SharedString::from(format!("screenshot-{i}")))
-                    .flex_none()
-                    .w(px(THUMB_W))
-                    .h(px(THUMB_H))
-                    .border_2()
-                    .border_color(t.outline)
-                    .bg(t.well)
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(t.accent))
-                    .child(
-                        gpui::img(shot.path.clone())
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.screenshots.viewing = Some(i);
-                        this.screenshots.confirm_delete = false;
-                        this.screenshots.note = None;
-                        cx.notify();
-                    }))
-            }),
-        );
+        let pictures: Vec<_> = list
+            .iter()
+            .take(shown)
+            .map(|shot| self.picture(&shot.path, Look::Fit(picture_cache::THUMB), cx))
+            .collect();
+        let grid =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(10.))
+                .children(pictures.into_iter().enumerate().map(|(i, picture)| {
+                    div()
+                        .id(SharedString::from(format!("screenshot-{i}")))
+                        .flex_none()
+                        .w(px(THUMB_W))
+                        .h(px(THUMB_H))
+                        .border_2()
+                        .border_color(t.outline)
+                        .bg(t.well)
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(t.accent))
+                        .children(picture.map(|image| {
+                            gpui::img(image)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                        }))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.screenshots.viewing = Some(i);
+                            this.screenshots.confirm_delete = false;
+                            this.screenshots.note = None;
+                            cx.notify();
+                        }))
+                }));
         let mut section = div().flex().flex_col().gap(px(8.));
         if self.screenshots.viewing.is_none() {
             if let Some(Err(e)) = &self.screenshots.note {
@@ -186,6 +196,13 @@ impl Launcher {
         let i = self.screenshots.viewing?;
         let shot = self.screenshots.list.get(i)?.clone();
         let count = self.screenshots.list.len();
+        // Fitted to a 4K screen; its tile stands in while it is made.
+        let picture = self
+            .picture(&shot.path, Look::Fit(picture_cache::FULL), cx)
+            .or_else(|| {
+                self.pictures
+                    .made(&shot.path, Look::Fit(picture_cache::THUMB))
+            });
         let taken: chrono::DateTime<chrono::Local> = shot.taken.into();
         let step = |id: &'static str, label: &'static str, older: bool, can: bool| {
             let b = button(id, label, Kind::Ghost, &t);
@@ -325,14 +342,14 @@ impl Launcher {
                         .border_2()
                         .border_color(t.outline)
                         .bg(t.well)
-                        .child(
-                            gpui::img(shot.path.clone())
+                        .children(picture.map(|image| {
+                            gpui::img(image)
                                 .absolute()
                                 .top_0()
                                 .left_0()
                                 .size_full()
-                                .object_fit(gpui::ObjectFit::Contain),
-                        ),
+                                .object_fit(gpui::ObjectFit::Contain)
+                        })),
                 )
                 .child(bottom),
         )
