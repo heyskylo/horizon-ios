@@ -3386,6 +3386,12 @@ depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
 
+Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
+on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
+the build. It stays loaded and keeps what it holds; what it registered at start (blocks, items, component types)
+stays registered, and its `RenderHooks` keep drawing until a restart. Mixin code is not switched: it checks
+`native_on` itself, as before ([design/mod-hotload.md](design/mod-hotload.md)).
+
 ### Dependencies between trait mods
 
 A mod can publish functions and statics from its `[api]` package for another mod to call:
