@@ -120,6 +120,7 @@ mod enchant_effects;
 mod end;
 mod entity;
 mod entity_culling;
+mod entity_sounds;
 mod event_loop;
 mod events;
 mod execution_role;
@@ -306,6 +307,7 @@ mod server_links;
 mod server_packs;
 mod server_travel;
 mod shader_packs;
+mod sheep_dye;
 mod shelf;
 mod shield;
 mod shoulders;
@@ -7083,12 +7085,7 @@ impl Game<'_> {
             return;
         };
         self.start_using_item();
-        let at = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio
-            .play(&instrument.sound, at, instrument.range / 16.0, 1.0);
+        self.play_player_bound_sound(&instrument.sound, 2, instrument.range / 16.0, 1.0, true);
         self.post_entity_event(
             "minecraft:instrument_play",
             horizon_client::mobs::Who::Player,
@@ -13650,9 +13647,14 @@ impl Game<'_> {
                 let want = sound.trim_start_matches("minecraft:");
                 let mut keep = Vec::with_capacity(capture.len());
                 for entry in capture.drain(..) {
-                    let name = entry.0.trim_start_matches("minecraft:");
+                    let name = entry.event.trim_start_matches("minecraft:");
                     if name == want || name == "block.fire.extinguish" {
-                        self.guest_player_sounds.push(entry);
+                        self.guest_player_sounds.push((
+                            entry.event,
+                            entry.position,
+                            entry.volume,
+                            entry.pitch,
+                        ));
                     } else {
                         keep.push(entry);
                     }

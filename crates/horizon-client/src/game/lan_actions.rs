@@ -5296,14 +5296,13 @@ impl Game<'_> {
         if let Some(capture) = self.audio.capture.as_mut() {
             let mut i = heard.min(capture.len());
             while i < capture.len() {
-                let (name, at, ..) = &capture[i];
+                let (name, at) = (&capture[i].event, &capture[i].position);
                 let place = placed
                     .iter()
                     .any(|(p, n)| p == at && name.trim_start_matches("minecraft:") == n.as_str());
                 if place {
-                    let (name, at, volume, pitch) = capture.remove(i);
-                    let source = horizon_client::settings::sound_source(&name) as i32;
-                    host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+                    let sound = capture.remove(i);
+                    host.hub.captured_sound(&sound, Some(conn));
                 } else {
                     i += 1;
                 }
@@ -5320,9 +5319,8 @@ impl Game<'_> {
             return;
         };
         let sounds: Vec<_> = capture.drain(heard.min(capture.len())..).collect();
-        for (name, at, volume, pitch) in sounds {
-            let source = horizon_client::settings::sound_source(&name) as i32;
-            host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+        for sound in sounds {
+            host.hub.captured_sound(&sound, Some(conn));
         }
     }
 
@@ -5340,14 +5338,38 @@ impl Game<'_> {
         };
         let mut i = heard.min(capture.len());
         while i < capture.len() {
-            if capture[i].0 == horn {
-                let (name, at, volume, pitch) = capture.remove(i);
-                let source = horizon_client::settings::sound_source(&name) as i32;
-                host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+            if capture[i].event == horn {
+                let sound = capture.remove(i);
+                host.hub.captured_sound(&sound, Some(conn));
             } else {
                 i += 1;
             }
         }
+    }
+
+    /// A level sound's old emitter must still be known at playback. Keep
+    /// sounds needing a new pairing queued, with their later removals held.
+    pub(super) fn lan_prepare_captured_sounds(
+        &mut self,
+        host: &mut LanHost,
+        entities: &[horizon_client::lan::entity::EntityState],
+    ) {
+        let Some(sounds) = self.audio.capture.as_mut() else {
+            return;
+        };
+        let blocks: Vec<_> = host
+            .broken
+            .iter()
+            .copied()
+            .chain(
+                self.lan_events
+                    .iter()
+                    .filter(|(kind, ..)| *kind == 2001)
+                    .map(|(_, pos, ..)| pos.map(f64::from)),
+            )
+            .collect();
+        sounds.retain(|sound| !captured_block_break(sound, &blocks));
+        host.hub.prepare_captured_sounds(sounds, entities);
     }
 
     /// Positional sounds and level events of the tick, for the guests.
@@ -5355,17 +5377,14 @@ impl Game<'_> {
         let sounds = self.audio.capture.take().unwrap_or_default();
         self.audio.capture = Some(Vec::new());
         let blocks: Vec<[f64; 3]> = std::mem::take(&mut host.broken);
-        for (name, at, volume, pitch) in sounds {
+        for sound in sounds {
             // Block breaks are heard through the level event.
-            if blocks
-                .iter()
-                .any(|b| (0..3).all(|k| (b[k] + 0.5 - at[k]).abs() < 1e-6))
-            {
+            if captured_block_break(&sound, &blocks) {
                 continue;
             }
-            let source = horizon_client::settings::sound_source(&name) as i32;
-            host.hub.sound(&name, at, volume, pitch, source, None);
+            host.hub.captured_sound(&sound, None);
         }
+        host.hub.finish_captured_sounds();
     }
 
     /// `LivingEntity.tick`'s arrows and bee stingers falling out of the
@@ -5436,6 +5455,13 @@ impl Game<'_> {
     }
 }
 
+fn captured_block_break(sound: &horizon_client::audio::CapturedSound, blocks: &[[f64; 3]]) -> bool {
+    sound.entity.is_none()
+        && blocks
+            .iter()
+            .any(|b| (0..3).all(|k| (b[k] + 0.5 - sound.position[k]).abs() < 1e-6))
+}
+
 /// ClientboundSwingAnimationPacket: the hand and the animation (its type and
 /// base duration; each client applies the swinger's haste and fatigue).
 fn swing_packet(id: i32, hand: Hand, animation: SwingAnimation) -> C {
@@ -5485,6 +5511,26 @@ fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f3
 mod tests {
     use super::eye_columns;
     use horizon_client::pose::Pose;
+
+    #[test]
+    fn a_block_break_suppresses_its_positional_duplicate_but_not_an_entity_sound() {
+        let mut sound = horizon_client::audio::CapturedSound {
+            event: "minecraft:block.stone.break".into(),
+            position: [1.5, 64.5, -2.5],
+            volume: 1.0,
+            pitch: 1.0,
+            source: 4,
+            entity: None,
+            except_entity: None,
+        };
+        let broken = [[1.0, 64.0, -3.0]];
+        assert!(super::captured_block_break(&sound, &broken));
+        sound.entity = Some(37);
+        assert!(!super::captured_block_break(&sound, &broken));
+        sound.entity = None;
+        sound.position[0] += 0.25;
+        assert!(!super::captured_block_break(&sound, &broken));
+    }
 
     /// #4124: a STOP is measured from the START that named its block (`destroyPos`) — an abort, or
     /// a STOP from out of reach, ends the dig the guest's button held but leaves that clock — and

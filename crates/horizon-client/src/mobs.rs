@@ -73,6 +73,7 @@ pub mod ravager;
 pub mod render;
 pub mod riders;
 pub mod seen_grid;
+pub mod sheep_dye;
 pub mod shulker;
 pub mod skin;
 pub mod skin_layers;
@@ -1454,6 +1455,25 @@ impl MannequinDescription {
     }
 }
 /// Events a mob tick asks the game to act on.
+impl MobEvent {
+    pub fn entity_sound(
+        mob: &Mob,
+        name: &'static str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+    ) -> Self {
+        Self::EntitySound {
+            mob: mob.id,
+            name,
+            at: [mob.position.x, mob.position.y, mob.position.z],
+            volume,
+            pitch,
+            source,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum MobEvent {
     /// Squid.handleEntityEvent(19), resetting the remote tentacle cycle.
@@ -1510,6 +1530,16 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// The entity overload of `Level.playSound`: keep the emitter and the
+    /// call site's category rather than turning it into a positional sound.
+    EntitySound {
+        mob: u32,
+        name: &'static str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        source: usize,
+    },
     /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
     /// block at `pos` (the splash and bubble particles over it).
     BubbleColumnParticles {
