@@ -317,7 +317,10 @@ impl Game<'_> {
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
         match t {
-            Target::Player => return Err(err("commands.data.entity.invalid", &[])),
+            // EntityDataAccessor.setData: players can't be modified, guests neither.
+            Target::Player | Target::Guest(_) => {
+                return Err(err("commands.data.entity.invalid", &[]));
+            }
             Target::Mob(id) => {
                 let uuid = self.uuid_for(id);
                 let kind = self
@@ -387,6 +390,45 @@ impl Game<'_> {
                     *slot = new;
                 }
             }
+            Target::Boat(id) => {
+                // AbstractBoat.readAdditionalSaveData over Entity.load: the
+                // position, rotation, motion, NoGravity and a chest boat's items.
+                let (position, velocity, yaw) =
+                    entity_nbt::boat_from_nbt(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                let b = self
+                    .boats
+                    .iter_mut()
+                    .find(|b| b.id == id)
+                    .ok_or_else(stale)?;
+                b.position = position;
+                b.previous = position;
+                b.velocity = velocity;
+                b.yaw = yaw;
+                b.previous_yaw = yaw;
+                b.pitch = entity_nbt::rotation(&tag)[1];
+                b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                if b.chest {
+                    b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
+                }
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Cart(id) => {
+                let uuid = self.uuid_for(id);
+                let i = self
+                    .carts
+                    .iter()
+                    .position(|c| c.id == id)
+                    .ok_or_else(stale)?;
+                let mut cart = self.carts[i].clone();
+                cart.load(&tag).ok_or_else(stale)?;
+                crate::game::minecarts::forget_unreadable_display(&mut cart, |t| {
+                    self.state_from_nbt(t).is_some()
+                });
+                self.roll_cart_loot(&mut cart, &tag);
+                self.carts[i] = cart;
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             Target::Other(id) => {
                 let uuid = self.uuid_for(id);
                 let marker = self
@@ -411,6 +453,8 @@ impl Game<'_> {
         | Target::Item(id)
         | Target::Stand(id)
         | Target::Frame(id)
+        | Target::Boat(id)
+        | Target::Cart(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
