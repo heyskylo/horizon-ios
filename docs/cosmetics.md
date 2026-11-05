@@ -124,6 +124,24 @@ Limits, checked by `Item::parse` with the item's own (vertices, parts, texture):
 `Emote::pose_body` poses the six bones at a time and weight (the blend), `Emote::pose_props` the
 props; `Playing` is an emote someone plays (its start, its cancel) and gives its time and weight.
 
+### Playing an emote (`game/emotes.rs`, `game/emote_wheel.rs`)
+
+- **The wheel**: *Emote Wheel* (`key.emote`, **B** by default: no vanilla key uses it; Controls
+  rebinds it, and so does the controller's page, with no button by default: the stick's cursor
+  picks a slice). Up to 8 emotes around the middle of the screen, the game running behind. Hold
+  the key, point at one and let go; or tap the key and click one, or press its number (1–8).
+  Escape or the key again closes it. The wheel lists the emotes the account owns
+  (`HORIZON_COSMETICS_LOCAL`: the folder's).
+- **Cancelled** by moving more than a hundredth of a block, attacking or mining, using an item,
+  being hurt, riding, sleeping, gliding, sneaking, swimming or dying: it fades out over its blend.
+  Only a standing player starts one. A loop plays until cancelled.
+- **The camera**: from first person it turns to the front view (third person, facing you) for
+  the emote and eases out from close to its usual distance over a quarter second; when the emote
+  ends it goes back to first person, unless you changed the view meanwhile. From a third person
+  view it stays as it is.
+- **Visual only**: it changes nothing of the game; the game server receives nothing and sees a
+  player standing still. `horizon-ctl emote [ID|stop]` plays one as the wheel does.
+
 ## What other players wear (`horizon_cosmetics::Cosmetics`)
 
 The game asks Horizon's cosmetics service (HTTPS, JSON) what the players in view wear, and draws
@@ -176,7 +194,8 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   everything off for one run (no thread, no request, no setting, no drawing), `=1` on;
   `HORIZON_COSMETICS_API=<url>` points the game at another service, and
   `HORIZON_COSMETICS_LOCAL=<folder>` reads items from a folder instead: every player and every
-  mannequin wears its first item of each slot (the art and the bench, without the network).
+  mannequin wears its first item of each slot, and every mannequin plays the folder's first
+  emote over and over (the art and the bench, without the network).
 - **Settings** (Extras, under "Cosmetics", shown only with the flag on), the same three as the
   launcher's Wardrobe (`horizon_cosmetics::prefs`, lines of `horizon-extras.txt`):
   - *My cosmetics: Shown / Hidden* is the account's (`PUT /v1/visible`): hidden, every Horizon

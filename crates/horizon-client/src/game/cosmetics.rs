@@ -400,6 +400,39 @@ impl Game<'_> {
             .retain(|_, b| Arc::strong_count(&b.item) > 1);
     }
 
+    /// Once a tick: others' emotes on their models. Only items from a folder play here for now
+    /// (mannequins, for the art and the bench); others' emotes show with "Other players'
+    /// cosmetics" on Shown only.
+    pub(super) fn tick_others_emotes(&mut self) {
+        let shown = self.settings.extras.effective_others() == Others::Shown;
+        // Items from a folder (the art, the bench): every mannequin plays its first emote, again
+        // and again.
+        if self.cosmetics.local && shown {
+            let Some(first) = self.owned_emotes().first().cloned() else {
+                return;
+            };
+            for m in self.mobs.iter_mut() {
+                let age = m.age as f32;
+                if &*m.kind.id == "minecraft:mannequin"
+                    && m.emote.as_ref().is_none_or(|p| p.at(age).is_none())
+                {
+                    m.emote = Some(horizon_cosmetics::Playing {
+                        item: first.clone(),
+                        // Out of step, so a crowd doesn't move as one.
+                        start: age - (m.id % 40) as f32,
+                        stop: None,
+                    });
+                }
+            }
+            return;
+        }
+        if !shown {
+            for m in self.mobs.iter_mut() {
+                m.emote = None;
+            }
+        }
+    }
+
     /// Items from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins are dressed and marked too.
     pub(super) fn cosmetics_local(&self) -> bool {
         self.cosmetics.local
@@ -516,8 +549,14 @@ impl Game<'_> {
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) -> Option<(glam::Vec3, glam::Vec3)> {
         use horizon_client::mobs::{anim, render};
-        let worn = self.worn(m, own)?;
-        if horizon_client::mobs::trader::is_invisible(m) {
+        let worn = self.worn(m, own);
+        // An emote's props: its time and weight while it plays.
+        let ticks = m.age as f32 + alpha;
+        let emote = m.emote.as_ref().and_then(|p| {
+            let (t, w) = p.at(ticks)?;
+            (p.item.vertices > 0).then_some((&p.item, t, w))
+        });
+        if worn.is_none() && emote.is_none() || horizon_client::mobs::trader::is_invisible(m) {
             return None;
         }
         // The avatar's body, posed as it is drawn.
@@ -528,7 +567,6 @@ impl Game<'_> {
         body_poses.reset(body);
         let data = self.res.mob_data();
         anim::setup(m, &anim::state(m, alpha), body_poses, &data.animations);
-        let ticks = m.age as f32 + alpha;
         let frame = self.cosmetics.frame.get();
         let mut bounds = None;
         // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
@@ -536,8 +574,10 @@ impl Game<'_> {
         let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
         let bodies = own || self.settings.extras.effective_others() == Others::Shown;
-        for item in worn.iter() {
-            if !bodies || covered(m, item.slot) {
+        let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
+        let emote_items = emote.map(|(i, t, w)| (i, Some((t, w))));
+        for (item, emoting) in worn_items.chain(emote_items) {
+            if emoting.is_none() && (!bodies || covered(m, item.slot)) {
                 continue;
             }
             let mut baked = self.cosmetics.baked.borrow_mut();
@@ -580,6 +620,14 @@ impl Game<'_> {
                 };
                 poses.reset(model);
                 item.animate(ticks, |name, pose| *poses.get(name) = pose);
+                if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
+                    e.pose_props(t, |n| item.rest(n), |n, pose| *poses.get(n) = pose);
+                    // Props grow in and shrink out with the emote's blend.
+                    let root = poses.get(&model.name);
+                    for s in &mut root[6..9] {
+                        *s *= w;
+                    }
+                }
                 if gpu {
                     let mut models = self.skin_models.borrow_mut();
                     let mut frame = self.skin_frame.borrow_mut();

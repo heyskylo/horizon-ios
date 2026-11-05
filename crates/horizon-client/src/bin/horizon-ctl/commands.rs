@@ -437,6 +437,10 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("look-at-entity", Move, "look-at-entity ID [--over S]", "face an entity (same as look-at entity)", "",
         ["horizon-ctl look-at-entity 42"], &[p("id", Ty::Int, "entity id from entities"), OVER], mcp: true, local: false, wire: "look-at entity"),
     cmd!("tp", Move, "tp X Y Z", "teleport the player", "", ["horizon-ctl tp 0 80 0"], &XYZ, mcp: true, local: false),
+    cmd!("emote", Act, "emote [ID|stop]", "play one of the player's emotes, stop it, or list them",
+        "Without an argument: the emotes the player owns (the wheel's) and the one playing. With an ID it plays that emote as the emote wheel does (the player must stand still: moving, attacking or using an item cancels it); stop fades it out. Visual only: nothing is sent to the game server (docs/cosmetics.md).",
+        ["horizon-ctl emote", "horizon-ctl emote wave_hello", "horizon-ctl emote stop"],
+        &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
         "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops and picked_up (inventory change).",
