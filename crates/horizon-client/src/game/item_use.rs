@@ -32,6 +32,9 @@ impl Game<'_> {
         self.using = Some((self.held_slot(), 0));
         self.use_duration = duration;
         self.use_ticks_set = ticks_set;
+        // `LivingEntity.startUsingItem`: `causeUseVibration(ITEM_INTERACT_START)`
+        // when the use effects of the stack ask for interaction vibrations.
+        self.use_vibration(&stack, "minecraft:item_interact_start");
         // A new charge hears the crossbow's loading sounds again
         // (`game/crossbow.rs`).
         self.crossbow_sounds = [false; 2];
@@ -100,7 +103,7 @@ impl Game<'_> {
         // a potion is drunk (no last tick of its own: a mod's tick ran it out).
         if self.finish_drinking(slot, stack) {
             self.use_item_finished(stack);
-            self.use_vibration(stack);
+            self.use_vibration(stack, "minecraft:item_interact_finish");
             return;
         }
         self.using = None;
@@ -113,7 +116,7 @@ impl Game<'_> {
         }
         self.use_item_finished(stack);
         // `LivingEntity.completeUsingItem` ends with `stopUsingItem`.
-        self.use_vibration(stack);
+        self.use_vibration(stack, "minecraft:item_interact_finish");
     }
     /// `LivingEntityUseItemEvent.Finish` after `finishUsingItem` of `stack`
     /// (no ticks left): the hand holds what a mod made the result.
