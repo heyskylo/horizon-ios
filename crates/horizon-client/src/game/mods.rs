@@ -3,6 +3,7 @@
 //! (`native_hooks.rs`); WebAssembly code mods don't run any more.
 use super::Game;
 use horizon_client::{
+    lang,
     mod_list::{self, Installed},
     text::Text,
 };
@@ -16,6 +17,12 @@ pub(super) struct ModsState {
     stopped: Vec<String>,
     /// Browse mods' worker (`mod_browser`).
     pub(super) jobs: super::mod_browser::Jobs,
+    /// The content mods the loaded resources were built with: a switch the
+    /// game can apply live moves it to the player's choice (`switch_mods`).
+    pub(super) applied: Option<std::collections::BTreeSet<String>>,
+    /// A live switch's resource reload is running: when it applied, the server
+    /// reloads its data from the new root. Its start, for the log.
+    pub(super) live: Option<std::time::Instant>,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
@@ -391,6 +398,9 @@ impl Game<'_> {
                 }
             })
             .collect();
+        if self.mods.applied.is_none() {
+            self.mods.applied = Some(self.settings.mods.enabled.clone());
+        }
         // A mod with a native version built in says so instead, and isn't news.
         self.list_native_mods();
         let built = std::env::current_exe()
@@ -420,6 +430,101 @@ impl Game<'_> {
             .filter(|row| row.problem.as_deref() == Some(STOPPED))
             .map(|row| row.title.clone())
             .collect();
+    }
+    /// The content mods the resources load with: the ones applied, which a
+    /// switch that needs a restart doesn't change.
+    pub(super) fn applied_mods(&self) -> std::collections::BTreeSet<String> {
+        self.mods
+            .applied
+            .clone()
+            .unwrap_or_else(|| self.settings.mods.enabled.clone())
+    }
+    /// The player turned content mods on or off (Options > Mods, or an
+    /// install from Browse Mods): those with only assets and data apply now
+    /// (docs/design/mod-hotload.md), through the resource reload and then the
+    /// server's data reload (`mods_reloaded`); those that add blocks, items or
+    /// worldgen wait for a restart, and the Mods page says so.
+    pub(super) fn switch_mods(&mut self) {
+        let Some(applied) = self.mods.applied.clone() else {
+            return;
+        };
+        let wanted = self.settings.mods.enabled.clone();
+        if applied == wanted {
+            return;
+        }
+        let packages: Vec<horizon_mods::Package> = horizon_mods::find(
+            &Self::game_dir().join(mod_list::DIR),
+        )
+        .iter()
+        .filter_map(|path| {
+            let package = horizon_mods::Package::read(path).ok()?;
+            let content =
+                horizon_mods::Content::read(path, &package.manifest).ok()?;
+            match horizon_client::mod_content::live_switch(&content) {
+                Ok(()) => None,
+                Err(why) => {
+                    log::info!("Horizon: mod {} needs a restart to switch: {why}", package.manifest.id);
+                    Some(package)
+                }
+            }
+        })
+        .collect();
+        let waits = |id: &String| packages.iter().any(|p| &p.manifest.id == id);
+        let mut next = applied.clone();
+        let mut waiting = Vec::new();
+        for id in applied.symmetric_difference(&wanted) {
+            if waits(id) {
+                waiting.push(id.clone());
+            } else if wanted.contains(id) {
+                next.insert(id.clone());
+            } else {
+                next.remove(id);
+            }
+        }
+        self.ui.options.mods_note = (!waiting.is_empty()).then(|| {
+            lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")])
+        });
+        if next == applied {
+            return;
+        }
+        log::info!("Horizon: content mods switched live: {:?} -> {:?}", applied, next);
+        self.mods.applied = Some(next);
+        self.mods.live = Some(std::time::Instant::now());
+        self.reload_packs();
+    }
+    /// A live switch's resources applied: the server reloads its data packs
+    /// from the new root, as `/reload` does (recipes, tags, loot tables,
+    /// advancements, functions), and sends them to its players.
+    pub(super) fn mods_reloaded(&mut self, applied: bool) {
+        let Some(started) = self.mods.live.take() else {
+            return;
+        };
+        let resources_ms = started.elapsed().as_millis();
+        if !applied {
+            return;
+        }
+        let root = self.options.resources.clone();
+        let enabled = self.applied_mods();
+        let reload = move |g: &mut Game<'_>| {
+            let at = std::time::Instant::now();
+            g.options.resources = root;
+            g.settings.mods.enabled = enabled.clone();
+            g.mods.applied = Some(enabled);
+            if g.world_root.as_os_str().is_empty() {
+                return;
+            }
+            g.reload_datapacks(true);
+            log::info!(
+                "Horizon: content mods switched live: server data reloaded in {} ms",
+                at.elapsed().as_millis()
+            );
+        };
+        log::info!("Horizon: content mods switched live: resources reloaded in {resources_ms} ms");
+        if let Some(server) = &self.integrated {
+            server.post(reload);
+        } else if self.remote.is_none() {
+            reload(self);
+        }
     }
     /// Once, in the first world after the update: which WebAssembly mods stopped.
     pub(super) fn tell_native_now(&mut self) {

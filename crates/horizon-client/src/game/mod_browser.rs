@@ -153,6 +153,7 @@ impl Game<'_> {
         if installed {
             self.settings.save(&Self::options_path());
             self.start_mods();
+            self.switch_mods();
         }
     }
 }

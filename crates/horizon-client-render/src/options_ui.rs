@@ -1622,6 +1622,8 @@ pub struct OptionsUi {
     pub mod_browser: crate::mod_browser::ModBrowser,
     /// The project whose page is open (`Page::ModProject`).
     pub mod_project: String,
+    /// The Mods page's line about switches that wait for a restart.
+    pub mods_note: Option<String>,
     /// Horizon's `packBrowser` extra: the pack screen's Add button.
     pub pack_browser: bool,
     /// Packs: the packs found and the selection the screen opens with.
@@ -1709,6 +1711,7 @@ impl Default for OptionsUi {
             settings_search,
             mod_browser: Default::default(),
             mod_project: String::new(),
+            mods_note: None,
             pack_browser: false,
             pack_infos: Vec::new(),
             pack_selection: Vec::new(),
@@ -2991,6 +2994,9 @@ impl OptionsUi {
                     Act::Push(Page::ModBrowser),
                 );
                 let mut rows = vec![Row::Buttons(browse, None)];
+                if let Some(note) = &self.mods_note {
+                    rows.extend(wrap(note, 64).into_iter().map(Row::Note));
+                }
                 if s.mods.installed.is_empty() {
                     rows.push(Row::Header("horizon.mods.empty"));
                     return rows;
