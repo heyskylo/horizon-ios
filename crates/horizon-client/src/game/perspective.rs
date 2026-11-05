@@ -218,6 +218,27 @@ fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
         })
     })
 }
+/// What sets the body's yaw of a player riding something (`Game::ridden_body`).
+#[derive(Clone, Copy)]
+enum RiddenBody {
+    /// The boat's yaw.
+    Boat(f32),
+    /// The living vehicle's body yaw.
+    Living(f32),
+}
+
+/// `LivingEntityRenderer.solveBodyRot` for the rider of a living vehicle: the
+/// body faces the vehicle's body, the head turning at most 85 degrees from it,
+/// and past 50 degrees the body turns a fifth of the head's offset along.
+fn rider_body_yaw(head: f32, vehicle_body: f32) -> f32 {
+    let diff = wrap(head - vehicle_body).clamp(-85.0, 85.0);
+    let mut body = head - diff;
+    if diff.abs() > 50.0 {
+        body += diff * 0.2;
+    }
+    body
+}
+
 fn wrap(d: f32) -> f32 {
     let d = d % 360.0;
     if d >= 180.0 {
@@ -456,7 +477,7 @@ impl Game<'_> {
         // another player's does (`villager::sleep_pose`).
         let bed = self.sleeping.map_or(0, |head| self.bed_facing(head));
         let spectator = self.spectator();
-        let vehicle_yaw = self.ridden_vehicle_yaw();
+        let ridden = self.ridden_body();
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
@@ -468,11 +489,7 @@ impl Game<'_> {
         m.previous = from;
         m.position = at;
         let (dx, dz) = (at.x - m.previous.x, at.z - m.previous.z);
-        let walked = if riding {
-            0.0
-        } else {
-            player_walk_distance(m.previous, at)
-        };
+        let walked = player_walk_distance(m.previous, at);
         m.previous_yaw = m.yaw;
         m.previous_body_yaw = m.body_yaw;
         m.previous_head_yaw = m.head_yaw;
@@ -480,33 +497,38 @@ impl Game<'_> {
         m.yaw = yaw;
         m.head_yaw = yaw;
         m.head_pitch = pitch;
-        let mut target = m.body_yaw;
-        if let Some(v_yaw) = vehicle_yaw {
-            target = v_yaw;
-            let diff = wrap(yaw - v_yaw);
-            let clamped = diff.clamp(-85.0, 85.0);
-            target += diff - clamped;
-            m.body_yaw = target;
-        } else {
-            if dx * dx + dz * dz > 0.002_500_000_2 {
-                // LivingEntity.tick: walking backwards the body faces away from
-                // the walk direction, not along it.
-                let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
-                let facing = (wrap(yaw) - walk).abs();
-                target = if 95.0 < facing && facing < 265.0 {
-                    walk - 180.0
-                } else {
-                    walk
-                };
+        match ridden {
+            // AbstractBoat.positionRider (clampRotation): the passenger's body
+            // is set to the boat's yaw each tick.
+            Some(RiddenBody::Boat(boat)) => m.body_yaw += wrap(boat - m.body_yaw),
+            // A living vehicle's rider is drawn from its body
+            // (`LivingEntityRenderer.solveBodyRot`).
+            Some(RiddenBody::Living(body)) => {
+                m.body_yaw += wrap(rider_body_yaw(yaw, body) - m.body_yaw);
             }
-            if swinging {
-                target = yaw;
-            }
-            // tickHeadTurn: ease toward the target, within 50 degrees of the head.
-            m.body_yaw += wrap(target - m.body_yaw) * 0.3;
-            let diff = wrap(yaw - m.body_yaw);
-            if diff.abs() > 50.0 {
-                m.body_yaw += diff - diff.signum() * 50.0;
+            // A minecart's, a cushion's: the body turns as on foot.
+            None => {
+                let mut target = m.body_yaw;
+                if dx * dx + dz * dz > 0.002_500_000_2 {
+                    // LivingEntity.tick: walking backwards the body faces away from
+                    // the walk direction, not along it.
+                    let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
+                    let facing = (wrap(yaw) - walk).abs();
+                    target = if 95.0 < facing && facing < 265.0 {
+                        walk - 180.0
+                    } else {
+                        walk
+                    };
+                }
+                if swinging {
+                    target = yaw;
+                }
+                // tickHeadTurn: ease toward the target, within 50 degrees of the head.
+                m.body_yaw += wrap(target - m.body_yaw) * 0.3;
+                let diff = wrap(yaw - m.body_yaw);
+                if diff.abs() > 50.0 {
+                    m.body_yaw += diff - diff.signum() * 50.0;
+                }
             }
         }
         if riding {
@@ -603,15 +625,16 @@ impl Game<'_> {
             self.yaw += delta.clamp(-105.0, 105.0) - delta;
         }
     }
-    fn ridden_vehicle_yaw(&self) -> Option<f32> {
+    /// What the player rides that sets their body's yaw: a boat's yaw, or a
+    /// living vehicle's body yaw. Minecarts and cushions leave it to the
+    /// player's own turn.
+    fn ridden_body(&self) -> Option<RiddenBody> {
         let id = self.riding?;
-        self.boats
-            .iter()
-            .find(|b| b.id == id)
-            .map(|b| b.yaw)
-            .or_else(|| self.carts.iter().find(|c| c.id == id).map(|c| c.yaw))
-            .or_else(|| self.mobs.iter().find(|m| m.id == id).map(|m| m.body_yaw))
-            .or_else(|| self.cushions.iter().find(|c| c.id == id).map(|c| c.yaw))
+        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+            return Some(RiddenBody::Boat(b.yaw));
+        }
+        let m = self.mobs.iter().find(|m| m.id == id)?;
+        Some(RiddenBody::Living(m.body_yaw))
     }
     /// `Entity.setOldRot` after a server sets the player's rotation
     /// (`handleRotatePlayer`): the model's head snaps to it instead of easing
@@ -1697,22 +1720,17 @@ mod preview_tests {
         );
     }
 
+    /// `LivingEntityRenderer.solveBodyRot` worked by hand: the head turns at
+    /// most 85 degrees from the vehicle's body, and past 50 the body follows a
+    /// fifth of the turn.
     #[test]
-    fn riding_vehicle_body_yaw_follows_vehicle_clamped_to_head() {
-        let v_yaw = 40.0f32;
-        // Head looking near vehicle direction: body matches vehicle yaw exactly.
-        let head_yaw = 60.0f32;
-        let diff = wrap(head_yaw - v_yaw);
-        let clamped = diff.clamp(-85.0, 85.0);
-        let body_yaw = v_yaw + diff - clamped;
-        assert_eq!(body_yaw, 40.0);
-
-        // Head looking past 85 degrees: body is dragged to stay within 85 degrees.
-        let head_yaw = 140.0f32;
-        let diff = wrap(head_yaw - v_yaw);
-        let clamped = diff.clamp(-85.0, 85.0);
-        let body_yaw = v_yaw + diff - clamped;
-        assert_eq!(body_yaw, 55.0);
-        assert_eq!(head_yaw - body_yaw, 85.0);
+    fn a_living_vehicles_rider_faces_its_body_within_85_degrees() {
+        let body = |head, vehicle| (super::rider_body_yaw(head, vehicle) * 1000.0).round() / 1000.0;
+        assert_eq!(body(60.0, 40.0), 40.0);
+        assert_eq!(body(100.0, 40.0), 52.0);
+        assert_eq!(body(140.0, 40.0), 72.0);
+        assert_eq!(body(-60.0, 40.0), 8.0);
+        // Across the wrap: head at 170, vehicle at -170 (20 degrees apart).
+        assert_eq!(body(170.0, -170.0), 190.0);
     }
 }

@@ -82,6 +82,9 @@ pub(super) struct Portals {
     pub(super) player: PortalState,
     /// `LocalPlayer.portalProcess.isInsidePortalThisTick`.
     client_inside: bool,
+    /// Whether the last tick's `handlePortalTransitionEffect` found the
+    /// player inside a nether portal: it closes any screen opened meanwhile.
+    client_was_inside: bool,
     /// Items and mobs, by entity id.
     pub(super) entities: HashMap<u32, PortalState>,
     /// Positions before this tick's moves, by entity id.
@@ -520,18 +523,12 @@ impl Game<'_> {
 
     // ---- the player ----
 
-    /// Whether the local player is currently inside a portal or experiencing
-    /// the portal transition screen effect. Opening inventories is blocked
-    /// while transitioning.
+    /// Whether the inventory key opens nothing: vanilla opens the screen,
+    /// then `LocalPlayer.handlePortalTransitionEffect` closes it in the same
+    /// tick while the player stands in a nether portal, so it is never drawn.
+    /// The fading effect after leaving the portal closes nothing.
     pub(super) fn in_portal_transition(&self) -> bool {
-        self.portals.client_inside
-            || self.screen_fx.portal > 0.0
-            || self
-                .portals
-                .player
-                .process
-                .as_ref()
-                .is_some_and(|p| p.inside)
+        self.portals.client_was_inside
     }
 
     /// The same on a server's client: `Entity.canUsePortal` (alive, not a
@@ -580,7 +577,9 @@ impl Game<'_> {
     /// the chat and death screens and plays `block.portal.trigger` when the
     /// effect starts from nothing.
     pub(super) fn client_portal_effect(&mut self) -> bool {
-        if !std::mem::take(&mut self.portals.client_inside) {
+        let inside = std::mem::take(&mut self.portals.client_inside);
+        self.portals.client_was_inside = inside;
+        if !inside {
             return false;
         }
         match self.screen {
