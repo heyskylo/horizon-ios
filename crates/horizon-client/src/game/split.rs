@@ -575,8 +575,9 @@ impl<'a> Split<'a> {
         }
         presented
     }
-    /// Every player's frame submitted and the device idle: before anything reconfigures a
-    /// surface, whose wait for the GPU breaks on a submission made while it waits.
+    /// Every player's frame submitted by its submit thread, no device wait: before
+    /// anything reconfigures a surface, whose wait for the GPU breaks on a submission
+    /// made while it waits.
     fn wait_queues(&mut self) {
         let renderers = std::iter::once(&mut self.host.renderer)
             .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
