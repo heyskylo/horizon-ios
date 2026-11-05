@@ -1131,9 +1131,9 @@ impl Game<'_> {
             }
             if found.is_empty() {
                 return Err(match &sources[..] {
-                    [Owner::Block(p)]
-                        if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) =>
-                    {
+                    // ItemCommands.getContainer: a block entity that is no Container
+                    // (a sign, a lectern, a beacon) is no source either.
+                    [Owner::Block(p)] if self.block_container_size(*p).is_none() => {
                         err(
                             "commands.item.source.not_a_container",
                             &[&p[0], &p[1], &p[2]],
