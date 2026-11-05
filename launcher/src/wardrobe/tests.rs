@@ -18,6 +18,8 @@ struct Mock {
     log: Vec<(String, String, String, String)>,
     /// The service fails on its side (503) for the account's changes.
     down: bool,
+    /// The service refuses every sign-in (401), as when it is misconfigured.
+    sign_in_fails: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
     /// The file every `?hash=` request answers, whatever its path says.
@@ -63,6 +65,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 "claim": {"state": m.claim, "items": ["hat"], "starts_at": null, "ends_at": null},
             }),
         ),
+        ("POST", "/v1/auth/start") if m.sign_in_fails => (401, json!({"error": "no_session"})),
         ("POST", "/v1/auth/start") => (200, json!({"server_id": "issued-1", "expires_in": 120})),
         ("POST", "/v1/auth/finish") => {
             let v: Value = serde_json::from_str(body).unwrap();
@@ -473,6 +476,133 @@ fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
     }))
     .unwrap();
     assert!(old.purchases.is_empty());
+}
+
+/// `join` for `sync_with_session`: tells Mojang the account joined `id`, as a server would.
+fn joined(m: &Arc<Mutex<Mock>>) -> impl Fn(&str) -> Result<(), String> {
+    let m = m.clone();
+    move |id: &str| {
+        m.lock().unwrap().joined.push(id.to_owned());
+        Ok(())
+    }
+}
+
+/// How often the service was asked to finish a sign-in.
+fn finishes(m: &Arc<Mutex<Mock>>) -> usize {
+    m.lock()
+        .unwrap()
+        .log
+        .iter()
+        .filter(|(_, path, ..)| path == "/v1/auth/finish")
+        .count()
+}
+
+/// A live session is reused: the account is proved with Mojang once per service session, not
+/// once per refresh (the Wardrobe used to sign in again every few minutes).
+#[test]
+fn a_live_session_is_reused_between_refreshes() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let mut session = None;
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert_eq!(m.lock().unwrap().joined.len(), 1);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(
+        finishes(&m),
+        1,
+        "a live session was proved with Mojang again"
+    );
+    assert_eq!(m.lock().unwrap().joined.len(), 1);
+}
+
+/// A session that ran out, or one for another account, signs in again.
+#[test]
+fn an_ended_session_signs_in_again() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let ended = Arc::new(Session {
+        token: "svc-session".into(),
+        until: Instant::now() - Duration::from_secs(1),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(ended);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert!(session.as_ref().is_some_and(|s| s.live()));
+    // Another account's live session is not this account's.
+    let other = Arc::new(Session {
+        token: "svc-session".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: "00000000000000000000000000000000".into(),
+        name: "Other".into(),
+    });
+    let mut session = Some(other);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 2);
+    assert_eq!(session.as_ref().unwrap().uuid, UUID);
+}
+
+/// The service answering 401 ends the session: the launcher signs in once more and retries the
+/// call.
+#[test]
+fn a_401_signs_in_again_and_retries_once() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let stale = Arc::new(Session {
+        token: "ended".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(stale);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert_eq!(session.as_ref().unwrap().token, "svc-session");
+    assert!(saved.me.is_some());
+}
+
+/// A service that refuses every sign-in is not retried in a loop: the 401 stands.
+#[test]
+fn a_refused_sign_in_is_not_retried_forever() {
+    let (m, service) = serve(|m| m.sign_in_fails = true);
+    let stale = Arc::new(Session {
+        token: "ended".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(stale);
+    let err = service
+        .sync_with_session(
+            "Notch",
+            UUID,
+            &mut session,
+            &mut Saved::default(),
+            joined(&m),
+        )
+        .unwrap_err();
+    assert_eq!(err, Error::SignedOut);
+    // One refused 401, one refused sign-in: no second round.
+    let requested: Vec<String> = m
+        .lock()
+        .unwrap()
+        .log
+        .iter()
+        .map(|(_, path, ..)| path.clone())
+        .collect();
+    assert_eq!(requested, ["/v1/me", "/v1/auth/start"]);
 }
 
 #[test]
