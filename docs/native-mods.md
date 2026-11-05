@@ -3372,6 +3372,34 @@ as the terrain samples them. API 380.
 
 Look blocks up once and keep what you need (a few words a block for your own shader), not every frame.
 
+### Block states
+
+`crates/horizon-client/src/game/native_block_sprites.rs` and `horizon_client::block_states`: for a client mod working
+out what every block looks like (a map's colours, a voxel renderer's table) on a thread of its own. The helper returns
+a copy to keep, cheap to clone, `Send` and `Sync`: fetch it on the game's thread, then use it anywhere. It follows the
+resources loaded at the time, so ask again when `native_block_sprites_version()` changes
+(`native_client_resources_reloaded` hears the same reloads, but not the first load).
+
+- `native_block_states()` (`BlockStates`) holds every block state by its id (`BlockStateId`, as the world stores
+  blocks): `len()`, `get(id)` and `iter()` give each state's `BlockStateFacts`:
+  - `name`: its block, without properties (`minecraft:grass_block`);
+  - `air`: air, cave air or void air (`BlockState.isAir`);
+  - `invisible`: no model draws it (render shape `INVISIBLE`: air, barriers, light, and water and lava, which are drawn
+    as fluids);
+  - `fluid`: `BlockState.getFluidState` (`FluidState`, whose `kind()` is a `FluidKind`), a waterlogged block's water
+    and kelp's included;
+  - `waterlogged`: its `waterlogged` property is true;
+  - `emission`: the light it gives, 0 to 15;
+  - `outline`: `BlockState.getShape`, the outline the cursor picks, as block-local `[min_x, min_y, min_z, max_x,
+    max_y, max_z]` boxes (`[0, 0, 0, 1, 0.5, 1]` for a bottom slab, none for air), without flowers' random offset;
+  - `map_color`: `MapColor.col` as `0xRRGGBB`, its colour on a vanilla map, none for `MapColor.NONE`;
+  - `collides`: whether it can collide at all (false for a state whose collision shape is always empty: flowers,
+    water). `native_block_collision(pos)` gives a placed block's boxes.
+
+  `sprites(id)` says what the state's model draws on each side, as `native_block_sprites` does for a block by name,
+  and `texture(sprite)` names the texture behind any of its sprites (`block/grass_block_top`: vanilla's without their
+  namespace, a mod's with it), the name `native_texture_sprites` and `native_draw_cube` take.
+
 ### Menu extra data
 
 A content mod's menu type opened by its block can carry bytes of the mod's own to the screen, as NeoForge's
