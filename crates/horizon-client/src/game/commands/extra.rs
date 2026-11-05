@@ -6,7 +6,7 @@
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::{
     command::CommandError,
-    skins::{NameOrId, Resolve, ResolvedProfile},
+    skins::{NameOrId, ProfileLookup, Resolve, ResolvedProfile},
     snbt,
     text::{self, ClickEvent, InlineObject, Style, Text},
 };
@@ -36,7 +36,8 @@ impl Default for WaypointIcon {
 /// answers with (`commands.fetchprofile.<kind>.success|failure`), the
 /// argument they show, and the source to answer.
 pub(in crate::game) struct ProfileFetch {
-    key: NameOrId,
+    /// Keep this command's result even if the shared service cache evicts its key.
+    lookup: ProfileLookup,
     kind: &'static str,
     argument: Text,
     source: Option<super::execute::Source>,
@@ -798,7 +799,10 @@ impl Game<'_> {
                 _ => String::new(),
             };
             self.cmds.profile_fetches.push(ProfileFetch {
-                key: NameOrId::Name(name.clone()),
+                lookup: self
+                    .skin_profiles
+                    .borrow_mut()
+                    .lookup(&NameOrId::Name(name.clone())),
                 kind: "name",
                 argument: Text::literal(name),
                 source: self.command_source,
@@ -813,7 +817,7 @@ impl Game<'_> {
             .unwrap_or_default();
             // `Component.translationArg(id)`: the UUID's string form.
             self.cmds.profile_fetches.push(ProfileFetch {
-                key: NameOrId::Id(id),
+                lookup: self.skin_profiles.borrow_mut().lookup(&NameOrId::Id(id)),
                 kind: "id",
                 argument: Text::literal(horizon_protocol::crypto::uuid_string(id)),
                 source: self.command_source,
@@ -846,16 +850,16 @@ impl Game<'_> {
     /// Whether a `/fetchprofile` lookup is still in flight (the command
     /// harness waits for them, as vanilla's oracle resolves at once).
     pub(in crate::game) fn profile_fetches_pending(&mut self) -> bool {
-        let mut resolver = self.skin_profiles.borrow_mut();
         self.cmds
             .profile_fetches
             .iter()
-            .any(|f| matches!(resolver.state(&f.key), Resolve::Pending))
+            .any(|f| matches!(f.lookup.state(), Resolve::Pending))
     }
     fn tick_profile_fetches(&mut self) {
+        self.skin_profiles.borrow_mut().poll();
         let fetches = std::mem::take(&mut self.cmds.profile_fetches);
         for fetch in fetches {
-            let state = self.skin_profiles.borrow_mut().state(&fetch.key);
+            let state = fetch.lookup.state();
             match state {
                 Resolve::Pending => self.cmds.profile_fetches.push(fetch),
                 Resolve::Done(result) => {
