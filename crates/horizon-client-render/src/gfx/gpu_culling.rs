@@ -31,6 +31,12 @@
 //! walk's would and a thin shell more, alike on every backend; a frame whose
 //! sums could leave i32 is drawn by the CPU (`Prepared::Cpu`).
 //!
+//! Its statistics, the sections the pass kept and their draws (`counts[0]`,
+//! `counts[1]`), are copied after the pass into one of `READBACKS` small
+//! buffers with the CPU's part of the same frame (`copy_stats`), mapped once the
+//! frame is submitted (`submitted`, from the frame's after-submit hook) and
+//! taken in a frame or a few later (`collect`); nothing waits for them.
+//!
 //! A record also holds where its section's buckets of solid quads by the side
 //! they face end, and what `mesher::Sides::visible_from` compares the eye with
 //! for each, its margin in (`Sides::thresholds`); the tables hold the eye less
@@ -70,9 +76,17 @@ use super::{
     submit::Queue,
     upload::Uploads,
 };
-use crate::mesher::Sides;
-use glam::{DVec3, DVec4, Vec3};
-use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
+use crate::{graphics::GpuCullingOffer, mesher::Sides};
+use glam::{DVec3, DVec4, Mat4, Vec3};
+use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Instant,
+};
 
 /// One section (`gpu_culling.wgsl`'s `Section`).
 #[repr(C)]
@@ -176,9 +190,9 @@ fn threshold_key(t: f32, positive: bool) -> u32 {
 /// The most draws a section has: the runs its buckets that can face the eye
 /// lie in. Two runs are apart by a bucket left out, so 7 buckets hold at most 4.
 const RUNS: u32 = 4;
-/// Words per id in `runs` (the shader's `RUN_WORDS`): its page and draws, then
-/// each draw's first quad and quads.
-const RUN_WORDS: u64 = 1 + 2 * RUNS as u64;
+/// Words per id in `runs` (the shader's `RUN_WORDS`): its page, flags and draws,
+/// then each draw's first quad and quads, then its two occlusion stamps.
+const RUN_WORDS: u64 = 1 + 2 * RUNS as u64 + 2;
 
 /// `rounded_box` for bounds past what a box's codes hold, or not finite: no
 /// frustum plane rejects it, so it is drawn wherever its column is within the
@@ -256,15 +270,36 @@ struct Params {
     /// Its height in sections, and the level's (the sky band's top section).
     reach_height: i32,
     reach_sections: i32,
-    /// `REACH`, `SKY`, `EYE`.
+    /// `REACH`, `SKY`, `EYE`, `OCCLUDE`, `PROBE`.
     flags: u32,
     /// With `EYE`, where the eye's keys start in `tables`, in words.
     eyes: u32,
+    /// With `OCCLUDE`: the frame's stamp (never 0), where the boxes to test
+    /// start in `counts`, in words, 0, 0.
+    occl: [u32; 4],
+    /// The world pass's view projection, which the test draws its boxes with.
+    view_proj: [[f32; 4]; 4],
 }
 
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
-/// and the draws, fewer only where a region was short.
-const STATS: u64 = 2;
+/// the draws (fewer only where a region was short), then occlusion's: the
+/// quads of the sections with runs and of the tested boxes not seen (the
+/// gate's share), the box draw (its instances: the boxes tested), and the
+/// boxes not seen.
+const STATS: u64 = 12;
+const QUADS: usize = 2;
+const HIDDEN_QUADS: usize = 3;
+const BOX: u64 = 4;
+const HIDDEN: usize = 9;
+/// Statistics on their way back at once, a frame or a few late so the CPU never
+/// waits (as `cull`'s results).
+const READBACKS: usize = 3;
+const FREE: u8 = 0;
+const PENDING: u8 = 1;
+const MAPPED: u8 = 2;
+/// Its mapping failed or the device lost its buffer: never copied into or
+/// unmapped again, so the statistics stop (as `timing::GpuTimer`'s).
+const FAILED: u8 = 3;
 /// In `Params::flags` (the shader's `REACH`): cave culling's graph is in
 /// `reach`.
 const REACH: u32 = 1;
@@ -274,6 +309,10 @@ const SKY: u32 = 2;
 /// In `Params::flags` (the shader's `EYE`): solid quads facing away from the
 /// eye are left out, its keys in `tables` from `Params::eyes`.
 const EYE: u32 = 4;
+/// In `Params::flags` (the shader's `OCCLUDE` and `PROBE`): the frame occludes,
+/// and it tests every box (cull.rs's probe frame).
+const OCCLUDE: u32 = 8;
+const PROBE: u32 = 16;
 /// Ids per block (the shader's `BLOCK`), and the workgroup of the passes over ids.
 const WORKGROUP: u32 = 64;
 /// Workgroups along x when there are more (the shader's `ROW`).
@@ -314,6 +353,11 @@ pub(super) struct FrameInputs<'a> {
     /// from it are left out (`sides_on`); `None`: every solid quad is drawn. A
     /// GPU frame has no water mirror, whose eye below would see more of them.
     pub eye: Option<Vec3>,
+    /// The world pass's view projection (gfx.rs `globals.view_proj`), and
+    /// whether occlusion culling is on: frames that can run its test then
+    /// do, by its gate (`GpuCulling::occluding`).
+    pub view_proj: Mat4,
+    pub occlude: bool,
 }
 
 /// What `GpuCulling::prepare` made of a frame.
@@ -475,10 +519,31 @@ pub(super) fn supported(
         // The pass binds 8, the last cave culling's graph.
         && limits.max_storage_buffers_per_shader_stage >= 8
         && !super::flat::is_broken_intel_vulkan(info)
-        // DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
-        // pulled solid pipelines (those of a device with flat page groups) read the page.
-        // shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
-        && !(info.backend == wgpu::Backend::Dx12 && flat_min_sections.is_some())
+        && !loses_base_vertex(info, flat_min_sections.is_some())
+}
+
+/// DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
+/// pulled solid pipelines (those of a device with flat page groups) read the page.
+/// shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
+pub(super) fn loses_base_vertex(info: &wgpu::AdapterInfo, flat_page_groups: bool) -> bool {
+    info.backend == wgpu::Backend::Dx12 && flat_page_groups
+}
+
+/// What the settings offer (`graphics::GpuCullingOffer`): where `supported`
+/// holds, but not on a software adapter (WARP, lavapipe), whose pass would run
+/// on the CPU beside the frame, as occlusion culling's default has it; where it
+/// doesn't, DX12 with flat page groups says why (`loses_base_vertex`).
+pub(super) fn offer(
+    info: &wgpu::AdapterInfo,
+    supported: bool,
+    flat_page_groups: bool,
+) -> GpuCullingOffer {
+    match (supported, super::is_software(info.device_type)) {
+        (false, _) if loses_base_vertex(info, flat_page_groups) => GpuCullingOffer::Dx12,
+        (false, _) => GpuCullingOffer::Unsupported,
+        (true, true) => GpuCullingOffer::Software,
+        (true, false) => GpuCullingOffer::Offered,
+    }
 }
 
 /// A buffer that is recreated larger when it must hold more.
@@ -522,6 +587,20 @@ impl Grown {
         self.buffer = try_create(device, self.label, size, self.usage)?;
         self.bytes = size;
         Some(true)
+    }
+    /// `reserve`, keeping what the buffer held (`runs`' stamps).
+    fn reserve_keeping(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        bytes: u64,
+    ) -> Option<bool> {
+        let (old, old_bytes) = (self.buffer.clone(), self.bytes);
+        let made = self.reserve(device, bytes)?;
+        if made {
+            encoder.copy_buffer_to_buffer(&old, 0, &self.buffer, 0, old_bytes);
+        }
+        Some(made)
     }
 }
 
@@ -653,6 +732,7 @@ impl Records {
         self.fading = 0;
     }
     /// The sections with a record.
+    #[cfg(any(test, debug_assertions))]
     pub fn live(&self) -> usize {
         let free: u32 = self.free.iter().map(|word| word.count_ones()).sum();
         self.records.len() - free as usize
@@ -730,6 +810,159 @@ impl Fades {
     }
 }
 
+/// One GPU frame's statistics on their way back: `counts[..STATS]`, and what
+/// the CPU drew of the same frame.
+struct Readback {
+    buffer: wgpu::Buffer,
+    state: Arc<AtomicU8>,
+    /// Its frame (gfx.rs `frame_serial`), and the CPU's part of its statistics:
+    /// the sections it drew that the pass didn't count, its section draws, and
+    /// every draw call.
+    frame: u64,
+    cpu: [usize; 3],
+    /// Its frame occluded: its counts carry the test's.
+    occluded: bool,
+}
+
+/// The occlusion test (`gpu_occlusion.wgsl`): its boxes' pipeline and bind
+/// group, and phase 2's passes (count2, scan2, scatter2).
+struct BoxTest {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    group: Option<wgpu::BindGroup>,
+    phase2: [wgpu::ComputePipeline; 3],
+}
+
+impl BoxTest {
+    /// `color`: the world pass's colour format. `None` when the device fails to
+    /// make the pipelines: GPU culling then runs without the test.
+    fn new(
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        compute: &wgpu::BindGroupLayout,
+    ) -> Option<Self> {
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let storage = |read_only| wgpu::BufferBindingType::Storage { read_only };
+        use wgpu::ShaderStages as S;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("GPU culling occlusion test"),
+            entries: &[
+                entry(0, S::VERTEX_FRAGMENT, wgpu::BufferBindingType::Uniform),
+                entry(9, S::VERTEX, storage(true)),
+                entry(10, S::VERTEX, storage(true)),
+                entry(11, S::FRAGMENT, storage(false)),
+                entry(12, S::VERTEX, storage(true)),
+            ],
+        });
+        let source = [
+            include_str!("gpu_culling.wgsl"),
+            include_str!("gpu_occlusion.wgsl"),
+        ]
+        .concat();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("GPU culling occlusion test"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let layouts = [Some(&layout)];
+        let box_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("GPU culling occlusion test"),
+            bind_group_layouts: &layouts,
+            ..Default::default()
+        });
+        // cull.rs's `Early` pipeline: front faces against the world pass's
+        // reversed depth, without writes.
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("GPU culling occlusion test"),
+            layout: Some(&box_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_box"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_box"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::empty(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let compute_layouts = [Some(compute)];
+        let compute_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("GPU culling phase 2"),
+            bind_group_layouts: &compute_layouts,
+            ..Default::default()
+        });
+        let phase2 = ["count2", "scan2", "scatter2"].map(|entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("GPU culling phase 2"),
+                layout: Some(&compute_layout),
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        });
+        let internal = pollster::block_on(internal.pop());
+        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+            log::warn!("Horizon renderer: GPU culling's occlusion test unavailable ({e})");
+            return None;
+        }
+        Some(Self {
+            pipeline,
+            layout,
+            group: None,
+            phase2,
+        })
+    }
+
+    /// Its bind group: the parameters, then the test list (`counts`), the
+    /// origins, the stamps (`runs`) and the records.
+    fn bind(&self, device: &wgpu::Device, buffers: [&wgpu::Buffer; 5]) -> wgpu::BindGroup {
+        let entries = [0, 9, 10, 11, 12]
+            .into_iter()
+            .zip(buffers)
+            .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("GPU culling occlusion test"),
+            layout: &self.layout,
+            entries: &entries.collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// The pass, its buffers and the records it draws from: made when GPU culling
 /// is switched on, dropped when it is switched off.
 pub(super) struct GpuCulling {
@@ -769,12 +1002,28 @@ pub(super) struct GpuCulling {
     /// This frame's updates and table words, kept for their room.
     scratch: Vec<Update>,
     words: Vec<u32>,
+    /// The statistics on their way back (`Readback`), the next one to copy
+    /// into, and this frame's copy.
+    readbacks: Vec<Readback>,
+    next: usize,
+    current: Option<usize>,
+    /// The occlusion test, where the device can run it (Vulkan, with cull.rs's
+    /// test forced early: `Cull::early`).
+    test: Option<BoxTest>,
+    /// Advanced by every frame that may occlude (never 0); the newest share of
+    /// quads the test hid, with its frame; whether this frame occludes; and the
+    /// newest result's boxes not seen and tested.
+    stamp: u32,
+    share: (u64, f32),
+    occluding: bool,
+    hidden: Option<[usize; 2]>,
 }
 
 impl GpuCulling {
     /// `None` when the device fails to make the pipelines or the memory for the
-    /// buffers is missing (caught, not raised: raised errors are fatal).
-    pub fn new(device: &wgpu::Device) -> Option<Self> {
+    /// buffers is missing (caught, not raised: raised errors are fatal). `test`:
+    /// the world pass's colour format, where frames can run the occlusion test.
+    pub fn new(device: &wgpu::Device, test: Option<wgpu::TextureFormat>) -> Option<Self> {
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
@@ -827,7 +1076,24 @@ impl GpuCulling {
             log::warn!("Horizon renderer: GPU culling unavailable ({e})");
             return None;
         }
+        let test = test.and_then(|color| BoxTest::new(device, color, &layout));
         use wgpu::BufferUsages as U;
+        let readbacks = (0..READBACKS)
+            .map(|_| {
+                Some(Readback {
+                    buffer: try_create(
+                        device,
+                        "GPU culling statistics",
+                        STATS * 4,
+                        U::MAP_READ | U::COPY_DST,
+                    )?,
+                    state: Arc::new(AtomicU8::new(FREE)),
+                    frame: 0,
+                    cpu: [0; 3],
+                    occluded: false,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(Self {
             pipelines,
             layout,
@@ -859,7 +1125,8 @@ impl GpuCulling {
                 device,
                 "GPU culling counts",
                 (STATS + 64) * 4,
-                U::STORAGE | U::INDIRECT | U::COPY_DST | TEST_READ,
+                // The counts are copied out for the statistics (`copy_stats`).
+                U::STORAGE | U::INDIRECT | U::COPY_DST | U::COPY_SRC,
             )?,
             draws: Grown::new(
                 device,
@@ -873,7 +1140,13 @@ impl GpuCulling {
                 1024 * 16,
                 U::VERTEX | U::STORAGE | TEST_READ,
             )?,
-            runs: Grown::new(device, "GPU culling runs", 1024 * RUN_WORDS * 4, U::STORAGE)?,
+            // Kept when it grows (`reserve_keeping`): it holds the stamps.
+            runs: Grown::new(
+                device,
+                "GPU culling runs",
+                1024 * RUN_WORDS * 4,
+                U::STORAGE | U::COPY_SRC | U::COPY_DST,
+            )?,
             // Room for render distance 64's graph, 57.5 KB.
             reach: Grown::new(
                 device,
@@ -891,6 +1164,15 @@ impl GpuCulling {
             pass_pages: 1,
             scratch: Vec::new(),
             words: Vec::new(),
+            readbacks,
+            next: 0,
+            current: None,
+            test,
+            stamp: 0,
+            // cull.rs's start: culling until a result says otherwise.
+            share: (0, 1.0),
+            occluding: false,
+            hidden: None,
         })
     }
 
@@ -912,6 +1194,7 @@ impl GpuCulling {
         self.pages.clear();
         self.ids = 0;
         self.n_updates = 0;
+        self.occluding = false;
         self.prepare_buffers(device, queue, uploads, encoder, input)
             .unwrap_or(Prepared::OutOfMemory)
     }
@@ -955,12 +1238,18 @@ impl GpuCulling {
         let pass_pages = self.records.page_sections.len().max(1) as u32;
         // A region has room for every draw of every record on its page.
         let total = RUNS * self.records.page_sections.iter().sum::<u32>();
-        // The statistics, each page's count, then each block's per page.
-        let count_words = STATS + u64::from(pass_pages) * (1 + u64::from(ids.div_ceil(WORKGROUP)));
+        // The statistics, each page's count in both phases, each block's per
+        // page in both phases, then where the test exists the boxes to test.
+        let blocks = u64::from(ids.div_ceil(WORKGROUP));
+        let phase1_end = STATS + u64::from(pass_pages) * (2 + blocks);
+        let tests_at = phase1_end + u64::from(pass_pages) * blocks;
+        let count_words = match self.test {
+            Some(_) => tests_at + u64::from(ids),
+            None => phase1_end,
+        };
         for (buffer, bytes) in [
             (&mut self.updates, self.scratch.len() as u64 * Update::BYTES),
             (&mut self.origins, u64::from(ids) * 16),
-            (&mut self.runs, u64::from(ids) * RUN_WORDS * 4),
             (&mut self.tables, u64::from(regions + 2 * pass_pages) * 4),
             (&mut self.counts, count_words * 4),
             (&mut self.draws, u64::from(total.max(1)) * 20),
@@ -968,6 +1257,12 @@ impl GpuCulling {
             if buffer.reserve(device, bytes)? {
                 self.group = None;
             }
+        }
+        if self
+            .runs
+            .reserve_keeping(device, encoder, u64::from(ids) * RUN_WORDS * 4)?
+        {
+            self.group = None;
         }
         // A copy of the graph made anew holds none.
         if let Some(r) = &input.reach
@@ -982,6 +1277,16 @@ impl GpuCulling {
         let Some(params) = planes else {
             return Some(Prepared::Cpu);
         };
+        // Occlusion, by cull.rs's gate over the share the newest test hid.
+        let mut occl = 0;
+        if self.test.is_some() && input.occlude {
+            self.stamp = self.stamp.wrapping_add(1).max(1);
+            let (occludes, probe) = super::cull::gate(self.share.1, self.stamp);
+            if occludes && ids > 0 {
+                self.occluding = true;
+                occl = OCCLUDE | if probe { PROBE } else { 0 };
+            }
+        }
         if self.records.all_dirty {
             // The whole table, after it grew or more records changed than
             // updates take (GPU culling switched on in a loaded world, a
@@ -1025,8 +1330,11 @@ impl GpuCulling {
             updates: self.scratch.len() as u32,
             pages: pass_pages,
             regions,
+            occl: [self.stamp, tests_at as u32, 0, 0],
+            view_proj: input.view_proj.to_cols_array_2d(),
             ..params
         };
+        params.flags |= occl;
         if let Some(r) = &input.reach {
             if self.reach_generation != Some(r.generation) {
                 // Through the belt: a search lands every few frames while the
@@ -1040,9 +1348,24 @@ impl GpuCulling {
             params.flags |= REACH | if r.sky_reached { SKY } else { 0 };
         }
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
-        encoder.clear_buffer(&self.counts.buffer, 0, Some(count_words * 4));
+        // A frame that occludes reads phase 2's blocks too; the boxes to test
+        // are written before they are read.
+        let cleared = if self.occluding { tests_at } else { phase1_end };
+        encoder.clear_buffer(&self.counts.buffer, 0, Some(cleared * 4));
         if self.group.is_none() {
             self.group = Some(self.bind(device));
+            if let Some(test) = &mut self.test {
+                test.group = Some(test.bind(
+                    device,
+                    [
+                        &self.params,
+                        &self.counts.buffer,
+                        &self.origins.buffer,
+                        &self.runs.buffer,
+                        &self.sections.buffer,
+                    ],
+                ));
+            }
         }
         self.ids = ids;
         self.n_updates = params.updates;
@@ -1102,11 +1425,13 @@ impl GpuCulling {
     /// The kept sections' solid draws, a count draw per page, with the quad
     /// indices bound. Leaves the origins at vertex slot 1. `group`: the page's group 1 for
     /// pipelines that read the page themselves (`Flat::page_group`), else none.
+    /// `phase`: 0, or 1 after `compact` in a frame that occludes.
     pub fn draw<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         arena: &Arena,
         group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+        phase: u64,
     ) {
         if self.pages.is_empty() {
             return;
@@ -1121,7 +1446,7 @@ impl GpuCulling {
                 &self.draws.buffer,
                 u64::from(first) * 20,
                 &self.counts.buffer,
-                (STATS + u64::from(page)) * 4,
+                (STATS + phase * u64::from(self.pass_pages) + u64::from(page)) * 4,
                 size,
             );
         }
@@ -1130,6 +1455,139 @@ impl GpuCulling {
     /// Draw calls `draw` makes.
     pub fn draw_calls(&self) -> usize {
         self.pages.len()
+    }
+
+    /// Whether the frame occludes (`prepare`): phase 1's `draw`, then `test` in
+    /// its pass, `compact` after it, and phase 2's `draw` in the next pass.
+    pub fn occluding(&self) -> bool {
+        self.occluding
+    }
+
+    /// The boxes the newest test read back did not see and those it tested,
+    /// and the share of quads it hid (cull.rs `Cull::hidden`).
+    pub fn hidden(&self) -> Option<([usize; 2], f32)> {
+        self.hidden.map(|h| (h, self.share.1))
+    }
+
+    /// In the world pass after phase 1's draws: the listed boxes against its
+    /// depth. Leaves the pass's pipeline and group 0 changed.
+    pub fn test(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Some(BoxTest {
+            pipeline,
+            group: Some(group),
+            ..
+        }) = &self.test
+            && self.occluding
+        {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw_indirect(&self.counts.buffer, BOX * 4);
+        }
+    }
+
+    /// Between the world passes: phase 2's draws, of the sections the test saw,
+    /// into the regions phase 1 drew from.
+    pub fn compact(&self, encoder: &mut wgpu::CommandEncoder, timing: Option<&mut PassTiming>) {
+        let (Some(test), Some(group)) = (&self.test, &self.group) else {
+            return;
+        };
+        if !self.occluding {
+            return;
+        }
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("GPU culling phase 2"),
+            timestamp_writes: timing.and_then(|t| t.compute_writes("GPU culling phase 2")),
+        });
+        pass.set_bind_group(0, group, &[]);
+        let [count2, scan2, scatter2] = &test.phase2;
+        let blocks = self.ids.div_ceil(WORKGROUP);
+        pass.set_pipeline(count2);
+        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
+        pass.set_pipeline(scan2);
+        pass.dispatch_workgroups(self.pass_pages, 1, 1);
+        pass.set_pipeline(scatter2);
+        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
+    }
+
+    /// After the frame's world passes (phase 2's counts too), in the same
+    /// encoder: the pass's counts copied out with
+    /// the CPU's part of frame `frame` (`Readback::cpu`), into the next readback
+    /// if it is free. While three frames' are on their way, this one's
+    /// statistics are never shown.
+    pub fn copy_stats(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, cpu: [usize; 3]) {
+        let r = &mut self.readbacks[self.next];
+        if r.state.load(Ordering::Acquire) != FREE {
+            return;
+        }
+        encoder.copy_buffer_to_buffer(&self.counts.buffer, 0, &r.buffer, 0, STATS * 4);
+        (r.frame, r.cpu, r.occluded) = (frame, cpu, self.occluding);
+        self.current = Some(self.next);
+    }
+
+    /// The frame's statistics to read back, started by calling it right after
+    /// the frame's submission (gfx's after-submit hook, on the submit thread
+    /// when the frame goes there), as `cull::Cull::submitted`.
+    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+        let i = self.current.take()?;
+        let r = &self.readbacks[i];
+        let (buffer, state) = (r.buffer.clone(), r.state.clone());
+        state.store(PENDING, Ordering::Release);
+        self.next = (i + 1) % READBACKS;
+        Some(move || {
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    state.store(
+                        if result.is_ok() { MAPPED } else { FAILED },
+                        Ordering::Release,
+                    );
+                });
+        })
+    }
+
+    /// The statistics that came back, their readbacks freed: the newest
+    /// frame's, as (frame, [sections drawn, section draws, draw calls]), the
+    /// pass's counts added to the CPU's part. Called as a frame starts, so a
+    /// copy no submission took (a frame that failed on the way) is dropped.
+    pub fn collect(&mut self, device: &wgpu::Device) -> Option<(u64, [usize; 3])> {
+        self.current = None;
+        if device.poll(wgpu::PollType::Poll).is_err() {
+            return None;
+        }
+        let mut newest: Option<(u64, [usize; 3])> = None;
+        for r in &self.readbacks {
+            if r.state.load(Ordering::Acquire) != MAPPED {
+                continue;
+            }
+            {
+                let Ok(data) = r.buffer.slice(..).get_mapped_range() else {
+                    // Device loss can destroy a buffer after its mapping
+                    // succeeded; unmapping it would panic (`timing::GpuTimer`).
+                    r.state.store(FAILED, Ordering::Release);
+                    continue;
+                };
+                // The mapping need not be 4-byte aligned: read the words unaligned.
+                let words: [u32; STATS as usize] =
+                    bytemuck::pod_read_unaligned(&data[..STATS as usize * 4]);
+                let [kept, draws] = [words[0], words[1]];
+                // The newest test's share, for the gate (`prepare`).
+                if r.occluded && r.frame > self.share.0 {
+                    let quads = words[QUADS].max(1);
+                    self.share = (r.frame, words[HIDDEN_QUADS] as f32 / quads as f32);
+                    self.hidden = Some([words[HIDDEN] as usize, words[BOX as usize + 1] as usize]);
+                }
+                let [sections, cpu_draws, calls] = r.cpu;
+                if newest.is_none_or(|(frame, _)| r.frame > frame) {
+                    newest = Some((
+                        r.frame,
+                        [sections + kept as usize, cpu_draws + draws as usize, calls],
+                    ));
+                }
+            }
+            r.buffer.unmap();
+            r.state.store(FREE, Ordering::Release);
+        }
+        newest
     }
 }
 
@@ -1231,6 +1689,8 @@ mod tests {
             frustum,
             reach: None,
             eye: None,
+            view_proj: Mat4::IDENTITY,
+            occlude: false,
         }
     }
 
@@ -1391,6 +1851,21 @@ mod tests {
             runs.push((first, start - first));
         }
         runs
+    }
+
+    /// The pass's module validates without the early depth test, and the
+    /// occlusion test's (the pass's with `gpu_occlusion.wgsl`) with it.
+    #[test]
+    fn the_shaders_validate() {
+        use naga::valid::Capabilities as C;
+        let pass = include_str!("gpu_culling.wgsl");
+        let test = [pass, include_str!("gpu_occlusion.wgsl")].concat();
+        for (source, capabilities) in [(pass, C::all() - C::EARLY_DEPTH_TEST), (&test, C::all())] {
+            let module = naga::front::wgsl::parse_str(source).unwrap();
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+                .validate(&module)
+                .unwrap();
+        }
     }
 
     /// Ids, page counts, flags and changes against a plain list of what each id
@@ -1631,6 +2106,8 @@ mod tests {
             ("reach_sections", offset_of!(Params, reach_sections)),
             ("flags", offset_of!(Params, flags)),
             ("eyes", offset_of!(Params, eyes)),
+            ("occl", offset_of!(Params, occl)),
+            ("view_proj", offset_of!(Params, view_proj)),
         ] {
             assert!(members.contains(&(name.into(), offset)), "Params.{name}");
         }
@@ -1651,7 +2128,7 @@ mod tests {
         ];
         assert_eq!(layout("Update"), (size_of::<Update>(), named(&id)));
         assert_eq!((size_of::<Record>(), size_of::<Update>()), (80, 96));
-        assert_eq!(size_of::<Params>(), 128);
+        assert_eq!(size_of::<Params>(), 208);
         let constant = |name: &str| {
             let (_, c) = module
                 .constants
@@ -2339,7 +2816,7 @@ mod tests {
         // So have the sections' buckets and whether a frame has an eye.
         let mut shapes = Rng(0x3C6E_F372_FE94_F82B);
         let (min_y, height) = (-64, 24);
-        let mut gpu = GpuCulling::new(device).expect("the pass");
+        let mut gpu = GpuCulling::new(device, None).expect("the pass");
         let mut uploads = Uploads::new(device);
         let mut held: BTreeMap<u32, (Placed, Sides)> = BTreeMap::new();
         // Fading sections the frustum and the graph keep, left to the CPU.
@@ -2512,6 +2989,8 @@ mod tests {
                 frustum: &frustum,
                 reach,
                 eye,
+                view_proj: Mat4::IDENTITY,
+                occlude: false,
             };
             if case == 7 {
                 // Planes past the integers: the CPU draws that frame, nothing is
@@ -2581,8 +3060,12 @@ mod tests {
                 }
             }
             gpu.dispatch(&mut encoder, None);
+            // Its statistics come back with a CPU part of the case's own.
+            let cpu = [case * 7, case * 3, case];
+            gpu.copy_stats(&mut encoder, case as u64, cpu);
             uploads.finish(&encoder);
             queue.submit([encoder.finish()]);
+            gpu.submitted().expect("a readback free")();
             let pages = u64::from(gpu.pass_pages);
             let counts = read(device, queue, &gpu.counts.buffer, (STATS + pages) * 4);
             let draws = read(device, queue, &gpu.draws.buffer, gpu.draws.bytes);
@@ -2619,6 +3102,13 @@ mod tests {
                 [kept_sections, draw_count],
                 "case {case}: sections kept, draws"
             );
+            // The reads above waited for the GPU.
+            let (kept, drawn) = (kept_sections as usize, draw_count as usize);
+            assert_eq!(
+                gpu.collect(device),
+                Some((case as u64, [cpu[0] + kept, cpu[1] + drawn, cpu[2]])),
+                "case {case}: statistics"
+            );
             compared += kept_sections as usize;
         }
         // Not a comparison of empty lists, nor of a test that keeps everything.
@@ -2643,6 +3133,73 @@ mod tests {
             band[0] > 0 && band[1] > 0,
             "the sky band left out and kept {band:?}"
         );
+    }
+
+    /// The statistics come back with their frame, in place and from the submit
+    /// thread, submitted as gfx.rs submits frames (`submit_later`, or in place
+    /// with its `after` handed back): three frames on their way fill the ring, a
+    /// fourth's are skipped, `collect` takes in the newest; and a readback whose
+    /// buffer the device lost after its mapping goes `FAILED`, never copied into
+    /// or unmapped again (as `timing::GpuTimer`'s), so the statistics stop.
+    #[test]
+    fn the_statistics_come_back_with_their_frame() {
+        use super::super::submit::{AfterSubmit, Job};
+        on_each_device(|device, queue| {
+            for threaded in [false, true] {
+                let queue = Queue::new((**queue).clone(), threaded);
+                let mut gpu = GpuCulling::new(device, None).expect("the pass");
+                // As if the pass kept 5 sections and drew 7 times.
+                queue.write_buffer(&gpu.counts.buffer, 0, bytemuck::cast_slice(&[5_u32, 7]));
+                // Whether the frame's statistics went out.
+                let frame = |gpu: &mut GpuCulling, f: u64| {
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    gpu.copy_stats(&mut encoder, f, [f as usize, 10, 3]);
+                    let after = gpu.submitted().map(|g| Box::new(g) as AfterSubmit);
+                    let sent = after.is_some();
+                    let job = Job {
+                        encoder,
+                        surface: None,
+                        after,
+                    };
+                    if let Err(back) = queue.submit_later(job) {
+                        queue.submit([back.encoder.finish()]);
+                        if let Some(read) = back.after {
+                            read();
+                        }
+                    }
+                    sent
+                };
+                let landed = |gpu: &mut GpuCulling| {
+                    queue.landed();
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    gpu.collect(device)
+                };
+                for f in 1..=3 {
+                    assert!(frame(&mut gpu, f), "frame {f}, threaded {threaded}");
+                }
+                assert!(!frame(&mut gpu, 4), "a full ring, threaded {threaded}");
+                assert_eq!(landed(&mut gpu), Some((3, [3 + 5, 10 + 7, 3])));
+                assert_eq!(gpu.collect(device), None);
+                assert!(frame(&mut gpu, 5));
+                assert_eq!(landed(&mut gpu), Some((5, [5 + 5, 10 + 7, 3])));
+                // Frame 6's buffer destroyed after its mapping (#6320).
+                let lost = gpu.next;
+                assert!(frame(&mut gpu, 6));
+                queue.landed();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                gpu.readbacks[lost].buffer.destroy();
+                assert_eq!(gpu.collect(device), None);
+                for f in 7..=12 {
+                    let sent = frame(&mut gpu, f);
+                    let back = landed(&mut gpu);
+                    let state = gpu.readbacks[lost].state.load(Ordering::Acquire);
+                    assert_eq!(state, FAILED, "frame {f}, threaded {threaded}");
+                    // The two other readbacks, then none.
+                    assert_eq!(sent, f <= 8, "frame {f}, threaded {threaded}");
+                    assert_eq!(back.is_some(), f <= 8, "frame {f}, threaded {threaded}");
+                }
+            }
+        });
     }
 
     /// `draw`'s count draws draw what the pass kept, page by page: each kept
@@ -2687,7 +3244,7 @@ struct Quad {
         for _ in 0..4 {
             assert!(arena.open_page(device, u64::from(SECTIONS / 3) * grain));
         }
-        let mut gpu = GpuCulling::new(device).expect("the pass");
+        let mut gpu = GpuCulling::new(device, None).expect("the pass");
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         // The sections' buckets by facing side have their own sequence.
         let mut shapes = Rng(0xA54F_F53A_5F1D_36F1);
@@ -2816,6 +3373,8 @@ struct Quad {
                 frustum,
                 reach: None,
                 eye,
+                view_proj: Mat4::IDENTITY,
+                occlude: false,
             };
             let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
@@ -2860,7 +3419,7 @@ struct Quad {
             });
             pass.set_pipeline(&pipeline);
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-            gpu.draw(&mut pass, &arena, |_| None);
+            gpu.draw(&mut pass, &arena, |_| None, 0);
             drop(pass);
             encoder.copy_texture_to_buffer(
                 target.as_image_copy(),

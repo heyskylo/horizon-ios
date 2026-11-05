@@ -126,7 +126,7 @@ impl Run<'_> {
                 while n < lines.len()
                     && n - first < MAX_CALL_LINES
                     && !lines[n].trim_start().starts_with('#')
-                    && self.macros.unfinished_call(&line)
+                    && self.macros.unfinished_call(&line, &lines[n..])
                 {
                     line.push(' ');
                     line.push_str(lines[n]);

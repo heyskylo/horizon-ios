@@ -287,6 +287,13 @@ impl Game<'_> {
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+        if self.pad_stick_scroll() {
+            let size = self.gui_size();
+            self.ui
+                .options
+                .scroll_at(&self.settings, size, self.cursor, amount);
+            return Ok(());
+        }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
         });
@@ -424,6 +431,11 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioFolder => {
+                    let dir = std::path::PathBuf::from("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::packs::open_folder(&dir);
+                }
             }
         }
         Ok(())
@@ -501,6 +513,8 @@ impl Game<'_> {
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr_lighting(s.horizon.hdr_lighting);
+            // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
+            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,

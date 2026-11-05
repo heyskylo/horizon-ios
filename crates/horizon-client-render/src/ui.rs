@@ -543,6 +543,38 @@ pub fn button(
         crate::widgets::Narratable::button(label.plain(), rect, active)
     });
 }
+/// A [`button`] with a job on its screen: its controller button and glyph come from `action`, so
+/// a new screen gets them by drawing this for its Done, Back, Cancel or Apply.
+#[allow(clippy::too_many_arguments)]
+pub fn action_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    action: crate::widgets::Action,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+) {
+    crate::widgets::declare_action(action, [x, y, w, h], active);
+    let room = if active {
+        crate::widgets::action_glyph_room()
+    } else {
+        0.0
+    };
+    button_with_room(
+        batch,
+        atlas,
+        [x, y, w, h],
+        label,
+        active,
+        hover,
+        room,
+        |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
+    );
+}
 /// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
 /// `LockIconButton`): `narration` builds what it records from its rectangle,
 /// and only while the narrator records.
@@ -557,6 +589,29 @@ pub fn button_as(
     label: &Text,
     active: bool,
     hover: bool,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
+    button_with_room(
+        batch,
+        atlas,
+        [x, y, w, h],
+        label,
+        active,
+        hover,
+        0.0,
+        narration,
+    );
+}
+/// A button whose label keeps `room` free at its left.
+#[allow(clippy::too_many_arguments)]
+fn button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    label: &Text,
+    active: bool,
+    hover: bool,
+    room: f32,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
     crate::widgets::record(&label.plain(), [x, y, w, h], active);
@@ -575,15 +630,18 @@ pub fn button_as(
     } else {
         rgba(160, 160, 160, 255)
     };
-    scrolling_text(
+    // Centred on the button, as the title's are, and only moved out from under a glyph.
+    scrolling_text_around_at(
         batch,
         atlas,
         label,
-        x + 2.0,
+        x + (w / 2.0).floor(),
+        x + 2.0 + room,
         x + w - 2.0,
         y,
         y + h,
         y + ((h - 8.0) / 2.0).floor(),
+        crate::hud_overlays::now_ms(),
         color,
     );
 }
@@ -859,8 +917,29 @@ impl Scroll {
     }
 }
 
-/// Vertical scroll bar (AbstractScrollArea): background and scroller sprites.
+/// Vertical scroll bar of a list (AbstractScrollArea): the sprites, and the
+/// list is registered for the controller's focus (`widgets::scroll_area`).
 pub fn scrollbar(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    content: f32,
+    scroll: f32,
+) {
+    if content > bottom - top {
+        crate::widgets::scroll_area(
+            [0.0, top, x + 6.0, bottom - top],
+            scroll,
+            content - (bottom - top),
+        );
+    }
+    scrollbar_sprites(batch, atlas, x, top, bottom, content, scroll);
+}
+
+/// The scroll bar's background and scroller sprites.
+pub fn scrollbar_sprites(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     x: f32,
@@ -1740,6 +1819,31 @@ mod tests {
     /// The label of a widget it does not fit is clipped to the widget's box
     /// instead of being drawn past it (the bug: `so_so`'s 590 px Create World
     /// label ran over the button beside it).
+    #[test]
+    fn a_glyph_leaves_a_label_that_fits_centred() {
+        let atlas = atlas();
+        crate::widgets::set_action_glyphs(true);
+        let label = Text::literal("Done");
+        let mut plain = HudBatch::new([640, 480]);
+        button(
+            &mut plain, &atlas, 10.0, 20.0, 150.0, 20.0, &label, true, false,
+        );
+        let mut declared = HudBatch::new([640, 480]);
+        action_button(
+            &mut declared,
+            &atlas,
+            crate::widgets::Action::Done,
+            10.0,
+            20.0,
+            150.0,
+            20.0,
+            &label,
+            true,
+            false,
+        );
+        assert_eq!(quads(&plain), quads(&declared));
+    }
+
     #[test]
     fn a_label_wider_than_its_widget_stays_inside_it() {
         let atlas = atlas();

@@ -692,6 +692,25 @@ impl Occlusion {
     pub fn contains(&self, key: SectionKey) -> bool {
         self.graph.as_ref().is_none_or(|g| g.contains(key))
     }
+    /// Whether the current graph knows that `key` is visible from
+    /// `camera_section`. Unknown is returned when the graph is absent, was
+    /// searched from another section, or does not cover the queried section.
+    pub fn visible_for_camera(&self, key: SectionKey, camera_section: SectionKey) -> Option<bool> {
+        let graph = self.graph.as_ref()?;
+        if graph.from != camera_section {
+            return None;
+        }
+        let dx = i64::from(key.0) - i64::from(graph.from.0);
+        let dz = i64::from(key.2) - i64::from(graph.from.2);
+        if dx.abs() > i64::from(graph.radius)
+            || dz.abs() > i64::from(graph.radius)
+            || key.1 < graph.y0
+            || key.1 > graph.sections
+        {
+            return None;
+        }
+        Some(graph.contains(key))
+    }
     /// Changes whenever `contains` may answer differently: a search landed, a
     /// partial update reached more sections, or the graph went.
     #[cfg(any(test, debug_assertions))]
@@ -902,6 +921,77 @@ mod tests {
         o.set((1, 1, 0), ALL_VISIBLE);
         o.settle(at((0, 1, 0)), 3);
         assert!(o.contains((2, 1, 0)));
+    }
+
+    /// `visible_for_camera` answers only for the box of the graph it holds, and
+    /// only for the camera that search started from. Everywhere else it says
+    /// unknown, so the caller keeps the geometry.
+    #[test]
+    fn visible_for_camera_is_unknown_outside_its_box_and_its_camera() {
+        // No graph yet: nothing to answer with.
+        assert_eq!(
+            Occlusion::new(0, 4).visible_for_camera((0, 1, 0), (0, 1, 0)),
+            None
+        );
+        let mut o = Occlusion::new(0, 4);
+        o.settle(at((0, 1, 0)), 2);
+        let from = o.columns.section_of(at((0, 1, 0)));
+        assert_eq!(from, (0, 1, 0), "the camera section searched from");
+        // Inside the searched box the answer is `contains`, its edges too.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                for y in -1..=4 {
+                    assert_eq!(
+                        o.visible_for_camera((x, y, z), from),
+                        Some(o.contains((x, y, z))),
+                        "{x} {y} {z}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            o.visible_for_camera((2, 1, 0), from),
+            Some(true),
+            "the box's edge"
+        );
+        // Off the box's sides, below it, or above the level: unknown.
+        for key in [
+            (3, 1, 0),
+            (-3, 1, 0),
+            (0, 1, 3),
+            (0, 1, -3),
+            (0, -2, 0),
+            (0, 5, 0),
+        ] {
+            assert_eq!(o.visible_for_camera(key, from), None, "{key:?}");
+        }
+        // Another camera section: this graph is not about it.
+        assert_eq!(o.visible_for_camera((0, 1, 0), (1, 1, 0)), None);
+    }
+
+    /// The answer follows the graph: a closed wall hides the section behind it,
+    /// and opening the wall shows it again.
+    #[test]
+    fn visible_for_camera_reports_what_the_graph_hides() {
+        let mut o = Occlusion::new(0, 4);
+        for (dx, dy, dz) in STEPS {
+            o.set((dx, 1 + dy, dz), 0);
+        }
+        o.settle(at((0, 1, 0)), 3);
+        let from = (0, 1, 0);
+        assert_eq!(
+            o.visible_for_camera((1, 1, 0), from),
+            Some(true),
+            "the wall itself"
+        );
+        assert_eq!(
+            o.visible_for_camera((2, 1, 0), from),
+            Some(false),
+            "hidden behind it"
+        );
+        o.set((1, 1, 0), ALL_VISIBLE);
+        o.settle(at((0, 1, 0)), 3);
+        assert_eq!(o.visible_for_camera((2, 1, 0), from), Some(true));
     }
 
     /// Faces `a` and `b` of a section see each other, nothing else does.

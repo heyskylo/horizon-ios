@@ -3,8 +3,8 @@
 
 A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator in survival holding a fishing rod. LocatorBarClient (a player made of
-vanilla's protocol code) casts the rod ahead and down at an armor stand, a marker armor stand and a boat three blocks
-away (ServerboundUseItemPacket) and reels it in. `Projectile.canHitEntity` lets the bobber hook what
+vanilla's protocol code) casts the rod ahead and down at an armor stand, a marker armor stand and a boat two and a half
+blocks away (ServerboundUseItemPacket) and reels it in. `Projectile.canHitEntity` lets the bobber hook what
 `Entity.canBeHitByProjectile` accepts (`isAlive() && isPickable()`; `ArmorStand.isPickable` is false for a marker), and
 `FishingHook.retrieve` pulls the hooked entity 0.1 of the way to its owner (`pullEntity`). The entity each bobber hooks
 (`DATA_HOOKED_ENTITY`) and the position the entity ends at are compared exactly.
@@ -20,11 +20,16 @@ except ImportError:
 NAME = 'fishing-hook-entities-parity'
 # server_dir and generate_world write these server.properties.
 locator.PROPERTIES = dict(locator.PROPERTIES, gamemode='survival')
-# Alice stands at the world spawn (0.5 -60 0.5) looking along +z; the target is three blocks ahead.
+# Alice stands at the world spawn (0.5 -60 0.5) looking along +z; the target is 2.5 blocks ahead. The throw is
+# randomised (each axis of FishingHook's velocity takes triangle(0.5, 0.0103365)): at 3.0 the bobber's second tick
+# reaches the stand's front face (z=2.75) only on the faster ~80% of throws, and a slower one starts its third tick
+# inside the box ProjectileUtil.computeMargin has grown, where AABB.clip finds no hit. At 2.5 every throw enters
+# the stand, and the boat, from outside on its second tick, so which entity is hooked no longer depends on a draw.
+TARGET = '0.5 -60 2.5'
 TARGETS = [
-    ('stand', 'minecraft:armor_stand', 'minecraft:armor_stand 0.5 -60 3.0'),
-    ('marker', 'minecraft:armor_stand', 'minecraft:armor_stand 0.5 -60 3.0 {Marker:1b}'),
-    ('boat', 'minecraft:oak_boat', 'minecraft:oak_boat 0.5 -60 3.0'),
+    ('stand', 'minecraft:armor_stand', f'minecraft:armor_stand {TARGET}'),
+    ('marker', 'minecraft:armor_stand', f'minecraft:armor_stand {TARGET} {{Marker:1b}}'),
+    ('boat', 'minecraft:oak_boat', f'minecraft:oak_boat {TARGET}'),
 ]
 SCRIPT = [('setup', ['hooks on', 'chat on', 'cmd Alice give @s minecraft:fishing_rod'])]
 for name, kind, summon in TARGETS:
@@ -60,7 +65,7 @@ def check(vanilla, vanilla_all):
     if any(line.startswith('Alice step=marker-cast hooked minecraft:armor_stand') for line in vanilla):
         return 'vanilla hooked a marker armor stand'
     positions = {line.split()[1]: line.split()[4:] for line in vanilla if line.split()[2] == 'position'}
-    if positions.get('step=stand-position', [''])[-1] == '3.0' or positions.get('step=boat-position', [''])[-1] == '3.0':
+    if positions.get('step=stand-position', [''])[-1] == '2.5' or positions.get('step=boat-position', [''])[-1] == '2.5':
         return 'vanilla did not pull the hooked entity'
     return None
 

@@ -2,6 +2,8 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
+mod placement;
+
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
@@ -1251,48 +1253,7 @@ impl Game<'_> {
         if !self.boat_models.has(wood, chest) {
             return None;
         }
-        let (eye, dir) = self.aim()?;
-        let reach = self.reach();
-        // ClipContext.Fluid.ANY: the first fluid surface (water or lava) or
-        // block along the ray.
-        let block = self.pick().map(|h| {
-            (
-                h.point,
-                (0..3)
-                    .map(|a| (h.point[a] - eye[a]).powi(2))
-                    .sum::<f64>()
-                    .sqrt(),
-            )
-        });
-        let mut fluid = None;
-        let mut t = 0.0;
-        while t < reach {
-            let p: [f64; 3] = std::array::from_fn(|a| eye[a] + dir[a] * t);
-            let (x, y, z) = (
-                p[0].floor() as i32,
-                p[1].floor() as i32,
-                p[2].floor() as i32,
-            );
-            if let Some((h, _)) = self.fluid_height_of(x, y, z, None)
-                && p[1] <= f64::from(y) + f64::from(h)
-            {
-                fluid = Some((fluid_hit_point(p, y, h), t));
-                break;
-            }
-            t += 0.05;
-        }
-        let hit = match (block, fluid) {
-            (Some(b), Some(w)) => {
-                if w.1 < b.1 {
-                    w.0
-                } else {
-                    b.0
-                }
-            }
-            (Some(b), None) => b.0,
-            (None, Some(w)) => w.0,
-            (None, None) => return None,
-        };
+        let hit = self.boat_item_hit()?;
         let mut boat = Boat::new(
             self.next_entity + 1,
             Arc::from(wood),
@@ -1387,10 +1348,10 @@ impl Game<'_> {
         if !self.native_may_board(self.boats[i].id) {
             return true;
         }
-        self.riding = Some(self.boats[i].id);
+        let id = self.boats[i].id;
         self.yaw = self.boats[i].yaw;
-        // ServerPlayer.startRiding.
-        self.trigger_player("minecraft:started_riding");
+        // Entity.startRiding (ServerPlayer.startRiding fires the trigger).
+        self.start_riding(id);
         true
     }
     /// `ContainerEntity.interactWithContainerVehicle` (`AbstractChestBoat`):
@@ -1516,7 +1477,6 @@ impl Game<'_> {
             self.view_scale(),
         );
         for b in &self.boats {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender.
             let (previous, position) = (at(b.previous), at(b.position));
             if !self.standing_entity_in_view(
@@ -1524,6 +1484,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(b, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let models = if b.chest {
                 &self.boat_models.chest_models
             } else {
@@ -1618,40 +1583,14 @@ impl Game<'_> {
                     out,
                 );
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, b, out, entity_start);
         }
-    }
-}
-
-/// Where a fluid pick lands in the cell the ray sample `p` is in. Vanilla's
-/// `ClipContext.Fluid.ANY` clips against the fluid shape: a full-height cell
-/// (the same fluid above it) is a full cube, so the hit is the ray's own
-/// point and a boat placed under water stays at the eye; a partial cell is
-/// clipped to its surface.
-fn fluid_hit_point(p: [f64; 3], y: i32, h: f32) -> [f64; 3] {
-    if h >= 1.0 {
-        p
-    } else {
-        [p[0], f64::from(y) + f64::from(h), p[2]]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `VoxelShape.clip` on a full-cube fluid cell keeps the true hit point
-    /// (a ray starting inside hits at `from + delta * 0.001`); only a partial
-    /// cell is clipped to its surface.
-    #[test]
-    fn a_full_height_fluid_cell_keeps_the_ray_point_and_a_partial_one_snaps_to_its_surface() {
-        let eye = [0.5, 3.62, 0.5];
-        assert_eq!(fluid_hit_point(eye, 3, 1.0), eye);
-        assert_eq!(
-            fluid_hit_point(eye, 3, 8.0 / 9.0),
-            [0.5, 3.0 + f64::from(8.0f32 / 9.0), 0.5]
-        );
-    }
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)

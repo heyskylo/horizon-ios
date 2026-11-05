@@ -140,7 +140,7 @@ fn visible(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     match who {
         Who::Player => {
             let Some(p) = &w.player else { return false };
-            let r = (range * p.visibility_percent()).max(2.0);
+            let r = (range * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
             p.alive && !p.spectator && m.distance_sqr(p.position) <= r * r && m.sees(w, who)
         }
         Who::Mob(id) => {
@@ -806,8 +806,7 @@ fn same_type(w: &MobWorld, a: Who, b: Who) -> bool {
 fn broadcast_anger(m: &Mob, w: &MobWorld, by: Who, at: Vec3, events: &mut Vec<MobEvent>) {
     let range = m.attrs.follow_range;
     let hoglin = species_of(w, by) == Some(Species::Hoglin);
-    // Hoglin.canBeHunted: an adult.
-    let huntable = matches!(by, Who::Mob(id) if w.seen(id).is_some_and(|s| !s.baby));
+    let huntable = matches!(by, Who::Mob(id) if w.seen(id).is_some_and(|s| s.huntable));
     if hoglin && !huntable {
         return;
     }
@@ -1254,7 +1253,8 @@ impl Goal for HuntHoglin {
             return false;
         }
         let hoglins: Vec<(u32, Vec3)> =
-            cx.w.nearby(pos, range, |s| s.species == Species::Hoglin && !s.baby)
+            // PiglinSpecificSensor: only a hoglin that `canBeHunted`.
+            cx.w.nearby(pos, range, |s| s.huntable)
                 .map(|s| (s.id, s.position))
                 .collect();
         self.found = hoglins

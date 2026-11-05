@@ -11,6 +11,9 @@ use horizon_client::{
 };
 use horizon_world::nbt::Tag;
 
+mod contents;
+use contents::Component;
+
 /// One addressable slot.
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::game) enum Slot {
@@ -33,6 +36,9 @@ pub(in crate::game) enum Slot {
     Block([i32; 3], usize),
     /// A slot of another player (`for_player`): reached with their state in place.
     Guest(u32, Box<Slot>),
+    /// A component collection for writes, or an indexed component item for reads.
+    Contents(Box<Slot>, Component),
+    ContentItem(Box<Slot>, Component, usize),
 }
 struct SlotCandidate {
     slot: Slot,
@@ -224,6 +230,17 @@ impl Game<'_> {
                     .collect()
             }),
             "slot_range" => self.slots_named(owner, source["slots"].as_str().unwrap_or_default()),
+            "contents" => {
+                let Some(component) = source["component"].as_str().and_then(Component::named)
+                else {
+                    return Vec::new();
+                };
+                let parents = self.inline_slots(owner, &source["slot_source"]);
+                parents
+                    .into_iter()
+                    .flat_map(|p| self.contents_slots(p, component))
+                    .collect()
+            }
             "limit_slots" => {
                 let mut slots = self.inline_slots(owner, &source["slot_source"]);
                 slots.truncate(source["limit"].as_u64().unwrap_or(0) as usize);
@@ -307,6 +324,17 @@ impl Game<'_> {
                     });
                 }
             }
+            "contents" => {
+                if let Some(component) = source["component"].as_str().and_then(Component::named) {
+                    for parent in self.inline_slots(owner, &source["slot_source"]) {
+                        out.push(SlotCandidate {
+                            slot: Slot::Contents(Box::new(parent), component),
+                            filters: filters.to_vec(),
+                            limit,
+                        });
+                    }
+                }
+            }
             "filtered" => {
                 let mut filters = filters.to_vec();
                 filters.push(source["item_filter"].clone());
@@ -344,6 +372,11 @@ impl Game<'_> {
     }
     pub(in crate::game) fn slot_get(&mut self, s: &Slot) -> Option<ItemStack> {
         match s {
+            Slot::Contents(..) => None,
+            Slot::ContentItem(parent, component, index) => {
+                let stack = self.slot_get(parent)?;
+                component.items(&stack).get(*index).cloned().flatten()
+            }
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_get(slot))
                 .flatten(),
@@ -476,6 +509,19 @@ impl Game<'_> {
     /// Put a stack (or nothing) in a slot; false when the slot cannot take it.
     pub(in crate::game) fn slot_set(&mut self, s: &Slot, stack: Option<ItemStack>) -> bool {
         match s {
+            Slot::Contents(..) => false,
+            Slot::ContentItem(parent, component, index) => {
+                let Some(mut outer) = self.slot_get(parent) else {
+                    return false;
+                };
+                let mut slots = component.items(&outer);
+                let Some(slot) = slots.get_mut(*index) else {
+                    return false;
+                };
+                *slot = stack;
+                component.store(&mut outer, slots);
+                self.slot_set(parent, Some(outer))
+            }
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_set(slot, stack))
                 .unwrap_or(false),
@@ -937,7 +983,7 @@ impl Game<'_> {
         };
         let modifier = self.item_modifier_arg(ctx, "modifier")?;
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as i64);
@@ -959,6 +1005,29 @@ impl Game<'_> {
             }
             let mut changed = 0;
             for candidate in &slots {
+                if let Slot::Contents(parent, component) = &candidate.slot {
+                    changed += self.modify_contents(
+                        parent,
+                        *component,
+                        candidate,
+                        &mut selected,
+                        |g, current| {
+                            g.apply_item_modifier(
+                                &modifier,
+                                Some(current),
+                                &mut rng,
+                                view.as_ref(),
+                                source.pos,
+                                0,
+                            )
+                            .map(|mut s| {
+                                s.count = s.count.min(g.stack_max_size(&s));
+                                s
+                            })
+                        },
+                    );
+                    continue;
+                }
                 if !self.select_slot(candidate, &mut selected, true) {
                     continue;
                 }
@@ -1062,14 +1131,12 @@ impl Game<'_> {
             }
             if found.is_empty() {
                 return Err(match &sources[..] {
-                    [Owner::Block(p)]
-                        if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) =>
-                    {
-                        err(
-                            "commands.item.source.not_a_container",
-                            &[&p[0], &p[1], &p[2]],
-                        )
-                    }
+                    // ItemCommands.getContainer: a block entity that is no Container
+                    // (a sign, a lectern, a beacon) is no source either.
+                    [Owner::Block(p)] if self.block_container_size(*p).is_none() => err(
+                        "commands.item.source.not_a_container",
+                        &[&p[0], &p[1], &p[2]],
+                    ),
                     _ if source_slots.starts_with('{') || source_slots.starts_with('[') => {
                         err("commands.item.source.no_such_slot.unnamed", &[])
                     }
@@ -1080,7 +1147,7 @@ impl Game<'_> {
             if ctx.get("modifier").is_some() {
                 let modifier = self.item_modifier_arg(ctx, "modifier")?;
                 let source = self.command_source.unwrap_or_else(|| self.player_source());
-                let view = source.entity.map(|t| self.entity_view_of(t));
+                let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
                 let mut rng = horizon_core::random::LegacyRandom::new(0);
                 found = found
                     .into_iter()
@@ -1119,6 +1186,16 @@ impl Game<'_> {
             let mut changed = 0;
             let mut i = 0;
             for candidate in &slots {
+                if let Slot::Contents(parent, component) = &candidate.slot {
+                    changed += self.replace_contents(
+                        parent,
+                        *component,
+                        candidate,
+                        &mut selected,
+                        &mut contents::Provider::new(&items, &mut i, &mode),
+                    );
+                    continue;
+                }
                 if !self.select_slot(candidate, &mut selected, false) {
                     continue;
                 }

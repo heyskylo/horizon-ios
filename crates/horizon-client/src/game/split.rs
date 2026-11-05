@@ -545,11 +545,16 @@ impl<'a> Split<'a> {
     /// When the windows had presented (before the GPU wait), for the frame-time readout.
     fn present(&mut self) -> Instant {
         let views = self.views();
+        let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
+        // A present mode switch reconfigures a surface, and an Outdated or Lost texture
+        // may: a reconfigure waits for the GPU to come idle and reports an error when a
+        // frame is submitted while it waits. Land this turn's frames on the submit
+        // threads first (the compositor then copies views already submitted, too).
+        self.wait_queues();
         let renderers: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
-        let vsync = self.host.settings.vsync;
-        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -569,6 +574,16 @@ impl<'a> Split<'a> {
             renderer.wait_in_flight();
         }
         presented
+    }
+    /// Every player's frame submitted by its submit thread, no device wait: before
+    /// anything reconfigures a surface, whose wait for the GPU breaks on a submission
+    /// made while it waits.
+    fn wait_queues(&mut self) {
+        let renderers = std::iter::once(&mut self.host.renderer)
+            .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
+        for renderer in renderers.flatten() {
+            renderer.wait_submissions();
+        }
     }
 }
 

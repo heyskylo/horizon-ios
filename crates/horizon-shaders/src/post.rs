@@ -124,6 +124,25 @@ const TERRAIN: [&str; 4] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_terrain_solid` and its fallbacks (ShaderDoc's "Iris Additional Programs", as
+/// #9137 quotes it): solid terrain, the quads over opaque texels.
+const TERRAIN_SOLID: [&str; 5] = [
+    "gbuffers_terrain_solid",
+    "gbuffers_terrain",
+    "gbuffers_textured_lit",
+    "gbuffers_textured",
+    "gbuffers_basic",
+];
+
+/// `gbuffers_terrain_cutout` and its fallbacks (the same): cutout terrain.
+const TERRAIN_CUTOUT: [&str; 5] = [
+    "gbuffers_terrain_cutout",
+    "gbuffers_terrain",
+    "gbuffers_textured_lit",
+    "gbuffers_textured",
+    "gbuffers_basic",
+];
+
 /// `gbuffers_line` and its fallback, as in Iris: lines such as the block outline.
 const LINES: [&str; 2] = ["gbuffers_line", "gbuffers_basic"];
 
@@ -397,8 +416,14 @@ pub struct Post {
     /// The flips of the virtual `deferred_pre` and `composite_pre` (6.1.6).
     pub deferred_pre: Vec<(u32, bool)>,
     pub composite_pre: Vec<(u32, bool)>,
-    /// What draws solid and cutout terrain, when the game asked for it and one loads.
+    /// What draws solid and cutout terrain, when the game asked for it and one loads; when
+    /// terrain draws in two parts, solid terrain only.
     pub terrain: Option<PostProgram>,
+    /// What draws cutout terrain when the game draws terrain in two parts
+    /// (`GameInputs::terrain_parts`); `terrain` then draws the solid part. A pack with
+    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` and no program for one part has
+    /// only the other.
+    pub terrain_cutout: Option<PostProgram>,
     /// What draws translucent terrain (water, stained glass) after deferred.
     pub water: Option<PostProgram>,
     /// What draws the sky (disc, sunset, stars, void) before terrain.
@@ -422,6 +447,9 @@ pub struct Post {
     pub lines: Option<PostProgram>,
     /// What draws rain and snow, after deferred.
     pub weather: Option<PostProgram>,
+    /// `rain.depth`: whether rain and snow write depth. Without an explicit false, retain
+    /// Horizon's existing writes; the inspected packs do not establish the external default.
+    pub rain_depth: bool,
     /// What draws the first-person hand and held items.
     pub hand: Option<PostProgram>,
     /// `clouds=off`: no clouds at all, neither the game's nor the pack's program for them.
@@ -474,6 +502,7 @@ impl Post {
     fn every_program(&self) -> impl Iterator<Item = &PostProgram> {
         let draws = [
             &self.terrain,
+            &self.terrain_cutout,
             &self.water,
             &self.sky,
             &self.sky_textured,
@@ -584,6 +613,9 @@ pub struct GameInputs {
     pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
+    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, every pack
+    /// draws terrain in these two parts.
+    pub terrain_parts: Option<[GbuffersInputs; 2]>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
     /// Entities and block entities read vertex by vertex, for the same.
@@ -605,6 +637,7 @@ pub fn load_post(
         deferred_pre: flips(properties, "deferred_pre"),
         composite_pre: flips(properties, "composite_pre"),
         terrain: None,
+        terrain_cutout: None,
         water: None,
         sky: None,
         sky_textured: None,
@@ -617,6 +650,9 @@ pub fn load_post(
         clouds: None,
         lines: None,
         weather: None,
+        rain_depth: properties
+            .get("rain.depth")
+            .is_none_or(|v| v.trim() != "false"),
         hand: None,
         clouds_off: false,
         shadow_pass: false,
@@ -711,6 +747,12 @@ pub fn load_post(
             }
         }
     }
+    let split_terrain = ["gbuffers_terrain_solid", "gbuffers_terrain_cutout"]
+        .iter()
+        .any(|n| loader.has(n));
+    // Whether the pack has a program for each part, loaded or not.
+    let [has_solid, has_cutout] =
+        [&TERRAIN_SOLID, &TERRAIN_CUTOUT].map(|chain| chain.iter().any(|n| loader.has(n)));
     let mut gbuffers = |names: &[&str], group, inputs: &GbuffersInputs| {
         names.iter().find_map(|name| {
             // `alphaTest.<program>` replaces the geometry's default test (OQ-23).
@@ -825,23 +867,86 @@ pub fn load_post(
             p.blend = blend(properties, &p.name).flatten();
             p
         });
-    if let Some(inputs) = &inputs.terrain {
-        // Solid and cutout terrain draw together: the cutout test, unless `alphaTest.*` says
-        // otherwise (3.2).
-        let mut cutout = inputs.clone();
-        cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
-            op: ">",
-            reference: 0.1,
-        }));
-        let terrain = gbuffers(&TERRAIN, Group::Gbuffers, &cutout);
+    if let Some(terrain) = &inputs.terrain {
+        // Cutout terrain's alpha test, unless `alphaTest.*` says otherwise (3.2): alpha above
+        // 0.5, which `alphaTestRef` reads. Iris 1.11.7 with probe packs of ours (#9307), through
+        // gbuffers_terrain alone or gbuffers_terrain_cutout: cutout fragments written with alpha
+        // 0.5 and below were discarded, 0.51 and above kept, and alphaTestRef read 0.5. Vanilla's
+        // cutout terrain cuts at 0.5 too (`RenderPipelines.CUTOUT_TERRAIN`'s `ALPHA_CUTOUT`).
+        let cutout = |inputs: &GbuffersInputs| {
+            let mut cutout = inputs.clone();
+            cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
+                op: ">",
+                reference: 0.5,
+            }));
+            cutout
+        };
+        // Solid and cutout terrain draw apart. A pack with Iris's gbuffers_terrain_solid or
+        // gbuffers_terrain_cutout draws each with its own, falling back to gbuffers_terrain's
+        // chain (Iris 1.11.7 with probe packs having both, or one of them); any other pack draws
+        // both parts with gbuffers_terrain's chain, each with its own alpha test (#9307). Solid
+        // terrain gets no default alpha test, and alphaTestRef 0: in those probes Iris kept
+        // solid fragments written with alpha 0.05, through either program, and also 0.0
+        // through gbuffers_terrain alone or gbuffers_terrain_solid (#9307).
+        let parts = inputs.terrain_parts.as_ref().filter(|_| split_terrain);
+        let mut lone = None;
+        let (solid, terrain_cutout) = match parts {
+            Some([solid, cut]) => {
+                let solid = gbuffers(&TERRAIN_SOLID, Group::Gbuffers, solid);
+                let cut = gbuffers(&TERRAIN_CUTOUT, Group::Gbuffers, &cutout(cut));
+                // One part loaded: its name, the other part, and whether the pack has a
+                // program for that one.
+                let one = match (&solid, &cut) {
+                    (Some(p), None) => Some((p.name.clone(), "cutout", has_cutout)),
+                    (None, Some(p)) => Some((p.name.clone(), "solid", has_solid)),
+                    _ => None,
+                };
+                match one {
+                    // No program in the other part's chain: that part draws nothing, and this
+                    // one draws alone. Iris 1.11.7 left the other part's terrain undrawn with
+                    // our probes having only gbuffers_terrain_solid, or only _cutout.
+                    Some((name, other, false)) => {
+                        lone = Some(format!(
+                            "{name}: no program for {other} terrain; nothing draws it"
+                        ));
+                        (solid, cut)
+                    }
+                    // The other part's program didn't load: this one doesn't draw alone, which
+                    // would leave that part's terrain undrawn. The game draws all terrain, as
+                    // when an unsplit pack's terrain program doesn't load.
+                    Some((name, other, true)) => {
+                        lone = Some(format!(
+                            "{name}: {other} terrain's program didn't load; the game draws all terrain"
+                        ));
+                        (None, None)
+                    }
+                    None => (solid, cut),
+                }
+            }
+            None => match &inputs.terrain_parts {
+                // One program draws both parts, so both load or neither does.
+                Some([solid, cut]) => match (
+                    gbuffers(&TERRAIN, Group::Gbuffers, solid),
+                    gbuffers(&TERRAIN, Group::Gbuffers, &cutout(cut)),
+                ) {
+                    (Some(solid), Some(cut)) => (Some(solid), Some(cut)),
+                    _ => (None, None),
+                },
+                // A game that draws terrain in one part: all of it with the cutout test.
+                None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
+            },
+        };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
-        let water = gbuffers(&WATER, Group::Translucent, inputs);
-        loader.post.terrain = terrain;
+        let water = gbuffers(&WATER, Group::Translucent, terrain);
+        loader.post.notes.extend(lone);
+        loader.post.terrain = solid;
         loader.post.water = water.map(|mut p| {
             p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
             p
         });
-        if let Some(p) = &mut loader.post.terrain {
+        loader.post.terrain_cutout = terrain_cutout;
+        let programs = [&mut loader.post.terrain, &mut loader.post.terrain_cutout];
+        for p in programs.into_iter().flatten() {
             p.blend = blend(properties, &p.name).flatten();
         }
     }
@@ -890,6 +995,7 @@ fn load_shadow(
     let post = &*loader.post;
     let gbuffers = [
         &post.terrain,
+        &post.terrain_cutout,
         &post.water,
         &post.sky,
         &post.sky_textured,
@@ -1022,6 +1128,21 @@ struct Loader<'a> {
 }
 
 impl Loader<'_> {
+    /// The pack has both stages of the program `name` in this folder, and doesn't turn it off
+    /// (`program.<name>.enabled`), as `load` reads them.
+    fn has(&self, name: &str) -> bool {
+        ["vsh", "fsh"].iter().all(|ext| match self.folder {
+            "" => self.pack.exists(&format!("{name}.{ext}")),
+            f => self.pack.exists(&format!("{f}/{name}.{ext}")),
+        }) && enabled(
+            self.properties,
+            self.folder,
+            name,
+            &self.options,
+            &self.switches,
+        )
+    }
+
     /// The program `name` translated by `translate`, or `None` when it is missing, disabled or
     /// fails (with a note).
     fn load(
@@ -2415,6 +2536,51 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(off.clouds.is_none() && off.clouds_off);
     }
 
+    #[test]
+    fn rain_depth_follows_live_properties_independently_of_weather_fallback() {
+        let pack = Pack::from_zip_bytes(
+            "original-weather-depth",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/gbuffers_basic.vsh",
+                    "#version 120\nvoid main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}",
+                ),
+                (
+                    "shaders/gbuffers_basic.fsh",
+                    "#version 120\nvoid main(){gl_FragColor=vec4(1.0);}",
+                ),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let inputs = GameInputs {
+            weather: Some(GbuffersInputs::default()),
+            ..Default::default()
+        };
+        for (text, writes) in [
+            ("rain.depth = true", true),
+            ("rain.depth = false", false),
+            (
+                "#if 0\nrain.depth=true\n#else\nrain.depth = false\n#endif",
+                false,
+            ),
+            ("rain.depth=true\nrain.depth=false", false),
+            ("rain.depth=false\nrain.depth=true", true),
+            // These defaults preserve accepted main as a compatibility choice, not a claim
+            // about the external default contract, which the permitted packs don't establish.
+            ("", true),
+            ("rain.depth=invalid", true),
+        ] {
+            let properties = Properties::parse(text, &macros);
+            let post = load_post(&pack, "", &properties, &macros, &inputs);
+            assert_eq!(post.rain_depth, writes, "{text:?}");
+            let weather = post.weather.expect("weather fallback loads");
+            assert_eq!(weather.name, "gbuffers_basic");
+            assert_eq!(weather.group, Group::Translucent);
+            assert_eq!(weather.blend, Some(TRANSLUCENT_BLEND));
+        }
+    }
+
     /// Without `gbuffers_clouds` the clouds draw with `gbuffers_textured`, else `gbuffers_basic`,
     /// blended; a pack with none of them leaves the clouds to the game.
     #[test]
@@ -2462,6 +2628,158 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert_eq!(clouds(&["gbuffers_terrain", "composite"]), None);
     }
 
+    const TERRAIN_VSH: &str = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+    const TERRAIN_FSH: &str = "#version 120\nvoid main() { gl_FragData[0] = vec4(1.0); }\n";
+
+    /// The pack of `files` (under `shaders/`), with `properties`, loaded with the game's terrain
+    /// inputs and, with `parts`, its two parts.
+    fn terrain_files(files: &[(String, &str)], properties: &str, parts: bool) -> Post {
+        let files: Vec<_> = (files.iter())
+            .map(|(name, source)| (format!("shaders/{name}"), *source))
+            .collect();
+        let files: Vec<_> = files.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+        let pack = Pack::from_zip_bytes("terrain-parts", crate::pack::tests::zip(&files)).unwrap();
+        let inputs = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
+            terrain: Some(inputs),
+            ..Default::default()
+        };
+        let macros = Macros::standard();
+        let properties = Properties::parse(properties, &macros);
+        load_post(&pack, "", &properties, &macros, &inputs)
+    }
+
+    /// `terrain_files` with `programs`, each writing white.
+    fn terrain_pack(programs: &[&str], properties: &str, parts: bool) -> Post {
+        let files: Vec<_> = (programs.iter())
+            .flat_map(|p| {
+                [
+                    (format!("{p}.vsh"), TERRAIN_VSH),
+                    (format!("{p}.fsh"), TERRAIN_FSH),
+                ]
+            })
+            .collect();
+        terrain_files(&files, properties, parts)
+    }
+
+    /// What draws solid (or all) terrain and what draws cutout terrain.
+    fn terrain_names(programs: &[&str], properties: &str, parts: bool) -> [Option<String>; 2] {
+        let post = terrain_pack(programs, properties, parts);
+        [post.terrain, post.terrain_cutout].map(|p| p.map(|p| p.name))
+    }
+
+    const TERRAIN_PROGRAMS: [&str; 3] = [
+        "gbuffers_terrain",
+        "gbuffers_terrain_solid",
+        "gbuffers_terrain_cutout",
+    ];
+
+    /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
+    /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`;
+    /// a pack with only `gbuffers_terrain` draws both parts with it, each with its own alpha
+    /// test (#9307).
+    #[test]
+    fn terrain_solid_and_cutout_fall_back_to_terrain() {
+        let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
+        let some = |name: &str| Some(name.to_owned());
+        let [terrain, solid, cutout] = TERRAIN_PROGRAMS;
+        assert_eq!(
+            names(&[terrain, solid, cutout], true),
+            [some(solid), some(cutout)]
+        );
+        assert_eq!(names(&[terrain, solid], true), [some(solid), some(terrain)]);
+        assert_eq!(
+            names(&[terrain, cutout], true),
+            [some(terrain), some(cutout)]
+        );
+        assert_eq!(names(&[terrain], true), [some(terrain), some(terrain)]);
+        // Without the game's two parts, terrain draws whole.
+        assert_eq!(
+            names(&[terrain, solid, cutout], false),
+            [some(terrain), None]
+        );
+    }
+
+    /// A pack whose only terrain program is `gbuffers_terrain_solid` (or `_cutout`) has nothing
+    /// for the other part: that part draws alone, and nothing draws the other, as Iris 1.11.7
+    /// did with our probes `tsc-solidonly` and `tsc-cutoutonly`.
+    #[test]
+    fn a_lone_split_program_draws_only_its_part() {
+        let [_, solid, cutout] = TERRAIN_PROGRAMS;
+        let some = |name: &str| Some(name.to_owned());
+        assert_eq!(terrain_names(&[solid], "", true), [some(solid), None]);
+        assert_eq!(terrain_names(&[cutout], "", true), [None, some(cutout)]);
+        let post = terrain_pack(&[solid], "", true);
+        let note = "gbuffers_terrain_solid: no program for cutout terrain; nothing draws it";
+        assert!(post.notes.iter().any(|n| n == note), "{:?}", post.notes);
+    }
+
+    /// When the other part has a program that fails to load, the part that loaded doesn't draw
+    /// alone: the game draws all terrain (#9176's review).
+    #[test]
+    fn a_split_part_that_fails_to_load_takes_the_other_with_it() {
+        let [_, solid, cutout] = TERRAIN_PROGRAMS;
+        // `cutout` with a stage that doesn't translate.
+        let files = [
+            (format!("{solid}.vsh"), TERRAIN_VSH),
+            (format!("{solid}.fsh"), TERRAIN_FSH),
+            (format!("{cutout}.vsh"), TERRAIN_VSH),
+            (
+                format!("{cutout}.fsh"),
+                "void main() { gl_FragData[0] = vec4(1.0) }\n",
+            ),
+        ];
+        let post = terrain_files(&files, "", true);
+        assert!(post.terrain.is_none() && post.terrain_cutout.is_none());
+        let note = "gbuffers_terrain_solid: cutout terrain's program didn't load; the game draws all terrain";
+        assert!(post.notes.iter().any(|n| n == note), "{:?}", post.notes);
+    }
+
+    /// `program.<name>.enabled` turning off the only split program leaves both parts to
+    /// `gbuffers_terrain`, as for a pack without it: Iris 1.11.7 drew all terrain with
+    /// `gbuffers_terrain` for our probe `tsc-disabled-false`.
+    #[test]
+    fn a_disabled_split_program_leaves_terrain_whole() {
+        let [terrain, solid, _] = TERRAIN_PROGRAMS;
+        let off = "program.gbuffers_terrain_solid.enabled = false\n";
+        let some = |name: &str| Some(name.to_owned());
+        assert_eq!(
+            terrain_names(&[terrain, solid], off, true),
+            [some(terrain), some(terrain)]
+        );
+        let on = "program.gbuffers_terrain_solid.enabled = true\n";
+        assert_eq!(
+            terrain_names(&[terrain, solid], on, true),
+            [some(solid), some(terrain)]
+        );
+    }
+
+    /// The cutout part's storage blocks count towards the buffers' sizes, like every other
+    /// program's.
+    #[test]
+    fn the_cutout_parts_storage_blocks_size_their_buffers() {
+        let fsh = "#version 430\nlayout(std430, binding = 0) buffer Sums { vec4 a[4]; } sums;\n\
+                   void main() {\n/* DRAWBUFFERS:0 */\ngl_FragData[0] = sums.a[3];\n}\n";
+        let files = [
+            ("gbuffers_terrain.vsh".into(), TERRAIN_VSH),
+            ("gbuffers_terrain.fsh".into(), TERRAIN_FSH),
+            ("gbuffers_terrain_cutout.vsh".into(), TERRAIN_VSH),
+            ("gbuffers_terrain_cutout.fsh".into(), fsh),
+        ];
+        let post = terrain_files(&files, "bufferObject.0 = 16\n", true);
+        let cutout = post.terrain_cutout.as_ref().map(|p| p.name.as_str());
+        assert_eq!(cutout, Some("gbuffers_terrain_cutout"), "{:?}", post.notes);
+        assert_eq!(
+            post.buffer_minimums(),
+            std::collections::BTreeMap::from([(0, 64)])
+        );
+    }
+
     #[test]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
@@ -2481,6 +2799,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             weather: Some(inputs.clone()),
             lines: Some(inputs.clone()),
             hand: Some(inputs),
+            terrain_parts: None,
             terrain_geometry: None,
             entity_geometry: None,
         };

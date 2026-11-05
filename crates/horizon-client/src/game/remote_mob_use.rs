@@ -6,13 +6,13 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, armadillo, equine, llama, nautilus, render::DYE_NAMES},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus},
 };
 
 impl Game<'_> {
     /// Whether mob `i` takes a right click with `hand`'s item on this
     /// client (`Mob.interact`'s result consumes the action).
-    pub(super) fn remote_mob_takes(&self, i: usize, hand: Hand) -> bool {
+    pub(super) fn remote_mob_takes(&mut self, i: usize, hand: Hand) -> bool {
         let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return false;
         };
@@ -68,7 +68,7 @@ impl Game<'_> {
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
-            Species::Allay => allay_takes(hand, item, m.extra.main_hand.is_some(), m.extra.flag),
+            Species::Allay => self.predict_allay_interaction(i, hand, stack.cloned()),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
                 !baby
@@ -78,7 +78,7 @@ impl Game<'_> {
                     ) || m.extra.variant == 1
                         && horizon_client::flowers::stew_effect(item).is_some())
             }
-            Species::Sheep => sheep_takes(item, m.extra.sheared, m.extra.color),
+            Species::Sheep => item == "minecraft:shears" || self.interact_sheep_dye(i, hand, true),
             // SnowGolem.mobInteract: shears take the pumpkin off.
             Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
             // AbstractNautilus.mobInteract: an untamed adult only answers its
@@ -132,6 +132,23 @@ impl Game<'_> {
             _ => false,
         }
     }
+    /// Whether that answer is `InteractionResult.SUCCESS`, the only result that
+    /// swings the hand: `CONSUME` ends the click without one. An adult animal's
+    /// food (`Animal.mobInteract`), a zombie villager's golden apple and a
+    /// sheep's shears (the server alone checks `readyForShearing`) answer
+    /// CONSUME on a client, and a horse's or panda's food SUCCESS_SERVER
+    /// (#9437). A tame wolf, cat or parrot sitting down is SUCCESS.
+    pub(super) fn remote_mob_swings(&self, i: usize, hand: Hand) -> bool {
+        let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
+            return false;
+        };
+        let stack = match hand {
+            Hand::Main => self.stack_in(self.selected),
+            Hand::Off => self.offhand.as_ref(),
+        };
+        let item = stack.map_or("", |s| &*s.item);
+        mob_swings(m, item)
+    }
     /// `AbstractHorse.handleEating` (`Llama`'s and `Camel`'s too) on this
     /// client's copy: a baby fed something that ages it draws one happy
     /// villager particle. The server draws it on its own level only, so no
@@ -157,18 +174,6 @@ impl Game<'_> {
     }
 }
 
-/// `Sheep.mobInteract` on a client answers CONSUME for shears whether or not the
-/// sheep is sheared (only the server checks `readyForShearing`).
-/// `DyeItem.interactLivingEntity` takes a living, unsheared sheep of another
-/// colour, and passes otherwise.
-fn sheep_takes(item: &str, sheared: bool, color: u8) -> bool {
-    let dye = item
-        .strip_prefix("minecraft:")
-        .and_then(|name| name.strip_suffix("_dye"))
-        .and_then(|name| DYE_NAMES.iter().position(|&d| d == name));
-    item == "minecraft:shears" || !sheared && dye.is_some_and(|c| c != usize::from(color))
-}
-
 /// `AbstractNautilus.mobInteract` on a client: its food is answered while the
 /// nautilus takes it (taming items for an untamed adult, its food once tamed),
 /// and a tame adult answers every click because that is the mount.
@@ -187,21 +192,6 @@ fn iron_golem_takes(item: &str, health: f32, max_health: f32) -> bool {
 /// axes return `PASS` here because the waxing and scraping run on the server.
 fn copper_golem_takes(item: &str, holding: bool, shearable: bool) -> bool {
     (item.is_empty() && holding) || (item == "minecraft:shears" && shearable)
-}
-
-/// `Allay.mobInteract` on the client's copy: a dancing allay with a
-/// `#minecraft:duplicates_allays` item duplicates, an empty-handed one takes
-/// what the used hand offers, and one that holds something gives it back only
-/// to a **main hand** that is empty (vanilla compares the hand and returns
-/// `PASS` otherwise, which lets the item be used).
-fn allay_takes(hand: Hand, item: &str, holding: bool, dancing: bool) -> bool {
-    if dancing && item == "minecraft:amethyst_shard" {
-        return true;
-    }
-    if !holding {
-        return !item.is_empty();
-    }
-    hand == Hand::Main && item.is_empty()
 }
 
 /// `AbstractHorse.handleEating` (and the llama and camel variants): this
@@ -235,6 +225,48 @@ pub(super) fn ages_on_food(m: &Mob, item: &str) -> bool {
     }
 }
 
+/// [`Game::remote_mob_swings`] for mob `m` and the held `item`.
+fn mob_swings(m: &Mob, item: &str) -> bool {
+    let food = m.kind.food.iter().any(|f| f.as_str() == item);
+    let hurt = m.health < m.attrs.max_health;
+    match m.species() {
+        // AbstractHorse.fedFood (Camel's, Llama's too): SUCCESS_SERVER,
+        // which swings on the server's side only.
+        s if food
+            && (equine::is_equine(s)
+                || llama::is_llama(s)
+                || matches!(s, Species::Camel | Species::CamelHusk)) =>
+        {
+            return false;
+        }
+        // Panda.mobInteract: its bamboo answers SUCCESS_SERVER.
+        Species::Panda if food => return false,
+        // Cat.mobInteract: food tames an untamed cat, and heals a hurt
+        // tame one: SUCCESS before Animal.mobInteract is reached.
+        Species::Cat if food && (!m.extra.tame || hurt) => return true,
+        // Wolf.mobInteract: food heals a hurt tame wolf (SUCCESS).
+        Species::Wolf if food && m.extra.tame && hurt => return true,
+        _ => {}
+    }
+    // Animal.mobInteract: a baby's food is SUCCESS, since it ages up; an
+    // adult's is CONSUME, as only the server knows whether it can breed.
+    if m.kind.flags.animal
+        && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
+        && food
+    {
+        return m.is_baby() && !m.extra.age_locked;
+    }
+    // A tame wolf, cat or parrot sits or stands up: SUCCESS
+    // (TamableAnimal's subclasses), so it swings.
+    let consumes = match m.species() {
+        // ZombieVillager.mobInteract: a golden apple cures it on the server.
+        Species::ZombieVillager => item == "minecraft:golden_apple",
+        // Sheep.mobInteract: shears, sheared or not.
+        Species::Sheep => item == "minecraft:shears",
+        _ => false,
+    };
+    !consumes
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,21 +289,48 @@ mod tests {
         ))
     }
 
-    /// `Sheep.mobInteract` and `DyeItem.interactLivingEntity` on a client (#9121).
+    /// Tamables' and horses' own `mobInteract` answer before `Animal.mobInteract`'s
+    /// CONSUME (#9450): sitting down and healing are SUCCESS, a horse's food
+    /// SUCCESS_SERVER.
     #[test]
-    fn a_sheep_takes_shears_always_and_dye_only_to_change_its_colour() {
-        for sheared in [false, true] {
-            assert!(
-                sheep_takes("minecraft:shears", sheared, 0),
-                "shears, sheared {sheared}"
-            );
-        }
-        assert!(sheep_takes("minecraft:red_dye", false, 0));
-        assert!(!sheep_takes("minecraft:white_dye", false, 0), "same colour");
-        assert!(sheep_takes("minecraft:white_dye", false, 14));
-        assert!(!sheep_takes("minecraft:red_dye", false, 14), "same colour");
-        assert!(!sheep_takes("minecraft:red_dye", true, 0), "sheared");
-        assert!(!sheep_takes("minecraft:stick", false, 0));
+    fn only_a_client_success_swings_the_hand() {
+        let Some(mut wolf) = mob("minecraft:wolf") else {
+            return;
+        };
+        wolf.extra.tame = true;
+        assert!(
+            mob_swings(&wolf, ""),
+            "a tame wolf sits: SUCCESS.withoutItem"
+        );
+        assert!(
+            !mob_swings(&wolf, "minecraft:beef"),
+            "full health: Animal's CONSUME"
+        );
+        wolf.health = wolf.attrs.max_health - 1.0;
+        assert!(
+            mob_swings(&wolf, "minecraft:beef"),
+            "hurt: Wolf.feed is SUCCESS"
+        );
+        let mut cat = mob("minecraft:cat").unwrap();
+        assert!(mob_swings(&cat, "minecraft:cod"), "taming: SUCCESS");
+        cat.extra.tame = true;
+        assert!(
+            !mob_swings(&cat, "minecraft:cod"),
+            "tame, full health: CONSUME"
+        );
+        assert!(mob_swings(&cat, ""), "a tame cat sits: SUCCESS");
+        let mut parrot = mob("minecraft:parrot").unwrap();
+        parrot.extra.tame = true;
+        assert!(mob_swings(&parrot, ""), "a tame parrot sits: SUCCESS");
+        let horse = mob("minecraft:horse").unwrap();
+        assert!(
+            !mob_swings(&horse, "minecraft:apple"),
+            "AbstractHorse.fedFood: SUCCESS_SERVER"
+        );
+        let cow = mob("minecraft:cow").unwrap();
+        assert!(!mob_swings(&cow, "minecraft:wheat"), "adult: CONSUME");
+        let sheep = mob("minecraft:sheep").unwrap();
+        assert!(!mob_swings(&sheep, "minecraft:shears"), "Sheep: CONSUME");
     }
 
     /// `AbstractNautilus.mobInteract` (#8595): an untamed adult takes its taming
@@ -340,36 +399,6 @@ mod tests {
         assert!(
             !copper_golem_takes("minecraft:iron_axe", false, true),
             "scraping too"
-        );
-    }
-
-    /// `Allay.mobInteract` (#8629): a holding allay gives its item back only to
-    /// an empty **main** hand, so an item in hand is still used and an empty
-    /// off hand does not take the item.
-    #[test]
-    fn a_holding_allay_only_answers_an_empty_main_hand() {
-        assert!(allay_takes(Hand::Main, "", true, false), "main hand, empty");
-        assert!(!allay_takes(Hand::Off, "", true, false), "off hand, empty");
-        assert!(
-            !allay_takes(Hand::Main, "minecraft:bread", true, false),
-            "item in hand"
-        );
-        assert!(!allay_takes(Hand::Off, "minecraft:bread", true, false));
-        assert!(
-            allay_takes(Hand::Main, "minecraft:stick", false, false),
-            "give it one"
-        );
-        assert!(
-            allay_takes(Hand::Off, "minecraft:stick", false, false),
-            "either hand gives"
-        );
-        assert!(
-            !allay_takes(Hand::Main, "", false, false),
-            "empty hand gives nothing"
-        );
-        assert!(
-            allay_takes(Hand::Main, "minecraft:amethyst_shard", true, true),
-            "a dancing allay duplicates"
         );
     }
 

@@ -272,6 +272,7 @@ the notes.
 | Archive | Runs on | Checks |
 | --- | --- | --- |
 | `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
+| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
 | `horizon-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |
@@ -283,6 +284,19 @@ exist, verifies Windows PE architectures, checks the `--help` and `--version` en
 `cargo run -p xtask -- package` and archives it. The
 GitHub jobs keep their Cargo caches (`Swatinem/rust-cache`); the Mac mini keeps its `target/`. Only the Mac
 runs the game: GitHub's runners have neither a GPU worth the name nor the game files.
+
+The musl archive is an optional manual download for musl-based Linux desktops; see
+[installation and updates](native-client.md#musl-linux-manual-installation). The launcher still selects the
+standard glibc archive. The musl client and tools keep audio and controllers enabled and link musl dynamically
+(`-C target-feature=-crt-static`) to load graphics and window libraries at runtime. A failed musl build does
+not block other platforms: signing and publication omit the missing archive with a warning. The dedicated
+server archive remains glibc; the bundled musl `horizon-server` refuses automatic updates to glibc archives.
+
+Musl gameplay parity is not yet validated. On x86-64, `horizon-core::jmath` uses the platform libm for several
+functions, so musl may round differently from glibc or HotSpot. Values near a simulation threshold could
+therefore change world generation or mob behaviour for the same seed. This build has no musl parity results;
+CLI startup checks do not establish gameplay parity. Before merging the platform support, record a successful
+Nightly dry run and a musl-desktop launch covering the title screen, a new world, sound and a controller.
 
 Building Windows ARM64 locally: [Windows ARM64](windows-arm64.md).
 
@@ -465,9 +479,15 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).
 - **Safety.** Same as `/nightly`: main's copy of the workflow runs, no pull request's code is checked out or run,
   the comment reaches the script as env vars, and the token has `issues` and `pull-requests` write only.
-- **Ludovic stays in charge.** A one-line pull request removing a login from the list revokes it as soon as it merges
-  (the file is his under CODEOWNERS). A line `paused` stops `/nightly` and the triage commands for every reviewer;
-  his own still work.
+- **Ludovic stays in charge.** A one-line pull request removing a reviewer's line revokes it as soon as it merges
+  (the file is his under CODEOWNERS). A line `paused` stops `/nightly`, the triage commands and the reviewers' claim
+  powers for every reviewer; his own still work.
+- **Accounts, not names.** Each line is `<numeric GitHub ID> <login>`, and every command decides by the comment
+  author's ID (`AUTHOR_ID`, from `github.event.comment.user.id`), never by the login: GitHub hands a renamed or deleted
+  account's login to whoever claims it next, while an ID is never reused. Ludovic is `OWNER_ID` in
+  `tools/ci/nightly_set.py`. A line in any other form, a bare login included, grants nothing.
+  `python3 tools/ci/resolve_reviewer_ids.py` fills in IDs for new lines; `--check` reports a listed ID whose login
+  changed (a rename to look at) or whose account is gone.
 
 ### Trusted reviewers pick the Nightly's pull requests
 

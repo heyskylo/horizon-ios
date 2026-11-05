@@ -42,13 +42,20 @@ An agent adds one server, `horizon-launcher mcp`. It holds:
   - `account_sign_in`, `account_list`.
 - **The game's tools.** It runs the selected version's `horizon-ctl mcp` (shipped beside the
   game) as a child. It lists that server's tools as `game_<name>`, all but `launch`, and passes
-  calls and results through, images included. `play` starts the game with a control socket in
-  the launcher's data folder. While no game answers, `game_*` calls say to call `play`.
+  calls and results through, images included. `play` starts the game with a control endpoint in
+  the launcher's data folder. A game the player started and turned Agent Control on in answers on
+  the game's default endpoint ([Connecting](#connecting)). Each call goes to the first of the two
+  where a game answers, the launcher's first, so a game from `play` wins over one from the window.
+  While no game answers on either, `game_*` calls say to call `play` or to turn Agent Control on.
+
+The default endpoint is worked out in the launcher's own process, so `$HORIZON_CONTROL`, and on
+Linux `$XDG_RUNTIME_DIR`, must be the same for `horizon-launcher mcp` as for the game.
 
 Why one server rather than two: the game's tools stay defined once, in horizon-ctl's table. The
-agent's client needs one entry and one approval. The version that plays is always the one the
-launcher selected, so the game's tools always match the game. `horizon-ctl mcp` stays available
-on its own, for a game started by hand or by a script.
+agent's client needs one entry and one approval, whichever way the game was started. The tools
+are always those of the version the launcher selected, even for a game of another version: a
+command that game does not know answers with an error, and `game_hello` tells which game it is.
+`horizon-ctl mcp` stays available on its own, for a game started by hand or by a script.
 
 ## Protocol revisions
 
@@ -185,12 +192,16 @@ turn the switch off.
   - `horizon-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
 - **Game, Horizon Settings > AI Agent:**
   - **Agent Control** (`agentControl` in horizon-extras.txt, off by default) opens the default
-    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory) in a game
-    the player started. Turning it off closes the endpoint and stops its listener.
+    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory, or
+    `horizon-control.json` in the temporary directory on Windows) in a game the player started.
+    `horizon-launcher mcp` reaches it as it is, with no second server. Turning it off closes the
+    endpoint and stops its listener.
   - The page shows whether a client is connected (`Server::clients`), when the last command came,
     and the socket's name.
   - **Copy Connection Details** copies the socket path, a `horizon-ctl --socket ... state` line
-    and an `mcpServers` config for this game's `horizon-ctl mcp`.
+    and an `mcpServers` config for this game's `horizon-ctl mcp`. That config points into the
+    version's folder, so it stops working once the launcher removes that version; an agent that
+    already has `horizon-launcher mcp` does not need it.
 - **The default:** a game an agent starts (`play` in MCP, `horizon-ctl launch`, `--control`) is
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
@@ -352,6 +363,52 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   loading. It is not frame-perfect and only makes sense on the same build and machine;
   `state.jsonl` is the oracle for where the re-run should have ended. A server recording replays
   only `--in-place`, into the same world.
+
+### Repeatable screenshots
+
+`HORIZON_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
+run, pixel for pixel, on the same build, GPU and driver: a change's before and after are then
+compared by a pixel diff, not by eye, where two runs otherwise differ by a shade or two over much
+of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
+
+- The world starts frozen (`/tick freeze`) before its first tick, on the server and the client:
+  how many ticks run while the world loads differs between runs, and the torch flicker and the
+  particles move on each.
+- What the frame shows of time follows the world's ticks, not the client's or the wall clock's:
+  - animated textures, the enchantment glint, the world border's scroll, the darkness effect's
+    pulse, the dragon's healing beam and the player model's idle swing (third person, the
+    inventory);
+  - the HUD: the hearts' jiggle and blink, chat fading, titles, the action bar, the held item's
+    name, the locator bar and the tab list (a title shown while frozen fades in on the next
+    `/tick step`);
+  - a shader pack's clock (Iris's `frameTimeCounter`, `frameCounter` and `frameTime`, a Horizon
+    pack's `time`, `frame_index` and `delta_time`, with smoothed values at their targets) and the
+    randoms behind custom uniforms, cave mood (`playerMood`), obfuscated text and a clock or
+    compass that spins;
+  - the camera's partial tick, held at 1 like the level's while frozen.
+- While frozen, the client's own entity effects (endermen's and blazes' particles) and its
+  countdowns (effects, a totem's pop, the hotbar's, the border's size change) wait for the world.
+- `/tick step N` moves the scene on by N ticks (flames, water, particles). What the server changes
+  during a step reaches the client between its ticks whenever it arrives, so particles that
+  follow can differ from run to run. Wait a second or more after a step before a capture (`wait
+  40`): the server sends its time once a second, which can leave the client a tick ahead until the
+  next, and the last tick still eases for a client tick. `/tick unfreeze` plays on as without the
+  switch.
+- The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
+  mob AI during a step, can differ when other server work drew on them first, and ids follow the
+  order the server loads and creates entities in, which loading changes from run to run. What an
+  id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
+  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene.
+- A script should wait until the world has loaded before it changes it: a command that acts on
+  what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
+- The player still ticks while frozen, as in vanilla: stand the player on a block (it falls
+  otherwise), and after a turn or a move wait a few seconds (`wait 60`) before a capture, or the
+  hand, which eases toward the view each tick, is a hair off. What the player does goes on too:
+  using an item, riding, running out of air.
+- Not covered: temporal AA and frame generation (they build on earlier frames: turn them off), a
+  shader pack's own buffers kept from frame to frame, custom entity model animations, native mods,
+  and what eases on the wall clock for a moment (toasts, the boss bar's fill, chunks fading in,
+  the spyglass): wait for them to settle. Frame times are real ones: not for timing.
 
 ## Tests
 

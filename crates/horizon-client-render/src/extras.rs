@@ -46,7 +46,7 @@ impl Corner {
             Corner::BottomRight => "Bottom right",
         }
     }
-    fn parse(s: &str, default: Corner) -> Corner {
+    pub fn parse(s: &str, default: Corner) -> Corner {
         Self::ALL
             .into_iter()
             .find(|c| c.name() == s)
@@ -177,6 +177,8 @@ pub struct Extras {
     /// painted texel of a player's outer layer drawn as a slab
     /// (`horizon_client::mobs::skin_layers`).
     pub three_d_skin_layers: bool,
+    /// The PvP & HUD page's options (`pvp`).
+    pub pvp: crate::pvp::Pvp,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -231,6 +233,7 @@ impl Default for Extras {
             horizon_marks: true,
             horizon_listed: true,
             three_d_skin_layers: false,
+            pvp: Default::default(),
         }
     }
 }
@@ -341,13 +344,15 @@ impl Extras {
                 horizon_cosmetics::prefs::MARKS => e.horizon_marks = flag(e.horizon_marks),
                 horizon_cosmetics::prefs::LISTED => e.horizon_listed = flag(e.horizon_listed),
                 SKIN_LAYERS_KEY => e.three_d_skin_layers = flag(e.three_d_skin_layers),
-                _ => {}
+                key => {
+                    e.pvp.parse_line(key, value);
+                }
             }
         }
         e
     }
     pub fn serialize(&self) -> String {
-        format!(
+        let mut text = format!(
             "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsAuras:{}\n{}:{}\n{}:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
@@ -408,7 +413,9 @@ impl Extras {
             bool_text(self.horizon_listed),
             SKIN_LAYERS_KEY,
             bool_text(self.three_d_skin_layers),
-        )
+        );
+        self.pvp.serialize(&mut text);
+        text
     }
     /// Adopts the settings `options.txt` held before they moved here, while
     /// this file (`own`) has no line of its own: 3D skin layers was an
@@ -581,6 +588,8 @@ pub enum Item {
     CosmeticsAuras,
     HorizonMarks,
     HorizonMe,
+    /// On the PvP & HUD page (`pvp::rows`).
+    Pvp(crate::pvp::Opt),
 }
 /// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -651,6 +660,7 @@ impl Item {
             Item::CosmeticsAuras => "horizon.extras.cosmetics_auras",
             Item::HorizonMarks => "horizon.extras.horizon_marks",
             Item::HorizonMe => "horizon.extras.horizon_me",
+            Item::Pvp(o) => o.caption_key(),
         }
     }
     /// The language key of the description shown as the row's tooltip.
@@ -681,6 +691,7 @@ impl Item {
             Item::CosmeticsAuras => "horizon.extras.cosmetics_auras.tooltip",
             Item::HorizonMarks => "horizon.extras.horizon_marks.tooltip",
             Item::HorizonMe => "horizon.extras.horizon_me.tooltip",
+            Item::Pvp(o) => o.description_key(),
         }
     }
     /// The caption in the current language (English when the key is missing).
@@ -720,6 +731,7 @@ impl Item {
             Item::CosmeticsAuras => "Others' auras and trails",
             Item::HorizonMarks => "Horizon logos",
             Item::HorizonMe => "Show me as Horizon",
+            Item::Pvp(o) => o.caption(),
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -730,6 +742,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             ChatIndicator => ChatAnimation,
+            Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
             | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
@@ -804,6 +817,7 @@ impl Item {
             Item::HorizonMe => {
                 "Show me as a Horizon player: other Horizon players see the logo by your name. Off, Horizon's cosmetics service never reports you as a Horizon player."
             }
+            Item::Pvp(o) => o.description(),
             Item::WheelCyclesSettings => {
                 "The scroll wheel over a button in the settings changes its value, as in vanilla. Off, the wheel only scrolls the list."
             }
@@ -862,6 +876,7 @@ impl Item {
             Item::CosmeticsAuras => e.cosmetics_auras,
             Item::HorizonMarks => e.horizon_marks,
             Item::HorizonMe => e.horizon_listed,
+            Item::Pvp(o) => return o.switch(&e.pvp),
             _ => return None,
         })
     }
@@ -869,6 +884,7 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             Item::CosmeticsMine => match e.cosmetics_mine {
                 true => crate::lang::get_or("horizon.extras.cosmetics.shown", "Shown"),
                 false => crate::lang::get_or("horizon.extras.cosmetics.hidden", "Hidden"),
@@ -923,6 +939,7 @@ impl Item {
             Item::CosmeticsAuras => e.cosmetics_auras = !e.cosmetics_auras,
             Item::HorizonMarks => e.horizon_marks = !e.horizon_marks,
             Item::HorizonMe => e.horizon_listed = !e.horizon_listed,
+            Item::Pvp(o) => o.cycle(&mut e.pvp, back),
             Item::SortKey => {}
         }
     }

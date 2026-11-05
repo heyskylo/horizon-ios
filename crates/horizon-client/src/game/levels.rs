@@ -129,6 +129,12 @@ pub(super) struct Levels {
 }
 
 impl Levels {
+    /// Clear every parked level and dimensions recorded as heard open.
+    pub(super) fn clear(&mut self) {
+        self.parked.clear();
+        self.heard_open.clear();
+    }
+
     /// A parked level, without opening or loading it.
     pub(super) fn parked_world(&self, dim: Dim) -> Option<&World> {
         self.parked.get(&dim).map(|level| &level.world)
@@ -486,9 +492,8 @@ impl Game<'_> {
                         self.tick()
                     } else {
                         let running = running.unwrap_or_else(|| self.clock.world_runs());
-                        if running {
-                            self.tick_weather_effects();
-                        }
+                        // ClientLevel.tick: the sky flash fades in a frozen level too.
+                        self.tick_weather_effects();
                         self.tick_world(running)
                     }
                 },
@@ -628,13 +633,15 @@ impl Game<'_> {
         let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
             .into_iter()
             .filter(|d| {
+                // `/forceload`ed chunks, or a native mod's tickets.
+                let held = |s: &Streaming| !s.forced.is_empty() || !s.mod_forced.is_empty();
                 let forced = if *d == self.dim {
-                    !self.streaming.forced.is_empty()
+                    held(&self.streaming)
                 } else {
                     self.levels
                         .parked
                         .get(d)
-                        .is_some_and(|p| !p.streaming.forced.is_empty())
+                        .is_some_and(|p| held(&p.streaming))
                 };
                 guests.iter().any(|g| g.dimension == d.id())
                     // A viewer count not yet told to 0 (`tick_mod_container_viewers`).
@@ -772,4 +779,19 @@ fn slowest_steps(notes: &[(f32, String)]) -> String {
         .map(|(ms, what)| format!("{what} {ms:.1}"))
         .collect();
     format!("; slowest: {}", list.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn levels_clear_empties_parked_and_heard_open() {
+        let mut levels = Levels::default();
+        levels.heard_open.push(Dim::Nether);
+        assert!(!levels.heard_open.is_empty());
+        levels.clear();
+        assert!(levels.heard_open.is_empty());
+        assert!(levels.parked.is_empty());
+    }
 }

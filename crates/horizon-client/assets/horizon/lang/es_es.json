@@ -123,6 +123,7 @@
   "Done": "Hecho",
   "This feature is not yet available in Horizon.": "Esta función aún no está disponible en Horizon.",
   "Your display or system doesn't offer HDR output.": "Tu pantalla o sistema no ofrece salida HDR.",
+  "Only applies to asynchronous entity culling.": "Solo se aplica a la oclusión asíncrona de entidades.",
   "Turn HDR on to use it.": "Activa el HDR para usarlo.",
   "%s chunks": "%s chunks",
   "%s per frame": "%s por fotograma",
@@ -240,7 +241,7 @@
   "horizon.moderation.remaining": "durante %s más",
   "horizon.moderation.mutelist.entry": "%1$s fue silenciado por %2$s %3$s",
   "horizon.moderation.invalid_duration": "%s no es una duración: 10m, 2h, 1d",
-  "horizon.moderation.usage.mute": "/mute <jugador> [motivo]",
+  "horizon.moderation.usage.mute": "/mute <jugador> [duración] [motivo]",
   "horizon.moderation.usage.tempmute": "/tempmute <jugador> <duración> [motivo]",
   "horizon.moderation.usage.unmute": "/unmute <jugador>",
   "horizon.moderation.usage.mutelist": "/mutelist",
@@ -251,5 +252,8 @@
   "horizon.tempban.usage": "/tempban <jugador> <duración> [motivo]",
   "horizon.tempban.invalid_duration": "%s no es una duración: 30m, 12h, 7d",
   "horizon.tempban.dedicated_required": "Los bloqueos temporales necesitan un servidor dedicado",
-  "horizon.tempban.success": "%1$s durante %2$s, hasta %3$s"
+  "horizon.tempban.success": "%1$s durante %2$s, hasta %3$s",
+  "horizon.tempban.list.empty": "No hay baneos temporales",
+  "horizon.tempban.list.count": "Hay %s baneo(s) temporal(es):",
+  "horizon.tempban.list.entry": "%1$s fue baneado por %2$s %3$s (hasta %4$s)"
 }

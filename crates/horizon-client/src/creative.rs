@@ -1278,6 +1278,41 @@ mod tests {
         assert_eq!(c.search.value, "");
     }
 
+    #[test]
+    fn stepping_through_tabs_turns_their_pages() {
+        let stack = |id: &str| format!("{{count:1,id:\"minecraft:{id}\"}}");
+        let tab = |id: &str, column: u32, page: u32| {
+            serde_json::json!({"id": format!("minecraft:{id}"), "type": "CATEGORY", "row": "TOP",
+                "column": column, "page": page, "title": id, "icon": stack("stone"),
+                "visible": true, "items": [stack("stone")]})
+        };
+        let raw = serde_json::json!({"schema": 3, "tabs": [
+            tab("first", 0, 0), tab("second", 1, 0), tab("modded", 0, 1), tab("more", 1, 2),
+            tab("everywhere", 6, 0)
+        ]});
+        let mut c = Creative::from_json(&raw).unwrap();
+        assert_eq!(c.pages(), 3);
+        let count = c.tabs.len();
+        let mut pages = Vec::new();
+        for step in 1..=count {
+            let tab = (c.selected + 1) % count;
+            c.select(tab);
+            assert_eq!(c.selected, tab, "step {step}");
+            assert!(
+                c.on_page(&c.tabs[tab]),
+                "tab {tab} selected on another page"
+            );
+            pages.push(c.page);
+        }
+        // A tab every page shows keeps the page it was reached from; then it wraps.
+        assert_eq!(pages, [0, 1, 2, 2, 0]);
+        // Backwards off the first tab, across pages, the same way.
+        c.select((c.selected + count - 1) % count);
+        assert_eq!(c.page, 0);
+        c.select((c.selected + count - 1) % count);
+        assert_eq!(c.page, 2);
+    }
+
     /// An export built with permissions: the operator tab's stacks, and their
     /// place at the end of the search tab, only with them.
     fn with_operator_tab() -> Creative {

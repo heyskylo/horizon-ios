@@ -570,6 +570,9 @@ impl<'a> Split<'a> {
                 .map_err(Into::into)
                 .and_then(|w| {
                     let w = Arc::new(w);
+                    // The new surface configures itself on the players' device, and that
+                    // wait breaks on a frame submitted meanwhile: drain every queue first.
+                    self.wait_queues();
                     let renderer = self.host.renderer.as_ref().ok_or("no renderer")?;
                     Ok::<_, Box<dyn std::error::Error>>((w.clone(), renderer.compositor(w)?))
                 });

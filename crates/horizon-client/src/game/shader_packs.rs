@@ -225,6 +225,16 @@ impl Game<'_> {
                             .get("separateAo")
                             .is_some_and(|v| v.trim() == "true");
                         renderer.set_separate_ao(separate_ao);
+                        // Lava's faces draw with the solid terrain's program.
+                        renderer.set_pack_lava_layers(
+                            ["lava_still", "lava_flow"]
+                                .iter()
+                                .filter_map(|f| {
+                                    let name = format!("minecraft:block/{f}");
+                                    self.pack.render.sprite_layers.get(&name).map(|&l| l as u16)
+                                })
+                                .collect(),
+                        );
                         let folder = dimension_folder_named(&pack, self.dim.id(), dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
@@ -398,6 +408,7 @@ impl Game<'_> {
             end_flash_direction,
             ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
             mood: self.ambience.moodiness,
+            still_ticks: self.clock.still().then(|| self.visual_ticks()),
         }
     }
 
@@ -691,12 +702,99 @@ fn name_id(name: &str) -> i32 {
     hash as i32
 }
 
+/// Votes from distinct blocks, so adding states cannot change a shared sprite's material.
+#[derive(Default)]
+struct BlockIdVotes<'a>(BTreeMap<(u32, i32), (bool, std::collections::BTreeSet<&'a str>)>);
+
+impl<'a> BlockIdVotes<'a> {
+    fn add(&mut self, layer: u32, id: i32, name: &'a str, sprite: Option<&str>) {
+        // Containers share the still sprite. Its fluid owns it just as a block
+        // named exactly like its sprite does; a lower container id must not win.
+        let owner = sprite
+            .and_then(|s| s.strip_prefix("block/"))
+            .map(|s| match s {
+                "lava_still" | "lava_flow" => "lava",
+                "water_still" | "water_flow" => "water",
+                _ => s,
+            });
+        let named = owner == Some(name.strip_prefix("minecraft:").unwrap_or(name));
+        let v = self.0.entry((layer, id)).or_default();
+        v.0 |= named;
+        v.1.insert(name);
+    }
+
+    fn write(self, table: &mut [i32]) {
+        let mut best = BTreeMap::new();
+        for ((layer, id), (named, blocks)) in self.0 {
+            let candidate = (named, blocks.len(), -id);
+            let b = best.entry(layer).or_insert(candidate);
+            if candidate > *b {
+                *b = candidate;
+            }
+        }
+        for (layer, (_, _, id)) in best {
+            if let Some(slot) = table.get_mut(layer as usize * 2) {
+                *slot = -id;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_id_tests {
+    use super::BlockIdVotes;
+
+    #[test]
+    fn fluid_sprites_keep_their_fluid_material_when_a_container_uses_them() {
+        let mut votes = BlockIdVotes::default();
+        // Our runtime probe: cauldron 17, lava 29. The lower container id used to
+        // win the still sprite's tie, while the flow sprite already read 29.
+        for (layer, sprite) in [(0, "lava_still"), (1, "lava_flow")] {
+            votes.add(
+                layer,
+                29,
+                "minecraft:lava",
+                Some(&format!("block/{sprite}")),
+            );
+        }
+        votes.add(0, 17, "minecraft:lava_cauldron", Some("block/lava_still"));
+        // Water's still sprite is also shared by containers and waterlogged models.
+        votes.add(2, 31, "minecraft:water", Some("block/water_still"));
+        votes.add(2, 17, "minecraft:water_cauldron", Some("block/water_still"));
+        votes.add(
+            2,
+            17,
+            "minecraft:other_container",
+            Some("block/water_still"),
+        );
+        let mut table = [-1; 8];
+        votes.write(&mut table);
+        assert_eq!(table, [29, -1, 29, -1, 31, -1, -1, -1]);
+    }
+
+    #[test]
+    fn shared_model_sprites_still_use_distinct_blocks_and_the_named_owner() {
+        let mut votes = BlockIdVotes::default();
+        for _ in 0..20 {
+            votes.add(0, 3, "minecraft:many_states", Some("block/shared"));
+        }
+        votes.add(0, 9, "minecraft:one", Some("block/shared"));
+        votes.add(0, 9, "minecraft:two", Some("block/shared"));
+        votes.add(1, 20, "minecraft:oak_leaves", Some("block/oak_leaves"));
+        votes.add(1, 3, "minecraft:one", Some("block/oak_leaves"));
+        votes.add(1, 3, "minecraft:two", Some("block/oak_leaves"));
+        let mut table = [-1; 4];
+        votes.write(&mut table);
+        assert_eq!(table, [9, -1, 20, -1]);
+    }
+}
+
 /// `mc_Entity` (x, y) of each block sprite layer, as (id, fluid) pairs: terrain vertices carry
 /// their sprite layer, not their block. A layer takes the id of the block named like its sprite
-/// (`block/oak_leaves` for `oak_leaves`), else the id most blocks drawing it share (ties: the
-/// lowest); -1 when no block drawing it has one. y is 1 for the fluid sprites, -1 otherwise.
+/// (`block/oak_leaves` for `oak_leaves`, and still/flow sprites for their fluid), else the id
+/// most blocks drawing it share (ties: the lowest); -1 when no block drawing it has one.
+/// y is 1 for the fluid sprites, -1 otherwise.
 pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
-    use std::collections::{BTreeMap, BTreeSet};
     let layers = pack
         .render
         .sprite_layers
@@ -711,7 +809,7 @@ pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec
     let catalog = &pack.render.model_catalog;
     let sprite = |name: &str| pack.render.sprite_layers.get(name).copied();
     // (layer, id) -> (a block named like the sprite, the blocks).
-    let mut votes: BTreeMap<(u32, i32), (bool, BTreeSet<&str>)> = BTreeMap::new();
+    let mut votes = BlockIdVotes::default();
     for i in 0..registry.len() {
         let state_id = horizon_world::registry::BlockStateId(i as u32);
         let Some(state) = registry.state(state_id) else {
@@ -722,14 +820,12 @@ pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec
         };
         let block = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
         let mut vote = |layer: u32| {
-            let named = pack
-                .layer_names
-                .get(&layer)
-                .and_then(|n| n.strip_prefix("block/"))
-                == Some(block);
-            let v = votes.entry((layer, id)).or_default();
-            v.0 |= named;
-            v.1.insert(&state.name);
+            votes.add(
+                layer,
+                id,
+                &state.name,
+                pack.layer_names.get(&layer).map(String::as_str),
+            );
         };
         // Fluids draw from their own sprites.
         let fluid = match block {
@@ -749,19 +845,7 @@ pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec
             }
         }
     }
-    let mut best: BTreeMap<u32, (bool, usize, i32)> = BTreeMap::new();
-    for ((layer, id), (named, blocks)) in votes {
-        let candidate = (named, blocks.len(), -id);
-        let b = best.entry(layer).or_insert(candidate);
-        if candidate > *b {
-            *b = candidate;
-        }
-    }
-    for (layer, (_, _, id)) in best {
-        if let Some(slot) = table.get_mut(layer as usize * 2) {
-            *slot = -id;
-        }
-    }
+    votes.write(&mut table);
     for f in ["water_still", "water_flow", "lava_still", "lava_flow"] {
         if let Some(l) = sprite(&format!("minecraft:block/{f}"))
             && let Some(slot) = table.get_mut(l as usize * 2 + 1)

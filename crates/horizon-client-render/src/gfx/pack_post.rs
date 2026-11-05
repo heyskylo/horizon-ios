@@ -43,6 +43,12 @@ mod shadow_faces_tests;
 #[cfg(test)]
 mod forced_flip_tests;
 
+#[cfg(test)]
+mod weather_depth_tests;
+
+#[cfg(test)]
+mod custom_type_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -516,8 +522,14 @@ pub struct PackPost {
     passes: Vec<Pass>,
     /// Shadow cache for temporal reprojection.
     shadow_cache: ShadowCache,
-    /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`.
+    /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`;
+    /// when the pack draws terrain in two parts, solid terrain only (`gbuffers_terrain_solid` or
+    /// its fallback).
     terrain: Option<Pass>,
+    /// What draws cutout terrain (`gbuffers_terrain_cutout` or its fallback), after `terrain`,
+    /// when the pack draws terrain in two parts. A pack with no program for one part has only
+    /// the other.
+    terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
     /// What draws the sky (`gbuffers_skybasic` or its fallback), before terrain, and its vertices.
@@ -676,6 +688,43 @@ fn texture_format(f: Format, features: wgpu::Features) -> wgpu::TextureFormat {
         // Snorm, 16-bit norm without the feature, RGB9_E5: half floats hold them.
         _ => half,
     }
+}
+
+/// `format` where `renders` says it can be a colour target, else the nearest float format that can:
+/// the same channels at 16 bits, then `Rgba8Unorm`. On OpenGL the 32-bit and 16-bit float formats
+/// render only with `GL_EXT_color_buffer_float`/`half_float`, and wgpu aborts on creating a target
+/// without. Other formats pass through. Float colour buffers are only sampled (never blended), so
+/// RENDER_ATTACHMENT is the only usage that decides.
+fn renderable_float(
+    format: wgpu::TextureFormat,
+    renders: impl Fn(wgpu::TextureFormat) -> bool,
+) -> wgpu::TextureFormat {
+    use wgpu::TextureFormat as T;
+    let half = match format {
+        T::R32Float | T::R16Float => T::R16Float,
+        T::Rg32Float | T::Rg16Float => T::Rg16Float,
+        T::Rgba32Float | T::Rgba16Float => T::Rgba16Float,
+        _ => return format,
+    };
+    if renders(format) {
+        format
+    } else if renders(half) {
+        half
+    } else {
+        T::Rgba8Unorm
+    }
+}
+
+/// [`texture_format`] made renderable on this adapter (see [`renderable_float`]).
+fn target_format(
+    f: Format,
+    features: wgpu::Features,
+    adapter: &wgpu::Adapter,
+) -> wgpu::TextureFormat {
+    renderable_float(texture_format(f, features), |format| {
+        (adapter.get_texture_format_features(format).allowed_usages)
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    })
 }
 
 /// The SNORM wgpu format of SNORM pack format `f`, where this adapter can render to it. Iris
@@ -1042,6 +1091,11 @@ pub(super) struct ShadowView {
     /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
     /// a cave's ceiling, which faces away, is often all that shadows the cave.
     pub every_face: bool,
+    /// Only the sections whose shadow can fall into the camera's view: those the camera's
+    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
+    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
+    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
+    pub view_casters: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -1466,6 +1520,22 @@ fn image_format(qualifier: &str) -> Option<wgpu::TextureFormat> {
     })
 }
 
+/// The value slot of the pack's custom uniform `name` for a program declaring it as GLSL type
+/// `ty`: after the frame's uniforms, in the order of `custom` (each with the type
+/// `shaders.properties` gives it). A `float`, `int`, `vec2`, `vec3` or `vec4` custom uniform
+/// declared as another of these types gets none, and reads 0: Iris 1.11.7 logs "Wrong uniform
+/// type ... Disabling that uniform" and our probes read 0 there (float as int, int as float,
+/// vec3 as vec2, vec2 as vec3; the vec4 cases were not probed). Other pairs (a `bool` on either
+/// side) keep the conversion `Value::write` makes: our probe read a float of 2.5 declared
+/// `bool` as true in both games.
+fn custom_index(custom: &[(String, String)], name: &str, ty: &str) -> Option<usize> {
+    const STRICT: [&str; 5] = ["float", "int", "vec2", "vec3", "vec4"];
+    let k = custom.iter().position(|(c, _)| c == name)?;
+    let declared = custom[k].1.as_str();
+    let disabled = declared != ty && STRICT.contains(&declared) && STRICT.contains(&ty);
+    (!disabled).then_some(pack_uniforms::NAMES.len() + k)
+}
+
 /// The pass of program `p`: a quad, or `geometry` drawn by the game. `None` (with a note) when
 /// wgpu refuses it or it writes nothing. `formats` are its buffers' (for a program of the shadow
 /// buffers, buffer n is shadowcolor n); `shadow` the shadowcolor formats when the shadow pass
@@ -1479,17 +1549,14 @@ fn build_pass(
     screen: wgpu::TextureFormat,
     notes: &mut Vec<String>,
     geometry: Option<&Geometry<'_>>,
-    custom: &[String],
+    custom: &[(String, String)],
     draws: &wgpu::BindGroupLayout,
     pack: &Resources<'_>,
 ) -> Option<Pass> {
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
-    let index = |name: &str| {
-        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| {
-            let k = custom.iter().position(|c| c == name)?;
-            Some(pack_uniforms::NAMES.len() + k)
-        })
+    let index = |name: &str, ty: &str| {
+        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| custom_index(custom, name, ty))
     };
     let mask = |flips: &[(u32, bool)]| flips.iter().filter(|f| f.1).fold(0u16, |m, f| m | 1 << f.0);
     let mut p = p;
@@ -1681,7 +1748,7 @@ fn build_pass(
     let missing: Vec<&str> = interface
         .uniforms
         .iter()
-        .filter(|u| !u.name.starts_with("hz_") && index(&u.name).is_none())
+        .filter(|u| !u.name.starts_with("hz_") && index(&u.name, &u.ty).is_none())
         .map(|u| u.name.as_str())
         .collect();
     if !missing.is_empty() {
@@ -1703,7 +1770,7 @@ fn build_pass(
         uniforms: interface
             .uniforms
             .iter()
-            .map(|u| (index(&u.name), u.ty.clone(), u.offset))
+            .map(|u| (index(&u.name, &u.ty), u.ty.clone(), u.offset))
             .collect(),
         name: p.name,
         group: p.group,
@@ -1756,14 +1823,11 @@ fn build_compute(
     formats: &[wgpu::TextureFormat; BUFFERS],
     shadow: Option<&[wgpu::TextureFormat; SHADOW_COLORS]>,
     notes: &mut Vec<String>,
-    custom: &[String],
+    custom: &[(String, String)],
     pack: &Resources<'_>,
 ) -> Option<Pass> {
-    let index = |name: &str| {
-        pack_uniforms::index(name).or_else(|| {
-            let k = custom.iter().position(|c| c == name)?;
-            Some(pack_uniforms::NAMES.len() + k)
-        })
+    let index = |name: &str, ty: &str| {
+        pack_uniforms::index(name).or_else(|| custom_index(custom, name, ty))
     };
     let interface = &c.interface;
     let (entries, samplers, slots, reads, shadow_reads, images) = bindings(
@@ -1832,7 +1896,7 @@ fn build_compute(
         uniforms: interface
             .uniforms
             .iter()
-            .map(|u| (index(&u.name), u.ty.clone(), u.offset))
+            .map(|u| (index(&u.name, &u.ty), u.ty.clone(), u.offset))
             .collect(),
         name,
         group,
@@ -1891,7 +1955,8 @@ impl PackPost {
         let features = device.features();
         let formats: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
             let f = post.config.buffers[i].format;
-            snorm_format(f, features, adapter).unwrap_or_else(|| texture_format(f, features))
+            snorm_format(f, features, adapter)
+                .unwrap_or_else(|| target_format(f, features, adapter))
         });
         let sky_clear = Some(&post.config.buffers[0])
             .filter(|b| b.clear)
@@ -1927,7 +1992,9 @@ impl PackPost {
         // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
         let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
-        let custom_names: Vec<String> = custom.uniforms().map(|u| u.0.to_owned()).collect();
+        let custom_names: Vec<(String, String)> = (custom.uniforms())
+            .map(|(name, ty)| (name.to_owned(), ty.to_owned()))
+            .collect();
         // A first run finds the names neither the frame nor the pack defines.
         custom.eval(0.0, &pack_uniforms::zero);
         // Its zeros are no start for `smooth`: the first frame's values are, as in Iris.
@@ -1944,7 +2011,9 @@ impl PackPost {
         // buffers 0 to 7.
         let shadow_formats: Option<[wgpu::TextureFormat; SHADOW_COLORS]> =
             post.shadow_pass.then(|| {
-                std::array::from_fn(|n| texture_format(shadow_config.colors[n].format, features))
+                std::array::from_fn(|n| {
+                    target_format(shadow_config.colors[n].format, features, adapter)
+                })
             });
         let shadow_space: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
             shadow_formats
@@ -2123,8 +2192,13 @@ impl PackPost {
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
         });
-        let terrain = post
+        let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let mut terrain = post
             .terrain
+            .zip(terrain_geometry.as_ref())
+            .and_then(|(p, g)| build(p, Some(g)));
+        let mut terrain_cutout = post
+            .terrain_cutout
             .zip(terrain_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let water = post
@@ -2255,7 +2329,7 @@ impl PackPost {
         let weather_geometry = world.weather.then(|| Geometry {
             buffers: &entity_buffers,
             table: None,
-            depth_write: true,
+            depth_write: post.rain_depth,
             atlas: None,
             material_maps: false,
             ids: None,
@@ -2331,8 +2405,31 @@ impl PackPost {
             .filter_map(|p| build(p, None))
             .collect();
         let stand_ins = pack_images::stand_ins(device, stand_ins.take());
-        if let Some(t) = &terrain {
-            notes.push(format!("terrain draws with {}", t.name));
+        // Terrain in two parts draws both or neither: one alone would leave the other part's
+        // terrain undrawn. Without either, the game draws all terrain, as when the terrain
+        // program of a pack that doesn't split can't draw.
+        if split
+            && terrain.is_some() != terrain_cutout.is_some()
+            && let Some(p) = terrain.take().or(terrain_cutout.take())
+        {
+            notes.push(format!(
+                "{}: the other part of terrain can't draw; the game draws all terrain",
+                p.name
+            ));
+        }
+        match (&terrain, &mut terrain_cutout) {
+            (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
+            (t, Some(c)) => {
+                if let Some(t) = t {
+                    notes.push(format!("solid terrain draws with {}", t.name));
+                }
+                notes.push(format!("cutout terrain draws with {}", c.name));
+                // Timed (and labelled) apart from the solid part when it runs the same program.
+                if t.as_ref().is_some_and(|t| t.name == c.name) {
+                    c.name.push_str(" (cutout)");
+                }
+            }
+            (None, None) => {}
         }
         for (part, pass) in [
             ("terrain", &shadow_terrain),
@@ -2416,6 +2513,7 @@ impl PackPost {
                 .iter()
                 .chain(&shadow_comp)
                 .chain(&terrain)
+                .chain(&terrain_cutout)
                 .chain(&water))
             .chain(shadow_terrain.iter().chain(&shadow_water))
             .chain(sky.iter().flat_map(|s| s.basic.iter().chain(&s.textured)))
@@ -2473,6 +2571,7 @@ impl PackPost {
                 .iter()
                 .flat_map(|s| s.basic.iter().chain(&s.textured))
                 .chain(&terrain)
+                .chain(&terrain_cutout)
                 .chain(entities.iter().flat_map(|e| e.passes.iter().flatten()))
                 .chain(&clouds)
                 .chain(&lines)
@@ -2488,6 +2587,7 @@ impl PackPost {
         }
         // Terrain tests against the world's depth (entities...), so the blit copies it then.
         let blit_depth = terrain.is_some()
+            || terrain_cutout.is_some()
             || water.is_some()
             || sky.is_some()
             || entities.as_ref().is_some_and(Entities::drawn)
@@ -2625,6 +2725,7 @@ impl PackPost {
             setup_pending: true,
             passes,
             terrain,
+            terrain_cutout,
             water,
             sky,
             entities,
@@ -3113,7 +3214,8 @@ impl PackPost {
     }
 
     /// Terrain (or, `translucent`, translucent terrain) with the pack's program; `draw` issues
-    /// the game's draws.
+    /// the game's draws. Solid terrain in two parts has its cutout part drawn second, from the
+    /// same draws.
     fn draw_terrain(
         &mut self,
         device: &wgpu::Device,
@@ -3123,13 +3225,35 @@ impl PackPost {
         list: TerrainList,
         draw: &mut TerrainDraw<'_>,
     ) {
-        let slot = match list {
+        self.draw_terrain_part(device, queue, encoder, size, list, false, draw);
+        if list == TerrainList::Solid {
+            self.draw_terrain_part(device, queue, encoder, size, list, true, draw);
+        }
+    }
+
+    /// The pass that draws `list`, or the cutout part of the solid list.
+    fn terrain_slot(&mut self, list: TerrainList, cutout: bool) -> &mut Option<Pass> {
+        match list {
+            TerrainList::Solid if cutout => &mut self.terrain_cutout,
             TerrainList::Solid => &mut self.terrain,
             TerrainList::Translucent => &mut self.water,
             TerrainList::ShadowSolid => &mut self.shadow_terrain,
             TerrainList::ShadowTranslucent => &mut self.shadow_water,
-        };
-        let Some(mut pass) = slot.take() else {
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_terrain_part(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        list: TerrainList,
+        cutout: bool,
+        draw: &mut TerrainDraw<'_>,
+    ) {
+        let Some(mut pass) = self.terrain_slot(list, cutout).take() else {
             return;
         };
         let translucent = list.translucent();
@@ -3167,12 +3291,7 @@ impl PackPost {
         if !pass.group.shadow() {
             self.mips_valid &= !pass.written;
         }
-        *match list {
-            TerrainList::Solid => &mut self.terrain,
-            TerrainList::Translucent => &mut self.water,
-            TerrainList::ShadowSolid => &mut self.shadow_terrain,
-            TerrainList::ShadowTranslucent => &mut self.shadow_water,
-        } = Some(pass);
+        *self.terrain_slot(list, cutout) = Some(pass);
     }
 
     /// The sky's parts in vanilla's order, each with the program that draws it; one render pass
@@ -3806,12 +3925,13 @@ impl PackPost {
                 horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
             },
             every_face: true,
+            view_casters: true,
         })
     }
 
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
-        self.terrain.is_some()
+        self.terrain.is_some() || self.terrain_cutout.is_some()
     }
 
     /// Whether the pack's shadow pass draws terrain (`shadow_view`).
@@ -3862,6 +3982,7 @@ impl PackPost {
             .passes
             .iter_mut()
             .chain(&mut self.terrain)
+            .chain(&mut self.terrain_cutout)
             .chain(&mut self.water)
             .chain(sky)
             .chain(entities)
@@ -4521,6 +4642,7 @@ impl PackPost {
         let mut shown = false;
         // A water-only pack still needs the opaque phase to populate requested snapshots.
         let mut terrain_drawn = self.terrain.is_none()
+            && self.terrain_cutout.is_none()
             && self.sky.is_none()
             && !self.entities.as_ref().is_some_and(Entities::drawn)
             && self.clouds.is_none()
@@ -4694,6 +4816,10 @@ mod snorm_tests;
 #[cfg(test)]
 #[path = "pack_post/depth_test.rs"]
 mod depth_test;
+
+#[cfg(test)]
+#[path = "pack_post/terrain_parts_tests.rs"]
+mod terrain_parts_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5282,6 +5408,27 @@ mod tests {
         let g = |name| texture_format(Format::parse(name).unwrap(), all);
         assert_eq!(g("RGBA16"), T::Rgba16Unorm);
         assert_eq!(g("R11F_G11F_B10F"), T::Rg11b10Ufloat);
+    }
+
+    #[test]
+    fn float_targets_fall_back_when_not_renderable() {
+        let all = |_| true;
+        assert_eq!(renderable_float(T::Rgba32Float, all), T::Rgba32Float);
+        // OpenGL without GL_EXT_color_buffer_float: only half floats render.
+        let half_only = |f: T| matches!(f, T::R16Float | T::Rg16Float | T::Rgba16Float);
+        assert_eq!(renderable_float(T::Rgba32Float, half_only), T::Rgba16Float);
+        assert_eq!(renderable_float(T::Rg32Float, half_only), T::Rg16Float);
+        assert_eq!(renderable_float(T::R32Float, half_only), T::R16Float);
+        assert_eq!(renderable_float(T::Rgba16Float, half_only), T::Rgba16Float);
+        // Neither renders: the 8-bit last resort.
+        assert_eq!(renderable_float(T::Rgba32Float, |_| false), T::Rgba8Unorm);
+        assert_eq!(renderable_float(T::Rg16Float, |_| false), T::Rgba8Unorm);
+        // Other formats are never replaced.
+        assert_eq!(renderable_float(T::Rgba8Uint, |_| false), T::Rgba8Uint);
+        assert_eq!(
+            renderable_float(T::Rgb10a2Unorm, |_| false),
+            T::Rgb10a2Unorm
+        );
     }
 
     #[test]

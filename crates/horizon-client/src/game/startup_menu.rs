@@ -622,6 +622,11 @@ impl Loading {
                 | Event::ListMusicTracks
                 | Event::PlayMusicTrack(..)
                 | Event::Volume(..) => {}
+                Event::OpenStudioFolder => {
+                    let dir = std::path::PathBuf::from("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    packs::open_folder(&dir);
+                }
             }
         }
     }
@@ -682,6 +687,18 @@ impl Loading {
             right,
         );
         self.menu_option_events(events);
+    }
+
+    /// The Realms screen's join, once its address came back: queued like a click on a server.
+    pub(super) fn poll_menu_realms(&mut self, event_loop: &dyn EventLoopCtl) {
+        if let Some(action) = self
+            .menu
+            .title
+            .as_mut()
+            .and_then(Title::take_connect_request)
+        {
+            self.menu_action(event_loop, action);
+        }
     }
 
     fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {

@@ -65,7 +65,9 @@ pub enum H {
     BlueMapAutoDetect,
     BlueMapRadius,
     CaveCulling,
+    GpuCulling,
     EntityCulling,
+    EntityCullingPrecheck,
     ParticleCulling,
     LeafCulling,
     CacheShulkerBoxes,
@@ -378,14 +380,24 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Skips terrain hidden behind closed sections. Off costs a lot.",
                         ),
                         h(
+                            H::GpuCulling,
+                            Saves,
+                            "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+                        ),
+                        h(
                             H::EntityCulling,
                             None,
                             "Hides entities behind opaque blocks.",
                         ),
                         h(
                             H::ParticleCulling,
-                            None,
-                            "Skips offscreen, subpixel and terrain-hidden particles.",
+                            Saves,
+                            "Skips particles outside the view, below one pixel or behind terrain.",
+                        ),
+                        h(
+                            H::EntityCullingPrecheck,
+                            Saves,
+                            "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.",
                         ),
                         h(
                             H::LeafCulling,
@@ -551,15 +563,15 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             ],
         ),
     ];
-    // Only Windows and Linux have more than one graphics API, and translucent batching
-    // (Metal draws flat).
+    // Only Windows and Linux have more than one graphics API, translucent batching (Metal
+    // draws flat) and GPU culling (Metal draws no count the GPU wrote).
     if cfg!(target_os = "macos") {
         for (_, groups) in &mut pages {
             for (_, rows) in groups {
                 rows.retain(|r| {
                     !matches!(
                         r.item,
-                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching)
+                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching | H::GpuCulling)
                     )
                 });
             }
@@ -692,6 +704,7 @@ impl H {
         let g = &s.horizon;
         match self {
             H::ChunkUpdates => Some(g.chunk_updates as f32 / 64.0),
+            H::EntityCullingPrecheck => Some(g.entity_culling_precheck as f32 / 512.0),
             H::UploadBudget => {
                 let i = UPLOAD_STEPS
                     .iter()
@@ -723,6 +736,7 @@ impl H {
     pub fn slider_steps(self) -> Option<u32> {
         match self {
             H::ChunkUpdates => Some(64),
+            H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
@@ -748,7 +762,21 @@ impl H {
                 lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
+            // the saved value waits.
+            H::GpuCulling => labelled(
+                "GPU Culling",
+                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+            ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::EntityCullingPrecheck => labelled(
+                "Entity Culling Precheck",
+                if g.entity_culling_precheck == 0 {
+                    "Off".to_string()
+                } else {
+                    lang::tr("%s mobs", &[&g.entity_culling_precheck])
+                },
+            ),
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
@@ -861,6 +889,7 @@ impl H {
         let g = &mut s.horizon;
         match self {
             H::ChunkUpdates => g.chunk_updates = (v * 64.0).round() as u32,
+            H::EntityCullingPrecheck => g.entity_culling_precheck = (v * 512.0).round() as u32,
             H::UploadBudget => {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
@@ -904,6 +933,7 @@ impl H {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
@@ -993,7 +1023,8 @@ impl Item {
     /// the saved values wait for an HDR display), and its sliders do something only
     /// while it is on; Translucent Batching switches only where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
-    /// and Smooth Gradients only where it can draw the 16-bit frame, the same way.
+    /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -1030,6 +1061,12 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::EntityCullingPrecheck)
+                if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
+            {
+                Some("Only applies to asynchronous entity culling.")
+            }
+            Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
             _ => None,
         }
     }
@@ -1045,6 +1082,9 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::GpuCulling) => {
+                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
+            }
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -1096,7 +1136,7 @@ impl Item {
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
-        if !self.available() {
+        if !self.available() || self.blocked(s).is_some() {
             return;
         }
         match self {
@@ -1134,6 +1174,7 @@ impl Item {
                     | H::GraphicsApi
                     | H::TranslucentBatching
                     | H::HdrSmoothGradients
+                    | H::GpuCulling
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen
@@ -1689,6 +1730,9 @@ impl GraphicsUi {
             crate::widgets::widget_cursor(hovered(rect), true);
             crate::widgets::target(rect);
             let primary = target == Target::Done;
+            if primary {
+                crate::widgets::declare_action(crate::widgets::Action::Done, rect, true);
+            }
             style::button(batch, atlas, rect, &label, (hover, true, primary));
         }
     }
@@ -1902,7 +1946,18 @@ impl GraphicsUi {
             return;
         };
         let x = cols.bar_x();
-        let track = [x, cols.top, style::SCROLLER_W, cols.bottom - cols.top];
+        let height = cols.bottom - cols.top;
+        crate::widgets::scroll_area(
+            [
+                cols.list_x,
+                cols.top,
+                x + style::SCROLLER_W - cols.list_x,
+                height,
+            ],
+            self.scroll.amount,
+            content - height,
+        );
+        let track = [x, cols.top, style::SCROLLER_W, height];
         style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
     }
     /// The strip under the plate: the hovered or focused setting's name and
@@ -2200,7 +2255,8 @@ impl GraphicsUi {
         content: f32,
     ) {
         self.focus = Some(target);
-        self.can_change_value = matches!(target, Target::Item(i) if i.slider(s).is_some());
+        self.can_change_value =
+            matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
         if let Target::Item(_) = target {
             let [_, y, _, h] = rect;
             if y < cols.top {
@@ -2269,6 +2325,7 @@ impl GraphicsUi {
             && self.can_change_value
             && let Some(Target::Item(item)) = self.focus
             && item.slider(s).is_some()
+            && item.blocked(s).is_none()
         {
             item.step_slider(s, key == K::ArrowRight, cols.track().1 + 8.0);
             self.changed = true;
@@ -3160,6 +3217,82 @@ mod tests {
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
     }
 
+    #[test]
+    fn entity_culling_precheck_slider_is_only_live_for_async() {
+        let item = Item::Horizon(H::EntityCullingPrecheck);
+        let mut s = Settings::default();
+        let initial = s.horizon.entity_culling_precheck;
+
+        for mode in [EntityCullingMode::Off, EntityCullingMode::Synchronous] {
+            s.horizon.entity_culling = mode;
+            assert_eq!(
+                item.blocked(&s),
+                Some("Only applies to asynchronous entity culling.")
+            );
+
+            let mut ui = GraphicsUi::default();
+            let row_rect = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (row_rect[0] + 4.0, row_rect[1] + 4.0)).is_empty());
+            item.set_slider(&mut s, 1.0);
+            assert_eq!(s.horizon.entity_culling_precheck, initial);
+
+            let (cols, lines, content) = ui.layout(&s, SIZE.0, SIZE.1);
+            assert!(
+                !ui.focusables(&s, &cols, &lines, false)
+                    .iter()
+                    .any(|(target, _)| *target == Target::Item(item))
+            );
+            ui.focus_on(&s, Target::Item(item), row_rect, &cols, content);
+            assert!(!ui.can_change_value);
+        }
+
+        for (code, expected) in [
+            ("en_us", "Only applies to asynchronous entity culling."),
+            ("de_de", "Nur für asynchrones Objekt-Culling."),
+            (
+                "es_es",
+                "Solo se aplica a la oclusión asíncrona de entidades.",
+            ),
+            (
+                "fr_fr",
+                "S'applique uniquement à l'occlusion asynchrone des entités.",
+            ),
+            ("pl_pl", "Dotyczy tylko asynchronicznego pomijania bytów."),
+            (
+                "ru_ru",
+                "Применяется только при асинхронном отсечении сущностей.",
+            ),
+            ("tr_tr", "Yalnızca eşzamansız varlık elemesine uygulanır."),
+            (
+                "uk_ua",
+                "Застосовується лише для асинхронного відсікання сутностей.",
+            ),
+            ("zh_cn", "仅适用于异步实体剔除。"),
+        ] {
+            let (shown, missed) = lang::scoped(lang::Language::load(&[], code), || {
+                lang::get(item.blocked(&s).unwrap())
+            });
+            assert_eq!(shown, expected, "{code}");
+            assert!(missed.is_empty(), "{code}: {missed:?}");
+        }
+
+        s.horizon.entity_culling = EntityCullingMode::Asynchronous;
+        assert_eq!(item.blocked(&s), None);
+        let mut ui = GraphicsUi::default();
+        let row_rect = row(&mut ui, &s, item);
+        let (cols, _, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        let (track_x, track_w) = cols.track();
+        assert_eq!(
+            press(
+                &mut ui,
+                &mut s,
+                (track_x + track_w - 4.0, row_rect[1] + 4.0)
+            ),
+            [Action::SliderDrag]
+        );
+        assert_eq!(s.horizon.entity_culling_precheck, 512);
+    }
+
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
     /// preset, and greyed out, reading Off, where the device can't batch.
     #[test]
@@ -3208,6 +3341,71 @@ mod tests {
             for preset in Preset::ALL {
                 crate::graphics::apply_preset(preset, &mut s);
                 assert_eq!(s.horizon.translucent_batching, on, "{preset:?}");
+            }
+        }
+    }
+
+    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
+    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    #[test]
+    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+        use crate::graphics::GpuCullingOffer;
+        let item = Item::Horizon(H::GpuCulling);
+        let at = |item| items().into_iter().position(|(_, i)| i == item);
+        if cfg!(target_os = "macos") {
+            // Metal draws no count the GPU wrote: never offered, so not shown.
+            assert_eq!(at(item), None);
+            return;
+        }
+        let i = at(item).unwrap();
+        assert_eq!(items()[i].0, Page::Performance);
+        assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
+        let mut s = Settings::default();
+        assert_eq!(item.switch(&s), Some(false));
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.gpu_culling = true;
+        // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
+        // it does anything.
+        for offer in [
+            GpuCullingOffer::Unsupported,
+            GpuCullingOffer::Software,
+            GpuCullingOffer::OutOfMemory,
+            GpuCullingOffer::Dx12,
+            GpuCullingOffer::DeviceLost,
+        ] {
+            crate::graphics::offer_gpu_culling(offer);
+            assert!(offer.reason().is_some());
+            assert_eq!(item.blocked(&s), offer.reason());
+            assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
+            // The box, the narrator and the widget tree read the switch.
+            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
+            let mut ui = GraphicsUi::default();
+            let r = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
+            ui.focus = Some(Target::Item(item));
+            let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+            assert!(enter.0.is_empty());
+            assert!(s.horizon.gpu_culling, "{offer:?}");
+        }
+        // Where it is, a click switches it and keeps the preset.
+        crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
+        assert_eq!(item.switch(&s), Some(true));
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        assert_eq!(
+            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.gpu_culling);
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.gpu_culling = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
             }
         }
     }
@@ -3395,6 +3593,17 @@ mod tests {
                 "Done",
             ] {
                 lang::get(text);
+            }
+            // Every reason GPU Culling's switch can give, whatever this device offers.
+            use crate::graphics::GpuCullingOffer as O;
+            for offer in [
+                O::Unsupported,
+                O::Software,
+                O::OutOfMemory,
+                O::Dx12,
+                O::DeviceLost,
+            ] {
+                lang::get(offer.reason().unwrap());
             }
         });
         // `labelled` also looks up values that are already words in the language ("An") or

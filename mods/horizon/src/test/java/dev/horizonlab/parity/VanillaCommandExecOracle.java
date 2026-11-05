@@ -104,11 +104,12 @@ public final class VanillaCommandExecOracle {
             LevelSettings settings = new LevelSettings("Harness", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, config);
             WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, config, false, true);
             WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED, LevelBasedPermissionSet.OWNER);
-            WorldOptions options = new WorldOptions(seed, true, false);
+            boolean flat = Boolean.getBoolean("horizon.parity.flat");
+            WorldOptions options = new WorldOptions(seed, !flat, false);
             WorldStem stem = Util.<WorldStem>blockUntilDone(executor -> WorldLoader.load(init, context -> {
                 Registry<LevelStem> noDatapackDimensions = new MappedRegistry<>(Registries.LEVEL_STEM, Lifecycle.stable()).freeze();
                 WorldDimensions dimensions = context.datapackWorldRegistries().lookupOrThrow(Registries.WORLD_PRESET)
-                    .getOrThrow(WorldPresets.NORMAL).value().createWorldDimensions();
+                    .getOrThrow(flat ? WorldPresets.FLAT : WorldPresets.NORMAL).value().createWorldDimensions();
                 WorldDimensions.Complete complete = dimensions.bake(noDatapackDimensions);
                 PrimaryLevelData data = new PrimaryLevelData(settings, complete.specialWorldProperty(), complete.lifecycle());
                 return new WorldLoader.DataLoadOutput<>(
@@ -128,7 +129,15 @@ public final class VanillaCommandExecOracle {
 
         @Override protected boolean initServer() {
             this.setPlayerList(new PlayerList(this, this.registries(), this.playerDataStorage, new EmptyNotificationService()) {});
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                this.getPlayerList().setViewDistance(2);
+                this.getPlayerList().setSimulationDistance(2);
+            }
             this.loadLevel();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                this.getPlayerList().setViewDistance(2);
+                this.getPlayerList().setSimulationDistance(2);
+            }
             return true;
         }
 
@@ -139,6 +148,7 @@ public final class VanillaCommandExecOracle {
             ran = true;
             try {
                 runScript();
+                if (Boolean.getBoolean("horizon.parity.flat")) saveEverything(true, true, true);
             } catch (Throwable t) {
                 t.printStackTrace();
                 Runtime.getRuntime().halt(2);
@@ -148,6 +158,34 @@ public final class VanillaCommandExecOracle {
         }
 
         ServerPlayer player;
+
+        // Execute the actual private arithmetic method on unregistered orbs in
+        // this real server level. No world tick or live scene actor is added.
+        void writeOrbWaterReference() throws IOException {
+            String input = System.getProperty("horizon.orbWaterArithmetic");
+            if (input == null) return;
+            JsonArray result = new JsonArray();
+            try {
+                var method = net.minecraft.world.entity.ExperienceOrb.class.getDeclaredMethod("setUnderwaterMovement");
+                method.setAccessible(true);
+                for (var entry : JsonParser.parseString(Files.readString(Path.of(input))).getAsJsonArray()) {
+                    JsonArray p = entry.getAsJsonArray();
+                    var orb = new net.minecraft.world.entity.ExperienceOrb(net.minecraft.world.entity.EntityTypes.EXPERIENCE_ORB, player.level());
+                    orb.setDeltaMovement(p.get(0).getAsDouble(), p.get(1).getAsDouble(), p.get(2).getAsDouble());
+                    method.invoke(orb);
+                    var v = orb.getDeltaMovement();
+                    JsonObject row = new JsonObject(); row.add("input", p);
+                    JsonArray bits = new JsonArray(); JsonArray values = new JsonArray();
+                    for (double n : new double[] {v.x(), v.y(), v.z()}) {
+                        bits.add(Long.toHexString(Double.doubleToRawLongBits(n))); values.add(n);
+                    }
+                    row.add("bits", bits); row.add("motion", values); result.add(row);
+                }
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("orb underwater reference failed", error);
+            }
+            Files.writeString(output.resolveSibling("orb-water-reference.json"), result.toString());
+        }
 
         void runScript() throws IOException {
             ServerLevel level = this.overworld();
@@ -164,9 +202,32 @@ public final class VanillaCommandExecOracle {
                 }
             };
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
-            new EmbeddedChannel(connection);
+            EmbeddedChannel channel = new EmbeddedChannel(connection);
+            JsonObject login = new JsonObject();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
+                    @Override public void write(io.netty.channel.ChannelHandlerContext context, Object message,
+                            io.netty.channel.ChannelPromise promise) throws Exception {
+                        if (message instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket packet) {
+                            login.addProperty("view_distance", packet.chunkRadius());
+                            login.addProperty("simulation_distance", packet.simulationDistance());
+                        }
+                        super.write(context, message, promise);
+                    }
+                });
+            }
             this.getPlayerList().placeNewPlayer(connection, player, cookie);
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                new net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket().handle(player.connection);
+            }
             settle();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                login.addProperty("server_view", this.getPlayerList().getViewDistance());
+                login.addProperty("server_simulation", this.getPlayerList().getSimulationDistance());
+                login.addProperty("client_loaded", player.connection.hasClientLoaded());
+                Files.writeString(output.resolveSibling("client_config.json"), login.toString());
+            }
+            writeOrbWaterReference();
             StringBuilder out = new StringBuilder();
             Gson gson = new Gson();
             for (String line : Files.readAllLines(script, StandardCharsets.UTF_8)) {
@@ -198,6 +259,91 @@ public final class VanillaCommandExecOracle {
                             out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "server_distances" -> {
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#server_distances");
+                        record.add("messages", new JsonArray());
+                        JsonArray values = new JsonArray();
+                        for (int n : new int[] {getPlayerList().getViewDistance(), getPlayerList().getSimulationDistance()}) {
+                            JsonArray value = new JsonArray(); value.add(true); value.add(n); values.add(value);
+                        }
+                        record.add("results", values); out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "chunk_ready" -> {
+                        JsonArray p = op.getAsJsonArray("chunk");
+                        int x = p.get(0).getAsInt(), z = p.get(1).getAsInt();
+                        var chunk = player.level().getChunkSource().getChunkNow(x, z);
+                        boolean[] ready = {chunk != null, chunk != null && chunk.isLightCorrect(),
+                            player.level().areEntitiesLoaded(new net.minecraft.world.level.ChunkPos(x, z).pack())};
+                        JsonObject record = new JsonObject(); record.addProperty("cmd", "#chunk_ready " + x + " " + z);
+                        record.add("messages", new JsonArray()); JsonArray values = new JsonArray();
+                        for (boolean flag : ready) {JsonArray value = new JsonArray(); value.add(true); value.add(flag ? 1 : 0); values.add(value);}
+                        record.add("results", values); out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "wait_chunks" -> {
+                        long deadline = System.nanoTime() + 180_000_000_000L;
+                        while (true) {
+                            tick(); boolean ready = true;
+                            for (var target : op.getAsJsonArray("chunks")) {
+                                var p = target.getAsJsonArray(); int x = p.get(0).getAsInt(), z = p.get(1).getAsInt();
+                                var chunk = player.level().getChunkSource().getChunkNow(x, z);
+                                ready &= chunk != null && chunk.isLightCorrect()
+                                    && player.level().areEntitiesLoaded(new net.minecraft.world.level.ChunkPos(x, z).pack());
+                            }
+                            if (ready) break;
+                            if (System.nanoTime() > deadline) throw new IllegalStateException("initial target readiness timed out");
+                            try {Thread.sleep(2);} catch (InterruptedException error) {throw new RuntimeException(error);}
+                        }
+                    }
+                    case "weather_state" -> {
+                        // Read-only prerequisites for named weather predicates.
+                        var data = level.getWeatherData();
+                        JsonArray results = new JsonArray();
+                        for (int value : new int[] {data.isRaining() ? 1 : 0,
+                                data.isThundering() ? 1 : 0, data.getClearWeatherTime(),
+                                data.getRainTime(), data.getThunderTime()}) {
+                            JsonArray result = new JsonArray();
+                            result.add(true);
+                            result.add(value);
+                            results.add(result);
+                        }
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#weather_state " + op.get("label").getAsString());
+                        record.add("messages", new JsonArray());
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "player_loop" -> {
+                        int n=op.get("n").getAsInt();
+                        int before=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME));
+                        messages.clear();
+                        for (int i=0;i<n;i++) { tick(); player.connection.tick(); }
+                        int delta=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME))-before;
+                        if (delta!=n) throw new IllegalStateException("player loop did not advance play_time: "+delta+"/"+n);
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#player_loop "+op.get("label").getAsString());
+                        JsonArray captured=new JsonArray();messages.forEach(captured::add);
+                        record.add("messages",captured);record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "player_state" -> {
+                        try {
+                            var field=net.minecraft.server.PlayerAdvancements.class.getDeclaredField("progress");field.setAccessible(true);
+                            var progress=(java.util.Map<?,?>)field.get(player.getAdvancements());
+                            var loaded=new java.util.ArrayList<String>();var done=new java.util.TreeMap<String,Boolean>();
+                            for (var a:getAdvancements().getAllAdvancements()) {
+                                String id=a.id().toString();if (!id.startsWith("h311:")) continue;
+                                loaded.add(id);var value=(net.minecraft.advancements.AdvancementProgress)progress.get(a);
+                                done.put(id,value!=null && value.isDone());
+                            }
+                            java.util.Collections.sort(loaded);
+                            var poison=player.getEffect(net.minecraft.world.effect.MobEffects.POISON);
+                            JsonObject state=new JsonObject();state.addProperty("health",player.getHealth());
+                            state.addProperty("poison_ticks",poison==null?0:poison.getDuration());state.add("loaded",gson.toJsonTree(loaded));state.add("done",gson.toJsonTree(done));
+                            JsonObject record=new JsonObject();record.addProperty("cmd","#player_state "+op.get("label").getAsString());
+                            record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                            out.append(gson.toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {throw new IllegalStateException(e);}
+                    }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
                         messages.clear();
@@ -209,9 +355,16 @@ public final class VanillaCommandExecOracle {
                         if (op.has("record")) {
                             try { Thread.sleep(300); } catch (InterruptedException e) { throw new RuntimeException(e); }
                         }
+                        long pacedStart = System.nanoTime();
                         for (int i = 0; i < n; i++) {
                             tick();
+                            if (op.has("pace_ms")) {
+                                long left = op.get("pace_ms").getAsLong() * (i + 1) * 1_000_000L - (System.nanoTime() - pacedStart);
+                                if (left > 0) try {Thread.sleep(left / 1_000_000L, (int)(left % 1_000_000L));}
+                                catch (InterruptedException error) {throw new RuntimeException(error);}
+                            }
                         }
+                        if (op.has("pace_ms")) System.err.println("harness paced wait: " + n + " ticks, " + ((System.nanoTime() - pacedStart) / 1_000_000L) + " ms");
                         if (op.has("record") && op.get("record").getAsBoolean()) {
                             JsonObject record = new JsonObject();
                             record.addProperty("cmd", "#tick");
@@ -232,7 +385,80 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
-                    case "settle" -> settle();
+                    case "settle" -> {
+                        settle();
+                        if (op.has("required_chunks")) {
+                            long deadline = System.nanoTime() + 120_000_000_000L;
+                            while (true) {
+                                boolean ready = true;
+                                for (var element : op.getAsJsonArray("required_chunks")) {
+                                    var pair = element.getAsJsonArray();
+                                    ready &= player.level().areEntitiesActuallyLoadedAndTicking(
+                                        new net.minecraft.world.level.ChunkPos(pair.get(0).getAsInt(), pair.get(1).getAsInt()));
+                                }
+                                if (ready) break;
+                                if (System.nanoTime() > deadline) throw new IllegalStateException("required chunks did not load");
+                                tick();
+                                Thread.yield();
+                            }
+                        }
+                    }
+                    case "use_item" -> {
+                        if (!op.has("sequence")) {
+                            player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
+                                net.minecraft.world.InteractionHand.MAIN_HAND);
+                        } else {
+                        player.connection.handleUseItem(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
+                            net.minecraft.world.InteractionHand.MAIN_HAND, op.get("sequence").getAsInt(),
+                            op.get("yaw").getAsFloat(), op.get("pitch").getAsFloat()));
+                        try {
+                            var ack = net.minecraft.server.network.ServerGamePacketListenerImpl.class.getDeclaredField("ackBlockChangesUpTo");
+                            ack.setAccessible(true);
+                            if (ack.getInt(player.connection) < op.get("sequence").getAsInt())
+                                throw new IllegalStateException("UseItem was not acknowledged");
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        }
+                    }
+                    case "crafter_max_map_fixture" -> {
+                        // Independent official saved-map file, copied unchanged to the Game scratch world.
+                        level.setMapData(new net.minecraft.world.level.saveddata.maps.MapId(31),
+                            net.minecraft.world.level.saveddata.maps.MapItemSavedData.createFresh(
+                                0, 0, (byte) 4, true, false, level.dimension()));
+                        level.getServer().getDataStorage().saveAndJoin();
+                    }
+                    case "map_state" -> {
+                        int id = op.get("id").getAsInt();
+                        var map = net.minecraft.world.item.MapItem.getSavedData(
+                            new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
+                        String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
+                            + ",center=" + map.centerX + "," + map.centerZ;
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#map_state " + id);
+                        JsonArray messages = new JsonArray();
+                        messages.add(spans(Component.literal(value)));
+                        record.add("messages", messages);
+                        record.add("results", new JsonArray());
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "light" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#light " + p);
+                        record.add("messages", new JsonArray());
+                        JsonArray results = new JsonArray();
+                        for (var layer : new net.minecraft.world.level.LightLayer[]{
+                            net.minecraft.world.level.LightLayer.BLOCK, net.minecraft.world.level.LightLayer.SKY}) {
+                            JsonArray value = new JsonArray();
+                            value.add(true);
+                            value.add(player.level().getBrightness(layer, pos));
+                            results.add(value);
+                        }
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
@@ -242,6 +468,14 @@ public final class VanillaCommandExecOracle {
                             net.minecraft.core.Direction.from3DDataValue(face), pos, false);
                         player.gameMode.useItemOn(player, player.level(), player.getMainHandItem(),
                             net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                    }
+                    case "crafter_tick" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        var state = player.level().getBlockState(pos);
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
+                            throw new IllegalStateException("crafter tick without a crafter");
+                        state.tick(player.level(), pos, player.level().getRandom());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
@@ -376,6 +610,21 @@ public final class VanillaCommandExecOracle {
 
         void settle() {
             ServerLevel level = player.level();
+            if (Boolean.getBoolean("horizon.loadedFixture")) {
+                // Use the actual player tickets; no permanent fixture DRAGON tickets.
+                level.getChunkSource().move(player);
+                long deadline = System.nanoTime() + 120_000_000_000L;
+                while (true) {
+                    tick(); boolean ready = true;
+                    for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+                        var pos = new net.minecraft.world.level.ChunkPos(player.chunkPosition().x() + dx, player.chunkPosition().z() + dz);
+                        ready &= level.getChunkSource().getChunkNow(pos.x(), pos.z()) != null && level.areEntitiesLoaded(pos.pack());
+                    }
+                    if (ready) return;
+                    if (System.nanoTime() > deadline) throw new IllegalStateException("real player tickets did not load");
+                    try {Thread.sleep(5);} catch (InterruptedException error) {throw new RuntimeException(error);}
+                }
+            }
             int cx = player.chunkPosition().x(), cz = player.chunkPosition().z();
             for (int dz = -2; dz <= 2; dz++) {
                 for (int dx = -2; dx <= 2; dx++) {

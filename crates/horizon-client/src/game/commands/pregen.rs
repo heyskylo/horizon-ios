@@ -244,7 +244,7 @@ impl Game<'_> {
     /// hand them the next jobs as soon as each one is done, rather than once
     /// a tick.
     pub(in crate::game) fn pump_chunks(&mut self, until: Instant, paused: bool) {
-        // Force-loaded chunks too: decorating in vanilla's order, a chunk
+        // Force-loaded chunks too, a mod's held ones as `/forceload`'s: decorating in vanilla's order, a chunk
         // waits for its neighbours far more often than once a tick allows.
         // And the players' chunks while they load, as vanilla's server runs
         // its chunk tasks while it waits for the next tick
@@ -255,7 +255,10 @@ impl Game<'_> {
         // only asked for by the tick's own `update_world`.
         let players = !paused && self.spawn_wait.is_empty();
         while self.pregen_runs_here()
-            || ((players || !self.streaming.forced.is_empty()) && self.streaming.busy())
+            || ((players
+                || !self.streaming.forced.is_empty()
+                || !self.streaming.mod_forced.is_empty())
+                && self.streaming.busy())
         {
             let now = Instant::now();
             if now >= until {

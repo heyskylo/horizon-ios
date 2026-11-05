@@ -417,6 +417,18 @@ impl Station {
     }
 }
 
+/// `at` is on one of a list's `rows`, with no row further that way.
+fn off_visible_rows(rows: &[[f32; 4]], at: (f32, f32), up: bool) -> bool {
+    let inside =
+        |r: &[f32; 4]| at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3];
+    let Some(on) = rows.iter().find(|r| inside(r)) else {
+        return false;
+    };
+    !rows
+        .iter()
+        .any(|r| r[0] == on[0] && if up { r[1] < on[1] } else { r[1] > on[1] })
+}
+
 /// `StonecutterScreen.getOffscreenRows`: the recipe rows below the 4x3 grid.
 fn stonecutter_offscreen_rows(recipes: usize) -> i32 {
     recipes.div_ceil(4) as i32 - 3
@@ -1212,6 +1224,28 @@ impl Game<'_> {
         }
         false
     }
+    /// A D-pad step off the visible rows of a station's list, from the row
+    /// under the cursor: the list scrolls a row, if it can, and the cursor
+    /// stays. False leaves the step to go on to whatever is that way.
+    pub(super) fn station_list_step(&mut self, up: bool) -> bool {
+        let Some(batch) = self.gui_scale() else {
+            return false;
+        };
+        let (ox, oy) = self.inventory_origin(&batch);
+        let local = (self.cursor.0 - ox, self.cursor.1 - oy);
+        if !off_visible_rows(&self.station_targets(), local, up) {
+            return false;
+        }
+        let shown = |g: &Self| {
+            g.station.as_ref().map(|s| {
+                let merchant = s.merchant.as_ref().map(|m| m.scroll);
+                (s.start, s.loom.start_row, merchant)
+            })
+        };
+        let before = shown(self);
+        self.station_scroll(if up { 1.0 } else { -1.0 });
+        shown(self) != before
+    }
     /// `StonecutterScreen.mouseScrolled`.
     pub(super) fn station_scroll(&mut self, d: f32) {
         self.merchant_scroll(d);
@@ -1441,7 +1475,7 @@ impl Game<'_> {
             return false;
         }
         // `SmithingScreen.containerTick`: the icons of the empty slots follow the template.
-        let (now, partial) = (self.ticks, self.clock.camera_fraction() as f32);
+        let (now, partial) = (self.visual_ticks(), self.clock.camera_fraction() as f32);
         if let Some(s) = self.station.as_mut().filter(|s| s.kind == Kind::Smithing) {
             let template = s.inputs[0].as_ref().map(|t| t.item.clone());
             let (base, base_len, additions, additions_len) =
@@ -1720,7 +1754,7 @@ impl Game<'_> {
                         if inside(local, bx, by, bw, 17.0)
                             && let Some((id, l)) = &offers.clues[i]
                         {
-                            let e = &self.stations().enchantments;
+                            let e = self.enchantments();
                             let (name, _) = e.full_name(id, *l);
                             let clue = self
                                 .translate("container.enchant.clue", "%s . . . ?")
@@ -2121,7 +2155,7 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
-        let e: &Enchantments = &self.stations().enchantments;
+        let e: &Enchantments = self.enchantments();
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
@@ -2957,6 +2991,10 @@ impl Game<'_> {
                 }
             }
         }
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        {
+            self.world.block_entities.sleep(pos);
+        }
         Ok(())
     }
 }
@@ -3045,6 +3083,16 @@ mod tests {
         assert_ne!(book.flip_t, target);
         let (open, _) = book.at(0.5);
         assert!(open < 1e-6);
+    }
+
+    #[test]
+    fn a_step_leaves_the_visible_rows_only_from_the_end_one() {
+        let rows = [[10.0, 0.0, 10.0, 10.0], [10.0, 10.0, 10.0, 10.0]];
+        assert!(off_visible_rows(&rows, (15.0, 15.0), false));
+        assert!(!off_visible_rows(&rows, (15.0, 15.0), true));
+        assert!(off_visible_rows(&rows, (15.0, 5.0), true));
+        assert!(!off_visible_rows(&rows, (15.0, 5.0), false));
+        assert!(!off_visible_rows(&rows, (50.0, 5.0), false));
     }
 
     #[test]
