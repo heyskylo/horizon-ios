@@ -423,6 +423,7 @@
   "Frame Generation": "Кадрдары оҥоруу",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Икки дьиҥнээх икки ардыгар оҥоһуллубут рамканы көрдөрөр: сымнаҕас, кыратык хойутаан.",
   "Shadow Cache": "Күлүк кэш",
+  "Shader Packs...": "Шейдер пакеттара...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Күн, көрүү уонна аан дойду сөп түбэстэхтэринэ, пакет күлүк хаартыскатын хаттаан туһанар. По умолчанию выключено.",
   "Find BlueMap": "BlueMap бул",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Сервердарга ыраах сиргэ BlueMap веб-каарталарын булар. Салгыы холбоһуҥ.",

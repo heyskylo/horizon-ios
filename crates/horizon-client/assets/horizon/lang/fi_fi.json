@@ -453,5 +453,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Aurat ja jäljet, joita muut pelaajat käyttävät. Oletuksena pois päältä.",
   "horizon.extras.cosmetics.shown": "Näytetään",
   "horizon.extras.cosmetics.hidden": "Piilotettu",
-  "horizon.extras.cosmetics.name_tags": "Vain nimilaput"
+  "horizon.extras.cosmetics.name_tags": "Vain nimilaput",
+  "Shader Packs...": "Shader Packit..."
 }

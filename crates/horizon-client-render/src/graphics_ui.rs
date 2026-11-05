@@ -1,6 +1,6 @@
 //! Horizon's graphics settings screen: every video setting, vanilla's and
-//! Horizon's, on one list of pages (General, Quality, Performance, Advanced,
-//! HDR) with a page list beside it, a search field over it and a description
+//! Horizon's, on one list of pages (General, Quality, Performance, Shaders,
+//! Advanced, HDR) with a page list beside it, a search field over it and a description
 //! of the hovered setting with its cost. Which settings it shows, in what
 //! pages, with what description and cost, and its input live here; how it
 //! looks comes from `graphics_style`.
@@ -24,15 +24,18 @@ pub enum Page {
     General,
     Quality,
     Performance,
+    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
+    Shaders,
     Advanced,
     /// HDR output's own settings.
     Hdr,
 }
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::General,
         Page::Quality,
         Page::Performance,
+        Page::Shaders,
         Page::Advanced,
         Page::Hdr,
     ];
@@ -41,6 +44,7 @@ impl Page {
             Page::General => "General",
             Page::Quality => "Quality",
             Page::Performance => "Performance",
+            Page::Shaders => "Shaders",
             Page::Advanced => "Advanced",
             Page::Hdr => "HDR",
         }
@@ -51,6 +55,7 @@ impl Page {
             Page::General => "How far you see, the window and the HUD.",
             Page::Quality => "The sky and weather, lighting, textures and the image.",
             Page::Performance => "Chunk loading, culling and power use.",
+            Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
             Page::Advanced => "How frames reach the screen, and the performance overlay.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
         }
@@ -106,6 +111,8 @@ pub enum H {
     HdrLighting,
     BatteryMode,
     ShadowCache,
+    /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
+    ShaderPacks,
     GraphicsApi,
     TranslucentBatching,
     HdrSmoothGradients,
@@ -115,6 +122,8 @@ pub enum H {
 pub enum Item {
     Vanilla(Opt),
     Horizon(H),
+    /// A Horizon extra that changes the picture (`extras::Item`, kept in `horizon-extras.txt`).
+    Extra(crate::extras::Item),
 }
 
 #[derive(Clone, Copy)]
@@ -137,6 +146,14 @@ fn h(opt: H, cost: Cost, text: &'static str) -> Setting {
         text,
     }
 }
+/// An extra's row: its description is its own language key.
+fn e(item: crate::extras::Item, cost: Cost) -> Setting {
+    Setting {
+        item: Item::Extra(item),
+        cost,
+        text: item.description_key(),
+    }
+}
 
 /// Every page's settings, in named groups of related rows.
 pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
@@ -153,11 +170,18 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             vec![
                 (
                     "Preset",
-                    vec![h(
-                        H::Preset,
-                        None,
-                        "Sets the options below together. Changing one makes it Custom.",
-                    )],
+                    vec![
+                        h(
+                            H::Preset,
+                            None,
+                            "Sets the options below together. Changing one makes it Custom.",
+                        ),
+                        v(
+                            Opt::Preset,
+                            None,
+                            "Vanilla's own preset: sets only vanilla's options, as Minecraft does.",
+                        ),
+                    ],
                 ),
                 (
                     "Distance",
@@ -197,6 +221,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         v(Opt::GuiScale, None, "Size of menus and the HUD."),
                         v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
                         v(
+                            Opt::ExclusiveFullscreen,
+                            None,
+                            "Fullscreen takes the display over, at the mode below.",
+                        ),
+                        v(
+                            Opt::ExclusiveMode,
+                            None,
+                            "The display mode exclusive fullscreen uses. Applies when you leave.",
+                        ),
+                        v(
                             Opt::Vsync,
                             None,
                             "Waits for the display's refresh: no tearing, a little latency.",
@@ -211,17 +245,12 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "Lowers the frame rate when minimised, or idle too.",
                         ),
-                        v(
-                            Opt::Fov,
-                            Low,
-                            "Field of view. Wider shows more terrain at once.",
-                        ),
                     ],
                 ),
                 (
                     "Interface",
                     vec![
-                        v(Opt::ViewBobbing, None, "Sways the view while walking."),
+                        v(Opt::MenuBlur, Low, "Blurs the world behind menus."),
                         v(Opt::AttackIndicator, None, "Shows attack cooldown."),
                         v(Opt::Autosave, None, "Shows when the world saves."),
                     ],
@@ -253,6 +282,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How far rain and snow fall around you.",
                         ),
                         v(Opt::Particles, Medium, "How many particles effects spawn."),
+                        e(crate::extras::Item::HideBlockParticles, None),
                     ],
                 ),
                 (
@@ -280,6 +310,8 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                         v(Opt::Vignette, None, "Darkens the screen's edges."),
                         v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
+                        e(crate::extras::Item::DynamicLights, Low),
+                        e(crate::extras::Item::Fullbright, None),
                     ],
                 ),
                 (
@@ -289,6 +321,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Opt::Mipmaps,
                             None,
                             "Smaller copies of block textures for distant terrain: less shimmer.",
+                        ),
+                        v(
+                            Opt::TextureFiltering,
+                            Low,
+                            "How textures are sampled: sharper at a slant with Anisotropic.",
+                        ),
+                        v(
+                            Opt::MaxAnisotropy,
+                            Low,
+                            "How far Anisotropic filtering goes. Higher is sharper at a slant.",
                         ),
                         v(
                             Opt::CutoutLeaves,
@@ -405,11 +447,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
                         ),
-                        h(
-                            H::ShadowCache,
-                            Saves,
-                            "Reuses the pack shadow map when sun, view and world match. Off by default.",
-                        ),
                     ],
                 ),
                 (
@@ -461,6 +498,24 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     )],
                 ),
             ],
+        ),
+        (
+            Page::Shaders,
+            vec![(
+                "Shader packs",
+                vec![
+                    h(
+                        H::ShaderPacks,
+                        High,
+                        "Picks a shader pack, Horizon's or a shaders/ folder one, and sets its options.",
+                    ),
+                    h(
+                        H::ShadowCache,
+                        Saves,
+                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                ],
+            )],
         ),
         (
             Page::Advanced,
@@ -865,6 +920,8 @@ impl H {
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
+            // A press across the row, as Calibrate...: the list it opens shows the pick.
+            H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
             // they are there, while the saved value waits for a device that can.
@@ -1068,6 +1125,10 @@ impl Item {
                 Some("Only applies to asynchronous entity culling.")
             }
             Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
+            // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
+            Item::Vanilla(Opt::MaxAnisotropy) if s.file.int("textureFiltering") != 2 => {
+                Some("Only with Anisotropic texture filtering.")
+            }
             _ => None,
         }
     }
@@ -1075,7 +1136,10 @@ impl Item {
     fn steps(self, s: &Settings) -> bool {
         self.switch(s).is_none()
             && self.slider(s).is_none()
-            && !matches!(self, Item::Horizon(H::HdrKey | H::HdrCalibrate))
+            && !matches!(
+                self,
+                Item::Horizon(H::HdrKey | H::HdrCalibrate | H::ShaderPacks)
+            )
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
@@ -1108,9 +1172,10 @@ impl Item {
             Item::Horizon(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
             }
-            Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
+            Item::Extra(e) => return e.switch(&s.extras),
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
+            Item::Vanilla(Opt::ExclusiveFullscreen) => s.file.bool("exclusiveFullscreen"),
             Item::Vanilla(Opt::SmoothLighting) => s.smooth_lighting,
             Item::Vanilla(Opt::EntityShadows) => s.entity_shadows,
             Item::Vanilla(Opt::Vignette) => s.vignette,
@@ -1124,6 +1189,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Horizon(h) => h.slider(s),
+            Item::Extra(_) => None,
         }
     }
     pub fn label(self, s: &Settings) -> Text {
@@ -1134,6 +1200,10 @@ impl Item {
             ),
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s),
+            Item::Extra(e) => Text::option_name_value(
+                Text::literal(e.caption_text()),
+                Text::literal(e.value(&s.extras)),
+            ),
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
@@ -1141,8 +1211,10 @@ impl Item {
             return;
         }
         match self {
-            Item::Vanilla(o) => o.set_slider(s, v),
+            // Options.applyGraphicsPreset, as Video Settings' slider does it.
+            Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Horizon(h) => h.set_slider(s, v),
+            Item::Extra(_) => {}
         }
         self.touched(s);
     }
@@ -1153,6 +1225,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Horizon(h) => h.cycle(s, back),
+            Item::Extra(e) => e.cycle(&mut s.extras, back),
         }
         self.touched(s);
     }
@@ -1160,36 +1233,39 @@ impl Item {
     fn touched(self, s: &mut Settings) {
         let presetless = matches!(
             self,
-            Item::Horizon(
-                H::Preset
-                    | H::BlueMapAutoDetect
-                    | H::BlueMapRadius
-                    | H::Overlay
-                    | H::ScreenshotQuality
-                    | H::Pacing
-                    | H::PresentMode
-                    | H::Workers
-                    | H::FrameGeneration
-                    | H::BatteryMode
-                    | H::ShadowCache
-                    | H::GraphicsApi
-                    | H::TranslucentBatching
-                    | H::HdrSmoothGradients
-                    | H::GpuCulling
-            ) | Item::Vanilla(
-                Opt::GuiScale
-                    | Opt::Fullscreen
-                    | Opt::Vsync
-                    | Opt::MaxFps
-                    | Opt::Fov
-                    | Opt::Gamma
-                    | Opt::InactivityFps
-                    | Opt::ViewBobbing
-                    | Opt::ChunkFade
-                    | Opt::Vignette
-                    | Opt::Autosave
-                    | Opt::AttackIndicator
-            )
+            Item::Extra(_)
+                | Item::Horizon(
+                    H::Preset
+                        | H::BlueMapAutoDetect
+                        | H::BlueMapRadius
+                        | H::Overlay
+                        | H::ScreenshotQuality
+                        | H::Pacing
+                        | H::PresentMode
+                        | H::Workers
+                        | H::FrameGeneration
+                        | H::BatteryMode
+                        | H::ShadowCache
+                        | H::GraphicsApi
+                        | H::TranslucentBatching
+                        | H::HdrSmoothGradients
+                        | H::GpuCulling
+                )
+                | Item::Vanilla(
+                    Opt::GuiScale
+                        | Opt::Fullscreen
+                        | Opt::ExclusiveFullscreen
+                        | Opt::ExclusiveMode
+                        | Opt::Vsync
+                        | Opt::MaxFps
+                        | Opt::Gamma
+                        | Opt::InactivityFps
+                        | Opt::MenuBlur
+                        | Opt::ChunkFade
+                        | Opt::Vignette
+                        | Opt::Autosave
+                        | Opt::AttackIndicator
+                )
         );
         if !presetless {
             s.horizon.preset = Preset::Custom;
@@ -1199,6 +1275,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_steps(),
             Item::Horizon(h) => h.slider_steps(),
+            Item::Extra(_) => None,
         }
     }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
@@ -1224,6 +1301,8 @@ pub enum Action {
     BindKey(&'static str),
     /// Start HDR calibration.
     Calibrate,
+    /// Open the shader pack list.
+    ShaderPacks,
     Done,
 }
 
@@ -1298,6 +1377,10 @@ impl GraphicsUi {
     #[cfg(test)]
     pub(crate) fn scroll_amount(&self) -> f32 {
         self.scroll.amount
+    }
+    /// The page the plate shows while nothing is searched.
+    pub fn page(&self) -> Page {
+        self.page
     }
     /// The screen opens, at `page`.
     pub fn open(&mut self, page: Page) {
@@ -1424,8 +1507,10 @@ impl GraphicsUi {
         s.vsync = b.vsync;
         s.max_fps = b.max_fps;
         s.inactivity_fps_limit = b.inactivity_fps_limit.clone();
-        s.fov = b.fov;
-        s.view_bobbing = b.view_bobbing;
+        s.menu_blur = b.menu_blur;
+        s.extras.fullbright = b.extras.fullbright;
+        s.extras.dynamic_lights = b.extras.dynamic_lights;
+        s.extras.hide_block_particles = b.extras.hide_block_particles;
         s.attack_indicator = b.attack_indicator;
         s.autosave_indicator = b.autosave_indicator;
         s.clouds = b.clouds.clone();
@@ -1444,6 +1529,17 @@ impl GraphicsUi {
         s.prioritize_chunk_updates = b.prioritize_chunk_updates;
         // Presets set it beside the options above.
         s.graphics_preset = b.graphics_preset.clone();
+        // The vanilla rows options.txt keeps as it read them.
+        for key in [
+            "exclusiveFullscreen",
+            "textureFiltering",
+            "maxAnisotropyBit",
+        ] {
+            if let Some(value) = b.file.get(key) {
+                s.file.set(key, value.clone());
+            }
+        }
+        s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
         self.changed = false;
     }
 
@@ -1713,6 +1809,7 @@ impl GraphicsUi {
                 vec![Action::ButtonClick, Action::Changed]
             }
             Item::Horizon(H::HdrCalibrate) => vec![Action::ButtonClick, Action::Calibrate],
+            Item::Horizon(H::ShaderPacks) => vec![Action::ButtonClick, Action::ShaderPacks],
             Item::Horizon(H::HdrKey) => {
                 vec![
                     Action::ButtonClick,
@@ -2112,7 +2209,7 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let cols = Columns::of(size.0, size.1);
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
@@ -2170,7 +2267,7 @@ mod tests {
                 .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
         }));
         ui.search.set_value("hdr");
-        let [x, y, w, h] = cols.page(4);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
         assert_eq!(ui.current(&ui.lines(&s).0), Some(Page::Hdr));
         let [x, y, ..] = cols.clear();
@@ -2370,19 +2467,58 @@ mod tests {
         assert!(!ui.scroll.held());
     }
 
+    /// The rows only vanilla's Video Settings had work here as they do there: its preset
+    /// applies its distances (`Options.applyGraphicsPreset`), Max Anisotropy waits for
+    /// Anisotropic filtering, Exclusive Fullscreen is a tick box of `options.txt`.
+    #[test]
+    fn vanilla_video_rows_work_on_the_graphics_screen() {
+        let mut s = Settings::default();
+        let preset = Item::Vanilla(Opt::Preset);
+        preset.set_slider(&mut s, 0.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fast", 8, 32)
+        );
+        preset.set_slider(&mut s, 2.0 / 3.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fabulous", 32, 128)
+        );
+        let anisotropy = Item::Vanilla(Opt::MaxAnisotropy);
+        let filtering = Item::Vanilla(Opt::TextureFiltering);
+        while s.file.int("textureFiltering") == 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_some());
+        while s.file.int("textureFiltering") != 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_none());
+        let exclusive = Item::Vanilla(Opt::ExclusiveFullscreen);
+        assert_eq!(exclusive.switch(&s), Some(false));
+        exclusive.cycle(&mut s, false, FB);
+        assert_eq!(exclusive.switch(&s), Some(true));
+        assert!(s.file.bool("exclusiveFullscreen"));
+        // The graphics extras switch their own setting.
+        let lights = Item::Extra(crate::extras::Item::DynamicLights);
+        lights.cycle(&mut s, false, FB);
+        assert!(s.extras.dynamic_lights);
+        assert_eq!(lights.switch(&s), Some(true));
+    }
+
     #[test]
     fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        s.fov = 90.0;
-        let fov = row(&mut ui, &s, Item::Vanilla(Opt::Fov));
+        s.gamma = 0.25;
+        let gamma = row(&mut ui, &s, Item::Vanilla(Opt::Gamma));
         // A slider being changed doesn't take the wheel either: a controller scrolls with it.
-        press(&mut ui, &mut s, (fov[0] + 4.0, fov[1] + 4.0));
+        press(&mut ui, &mut s, (gamma[0] + 4.0, gamma[1] + 4.0));
         assert!(ui.can_change_value);
         let before = ui.scroll.amount;
         ui.scroll(&s, SIZE, -1.0);
         assert_eq!(ui.scroll.amount, before + 18.0);
-        assert_eq!(s.fov, 90.0);
+        assert_eq!(s.gamma, 0.25);
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         ui.scroll(&s, SIZE, -1000.0);
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));

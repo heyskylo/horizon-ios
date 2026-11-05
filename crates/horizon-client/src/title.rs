@@ -2985,6 +2985,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let x = (w / 2.0).floor() - 155.0 + 80.0;
                 let y = 76.0 + (lines.len() as f32 + 1.0) * 9.0;
                 self.erase_check.set([x, y, width, BOX]);
+                crate::widgets::target([x, y, width, BOX]);
                 let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
                 let sprite = match (*erase_cache, hover) {
                     (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
@@ -3155,6 +3156,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let x = (w / 2.0).floor() - (width / 2.0).floor();
                 let y = top + 57.0 + lines.len() as f32 * 9.0;
                 self.warning_check.set([x, y, width, BOX]);
+                crate::widgets::target([x, y, width, BOX]);
                 let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
                 crate::widgets::narratable(|| {
                     crate::widgets::Narratable::checkbox(
@@ -3219,6 +3221,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
+            // Realms' icon buttons have no label to record.
+            if b.enabled && b.label.trim().is_empty() {
+                crate::widgets::target([b.x, b.y, b.w, 20.0]);
+            }
             if let Some(action) = b.action.filter(|_| !self.preparing) {
                 crate::widgets::declare_action(action, [b.x, b.y, b.w, 20.0], b.enabled);
             }

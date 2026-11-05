@@ -2732,8 +2732,15 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     }
     let _ = Fluid::None;
 }
-/// Mob.ate (sheep regrow wool, babies grow).
-pub fn ate(m: &mut Mob) {
+/// Mob.ate: `gameEvent(GameEvent.EAT)`, then (Sheep.ate) the wool grows back and a baby
+/// grows.
+pub fn ate(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    events.push(MobEvent::GameEvent {
+        event: "minecraft:eat",
+        at: [m.position.x, m.position.y, m.position.z],
+        source: m.id,
+        state: horizon_world::registry::BlockStateId(0),
+    });
     if m.species() == Species::Sheep {
         m.extra.sheared = false;
         // Sheep.ate: only a baby `canAgeUp` (no age lock holds it) grows.

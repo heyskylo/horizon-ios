@@ -460,26 +460,20 @@ impl Goal for LeaveBlock {
         let x = (m.position.x - 1.0 + m.random.next_double() * 2.0).floor() as i32;
         let y = (m.position.y + m.random.next_double() * 2.0).floor() as i32;
         let z = (m.position.z - 1.0 + m.random.next_double() * 2.0).floor() as i32;
-        let target = cx.w.world.block(x, y, z);
-        let below = cx.w.world.block(x, y - 1, z);
-        let bf = cx.w.facts.get(below);
-        let block = Aabb::new(
+        let area = Aabb::new(
             Vec3::new(f64::from(x), f64::from(y), f64::from(z)),
             Vec3::new(f64::from(x + 1), f64::from(y + 1), f64::from(z + 1)),
         );
-        let free = !cx.w.others_near(block).any(|s| s.bounds.intersects(block));
-        if cx.w.facts.is_air(target)
-            && !cx.w.facts.is_air(below)
-            && &*bf.name != "minecraft:bedrock"
-            && bf.full_collision
-            && free
-        {
-            cx.events.push(MobEvent::SetBlock {
-                pos: [x, y, z],
-                state: carried,
-            });
-            m.extra.carried = None;
-        }
+        // Keep the per-mob occupancy view: later mobs have not moved yet.
+        let occupants = cx.w.others_near(area).map(|s| s.bounds).collect();
+        // Game owns the mutable level, its scheduled ticks, RNG and shape hooks.
+        // Defer the complete attempt, including failed candidates' shape updates.
+        cx.events.push(MobEvent::EndermanPlaceBlock {
+            mob: m.id,
+            pos: [x, y, z],
+            carried,
+            occupants,
+        });
     }
 }
 
