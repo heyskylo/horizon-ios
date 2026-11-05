@@ -917,8 +917,29 @@ impl Scroll {
     }
 }
 
-/// Vertical scroll bar (AbstractScrollArea): background and scroller sprites.
+/// Vertical scroll bar of a list (AbstractScrollArea): the sprites, and the
+/// list is registered for the controller's focus (`widgets::scroll_area`).
 pub fn scrollbar(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    content: f32,
+    scroll: f32,
+) {
+    if content > bottom - top {
+        crate::widgets::scroll_area(
+            [0.0, top, x + 6.0, bottom - top],
+            scroll,
+            content - (bottom - top),
+        );
+    }
+    scrollbar_sprites(batch, atlas, x, top, bottom, content, scroll);
+}
+
+/// The scroll bar's background and scroller sprites.
+pub fn scrollbar_sprites(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     x: f32,

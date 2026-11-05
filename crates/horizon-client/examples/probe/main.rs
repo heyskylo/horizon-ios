@@ -44,6 +44,7 @@ mod entity_death_loot_fixture;
 mod entity_particles_probe;
 mod entity_sound_packet_fixture;
 mod environment_fixture;
+mod equipment_color_fixture;
 mod finalize_spawn_fixture;
 mod fire_starter_sound_probe;
 mod firework_tooltip_fixture;
@@ -196,6 +197,7 @@ probes! {
     server_files_probe,
     situational_music_fixture,
     skin_image_fixture,
+    equipment_color_fixture,
     player_skin_fixture,
     late_entity_pair_fixture,
     sheep_dye_fixture,

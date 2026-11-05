@@ -9,6 +9,7 @@ use horizon_client::{
     cit::{Hand, Kind, Rule},
     cit_armor,
     entities::ArmorStand,
+    equipment_color::Dyeable,
     items::ItemStack,
     mesher::Vertex,
     mobs::{Mob, Part, anim::Poses},
@@ -63,19 +64,54 @@ fn armor_stand_cart_shove(
         stand_z: za / 4.0,
     })
 }
-/// `EquipmentLayerRenderer.getColorForLayer`: a dyeable layer (one with a
-/// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
-/// colour; any other layer stays white, dyed or not. The result is in the
-/// renderer's byte order (R and B swapped).
-pub(super) fn layer_color(undyed: Option<u32>, stack: Option<&ItemStack>) -> u32 {
+/// EquipmentLayerRenderer's color, including the zero sentinel for an invisible layer.
+pub(super) fn layer_color(dyeable: Option<Dyeable>, stack: Option<&ItemStack>) -> u32 {
     let dyed = stack
         .and_then(|s| s.data())
         .and_then(|d| d.dyed_color)
         .map(|c| c as u32 & 0xFF_FFFF);
-    undyed.map_or(0xFFFF_FFFF, |undyed| {
-        let c = dyed.unwrap_or(undyed);
-        0xFF00_0000 | (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF
-    })
+    horizon_client::equipment_color::layer_color(dyeable, dyed)
+}
+
+/// Read all JSON equipment assets using their full resource paths. Directory symlinks
+/// are not followed, so a loop cannot trap resource loading; ordinary file links retain
+/// the previous loader's behavior.
+fn equipment_files(directory: &std::path::Path) -> Vec<(String, PathBuf)> {
+    let mut pending = vec![directory.to_owned()];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                pending.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+                && path.is_file()
+            {
+                let Ok(relative) = path.strip_prefix(directory) else {
+                    continue;
+                };
+                let name = relative.with_extension("");
+                let Some(parts) = name
+                    .components()
+                    .map(|part| part.as_os_str().to_str())
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                files.push((parts.join("/"), path));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
 }
 
 /// Armor stand models and the humanoid layers of every equipment asset.
@@ -87,8 +123,8 @@ pub(super) struct ArmorStandAssets {
     pub layers: HashMap<(&'static str, bool), Arc<Part>>,
     /// The player's armour models by slot (helmet, chestplate, leggings, boots).
     pub player: HashMap<&'static str, Part>,
-    /// asset id -> layer kind (humanoid / humanoid_leggings) -> each layer's (texture, undyed colour), in order.
-    pub equipment: HashMap<String, HashMap<String, Vec<(String, Option<u32>)>>>,
+    /// asset id -> layer kind (humanoid / humanoid_leggings) -> each layer's (texture, optional dye descriptor), in order.
+    pub equipment: HashMap<String, HashMap<String, Vec<(String, Option<Dyeable>)>>>,
     /// Each wing layer's `use_player_texture` flag, in equipment-file order.
     pub wing_player_textures: HashMap<String, Vec<bool>>,
     /// asset id -> `trim_overrides`.
@@ -130,15 +166,8 @@ impl ArmorStandAssets {
         let namespaces = std::iter::once("minecraft".to_owned())
             .chain(horizon_client::mod_content::namespaces(root));
         for namespace in namespaces {
-            let Ok(entries) = std::fs::read_dir(root.join(format!("assets/{namespace}/equipment")))
-            else {
-                continue;
-            };
-            for e in entries.flatten() {
-                let path = e.path();
-                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
+            let directory = root.join(format!("assets/{namespace}/equipment"));
+            for (name, path) in equipment_files(&directory) {
                 let Ok(v) =
                     std::fs::read(&path).map(|b| serde_json::from_slice::<serde_json::Value>(&b))
                 else {
@@ -149,7 +178,7 @@ impl ArmorStandAssets {
                 let mut kinds = HashMap::new();
                 for kind in ["humanoid", "humanoid_leggings", "wings"] {
                     // Every layer of the kind: leather's overlay is layer 1.
-                    let layers: Vec<(String, Option<u32>)> = v["layers"][kind]
+                    let layers: Vec<(String, Option<Dyeable>)> = v["layers"][kind]
                         .as_array()
                         .into_iter()
                         .flatten()
@@ -161,9 +190,11 @@ impl ArmorStandAssets {
                                 "minecraft" => format!("entity/equipment/{kind}/{tex}"),
                                 other => format!("{other}:entity/equipment/{kind}/{tex}"),
                             };
-                            let undyed = layer["dyeable"]["color_when_undyed"]
-                                .as_i64()
-                                .map(|c| c as u32 & 0xFF_FFFF);
+                            let undyed = layer["dyeable"].as_object().map(|_| Dyeable {
+                                color_when_undyed: layer["dyeable"]["color_when_undyed"]
+                                    .as_i64()
+                                    .map(|c| c as u32 & 0xFF_FFFF),
+                            });
                             (sprite, undyed)
                         })
                         .collect();
@@ -326,19 +357,17 @@ impl Game<'_> {
             // Every layer of the asset, the leather overlay too, then the
             // trim layer over the armour.
             let cit = stack.and_then(|s| self.cit_worn_rule(Kind::Armor, s));
-            for (i, (texture, undyed)) in layers.iter().enumerate() {
+            let mut layer_overlay = overlay;
+            for (texture, undyed) in layers {
                 let Some(uv) = self.armor_layer_rect(cit, &asset, kind, texture) else {
                     continue;
                 };
                 let color = layer_color(*undyed, stack);
-                out.push((
-                    part,
-                    uv,
-                    color,
-                    if i == 0 { overlay } else { 0 },
-                    item.to_owned(),
-                    false,
-                ));
+                if color == 0 {
+                    continue;
+                }
+                out.push((part, uv, color, layer_overlay, item.to_owned(), false));
+                layer_overlay = 0;
                 // The layer's OptiFine emissive overlay, full bright without the glint.
                 if let Some(g) = emissive
                     .overlay(texture)
@@ -1291,11 +1320,15 @@ impl Game<'_> {
             // EquipmentLayerRenderer: every layer of the asset, the leather overlay
             // too; the shader glint goes on the first layer only (renderShaderGlint).
             let cit = self.cit_worn_rule(Kind::Armor, stack);
-            for (i, (texture, undyed)) in layers.iter().enumerate() {
+            let mut layer_overlay = overlay;
+            for (texture, undyed) in layers {
                 let Some(uv) = self.armor_layer_rect(cit, &asset, kind, texture) else {
                     continue;
                 };
                 let color = layer_color(*undyed, Some(stack));
+                if color == 0 {
+                    continue;
+                }
                 let armor_start = out.len();
                 put(
                     &mut skin,
@@ -1306,9 +1339,10 @@ impl Game<'_> {
                     0.0,
                     color,
                     packed,
-                    if i == 0 { overlay } else { 0 },
+                    layer_overlay,
                     out,
                 );
+                layer_overlay = 0;
                 // The layer's OptiFine emissive overlay, full bright without the glint.
                 if let Some(glow) = glow_of(texture) {
                     put(
@@ -1917,6 +1951,101 @@ mod push_tests {
 #[cfg(test)]
 mod layer_color_tests {
     use super::*;
+
+    fn equipment_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-equipment-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets/minecraft/equipment")).unwrap();
+        root
+    }
+
+    #[test]
+    fn dyeable_without_default_is_hidden_but_black_is_an_opaque_color() {
+        let root = equipment_root("dye");
+        std::fs::write(
+            root.join("assets/minecraft/equipment/fixture.json"),
+            br#"{"layers":{"humanoid":[
+            {"texture":"minecraft:base","dyeable":{}},
+            {"texture":"minecraft:black","dyeable":{"color_when_undyed":0}},
+            {"texture":"minecraft:overlay"}
+        ]}}"#,
+        )
+        .unwrap();
+        let assets = ArmorStandAssets::load(&root, None);
+        let layers = &assets.equipment["minecraft:fixture"]["humanoid"];
+        let plain = ItemStack::new("minecraft:leather_chestplate", 1);
+        let mut dyed = plain.clone();
+        dyed.data_mut().dyed_color = Some(0x12_3456);
+        assert_eq!(
+            layer_color(layers[0].1, Some(&plain)),
+            0,
+            "no default color means no layer"
+        );
+        assert_eq!(
+            layer_color(layers[1].1, Some(&plain)),
+            0xFF00_0000,
+            "RGB zero is opaque black"
+        );
+        assert_eq!(layer_color(layers[2].1, Some(&plain)), 0xFFFF_FFFF);
+        assert_eq!(layer_color(layers[0].1, Some(&dyed)), 0xFF56_3412);
+        assert_eq!(layer_color(layers[1].1, Some(&dyed)), 0xFF56_3412);
+        assert_eq!(layer_color(layers[2].1, Some(&dyed)), 0xFFFF_FFFF);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_equipment_ids_keep_the_full_path_and_ignore_other_file_types() {
+        let root = equipment_root("nested");
+        let dir = root.join("assets/minecraft/equipment");
+        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+        let json =
+            br#"{"layers":{"wings":[{"texture":"minecraft:elytra","use_player_texture":true}]}}"#;
+        for name in [
+            "gear.json",
+            "nested/gear.json",
+            "nested/deeper/gear.json",
+            "not_an_asset.txt",
+        ] {
+            std::fs::write(dir.join(name), json).unwrap();
+        }
+        let assets = ArmorStandAssets::load(&root, None);
+        let mut names: Vec<_> = assets.equipment.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "minecraft:gear",
+                "minecraft:nested/deeper/gear",
+                "minecraft:nested/gear"
+            ]
+        );
+        assert_eq!(assets.wing_player_textures["minecraft:nested/gear"], [true]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_equipment_search_does_not_follow_directory_cycles() {
+        let root = equipment_root("cycle");
+        let directory = root.join("assets/minecraft/equipment");
+        std::fs::create_dir_all(directory.join("nested")).unwrap();
+        std::os::unix::fs::symlink(&directory, directory.join("nested/loop")).unwrap();
+        std::fs::write(
+            directory.join("nested/gear.json"),
+            br#"{"layers":{"humanoid":[{"texture":"minecraft:base"}]}}"#,
+        )
+        .unwrap();
+        let assets = ArmorStandAssets::load(&root, None);
+        assert_eq!(assets.equipment.len(), 1);
+        assert!(assets.equipment.contains_key("minecraft:nested/gear"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn the_smithing_preview_wears_armour_and_holds_the_rest_in_its_off_hand() {
         assert_eq!(preview_slot(Some("head")), 5);
@@ -1941,10 +2070,26 @@ mod layer_color_tests {
         let mut dyed = ItemStack::new("minecraft:leather_helmet", 1);
         dyed.data_mut().dyed_color = Some(0x1E_90FF);
         // Dyed blue, R and B swapped into the renderer's order, opaque.
-        assert_eq!(layer_color(Some(0xA06540), Some(&dyed)), 0xFFFF_901E);
+        assert_eq!(
+            layer_color(
+                Some(Dyeable {
+                    color_when_undyed: Some(0xA06540)
+                }),
+                Some(&dyed)
+            ),
+            0xFFFF_901E
+        );
         // An undyed stack keeps the asset's brown.
         let plain = ItemStack::new("minecraft:leather_helmet", 1);
-        assert_eq!(layer_color(Some(0xA06540), Some(&plain)), 0xFF40_65A0);
+        assert_eq!(
+            layer_color(
+                Some(Dyeable {
+                    color_when_undyed: Some(0xA06540)
+                }),
+                Some(&plain)
+            ),
+            0xFF40_65A0
+        );
         // No dye and no undyed colour: white.
         assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
         // A layer that isn't dyeable stays white even on a dyed stack.

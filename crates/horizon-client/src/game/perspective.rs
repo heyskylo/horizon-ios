@@ -885,7 +885,7 @@ fn render_wing_layer<'a>(
     pose: &dyn Fn(&horizon_client::mobs::Part) -> [f32; 9],
     sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
     texture: &'a str,
-    undyed: Option<u32>,
+    undyed: Option<horizon_client::equipment_color::Dyeable>,
     use_player_texture: bool,
     player_texture: Option<&'a str>,
     cit_texture: Option<&'a str>,
@@ -894,6 +894,10 @@ fn render_wing_layer<'a>(
     overlay: u32,
     out: &mut Vec<horizon_client::mesher::Vertex>,
 ) -> Option<(&'a str, std::ops::Range<usize>)> {
+    let color = super::armor_stands::layer_color(undyed, stack);
+    if color == 0 {
+        return None;
+    }
     let texture = cit_texture
         .filter(|s| sprites.contains_key(*s))
         .or_else(|| player_texture.filter(|s| use_player_texture && sprites.contains_key(*s)))
@@ -909,7 +913,6 @@ fn render_wing_layer<'a>(
         overlay,
         out,
     );
-    let color = super::armor_stands::layer_color(undyed, stack);
     for vertex in &mut out[start..] {
         vertex.color = color;
     }
@@ -1551,6 +1554,94 @@ mod preview_tests {
             assert_eq!(vertices[range.start].uv, [0.875, 0.0]);
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_dyed_wing_layers_emit_no_vertices_until_a_dye_is_present() {
+        use horizon_client::{
+            equipment_color::Dyeable,
+            hud::Rect,
+            items::ItemStack,
+            mobs::{Part, Polygon},
+        };
+        let model = Part {
+            name: "wing".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![Polygon {
+                normal: [0.0, 0.0, 1.0],
+                cull_back: false,
+                vertices: [
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [16.0, 0.0, 0.0, 1.0, 0.0],
+                    [16.0, 16.0, 0.0, 1.0, 1.0],
+                    [0.0, 16.0, 0.0, 0.0, 1.0],
+                ],
+            }],
+            children: vec![],
+        };
+        let sprites = [(
+            "wing".to_owned(),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 64,
+                h: 32,
+            },
+        )]
+        .into();
+        let dyeable = Some(Dyeable {
+            color_when_undyed: None,
+        });
+        let mut stack = ItemStack::new("minecraft:elytra", 1);
+        let mut vertices = Vec::new();
+        assert!(
+            render_wing_layer(
+                &model,
+                glam::Mat4::IDENTITY,
+                &|p| p.pose,
+                &sprites,
+                "wing",
+                dyeable,
+                false,
+                None,
+                None,
+                Some(&stack),
+                0xF000F0,
+                0,
+                &mut vertices
+            )
+            .is_none()
+        );
+        assert!(
+            vertices.is_empty(),
+            "invisible layers must not write depth or hide another layer"
+        );
+        stack.data_mut().dyed_color = Some(0);
+        let (_, range) = render_wing_layer(
+            &model,
+            glam::Mat4::IDENTITY,
+            &|p| p.pose,
+            &sprites,
+            "wing",
+            dyeable,
+            false,
+            None,
+            None,
+            Some(&stack),
+            0xF000F0,
+            0,
+            &mut vertices,
+        )
+        .unwrap();
+        assert_eq!(range.len(), 4);
+        assert!(
+            vertices[range]
+                .iter()
+                .all(|vertex| vertex.color == 0xFF00_0000),
+            "an explicitly black dye must remain visible"
+        );
     }
     #[test]
     fn the_player_model_rises_with_the_camera_at_levitation_255() {

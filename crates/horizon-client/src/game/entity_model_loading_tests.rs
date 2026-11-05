@@ -228,7 +228,12 @@ fn armor_equipment_loads_without_an_entity_model_document() {
     assert_eq!(
         assets.equipment["minecraft:leather"]["humanoid"],
         vec![
-            ("entity/equipment/humanoid/leather".into(), Some(0x123456)),
+            (
+                "entity/equipment/humanoid/leather".into(),
+                Some(horizon_client::equipment_color::Dyeable {
+                    color_when_undyed: Some(0x123456)
+                })
+            ),
             ("entity/equipment/humanoid/leather_overlay".into(), None),
         ]
     );

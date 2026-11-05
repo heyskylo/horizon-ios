@@ -37,6 +37,7 @@ pub mod datapack;
 pub mod dynamic_light;
 pub mod effects;
 pub mod environment;
+pub mod equipment_color;
 pub mod extras;
 pub mod fast_hash;
 pub mod fog;
