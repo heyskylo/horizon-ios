@@ -542,6 +542,28 @@ world aside to `backups/replaced-<time>/` (never deleted), puts the backup in pl
 it was running. Add `--dimension ID` (like `minecraft:the_nether`) to bring back only that dimension and leave
 the rest of the world as it is. The panel does the same with one click.
 
+### A smaller world: `[prune_chunks]`
+
+Players who travel far leave a trail of chunks nobody comes back to. This deletes the chunks players spent
+less than a minute near (vanilla's `InhabitedTime`, 1200 ticks), so they generate again from the seed, as they
+were, if someone returns. Back up first. Add to `server.toml`, then restart:
+
+```toml
+[prune_chunks]
+mode = "dry-run"             # "dry-run": only the report, the game starts at once; "delete": before the game starts
+min_inhabited_ticks = 1200   # chunks players spent less than this near go
+spawn_radius = 32            # chunks this close to the spawn stay (0 0 in the Nether and the End)
+ring = 1                     # chunks this close to a kept chunk stay, so no seam opens beside a build
+keep_files = ["horizon-smp/claims.json", "horizon-smp/places.json"]   # in the world folder: claims, homes
+```
+
+After the run, `mode` is set back to `"off"` and `logs/prune-chunks-<time>.txt` says, per dimension, how many
+chunks went (or would go) and how much disk was freed. The chunk's entities and points of interest go with it;
+region files are rewritten compacted (vanilla still reads them) and a file left empty is deleted. Chunks that
+can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
+`x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
+stops the prune before anything is deleted.
+
 ## 8. Start it with the computer
 
 ```sh
