@@ -254,8 +254,12 @@ fn content_mods_equipment_loads_under_its_namespace() {
         .unwrap(),
     )
     .unwrap();
-    // Not a content root: other namespaces stay unread, as before.
-    assert!(ArmorStandAssets::load(&root.0, None).equipment.is_empty());
+    // Native client resource lookup reads pack namespaces even without a content mod.
+    let resource_only = ArmorStandAssets::load(&root.0, None);
+    assert_eq!(
+        resource_only.equipment["gems:ruby"]["humanoid_leggings"],
+        vec![("gems:entity/equipment/humanoid_leggings/ruby".into(), None)]
+    );
     fs::write(
         root.0.join(horizon_items::content_namespaces::MARKER),
         br#"["gems"]"#,
@@ -266,6 +270,117 @@ fn content_mods_equipment_loads_under_its_namespace() {
         assets.equipment["gems:ruby"]["humanoid_leggings"],
         vec![("gems:entity/equipment/humanoid_leggings/ruby".into(), None)]
     );
+}
+
+#[test]
+#[ignore = "equipment parity driver supplies isolated roots and output"]
+fn equipment_assets_native_fixture() {
+    let root =
+        std::path::PathBuf::from(std::env::var_os("HORIZON_EQUIPMENT_FIXTURE_ROOT").unwrap());
+    let output = std::env::var_os("HORIZON_EQUIPMENT_FIXTURE_OUTPUT").unwrap();
+    let model_root = FixtureRoot::new();
+    fs::write(
+        model_root.0.join("entity-models.json"),
+        serde_json::to_vec(&fixture()).unwrap(),
+    )
+    .unwrap();
+    let document = EntityModelDocument::load(&model_root.0).unwrap();
+    let mut assets = ArmorStandAssets::load(&root.join("base"), Some(&document));
+    let prepared_model = assets.main.clone().unwrap();
+    let mut rows = Vec::new();
+    for (phase, directory) in ["base", "merged", "base"].into_iter().enumerate() {
+        if phase != 0 {
+            assets.reload_resources(&root.join(directory));
+        }
+        assert!(
+            std::sync::Arc::ptr_eq(assets.main.as_ref().unwrap(), &prepared_model),
+            "metadata reload discarded prepared model geometry"
+        );
+        let atlas = horizon_client::hud::HudAtlas::build(&root.join(directory)).unwrap();
+        for (id, kinds) in &assets.equipment {
+            for (kind, layers) in kinds {
+                for (index, (texture, dyeable)) in layers.iter().enumerate() {
+                    let player_texture = kind == "wings"
+                        && assets
+                            .wing_player_textures
+                            .get(id)
+                            .and_then(|flags| flags.get(index))
+                            .copied()
+                            .unwrap_or(false);
+                    let pixel = atlas.sprites.get(texture).map(|rect| {
+                        let x = (rect.u0 * atlas.width as f32).round() as usize;
+                        let y = (rect.v0 * atlas.height as f32).round() as usize;
+                        let offset = (y * atlas.width as usize + x) * 4;
+                        atlas.pixels[offset..offset + 4].to_vec()
+                    });
+                    rows.push(json!({"phase":phase,"id":id,"kind":kind,"index":index,"texture":texture,"pixel":pixel,
+                        "playerTexture":player_texture,"dyeable":dyeable.is_some(),
+                        "undyed":dyeable.and_then(|d|d.color_when_undyed)}));
+                }
+            }
+        }
+    }
+    rows.sort_by_key(|row| {
+        (
+            row["phase"].as_u64().unwrap(),
+            row["id"].as_str().unwrap().to_owned(),
+            row["kind"].as_str().unwrap().to_owned(),
+            row["index"].as_u64().unwrap(),
+        )
+    });
+    fs::write(output, serde_json::to_vec(&rows).unwrap()).unwrap();
+}
+
+#[test]
+fn equipment_reload_replaces_pack_metadata_and_retains_prepared_geometry() {
+    let old = FixtureRoot::new();
+    let new = FixtureRoot::new();
+    fs::write(
+        old.0.join("entity-models.json"),
+        serde_json::to_vec(&fixture()).unwrap(),
+    )
+    .unwrap();
+    for (root, name, player) in [(&old.0, "old", false), (&new.0, "new", true)] {
+        let path = root.join("assets/minecraft/equipment/gear.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            serde_json::to_vec(&json!({"layers":{"wings":[{
+                "texture":format!("minecraft:{name}"),"use_player_texture":player
+            }]}}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let added = new.0.join("assets/gems/equipment/nested/added.json");
+    fs::create_dir_all(added.parent().unwrap()).unwrap();
+    fs::write(
+        added,
+        br#"{"layers":{"humanoid":[{"texture":"gems:added"}]}}"#,
+    )
+    .unwrap();
+    let document = EntityModelDocument::load(&old.0).unwrap();
+    let mut assets = ArmorStandAssets::load(&old.0, Some(&document));
+    let prepared = assets.main.as_ref().unwrap().clone();
+    for (root, name, player, has_added) in
+        [(&new.0, "new", true, true), (&old.0, "old", false, false)]
+    {
+        assets.reload_resources(root);
+        assert!(std::sync::Arc::ptr_eq(
+            assets.main.as_ref().unwrap(),
+            &prepared
+        ));
+        assert_eq!(
+            assets.equipment["minecraft:gear"]["wings"][0].0,
+            format!("entity/equipment/wings/{name}")
+        );
+        assert_eq!(assets.wing_player_textures["minecraft:gear"], [player]);
+        assert_eq!(
+            assets.equipment.contains_key("gems:nested/added"),
+            has_added
+        );
+        assert_eq!(assets.root, *root);
+    }
 }
 
 #[test]

@@ -1117,14 +1117,15 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
-        // Content mods' entity textures: their equipment assets name them as
-        // `<ns>:<path>`, and native mods draw their block entities with them
-        // (`native_draw_quad`: `<ns>:entity/...`); and their mob effects'
-        // icons, `<ns>:mob_effect/<path>`.
-        let namespaces = horizon_items::content_namespaces::namespaces(root);
+        // Resource packs and native/content mods can all name entity textures
+        // and mob-effect icons in another client namespace.
+        let namespaces = horizon_assets::namespaces::client(root);
         for folder in ["entity", "mob_effect"] {
             if folders.contains(&folder) {
-                for namespace in &namespaces {
+                for namespace in namespaces
+                    .iter()
+                    .filter(|namespace| namespace.as_str() != "minecraft")
+                {
                     walk(
                         &root.join(format!("assets/{namespace}/textures/{folder}")),
                         &mut files,
@@ -3233,6 +3234,34 @@ mod tests {
         let at = ((py * atlas.width + px) * 4) as usize;
         atlas.pixels[at..at + 4].try_into().unwrap()
     }
+    #[test]
+    fn resource_pack_equipment_texture_loads_without_a_content_mod_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-pack-equip-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let equipment = root.join("assets/gems/textures/entity/equipment/wings/nested");
+        fs::create_dir_all(&equipment).unwrap();
+        write_strip(
+            &equipment.join("ruby.png"),
+            64,
+            32,
+            &[[13, 71, 201, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let sprite = atlas
+            .sprites
+            .get("gems:entity/equipment/wings/nested/ruby")
+            .expect("a resource-pack equipment texture must not require a content mod");
+        assert_eq!(texel_at(&atlas, *sprite, 0, 0), [13, 71, 201, 255]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn content_mod_entity_textures_pack_under_their_namespace() {
         let root = std::env::temp_dir().join(format!("horizon-atlas-equip-{}", std::process::id()));

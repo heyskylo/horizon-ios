@@ -214,6 +214,10 @@ name = "custom_component_wire"
 path = "../horizon-client/tests/custom_component_wire.rs"
 
 [[test]]
+name = "pufferfish_sting"
+path = "tests/pufferfish_sting.rs"
+
+[[test]]
 name = "forced_chunks"
 path = "../horizon-client/tests/forced_chunks.rs"
 

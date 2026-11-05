@@ -162,10 +162,8 @@ impl ArmorStandAssets {
         let mut equipment = HashMap::new();
         let mut wing_player_textures = HashMap::new();
         let mut trim_overrides = HashMap::new();
-        // EquipmentAssetManager reads every namespace: vanilla's and the content mods'.
-        let namespaces = std::iter::once("minecraft".to_owned())
-            .chain(horizon_client::mod_content::namespaces(root));
-        for namespace in namespaces {
+        // Client assets are not restricted to the namespaces a content mod owns.
+        for namespace in horizon_assets::namespaces::client(root) {
             let directory = root.join(format!("assets/{namespace}/equipment"));
             for (name, path) in equipment_files(&directory) {
                 let Ok(v) =
@@ -227,9 +225,11 @@ impl ArmorStandAssets {
             root: root.to_owned(),
         }
     }
-    /// Trim data of reloaded resources (the models stay).
-    pub fn reload_trims(&mut self, root: &std::path::Path) {
+    /// Reload equipment and trim metadata while retaining prepared model geometry.
+    pub fn reload_resources(&mut self, root: &std::path::Path) {
         let fresh = Self::load(root, None);
+        self.equipment = fresh.equipment;
+        self.wing_player_textures = fresh.wing_player_textures;
         self.trim_overrides = fresh.trim_overrides;
         self.trims = fresh.trims;
         self.root = fresh.root;

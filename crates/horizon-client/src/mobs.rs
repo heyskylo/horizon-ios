@@ -2724,6 +2724,64 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 }
                 i += 1;
             }
+            // Pufferfish.touch: the poison and playSound sit inside the
+            // hurtServer branch, so only a hit that landed poisons and stings.
+            // In vanilla, this runs in Pufferfish.aiStep during the fish's tick,
+            // so mobs ticking later in the same level tick tick their effects.
+            MobEvent::PufferfishSting {
+                mob,
+                target,
+                amount,
+                source,
+                poison_ticks,
+            } => {
+                let mut sound = None;
+                let mut raised = Vec::new();
+                let fish = mobs.iter().find(|m| m.id == mob);
+                let source = match fish {
+                    Some(fish) if source.attacker_species.is_none() => {
+                        source.with_species(fish.species())
+                    }
+                    _ => source,
+                };
+                let (aim, fish_pos, fish_silent, held) = fish
+                    .map(|m| {
+                        (
+                            Aim {
+                                eye: [m.position.x, m.eye_y(), m.position.z],
+                                look: m.look_angle(),
+                                feet: [m.position.x, m.position.y, m.position.z],
+                            },
+                            [m.position.x, m.position.y, m.position.z],
+                            m.silent,
+                            [m.extra.main_hand_stack().cloned(), None],
+                        )
+                    })
+                    .map(|(aim, pos, silent, held)| (Some(aim), Some(pos), silent, held))
+                    .unwrap_or((None, None, true, [None, None]));
+                // This runs inside the fish's tick now, before Game handles
+                // events. Native knockback still needs this attacker and its
+                // full held stack, rather than an enclosing player's scope.
+                let _attacker = crate::health::knockback_from_holding(mob as i32, held);
+                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                    && t.damage_aimed(amount, source, aim)
+                {
+                    t.add_effect("minecraft:poison", poison_ticks, 0);
+                    raised = std::mem::take(&mut t.outbox);
+                    if !fish_silent && let Some(at) = fish_pos {
+                        sound = Some(MobEvent::Sound("entity.puffer_fish.sting", at, 1.0, 1.0));
+                    }
+                }
+                events.remove(i);
+                if let Some(s) = sound {
+                    events.insert(i, s);
+                    i += 1;
+                }
+                for e in raised {
+                    events.insert(i, e);
+                    i += 1;
+                }
+            }
             _ => i += 1,
         }
     }
