@@ -875,6 +875,16 @@ impl Launcher {
                 .get_or_bake(id, hash, scale, || Self::wardrobe_mark(i, scale))
                 .clone()
         });
+        // As the game draws it: Horizon's mark before the name (unless the game's "Show me as a
+        // Horizon player" is off), the style's badge after it.
+        let horizon = prefs::listed(&backend::game_home()).then(|| {
+            let scale = self.scale;
+            self.wardrobe_marks
+                .get_or_bake("horizon", "mark", scale, || {
+                    art::bake(&horizon_cosmetics::mark::texels(), 8, 8, 2., scale)
+                })
+                .clone()
+        });
         let name_tag = div()
             .flex()
             .items_center()
@@ -882,7 +892,7 @@ impl Launcher {
             .px(px(8.))
             .py(px(3.))
             .bg(gpui::rgba(0x0000_0066))
-            .children(mark.map(|m| gpui::img(m).size(px(16.))))
+            .children(horizon.map(|m| gpui::img(m).size(px(16.))))
             .child(
                 div()
                     .font_family(theme::MONO)
@@ -890,6 +900,7 @@ impl Launcher {
                     .text_color(gpui::white())
                     .child(me.name.clone()),
             )
+            .children(mark.map(|m| gpui::img(m).size(px(16.))))
             .when_some(line, |d, c| d.border_b_2().border_color(c));
         let turn = button("wardrobe-turn", "Turn", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {

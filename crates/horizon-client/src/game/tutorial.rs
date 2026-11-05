@@ -32,6 +32,7 @@ pub(super) enum Hint {
     PunchTree,
     OpenInventory,
     CraftPlanks,
+    SocialInteractions,
 }
 
 /// The observations needed on the first tick of each step.
@@ -255,6 +256,19 @@ impl super::Game<'_> {
         {
             return;
         }
+        // Minecraft.tick: also show this in a single-player world once it is
+        // published to LAN, but not merely because its client uses memory networking.
+        if !self.settings.file.bool("joinedFirstServer")
+            && (!self.has_singleplayer_server() || self.is_published())
+        {
+            let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
+            self.tutorial_toasts.push(toast);
+            self.settings.file.set(
+                "joinedFirstServer",
+                horizon_client::options_file::V::Bool(true),
+            );
+            self.settings.save(&Self::options_path());
+        }
         if self.screen == super::Screen::Playing
             && ([
                 KeyCode::KeyW,
@@ -341,6 +355,14 @@ pub(super) struct HintToast {
 }
 
 impl super::Game<'_> {
+    pub(super) fn hide_social_tutorial(&mut self) {
+        for toast in &mut self.tutorial_toasts {
+            if toast.hint == Hint::SocialInteractions {
+                toast.wanted = false;
+            }
+        }
+    }
+
     pub(super) fn tutorial_toast_slots(&self) -> u32 {
         self.tutorial_toasts
             .iter()
@@ -392,6 +414,13 @@ impl super::Game<'_> {
                 "Press %1$s",
                 vec![],
             ),
+            Hint::SocialInteractions => (
+                "tutorial.socialInteractions.title",
+                "Social Interactions",
+                "tutorial.socialInteractions.description",
+                "Press %1$s to open social interactions",
+                vec![],
+            ),
             Hint::CraftPlanks => (
                 "tutorial.craft_planks.title",
                 "Craft wooden planks",
@@ -412,6 +441,7 @@ impl super::Game<'_> {
             Hint::Move => vec![key("key.jump")],
             Hint::PunchTree => vec![key("key.attack")],
             Hint::OpenInventory => vec![key("key.inventory")],
+            Hint::SocialInteractions => vec![key("key.socialInteractions")],
             _ => vec![],
         };
         let description = substitute(self.translate(description_key, description), &desc_args);
@@ -442,6 +472,9 @@ impl super::Game<'_> {
     ) {
         let wanted = self.tutorial.hint();
         for t in &mut self.tutorial_toasts {
+            if t.hint == Hint::SocialInteractions {
+                continue;
+            }
             t.wanted = wanted.is_some_and(|(hint, _)| hint == t.hint);
             if t.wanted {
                 t.progress = wanted.and_then(|(_, progress)| progress);
@@ -480,7 +513,9 @@ impl super::Game<'_> {
                 }
                 continue;
             }
-            let (sound, finished) = t.slide.update_now(|_| t.wanted);
+            let (sound, finished) = t.slide.update_now(|fully| {
+                t.wanted && (t.hint != Hint::SocialInteractions || social_hint_progress(fully).0)
+            });
             if let Some(show) = sound {
                 let event = if show { "ui.toast.in" } else { "ui.toast.out" };
                 self.audio
@@ -490,7 +525,11 @@ impl super::Game<'_> {
                 self.tutorial_toasts.remove(i);
                 continue;
             }
-            if let Some(progress) = t.progress {
+            if t.hint == Hint::SocialInteractions {
+                let (_, progress) = social_hint_progress(t.slide.fully_for);
+                t.progress = Some(progress);
+                t.smooth = progress;
+            } else if let Some(progress) = t.progress {
                 let delta = ((t.slide.fully_for - t.last_smooth) as f32 / 100.0).clamp(0.0, 1.0);
                 t.smooth += (progress - t.smooth) * delta;
                 t.last_smooth = t.slide.fully_for;
@@ -515,6 +554,7 @@ impl super::Game<'_> {
                     Hint::FindTree | Hint::PunchTree => "tree",
                     Hint::OpenInventory => "recipe_book",
                     Hint::CraftPlanks => "wooden_planks",
+                    Hint::SocialInteractions => "social_interactions",
                 };
                 batch.sprite_scaled(
                     atlas,
@@ -562,9 +602,38 @@ impl super::Game<'_> {
     }
 }
 
+/// TutorialToast.update uses the time fully visible (not the slide-in time),
+/// and hides only after 8000 ms. Its timed bar does not use progress smoothing.
+fn social_hint_progress(fully_visible_ms: i64) -> (bool, f32) {
+    (
+        fully_visible_ms <= 8000,
+        (fully_visible_ms as f32 / 8000.0).min(1.0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn social_hint_fills_for_eight_seconds_before_hiding() {
+        assert_eq!(social_hint_progress(0), (true, 0.0));
+        assert_eq!(social_hint_progress(4000), (true, 0.5));
+        assert_eq!(social_hint_progress(8000), (true, 1.0));
+        assert_eq!(social_hint_progress(8001), (false, 1.0));
+    }
+
+    #[test]
+    fn social_hint_counts_from_full_visibility_and_finishes_sliding_out() {
+        let mut slide = horizon_client::toasts::Slide::default();
+        for (now, visible) in [(0, true), (600, true), (8600, true), (8601, false)] {
+            let (_, finished) = slide.update(now, |fully| social_hint_progress(fully).0);
+            assert!(!finished);
+            assert_eq!(social_hint_progress(slide.fully_for).0, visible);
+        }
+        let (_, finished) = slide.update(9202, |fully| social_hint_progress(fully).0);
+        assert!(finished);
+    }
 
     #[test]
     fn craft_planks_hint_toast_appears_after_delay_and_clears_on_planks() {

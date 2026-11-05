@@ -492,7 +492,7 @@ impl Launcher {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().text_color(t.ink_soft).child(r.plain.clone()))
+                    .child(div().text_color(t.ink_soft).child(modpacks::row_plain(r)))
                     .child(technical)
                     .into_any_element()
             };

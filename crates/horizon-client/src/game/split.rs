@@ -399,6 +399,8 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
+        // The new atlas has no downloaded skins: queue them again, as after device loss.
+        self.host.skin_slots.forget();
         self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -474,6 +476,7 @@ impl<'a> Split<'a> {
         };
         drop(old);
         self.host.renderer = Some(renderer);
+        self.host.skin_slots.forget();
         self.host.options.offscreen = false;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;

@@ -196,10 +196,6 @@ fn bite_impulse(r: &mut impl RandomSource) -> f64 {
     // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
     f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
-/// RandomSource.triangle(mode, deviation).
-fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
-    mode + deviation * (f64::from(r.next_float()) - f64::from(r.next_float()))
-}
 /// `FishingHook.onHitBlock`: `getDeltaMovement().normalize().scale(hit.distanceTo(this))`,
 /// where `HitResult.distanceTo` is the *squared* distance to the hook: the bobber
 /// springs back a little off a wall instead of stopping dead.
@@ -273,9 +269,9 @@ impl Game<'_> {
             let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
             let mut random = LegacyRandom::new(unique_seed());
             v = Vec3::new(
-                v.x * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
-                v.y * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
-                v.z * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
+                v.x * (0.6 / len + random.triangle(0.5, 0.0103365)),
+                v.y * (0.6 / len + random.triangle(0.5, 0.0103365)),
+                v.z * (0.6 / len + random.triangle(0.5, 0.0103365)),
             );
             self.next_entity += 1;
             self.hook = Some(Hook {
@@ -300,6 +296,8 @@ impl Game<'_> {
                 lerp: HookLerp::default(),
                 random,
             });
+            // FishingRodItem.use counts a cast, not a reel-in.
+            self.award_stat("used", "minecraft:fishing_rod", 1);
         }
         self.swing_arm();
         true
@@ -550,7 +548,7 @@ impl Game<'_> {
             if h.time_until_hooked > 0 {
                 // The fish swimming up: a bubble now and then, and a fishing
                 // particle to each side of its path.
-                h.fish_angle += triangle(&mut h.random, 0.0, 9.188) as f32;
+                h.fish_angle += h.random.triangle(0.0, 9.188) as f32;
                 let angle = h.fish_angle * (std::f64::consts::PI / 180.0) as f32;
                 let (sin, cos) = (trig::sin(f64::from(angle)), trig::cos(f64::from(angle)));
                 let distance = h.time_until_hooked as f32 * 0.1;
@@ -1850,7 +1848,6 @@ mod tests {
     /// bobs in water, catches fish, and retrieves with rod damage and XP orb.
     #[test]
     fn default_fishing_lifecycle_preserved_with_hook_random() {
-        use super::triangle;
         let mut hook = Hook::remote(1, Vec3::new(0.0, 10.0, 0.0));
         hook.random = LegacyRandom::new(1001);
 
@@ -1859,9 +1856,9 @@ mod tests {
         let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
         let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
         v = Vec3::new(
-            v.x * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
-            v.y * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
-            v.z * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
+            v.x * (0.6 / len + hook.random.triangle(0.5, 0.0103365)),
+            v.y * (0.6 / len + hook.random.triangle(0.5, 0.0103365)),
+            v.z * (0.6 / len + hook.random.triangle(0.5, 0.0103365)),
         );
         hook.velocity = v;
         assert_ne!(hook.velocity, Vec3::ZERO);
@@ -1890,7 +1887,6 @@ mod tests {
     /// do not advance each other's random draws, nor do they mutate world.random.
     #[test]
     fn independent_random_streams_for_multiple_hooks_and_world() {
-        use super::triangle;
         let mut hook1 = Hook::remote(10, Vec3::ZERO);
         hook1.random = LegacyRandom::new(424242);
         let mut hook2 = Hook::remote(20, Vec3::ZERO);
@@ -1906,7 +1902,7 @@ mod tests {
         // Advance hook1 through several operations
         let _ = hook1.random.next_float();
         hook1.trigger_bite(100);
-        let _ = triangle(&mut hook1.random, 0.0, 9.188);
+        let _ = hook1.random.triangle(0.0, 9.188);
 
         // Hook2 has not been touched: its random stream must remain exactly identical to hook_ref
         assert_eq!(hook2.random.next_float(), hook_ref.random.next_float());
@@ -1927,7 +1923,6 @@ mod tests {
     /// catching fish, and retrieving XP orb all consume draws from the hook's own random.
     #[test]
     fn bobbing_biting_catching_and_retrieving_consume_hook_random() {
-        use super::triangle;
         let mut hook = Hook::remote(1, Vec3::ZERO);
         hook.random = LegacyRandom::new(777);
 
@@ -1946,8 +1941,8 @@ mod tests {
         assert_eq!(rain_check, expected.next_float());
         let sky_check = hook.random.next_float();
         assert_eq!(sky_check, expected.next_float());
-        let fish_angle_delta = triangle(&mut hook.random, 0.0, 9.188);
-        let expected_triangle = triangle(&mut expected, 0.0, 9.188);
+        let fish_angle_delta = hook.random.triangle(0.0, 9.188);
+        let expected_triangle = expected.triangle(0.0, 9.188);
         assert_eq!(fish_angle_delta, expected_triangle);
 
         // 4. Retrieve XP orb draws next_int_bound(6) + 1 from hook.random

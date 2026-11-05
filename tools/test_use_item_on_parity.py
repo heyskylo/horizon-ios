@@ -666,6 +666,53 @@ def cases(facts, count, seed):
         yield case
 
 
+# Items whose `Item.use` counts the used statistic (#9775): books, the spyglass, boats, a carrot or
+# warped fungus on a stick off its mount, armor and other equippables swapped from the hand, and
+# flint and steel or a fire charge on TNT (or lighting a fire). An empty map needs the server's
+# saved data and a fishing rod a hook, which the stand-in level and the fixture leave out.
+USED = ['writable_book', 'written_book', 'spyglass', 'oak_boat', 'birch_chest_boat', 'bamboo_raft',
+        'carrot_on_a_stick', 'warped_fungus_on_a_stick', 'iron_helmet', 'diamond_chestplate',
+        'leather_leggings', 'golden_boots', 'turtle_helmet', 'carved_pumpkin', 'flint_and_steel', 'fire_charge']
+# What the player looks down on (three blocks south of the clicked block), for the boats: two
+# blocks below its feet, so the new boat clears the player (vanilla's `noCollision` counts the
+# player, which is not in the oracle's level).
+FLOORS = ['stone', 'water', 'water', 'air', 'oak_planks']
+
+
+def used_stat_case(rng, states, case):
+    """An item whose `use` counts the used statistic, in either hand, over the clicked block (TNT for
+    flint and steel and fire charges, most of the time), with a floor under the player for boats."""
+    item = rng.choice(USED)
+    lights = item in ('flint_and_steel', 'fire_charge')
+    origin = 'tnt' if lights and rng.random() < 0.8 else rng.choice(['stone', 'dirt', 'oak_planks'])
+    cells = [[0, 0, 0, states.get(origin)]]
+    floor = rng.choice(FLOORS)
+    if floor != 'air':
+        cells.append([0, -2, 3, states.get(floor)])
+    case['cells'] = cells
+    # One of each: a second would go to the inventory, which the oracle's player lacks.
+    held = d.plain(item, 1)
+    case['use_item'] = {'item': held, 'creative': rng.random() < 0.2, 'sneaking': rng.random() < 0.15,
+                        'food': 20, 'yaw': rng.choice([0.0, 90.0, 180.0, 270.0, 33.0])}
+    if rng.random() < 0.3:
+        main = rng.choice(['-', '-', 'stick', 'stone'])
+        case['use_item'].update(offhand=held, item='-' if main == '-' else d.plain(main, 1))
+
+
+def used_stat_cases(facts, count, seed):
+    """`used_stat_case`s, from a stream of their own so the other cases stay as they were."""
+    rng = random.Random(f'used {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        used_stat_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -691,7 +738,7 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = list(cases(facts, args.count, args.seed))
+    all_cases = [*cases(facts, args.count, args.seed), *used_stat_cases(facts, max(args.count // 10, 1), args.seed)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
