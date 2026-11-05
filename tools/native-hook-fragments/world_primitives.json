@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "world_primitives",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_world_primitives",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {"contract": "collect", "out": "primitives"}
+    }
+  ],
+  "rust_summary": "world primitives (`native_world_primitives`): lines, boxes, beams and text a client mod draws in the world each frame.",
+  "doc_summary": "world primitives through `native_world_primitives`: once a frame, a client mod adds lines, box outlines, filled\nboxes, beacon-style beams and camera-facing text in world coordinates, each depth tested or seen through walls,\nand Horizon draws them after the entities and before the hand ([World primitives](#world-primitives)). Bundles\nneed `\"hooks\": @API:world_primitives@`."
+}

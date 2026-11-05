@@ -366,10 +366,13 @@ menus have their own data slots. Bundles that use it need `"hooks": 45`.
 API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
-normal terrain/entity shaders, not gameplay light. Only the first eight rims
-and eight lights are examined; positions must be within 32 blocks of the player,
-values must be finite and bounded, and source chunks must be loaded. At most
-256 rim edges and 16 colored lights are rendered. Requests are frame-local,
+normal terrain/entity shaders, not gameplay light. Each mod has a budget of its
+own: its first 256 rims and eight lights are examined, and its rims draw at most
+4096 outline edges, so one mod's requests never crowd out another's (requests
+bundles' injections push share one budget). Positions must be within 32 blocks
+of the player, values must be finite and bounded, and source chunks must be
+loaded. A rim that would pass its mod's edge budget is skipped whole. At most
+16 colored lights are rendered in all. Requests are frame-local,
 so disabling a native mod or leaving the world clears them without a retained
 state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
 blocks and emit a nearby vanilla flame particle; native mods must rate-limit
@@ -1733,8 +1736,9 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet and stops with
-   "the launcher has none for windows aarch64"; it doesn't build x64 game binaries for an ARM64 install. An Intel
+   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet. An x64 launcher
+   also refuses to build native mods when the selected game is ARM64: its compiler only produces x64 binaries.
+   Choosing x64 from the ARM64 launcher does not provide an x64 compiler. An Intel
    Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
    `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
    (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
@@ -2657,9 +2661,37 @@ a dimension.
   do (merging works on mobs, dropped items, armor stands and item frames; never on players, as in vanilla);
   `tags`, `add_tag`, `remove_tag` work as `/tag` does, and `name` is its name as plain text.
 - An `EntityRef` holds the world's open (`NativeWorldEpoch`) and the entity's id, which no other entity of that open
-  gets. A handle of an earlier open, of an entity that is gone or moved to another level (it gets a new id there, as in
-  vanilla), or used on a client reads as `None`.
+  gets. A handle of an earlier open, or of an entity that is gone or moved to another level (it gets a new id there, as
+  in vanilla), reads as `None`.
 - The entities are those of the level in place (the one a hook runs in) and the server's players, whatever their level.
+
+On a client (API @API:client_entity_refs@), `host.entity(id)` and these reads work against the entities the server shows
+the window: the window's own player (its id is the login's, once the server's first teleport made the player), other
+players, mobs, armor stands and the rest the server added. A handle belongs to one client level: after a login or a
+change of dimension (a respawn in the same level keeps it, as vanilla keeps its `ClientLevel`), the old one reads as
+`None`, as does a server-side handle used on the client and the other way round. A client knows only what the server synced, so:
+
+| Read on a client | What it gives |
+|---|---|
+| `position`, `block_position` | Where the window shows the entity (it eases toward the server's moves); for the own player, where it is. |
+| `rotation` | Yaw and pitch as synced; the own player's view. |
+| `kind`, `uuid` | The type and UUID the server added the entity with; a player's UUID is its profile's. |
+| `level` | The client's level. `LevelRef` reads stay server-only and return `None`. |
+| `name` | The custom name the server synced (`Entity.DATA_CUSTOM_NAME`: an armor stand's or a mob's), a player's profile name, else the type's name. |
+| `velocity` | The motion the server last sent (`Entity.lerpMotion`); the own player's own velocity. |
+| `on_ground`, `bounding_box`, `eye_height`, `eye_position`, `view_vector`, `distance_to_sqr` | From the client's copy, as on a server. |
+| `living.equipment`, `hand_item` | What `ClientboundSetEquipmentPacket` sent (an armor stand's six slots, a mob's or another player's), the own player's own inventory. A mob's off hand and body slot keep the item only. |
+| `nbt`, `tags` | `None`: the server sends neither saved data nor tags. |
+| `set_velocity`, `merge_nbt`, `add_tag`, `remove_tag`, `living.set_equipment` | Refused (`false`): a client's copy changes only when the server says so. |
+
+An entity the client tracks without a list of its own (a display, an interaction, a marker, a leash knot) has a handle
+too, but reads only its `kind`, `uuid`, `level` and `position` (where the server last put it).
+
+`host.menu_stacks()` (client, API @API:client_entity_refs@) gives the stacks of the menu the server opened for the window,
+with their components, by the server's slot number (the numbers `ContainerSetSlot` and `ContainerClick` carry): a
+chest's own slots, then the player's inventory, then the hotbar; an empty slot is `None`. Where `NativeScreenView.slots`
+counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
+inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
 
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
@@ -3002,6 +3034,35 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### World primitives
+
+`native_world_primitives(partial, camera, primitives)` (the trait's `Hooks::world_primitives`) runs once a frame while
+the world is drawn, on the client, not on the title screen. A mod adds to `primitives`
+(`horizon_client::world_primitives::WorldPrimitives`) in world coordinates, with ARGB colours:
+
+- `line(from, to, color, width)`: a line `width` pixels wide;
+- `box_outline(min, max, color, width)` and `filled_box(min, max, color)`;
+- `beam(base, height, color)`: a beacon's beam from the centre of its foot, rotating and scrolling as a beacon's; the
+  colour's alpha scales the beacon's own;
+- `text(at, text, color, scale)`: text in the game's font facing the camera, centred on `at`, a name tag's size at
+  scale 1; `.scale_with_distance()` keeps the size on screen it has 8 blocks away, `.background()` puts a name tag's
+  background behind it.
+
+Each returns the primitive, which `.through_walls()` makes seen through walls (no depth test); the others are hidden
+by the world in front of them. Horizon draws them with its own pipelines after the entities and before the
+first-person hand, into the world's targets: its reversed depth, its resolution (Resolution Scale) and TAA's jitter.
+They blend over the world and write no depth. A mod never needs wgpu for them.
+
+```rust,ignore
+fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_>) {
+    let home = [100.0, 64.0, -20.0];
+    event.primitives.beam(home, 256, 0xFF55_FFFF);
+    event.primitives.text([100.5, 66.0, -19.5], "Home", 0xFFFF_FFFF, 1.0)
+        .through_walls()
+        .scale_with_distance();
+}
+```
 
 ### Block textures
 

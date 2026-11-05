@@ -3004,6 +3004,36 @@ fn a_candle_on_an_uneaten_cake_makes_a_candle_cake() {
 }
 
 #[test]
+fn water_douses_a_lit_campfire_with_the_extinguish_sound() {
+    // CampfireBlock.placeLiquid: a lit campfire that takes water goes out
+    // and plays GENERIC_EXTINGUISH_FIRE, `entity.generic.extinguish_fire`.
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    w.put(at, w.id("campfire", &[("lit", "true")]));
+    w.level.events.clear();
+    let placed = w.f.behaviours.bucket_empty(
+        &mut w.level,
+        &mut w.ticks,
+        at,
+        None,
+        BucketContent::Fluid(crate::fluid::FluidKind::Water),
+        "minecraft:item.bucket.empty",
+        false,
+        false,
+    );
+    assert_eq!(placed, Some(at));
+    assert_eq!(w.prop(at, "lit"), "false");
+    assert_eq!(w.prop(at, "waterlogged"), "true");
+    assert!(
+        w.level.events.iter().any(|e| matches!(
+            e,
+            LevelEvent::Sound { sound, .. } if &**sound == "minecraft:entity.generic.extinguish_fire"
+        )),
+        "the extinguish sound"
+    );
+}
+
+#[test]
 fn an_empty_hand_snuffs_a_lit_candle() {
     // CandleBlock.useItemOn: an empty hand on a lit candle (`mayBuild`) runs
     // AbstractCandleBlock.extinguish: unlit, the wick smoke, the extinguish

@@ -1311,6 +1311,8 @@ enum Act {
     ResetPadKey(&'static str),
     ResetPadKeys,
     ToggleMod(usize),
+    /// PvP & HUD's PvP preset (`pvp::apply_preset`).
+    PvpPreset,
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
@@ -1570,6 +1572,9 @@ pub struct OptionsUi {
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
+    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
+    /// Nintendo's: each part shows the letter of the button playing it.
+    pub pad_by_letter: bool,
     pub languages: Vec<LanguageInfo>,
     language_choice: Option<String>,
     language_search: ui::EditBox,
@@ -1652,6 +1657,7 @@ impl Default for OptionsUi {
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
+            pad_by_letter: false,
             languages: Vec::new(),
             language_choice: None,
             language_search: search,
@@ -1946,6 +1952,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
         Act::Cycle(opt) => Some(opt.tooltip_key(s)),
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
+        Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
         _ => None,
     };
     if let Some(key) = key.filter(|key| lang::has(key)) {
@@ -2480,7 +2487,20 @@ impl OptionsUi {
                         widget
                     }
                 };
-                let mut rows = Vec::new();
+                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
+                let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
+                let mut rows = vec![Row::Buttons(
+                    preset,
+                    (self.page() == Page::Extras).then(|| {
+                        button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.pages.open.pvp"),
+                            Act::Push(Page::Pvp),
+                        )
+                    }),
+                )];
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     rows.extend(
@@ -3256,6 +3276,7 @@ impl OptionsUi {
                     });
                     let mut message = match pad.binding(action) {
                         Some(b) => {
+                            let b = if self.pad_by_letter { b.by_letter() } else { b };
                             let [r, g, bl] = b.color(self.pad_style);
                             Text::literal(b.label(self.pad_style))
                                 .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
@@ -4331,6 +4352,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -5276,6 +5301,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {

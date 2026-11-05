@@ -260,7 +260,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if data.is(Class::Campfire) {
                 self.emit(super::LevelEvent::Sound {
                     pos,
-                    sound: "minecraft:block.generic.extinguish_fire".into(),
+                    sound: "minecraft:entity.generic.extinguish_fire".into(),
                     volume: 1.0,
                     pitch: 1.0,
                 });
