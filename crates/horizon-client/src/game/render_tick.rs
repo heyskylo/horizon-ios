@@ -379,8 +379,18 @@ impl Game<'_> {
         let raw = sky.max(i32::from(packed & 15)).clamp(0, 15) as u8;
         lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
     }
+    /// What `Minecraft` ticks outside the level's own tick: `GameRenderer.tick` runs the light
+    /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
+    /// needs the level running normally. `HORIZON_STILL` keeps both with the world.
+    pub(super) fn tick_frame_visuals(&mut self, running: bool) {
+        if running || !self.clock.still() {
+            self.fog.tick_flicker();
+        }
+        if running {
+            self.texture_ticks += 1;
+        }
+    }
     pub(super) fn tick_particles(&mut self) {
-        self.fog.tick_flicker();
         let eye = self.eye_position();
         if let Some(e) = eye {
             let brightness = self.eye_brightness(e);
