@@ -80,25 +80,37 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
     output
 }
 
-/// A file's functions: where each is, its name and its tokens.
+/// A file's functions (where each is, its name and its tokens) and inline modules (where, name).
 #[derive(Default)]
-struct Functions(Vec<(Range<usize>, String, String)>);
+struct Items {
+    functions: Vec<(Range<usize>, String, String)>,
+    modules: Vec<(Range<usize>, String)>,
+}
 
-impl<'ast> Visit<'ast> for Functions {
+impl<'ast> Visit<'ast> for Items {
     fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
-        self.0.push((
+        self.functions.push((
             function.span().byte_range(),
             function.sig.ident.to_string(),
             function.to_token_stream().to_string(),
         ));
         syn::visit::visit_item_fn(self, function);
     }
+
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        if module.content.is_some() {
+            self.modules
+                .push((module.span().byte_range(), module.ident.to_string()));
+        }
+        syn::visit::visit_item_mod(self, module);
+    }
 }
 
-/// A file being touched is insufficient: the error must be inside the helper, and its owner be
-/// unique. The helper is the function with its tokens, or with its name when the pristine
-/// source has no function of that name: the staged file may be formatted (a trailing comma
-/// added), which changes its tokens and not its name.
+/// A file being touched is insufficient: the error must be inside what a mod brought, and its
+/// owner be unique. That is a helper (the function with its tokens, or with its name when the
+/// pristine source has no function of that name: the staged file may be formatted, a trailing
+/// comma added, which changes its tokens and not its name), or a support module (the inline
+/// module of its name, when the pristine source has none).
 fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) -> Option<String> {
     let stage = compiler.stage.canonicalize().ok()?;
     let file = Path::new(span["file_name"].as_str()?);
@@ -107,6 +119,7 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
     if start >= end {
         return None;
     }
+    let inside = |range: &Range<usize>| range.start <= start && end <= range.end;
     let mut files = BTreeSet::new();
     for base in [
         Some(stage.as_path()),
@@ -121,47 +134,74 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
             }
         }
     }
-    let entries = plan["injections"].as_array()?;
+    let empty = Vec::new();
+    let injections = plan["injections"].as_array().unwrap_or(&empty);
+    let modules = plan["modules"].as_array().unwrap_or(&empty);
     let mut owners = BTreeSet::new();
     for file in files {
         let source = fs::read_to_string(&file).ok()?;
         let syntax = syn::parse_file(&source).ok()?;
-        let mut functions = Functions::default();
-        functions.visit_file(&syntax);
+        let mut staged = Items::default();
+        staged.visit_file(&syntax);
         let pristine =
             fs::read_to_string(compiler.source.join(file.strip_prefix(&stage).ok()?)).ok()?;
-        let mut original = Functions::default();
+        let mut original = Items::default();
         original.visit_file(&syn::parse_file(&pristine).ok()?);
-        for entry in entries {
-            let (Some(id), Some(version), Some(path), Some(helper)) = (
+        // The plan's entries of the mods built, in this file.
+        let ours = |entry: &&Value| {
+            let (Some(id), Some(version), Some(path)) = (
                 entry["mod_id"].as_str(),
                 entry["mod_version"].as_str(),
                 entry["file"].as_str(),
-                entry["helper_source"].as_str(),
             ) else {
-                continue;
+                return false;
             };
-            if !compiler.mods.iter().any(|(m, v)| m == id && v == version)
-                || stage.join(path).canonicalize().ok().as_ref() != Some(&file)
-            {
-                continue;
-            }
-            let Ok(helper) = syn::parse_str::<syn::ItemFn>(helper) else {
+            compiler.mods.iter().any(|(m, v)| m == id && v == version)
+                && stage.join(path).canonicalize().ok().as_ref() == Some(&file)
+        };
+        let owner = |entry: &Value| {
+            format!(
+                "{} {}",
+                entry["mod_id"].as_str().unwrap_or_default(),
+                entry["mod_version"].as_str().unwrap_or_default()
+            )
+        };
+        for entry in injections.iter().filter(ours) {
+            let Some(Ok(helper)) = entry["helper_source"]
+                .as_str()
+                .map(syn::parse_str::<syn::ItemFn>)
+            else {
                 continue;
             };
             let tokens = helper.to_token_stream().to_string();
             let name = helper.sig.ident.to_string();
-            if original
-                .0
-                .iter()
-                .any(|(_, other, body)| *body == tokens || *other == name)
-            {
+            let is_helper = |(_, other, body): &(Range<usize>, String, String)| {
+                *body == tokens || *other == name
+            };
+            if original.functions.iter().any(is_helper) {
                 continue;
             }
-            if functions.0.iter().any(|(range, other, body)| {
-                range.start <= start && end <= range.end && (*body == tokens || *other == name)
-            }) {
-                owners.insert(format!("{id} {version}"));
+            if staged
+                .functions
+                .iter()
+                .any(|f| inside(&f.0) && is_helper(f))
+            {
+                owners.insert(owner(entry));
+            }
+        }
+        for entry in modules.iter().filter(ours) {
+            let Some(name) = entry["name"].as_str() else {
+                continue;
+            };
+            if original.modules.iter().any(|(_, other)| other == name) {
+                continue;
+            }
+            if staged
+                .modules
+                .iter()
+                .any(|(range, other)| other == name && inside(range))
+            {
+                owners.insert(owner(entry));
             }
         }
     }
@@ -312,6 +352,28 @@ mod tests {
         );
         let error = capture(&compiler, Cursor::new(&stdout), Vec::new()).explain(original.clone());
         assert!(error.contains("fast_mesh 0.1.0"), "{error}");
+
+        // An error in a support module names the mod that declared it.
+        fs::write(
+            dir.join("src/main.rs"),
+            "struct MeshTables { base: u8, animated_layers: u8 }\nfn main() {}\nmod fast_mesh_tables {\n    pub fn replace() -> super::MeshTables { super::MeshTables { base: 1 } }\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".horizon-mixins-stage.json"),
+            json!({"schema":6,"injections":[],"modules":[{"mod_id":"fast_mesh","mod_version":"0.1.0","file":"src/main.rs","name":"fast_mesh_tables"}]}).to_string(),
+        )
+        .unwrap();
+        let in_module = Command::new(env!("CARGO"))
+            .args(["check", "--offline", "--message-format=json"])
+            .arg("--manifest-path")
+            .arg(dir.join("Cargo.toml"))
+            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .output()
+            .unwrap();
+        let output = capture(&compiler, Cursor::new(&in_module.stdout), Vec::new());
+        assert_eq!(output.owners(), ["fast_mesh 0.1.0"]);
+        fs::write(dir.join("src/main.rs"), SOURCE).unwrap();
 
         for metadata in ["not json", "{}", r#"{"schema":99,"injections":[]}"#] {
             fs::write(dir.join(".horizon-mixins-stage.json"), metadata).unwrap();
