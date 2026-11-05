@@ -767,11 +767,16 @@ impl Game<'_> {
         }
         out
     }
+    /// `EntityType.getYOffset(level, pos, false, box)`: [`Self::drop_offset_from`] without
+    /// `movedUp`.
+    pub(super) fn drop_offset(&self, width: f64, height: f64, p: Pos) -> f64 {
+        self.drop_offset_from(width, height, p, false)
+    }
     /// `EntityType.getYOffset(level, pos, movedUp, box)`: the entity box set on
     /// top of the block (`setPos(x + 0.5, y + 1, z + 0.5)`) falls one block
     /// against the collision shapes overlapping that block, or, `moved_up`, two
     /// blocks against those of the block and the one under it.
-    pub(super) fn drop_offset(&self, width: f64, height: f64, p: Pos, moved_up: bool) -> f64 {
+    pub(super) fn drop_offset_from(&self, width: f64, height: f64, p: Pos, moved_up: bool) -> f64 {
         use horizon_world::{
             block_collision_scan::BlockCollisionScan, collision_context::CollisionContext,
         };
@@ -825,7 +830,7 @@ impl Game<'_> {
         };
         let t = self.res.mob_types().get(&name)?.clone();
         let y_off = if try_move_down {
-            self.drop_offset(t.width, t.height, p, false)
+            self.drop_offset(t.width, t.height, p)
         } else {
             0.0
         };

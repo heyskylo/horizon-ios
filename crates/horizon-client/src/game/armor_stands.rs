@@ -501,7 +501,7 @@ impl Game<'_> {
         };
         // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
         // up to two blocks (a bottom slab, the block under replaced grass).
-        let drop = self.drop_offset(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
+        let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
         stand.position.y = f64::from(pos[1]) + drop;
         stand.previous = stand.position;
         let foot = stand.position;
