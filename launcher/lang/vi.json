@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Dành cho những người chơi có mặt từ đầu. Nhận miễn phí; nhận rồi thì mãi là của bạn.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Hãy hoàn tất bước thanh toán miễn phí trong trình duyệt. Bộ sẽ xuất hiện ở đây ngay sau đó.",
   "{n} items": "{n} món",
-  "Nothing is on sale right now.": "Hiện không có gì đang bán."
+  "Nothing is on sale right now.": "Hiện không có gì đang bán.",
+  "Your basket": "Giỏ của bạn",
+  "Your basket is empty.": "Giỏ của bạn đang trống.",
+  "Add to basket": "Thêm vào giỏ",
+  "Total": "Tổng",
+  "This is a gift": "Đây là quà tặng",
+  "Your friend's Minecraft name": "Tên Minecraft của bạn bè",
+  "Find": "Tìm",
+  "For {name}": "Cho {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Hãy hỏi người trả tiền trước khi mua. Hoàn tiền trong 14 ngày vì bất kỳ lý do nào.",
+  "Pay {price} in your browser": "Trả {price} trong trình duyệt",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Thanh toán Paddle mở trong trình duyệt của bạn. Trình khởi chạy không trừ tiền gì.",
+  "US sales tax is added where a state charges it.": "Thuế bán hàng Hoa Kỳ được cộng thêm ở nơi tiểu bang thu.",
+  "VAT included where it applies.": "Đã gồm VAT ở nơi áp dụng.",
+  "In a set in your basket": "Nằm trong một bộ trong giỏ của bạn",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Hoàn tất thanh toán trong trình duyệt. Vật phẩm sẽ vào Tủ đồ sau giây lát."
 }

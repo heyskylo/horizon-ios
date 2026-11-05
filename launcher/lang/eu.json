@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Lehenengo hemen egon ziren jokalarientzat. Doan eska daiteke; behin eskatuta, zurea da betiko.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Amaitu doako ordainketa zure nabigatzailean. Multzoa pixka bat geroago iritsiko da hona.",
   "{n} items": "{n} elementu",
-  "Nothing is on sale right now.": "Orain ez dago ezer salgai."
+  "Nothing is on sale right now.": "Orain ez dago ezer salgai.",
+  "Your basket": "Zure saskia",
+  "Your basket is empty.": "Zure saskia hutsik dago.",
+  "Add to basket": "Gehitu saskira",
+  "Total": "Guztira",
+  "This is a gift": "Opari bat da",
+  "Your friend's Minecraft name": "Zure lagunaren Minecraft izena",
+  "Find": "Bilatu",
+  "For {name}": "{name}rentzat",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Galdetu ordainduko duenari erosi aurretik. Itzulketak 14 egunen barruan edozein arrazoirengatik.",
+  "Pay {price} in your browser": "Ordaindu {price} nabigatzailean",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle-ren ordainketa nabigatzailean irekitzen da. Abiarazlean ez da ezer kobratzen.",
+  "US sales tax is added where a state charges it.": "AEBetako salmenta-zerga gehitzen da estatu batek kobratzen duen lekuan.",
+  "VAT included where it applies.": "BEZ barne, aplikatzen den lekuan.",
+  "In a set in your basket": "Zure saskiko multzo batean",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Amaitu ordainketa nabigatzailean. Zure elementuak Armairura iritsiko dira une batean."
 }

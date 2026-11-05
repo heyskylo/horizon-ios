@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "ಇಲ್ಲಿ ಮೊದಲು ಇದ್ದ ಆಟಗಾರರಿಗಾಗಿ. ಉಚಿತವಾಗಿ ಪಡೆಯಬಹುದು; ಒಮ್ಮೆ ಪಡೆದರೆ ಅದು ಶಾಶ್ವತವಾಗಿ ನಿಮ್ಮದು.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "ನಿಮ್ಮ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಉಚಿತ ಚೆಕ್‌ಔಟ್ ಪೂರ್ಣಗೊಳಿಸಿ. ಸೆಟ್ ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಇಲ್ಲಿಗೆ ಬರುತ್ತದೆ.",
   "{n} items": "{n} ವಸ್ತುಗಳು",
-  "Nothing is on sale right now.": "ಈಗ ಏನೂ ಮಾರಾಟಕ್ಕಿಲ್ಲ."
+  "Nothing is on sale right now.": "ಈಗ ಏನೂ ಮಾರಾಟಕ್ಕಿಲ್ಲ.",
+  "Your basket": "ನಿಮ್ಮ ಬುಟ್ಟಿ",
+  "Your basket is empty.": "ನಿಮ್ಮ ಬುಟ್ಟಿ ಖಾಲಿಯಾಗಿದೆ.",
+  "Add to basket": "ಬುಟ್ಟಿಗೆ ಸೇರಿಸಿ",
+  "Total": "ಒಟ್ಟು",
+  "This is a gift": "ಇದು ಉಡುಗೊರೆ",
+  "Your friend's Minecraft name": "ನಿಮ್ಮ ಸ್ನೇಹಿತರ Minecraft ಹೆಸರು",
+  "Find": "ಹುಡುಕಿ",
+  "For {name}": "{name} ಗಾಗಿ",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "ಕೊಳ್ಳುವ ಮೊದಲು ಹಣ ಕೊಡುವವರನ್ನು ಕೇಳಿ. ಯಾವುದೇ ಕಾರಣಕ್ಕೂ 14 ದಿನಗಳಲ್ಲಿ ಹಣ ಮರುಪಾವತಿ.",
+  "Pay {price} in your browser": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ {price} ಪಾವತಿಸಿ",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle ಪಾವತಿ ನಿಮ್ಮ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ತೆರೆಯುತ್ತದೆ. ಲಾಂಚರ್‌ನಲ್ಲಿ ಏನನ್ನೂ ಕಡಿತಗೊಳಿಸುವುದಿಲ್ಲ.",
+  "US sales tax is added where a state charges it.": "ರಾಜ್ಯ ವಿಧಿಸುವಲ್ಲಿ ಅಮೆರಿಕದ ಮಾರಾಟ ತೆರಿಗೆ ಸೇರುತ್ತದೆ.",
+  "VAT included where it applies.": "ಅನ್ವಯಿಸುವಲ್ಲಿ VAT ಸೇರಿದೆ.",
+  "In a set in your basket": "ನಿಮ್ಮ ಬುಟ್ಟಿಯ ಸೆಟ್‌ನಲ್ಲಿ",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಪಾವತಿ ಮುಗಿಸಿ. ನಿಮ್ಮ ವಸ್ತುಗಳು ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ವಾರ್ಡ್‌ರೋಬ್‌ಗೆ ಬರುತ್ತವೆ."
 }

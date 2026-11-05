@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Bu yerda birinchi bo‘lgan o‘yinchilar uchun. Bepul olish mumkin; olganingizdan so‘ng u abadiy sizniki.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Bepul to‘lovni brauzeringizda yakunlang. To‘plam birozdan so‘ng shu yerda paydo bo‘ladi.",
   "{n} items": "{n} ta buyum",
-  "Nothing is on sale right now.": "Hozir hech narsa sotilmayapti."
+  "Nothing is on sale right now.": "Hozir hech narsa sotilmayapti.",
+  "Your basket": "Savatingiz",
+  "Your basket is empty.": "Savatingiz bo'sh.",
+  "Add to basket": "Savatga qo'shish",
+  "Total": "Jami",
+  "This is a gift": "Bu sovg'a",
+  "Your friend's Minecraft name": "Do'stingizning Minecraft nomi",
+  "Find": "Topish",
+  "For {name}": "{name} uchun",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Sotib olishdan oldin kim to'lashini so'rang. Har qanday sabab bilan 14 kun ichida pul qaytariladi.",
+  "Pay {price} in your browser": "{price} ni brauzerda to'lash",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle to'lovi brauzeringizda ochiladi. Launcherda hech narsa yechilmaydi.",
+  "US sales tax is added where a state charges it.": "AQSh savdo solig'i shtat oladigan joyda qo'shiladi.",
+  "VAT included where it applies.": "QQS amal qiladigan joyda kiritilgan.",
+  "In a set in your basket": "Savatingizdagi to'plamda",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "To'lovni brauzerda tugating. Buyumlaringiz birozdan keyin Garderobga keladi."
 }

@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pelaajille, jotka olivat täällä ensin. Ilmainen; lunastettuna se on pysyvästi sinun.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Viimeistele ilmainen kassa selaimessasi. Setti ilmestyy tänne hetken kuluttua.",
   "{n} items": "{n} esinettä",
-  "Nothing is on sale right now.": "Mitään ei ole nyt myynnissä."
+  "Nothing is on sale right now.": "Mitään ei ole nyt myynnissä.",
+  "Your basket": "Ostoskorisi",
+  "Your basket is empty.": "Ostoskorisi on tyhjä.",
+  "Add to basket": "Lisää koriin",
+  "Total": "Yhteensä",
+  "This is a gift": "Tämä on lahja",
+  "Your friend's Minecraft name": "Ystäväsi Minecraft-nimi",
+  "Find": "Etsi",
+  "For {name}": "Saajalle {name}",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Kysy maksajalta ennen ostamista. Hyvitys 14 päivän sisällä mistä tahansa syystä.",
+  "Pay {price} in your browser": "Maksa {price} selaimessa",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddlen maksu avautuu selaimeesi. Käynnistimessä ei veloiteta mitään.",
+  "US sales tax is added where a state charges it.": "Yhdysvaltain myyntivero lisätään, jos osavaltio perii sen.",
+  "VAT included where it applies.": "ALV sisältyy, missä sitä sovelletaan.",
+  "In a set in your basket": "Korisi setissä",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua."
 }

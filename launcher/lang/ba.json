@@ -1198,5 +1198,20 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Беренсе булып килгән уйынсылар өсөн. Бушлай алырға була; алғас, мәңгелеккә һинеке.",
   "Finish the free checkout in your browser. The set lands here a moment later.": "Бушлай түләүҙе браузерҙа тамамлағыҙ. Йыйылма бер аҙҙан бында барлыҡҡа килә.",
   "{n} items": "{n} әйбер",
-  "Nothing is on sale right now.": "Хәҙер бер нәмә лә һатылмай."
+  "Nothing is on sale right now.": "Хәҙер бер нәмә лә һатылмай.",
+  "Your basket": "Кәрзинегеҙ",
+  "Your basket is empty.": "Кәрзинегеҙ буш.",
+  "Add to basket": "Кәрзингә өҫтәргә",
+  "Total": "Барыһы",
+  "This is a gift": "Был бүләк",
+  "Your friend's Minecraft name": "Дуҫығыҙҙың Minecraft исеме",
+  "Find": "Табырға",
+  "For {name}": "{name} өсөн",
+  "Ask whoever pays before you buy. Refunds within 14 days for any reason.": "Һатып алыр алдынан кем түләйәсәген һорағыҙ. Теләһә ниндәй сәбәп менән 14 көн эсендә аҡса кире ҡайтарыла.",
+  "Pay {price} in your browser": "{price} браузерҙа түләргә",
+  "Paddle's checkout opens in your browser. Nothing is charged in the launcher.": "Paddle түләүе браузерығыҙҙа асыла. Лаунчерҙа бер нәмә лә алынмай.",
+  "US sales tax is added where a state charges it.": "АҠШ һатыу һалымы штат талап иткән урында өҫтәлә.",
+  "VAT included where it applies.": "ҠӨҺ ҡулланылған урында индерелгән.",
+  "In a set in your basket": "Кәрзинегеҙҙәге йыйылмала",
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Түләүҙе браузерҙа тамамлағыҙ. Әйберҙәрегеҙ бер аҙҙан Гардеробҡа килә."
 }

@@ -10,16 +10,26 @@
 //! and wears); a visit refreshes it as a Wardrobe visit does. Prices, sets, collections and the
 //! Supporter badge all come from the catalogue: an item it doesn't price isn't sold.
 use super::*;
-use horizon_launcher::shop::{self as rules, FOUNDER_SET};
-use horizon_launcher::wardrobe::{words, Entry, Me, Order, Set};
+use horizon_launcher::shop::{self as rules, Basket, FOUNDER_SET};
+use horizon_launcher::wardrobe::{words, Entry, Me, Order, Player, Set};
 use std::collections::{BTreeMap, HashSet};
+
+mod basket;
 
 /// The Shop's own state: the basket and what the player chose on the page.
 #[derive(Default)]
 pub(crate) struct Shop {
+    basket: Basket,
     currency: Option<String>,
     /// The card tried on: an item, a set, the Supporter badge or the founder set.
     selected: Option<String>,
+    /// The Supporter badge's price before it goes in the basket, in cents.
+    amount: Option<u32>,
+    gift: bool,
+    /// The gift's recipient, once found.
+    friend: Option<Player>,
+    /// Enter in the friend's field: look the name up on the next draw.
+    pub(crate) find_soon: bool,
     busy: bool,
     said: Option<String>,
     /// The player in 3D, the Wardrobe's view (`viewer`) with a camera of its own.
@@ -114,6 +124,9 @@ impl Launcher {
         if std::mem::take(&mut self.wardrobe_reload) || self.wardrobe.is_none() {
             self.open_wardrobe(cx);
         }
+        if std::mem::take(&mut self.shop.find_soon) {
+            self.shop_find(cx);
+        }
         let viewer = self.shop_dress(cx);
         let Some(w) = self.wardrobe.as_ref() else {
             return page.child(header);
@@ -164,7 +177,8 @@ impl Launcher {
             .w(px(320.))
             .flex_none()
             .child(self.shop_try_on(&me, &c, viewer, cx))
-            .children(self.shop_details(&me, &c, &currency, cx));
+            .children(self.shop_details(&me, &c, &currency, cx))
+            .child(self.shop_basket(&me, &c, &currency, cx));
         let right = self.shop_cards(&me, &c, &currency, cx).flex_1().min_w_0();
         page.child(header).child(
             div()
@@ -195,9 +209,11 @@ impl Launcher {
             .child(retry)
     }
 
-    /// What each slot shows now: what the account wears, the chosen card's items over it.
+    /// What each slot shows now: what the account wears, the basket's items over it, then the
+    /// chosen card's.
     fn shop_tried(&self, me: &Me, c: &Catalogue) -> BTreeMap<String, String> {
-        let items: Vec<&str> = (self.shop.selected.iter())
+        let ids = self.shop.basket.ids(c);
+        let items: Vec<&str> = (ids.iter().chain(&self.shop.selected))
             .flat_map(|id| unpack(id, c, me))
             .collect();
         let tried = items.into_iter().filter_map(|id| {
@@ -559,29 +575,5 @@ impl Launcher {
             });
         })
         .detach();
-    }
-
-    /// A sold item or set: what it costs this account (nothing more yet: no basket).
-    fn shop_buy(
-        &self,
-        id: &str,
-        me: &Me,
-        c: &Catalogue,
-        currency: &str,
-        _: &mut Context<Self>,
-    ) -> Option<Div> {
-        let owned: HashSet<String> = me.owned.iter().cloned().collect();
-        let price = match c.sets.iter().find(|s| s.id == id) {
-            Some(s) => match rules::set_price(s, c, &owned, currency) {
-                (_, mine) if mine == s.items.len() => tr("Owned").to_string(),
-                (amount, _) => rules::format_price(amount, currency),
-            },
-            None if owned.contains(id) => tr("Owned").to_string(),
-            None => {
-                let e = c.items.iter().find(|e| e.id == id)?;
-                rules::format_price(*e.prices.get(currency)?, currency)
-            }
-        };
-        Some(ui::text(15., FontWeight::MEDIUM, ink::FULL).child(price))
     }
 }
