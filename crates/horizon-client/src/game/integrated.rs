@@ -333,20 +333,15 @@ impl Game<'_> {
             return;
         };
         let enabled = self.options.pregen || self.settings.extras.pregen;
-        if horizon_client::command::vanilla::game_dispatcher()
-            .find("pregen")
-            .is_some()
-            == enabled
-        {
-            return;
-        }
-        server.call(move |g| {
+        // Check on the server, after earlier updates have run, so a later toggle
+        // wins. Do not block the window when an unrelated setting changes.
+        let _ = server.tasks.send(Box::new(move |g| {
             use horizon_client::command::vanilla;
             if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
                 vanilla::set_horizon_commands(enabled);
                 g.resend_commands_filtered();
             }
-        });
+        }));
     }
 
     /// `Minecraft.hasSingleplayerServer`: a world of this window's own, run

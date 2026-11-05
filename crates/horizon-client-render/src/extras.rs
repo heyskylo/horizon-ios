@@ -769,7 +769,8 @@ impl Item {
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
             | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
-            | CosmeticsOthers | CosmeticsAuras | CosmeticsSolo | HorizonMarks | HorizonMe | Pregen => {
+            | CosmeticsOthers | CosmeticsAuras | CosmeticsSolo | HorizonMarks | HorizonMe
+            | Pregen => {
                 return None;
             }
         })
