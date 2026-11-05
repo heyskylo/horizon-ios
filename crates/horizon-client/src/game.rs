@@ -8238,6 +8238,7 @@ impl Game<'_> {
     fn pauses_game(&self) -> bool {
         self.has_singleplayer_server()
             && !self.is_published()
+            && !self.has_split_players()
             && self.title.is_none()
             && (matches!(
                 self.screen,
