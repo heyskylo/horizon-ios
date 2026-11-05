@@ -123,6 +123,7 @@ impl Game<'_> {
                 yaw: super::cushions::snap_yaw(yaw),
                 color: 0,
                 check_interval: 0,
+                custom_name: None,
             });
         } else if kind == "minecraft:lightning_bolt" {
             self.spawn_remote_bolt(id, position);

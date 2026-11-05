@@ -302,8 +302,9 @@ horizon-server rollback [--timeout SECONDS]
 ```
 
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
-console commands do. While it's stopped, they edit vanilla's files directly. `kick`, `ban`, `pardon`, `ban-ip`
-and `pardon-ip` run the vanilla command on the running server, through its control API; `players` reads the
+console commands do. While it's stopped, they edit vanilla's files directly. `kick` runs the vanilla command
+on the running server, through its control API; `ban`, `pardon`, `ban-ip` and `pardon-ip` do the same while it
+is running and edit the vanilla files directly while it is stopped. `players` reads the
 lists from the files when the server is stopped. Any console command works through
 `cmd`: `horizon-server cmd ban Griefer`, `horizon-server cmd say Restarting in 5 minutes`.
 #### Temporary bans

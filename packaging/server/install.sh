@@ -74,11 +74,14 @@ else
   [ -n "$TAG" ] || die "could not read the release's tag"
   RAWTAG=$TAG
   # A Nightly installs under its date and commit, as `horizon-server update` names it:
-  # "Nightly 2026-10-28 · 0c02067" is nightly-2026-10-28-0c02067.
+  # "Nightly 2026-10-28 · 0c02067" is nightly-2026-10-28-0c02067. Its signature is checked for exactly that
+  # version, so the title must name it (as horizon_release_sign::nightly_title_version reads it, strictly).
+  NAME=
   case "$TAG" in
     nightly|nightly-*)
-      NAME=$(printf '%s\n' "$JSON" | sed -n 's/^  "name": "Nightly \([0-9-]\{10\}\) · \([0-9a-f]\{1,40\}\)".*/nightly-\1-\2/p' | head -n 1)
-      [ -z "$NAME" ] || TAG=$NAME ;;
+      NAME=$(printf '%s\n' "$JSON" | sed -n 's/^  "name": "Nightly \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) · \([0-9a-f]\{7,40\}\)"[,}]*$/nightly-\1-\2/p' | head -n 1)
+      [ -n "$NAME" ] || die "this Nightly's title doesn't name its date and commit as Horizon signs them, so it can't be checked: not installed"
+      TAG=$NAME ;;
   esac
   # A release asset's download address, from its block in the release's JSON.
   asset_url() {
@@ -100,23 +103,27 @@ else
   [ -n "$URL" ] || die "release $TAG has none of $ASSETS"
 
   # The signature (docs/release-flow.md, "Signed checksums"): SHA256SUMS.sig holds one base64 Ed25519 signature per
-  # line over "horizon release <tag>\n" + SHA256SUMS, a Nightly's for the channel "nightly" instead of its tag.
+  # line over "horizon release <tag>\n" + SHA256SUMS. A Nightly is checked against SHA256SUMS.v2.sig instead, signed
+  # for its own version (nightly-<date>-<commit>, from its title), never the channel's SHA256SUMS.sig: an older
+  # Nightly can't be passed off as the current one (docs/security.md, "Nightly signatures").
   # It needs OpenSSL 3 (LibreSSL, which macOS ships, and OpenSSL 1.x cannot verify Ed25519 this way); without it
   # the install says so and keeps the GitHub SHA-256 check below.
   EXPECT=$DIGEST
-  case "$RAWTAG" in nightly|nightly-*) SIGTAG=nightly ;; *) SIGTAG=$RAWTAG ;; esac
+  if [ -n "$NAME" ]; then SIGTAG=$NAME; SIGFILE=SHA256SUMS.v2.sig; else SIGTAG=$RAWTAG; SIGFILE=SHA256SUMS.sig; fi
   if ! command -v openssl >/dev/null; then
     echo "Note: OpenSSL isn't installed, so the release signature was not checked; checking GitHub's SHA-256 only."
   elif ! openssl version | grep -Eq '^OpenSSL ([3-9]|[1-9][0-9])\.'; then
     echo "Note: $(openssl version | cut -d' ' -f1-2) can't check Ed25519 signatures (OpenSSL 3 is needed), so the release signature was not checked; checking GitHub's SHA-256 only."
   else
     SUMS_URL=$(asset_url SHA256SUMS)
-    SIG_URL=$(asset_url SHA256SUMS.sig)
-    if [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then
+    SIG_URL=$(asset_url "$SIGFILE")
+    if [ -n "$NAME" ] && { [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; }; then
+      die "$TAG has no $SIGFILE (its signature for this exact build): it was published before Nightlies were signed for their own version, so it can't be checked. Install the current Nightly (--version latest) instead."
+    elif [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then
       echo "Note: release $TAG has no signed checksums (it was published before signing began), so the signature was not checked; checking GitHub's SHA-256 only."
     else
       curl -fsSL -o "$TMP/SHA256SUMS" "$SUMS_URL" || die "could not download SHA256SUMS"
-      curl -fsSL -o "$TMP/SHA256SUMS.sig" "$SIG_URL" || die "could not download SHA256SUMS.sig"
+      curl -fsSL -o "$TMP/SHA256SUMS.sig" "$SIG_URL" || die "could not download $SIGFILE"
       { printf 'horizon release %s\n' "$SIGTAG"; cat "$TMP/SHA256SUMS"; } > "$TMP/message"
       SIGNED=
       for KEY in $RELEASE_KEYS; do

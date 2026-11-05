@@ -21,6 +21,12 @@ class IntegrationEnvironmentTests(unittest.TestCase):
             self.assertEqual(env['HORIZON_TELEMETRY_URL'], 'off')
             self.assertEqual(env['HORIZON_LAUNCHER_NO_SELF_UPDATE'], '1')
             self.assertEqual(env['HORIZON_NO_AUDIO'], '1')
+            self.assertEqual(env['HORIZON_TEST_LOOPBACK'], '1')
+
+    def test_real_lan_suites_can_keep_the_network_interfaces(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = game_environment({'HORIZON_TEST_LOOPBACK': '0'}, root)
+            self.assertEqual(env['HORIZON_TEST_LOOPBACK'], '0')
 
     def test_each_fixture_process_gets_fresh_homes_and_cleanup(self):
         script = ('import json, os; from pathlib import Path; '
