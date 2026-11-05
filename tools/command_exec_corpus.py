@@ -5493,6 +5493,7 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 
 def groups():
     try:
+        from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
         from .carpet_farm_corpus import carpet_farms
@@ -5500,6 +5501,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
+        from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
         from carpet_farm_corpus import carpet_farms
@@ -5508,6 +5510,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
 
 
