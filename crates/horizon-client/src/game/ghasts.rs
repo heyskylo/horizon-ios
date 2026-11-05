@@ -99,13 +99,12 @@ impl Game<'_> {
             // timeout.
             self.mobs[index].extra.counter = 0;
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
             self.mount.reset_jump();
             if was_empty {
                 let down = happy_ghast::goggles(true, &self.mobs[index]);
                 let _ = self.handle_mob_events(vec![down]);
             }
-            self.trigger_player("minecraft:started_riding");
+            self.start_riding(id);
             return true;
         }
         false

@@ -1746,6 +1746,18 @@ impl Game<'_> {
                 && adv::conditions(&c["player"], &pctx, w)
         });
     }
+    /// `Entity.startRiding`'s `sendEventAndTriggers`: `START_RIDING_TRIGGER`
+    /// for every `ServerPlayer` in `entityToRide.getIndirectPassengersStream()`.
+    pub(super) fn trigger_started_riding(&mut self, vehicle: u32) {
+        let mounts: Vec<(u32, Option<u32>)> =
+            self.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+        let aboard = super::boarding::passenger_vehicles(vehicle, &mounts);
+        self.for_each_player(|g| {
+            if g.riding.is_some_and(|v| aboard.contains(&v)) {
+                g.trigger_player("minecraft:started_riding");
+            }
+        });
+    }
     /// A trigger with only the player condition (slept_in_bed, started_riding).
     pub(super) fn trigger_player(&mut self, name: &str) {
         let me = self.player_entity_for(name);

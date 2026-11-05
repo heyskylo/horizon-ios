@@ -2895,6 +2895,9 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// Vehicles that gained a rider this tick whose `START_RIDING_TRIGGER` was
+    /// not fired yet (`game/boarding.rs`), for a guest's turn.
+    started_riding: Vec<u32>,
     /// `Entity.boardingCooldown` of the acting player, and its vehicle at the
     /// last tick (`game/boarding.rs`).
     boarding_cooldown: i32,
@@ -19416,6 +19419,7 @@ impl<'a> Game<'a> {
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
+            started_riding: Vec::new(),
             boarding_cooldown: 0,
             riding_at_tick: None,
             rotation_forced: false,
