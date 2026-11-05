@@ -4,7 +4,9 @@
 Pictures of the game hold Minecraft's textures and can't be committed, so this test is differential: it builds the base
 (BASE_SHA on the parity runner, else the merge-base with origin/main) and the change, draws the same fixed scenes with
 each offscreen under HORIZON_STILL=1 (a frozen scene draws the same frame every run, docs/agent-control.md), and
-requires the decoded pixels to be identical. The oracle is the base build, not vanilla.
+requires the decoded pixels to be identical. The oracle is the base build, not vanilla. It fails any change that moves
+the picture on purpose, so no automatic selection runs it (named_only in tools/parity_hosts.json): a pull request that
+must leave the picture alone carries the frame-identity label (docs/release-flow.md).
 
 Sessions, each a fresh game and world (seed 7) per build:
 
