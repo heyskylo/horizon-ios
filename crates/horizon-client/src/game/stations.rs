@@ -2740,7 +2740,8 @@ impl Game<'_> {
         let lines = Self::resolved(&lines);
         // The component's height does not depend on where it is drawn, so a
         // probe at the origin gives the box its extra height.
-        let probe = horizon_client::bundle::tooltip_layout(self.items(), stack, 0.0, 0.0, 96.0);
+        let probe =
+            horizon_client::item_tooltip::bundle_tooltip(self.items(), stack, 0.0, 0.0, 96.0);
         let bundle_extra = probe.as_ref().map_or(0.0, |l| l.height + 2.0);
         let mut component = None;
         self.native_tooltip_component(stack, &mut component);
@@ -2759,9 +2760,13 @@ impl Game<'_> {
         self.tooltip_box(batch, Some(stack), x, y, w, h);
         let text_h = h - extra;
         Self::tooltip_text(batch, atlas, &lines, x, y);
-        if let Some(layout) =
-            horizon_client::bundle::tooltip_layout(self.items(), stack, x, y + text_h + 2.0, w)
-        {
+        if let Some(layout) = horizon_client::item_tooltip::bundle_tooltip(
+            self.items(),
+            stack,
+            x,
+            y + text_h + 2.0,
+            w,
+        ) {
             self.draw_bundle_tooltip(batch, &layout);
             self.draw_bundle_selected_name(batch, &layout, x, y + text_h + 2.0, w);
         }
