@@ -172,6 +172,16 @@ impl Entry {
         if self.owners.is_empty() {
             errors.push(format!("{id}: needs at least one owner (a GitHub login)"));
         }
+        // Once an entry records IDs, only they make an owner: a login added to `owners` alone would
+        // silently not be one (and be refused while listed). Both lists name the same accounts.
+        if !self.owner_ids.is_empty() && self.owner_ids.len() != self.owners.len() {
+            errors.push(format!(
+                "{id}: owners lists {} login(s) but owner_ids {} ID(s): give each owner's numeric GitHub \
+                 ID in owner_ids, in the same order (`gh api users/<login> --jq .id`)",
+                self.owners.len(),
+                self.owner_ids.len()
+            ));
+        }
         for (field, value) in [
             ("name", &self.name),
             ("summary", &self.summary),

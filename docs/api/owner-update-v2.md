@@ -51,10 +51,18 @@ owner-update-v2\n<id>\n<version>\n<sha256>\n<file>\n<submitter>\n<submitter_id>
 7. **The head merged is the head checked.** Merge with the head SHA the checks ran on (`gh pr merge --match-head-commit
    <sha>`), so a push between check and merge can't slip in.
 
+## Today
+
+The registry repository has no `owner-update` workflow yet (checked at horizon-mods `e53ad82`): every owner update
+waits for a reviewer, whatever its trailer says. Nothing merges on its own until a workflow doing every check above is
+written there. Until then the v2 trailer and `owner_ids` only make the review's notes and the service's refusals
+decide by ID.
+
 ## Order of deployment
 
 1. In the registry repository: update `scripts/owner_update.py` and the workflow to the checks above, accepting v2
    only; deploy the CI's `cargo horizon-mod` from a Horizon commit that knows `owner_ids` (older ones refuse the field).
-2. Run `tools/registry_backfill_owner_ids.py <checkout>` (dry run, then `--write`) and merge its pull request by hand.
+2. Once a maintainer has read `tools/registry_backfill_owner_ids.py`, run it on a checkout (dry run, then `--write`)
+   and merge its pull request by hand.
 3. Deploy the submission service with this change. Until step 1 is live, its v2 trailers fail verification and the
    updates simply wait for a reviewer.
