@@ -315,7 +315,6 @@
   "horizon.osk.close": "tutup",
   "horizon.extras.chat_animation.tooltip": "Baris sembang baharu meluncur masuk dari kiri semasa ia memudar, bukannya kelihatan keseluruhan.",
   "horizon.extras.chat_indicator.tooltip": "Bar berwarna di sebelah kiri baris sembang.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Roda tatal di atas butang dalam tetapan menukar nilainya, seperti dalam vanila. Mati, roda hanya menatal senarai.",
   "horizon.extras.pack_browser.tooltip": "Pilih Pek Sumber mendapat butang Tambah yang mencari Modrinth dan memasang pek ke dalam folder pek anda. Padam, permainan tidak pernah menghubungi Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Dalam dunia, pengawal lain boleh menyertai sebagai pemain baharu: tekan A apabila ia bertanya, kemudian pilih profil dan tempat untuk bermain.",
   "horizon.splitscreen.setup.monitor": "Pantau %s",

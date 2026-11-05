@@ -331,7 +331,6 @@
   "horizon.osk.close": "Chiudi",
   "horizon.extras.chat_animation.tooltip": "Una nuova linea di chat scorre da sinistra mentre si dissolve, invece di apparire intera.",
   "horizon.extras.chat_indicator.tooltip": "La barra colorata a sinistra di una chat line.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La rotella di scorrimento sopra un pulsante nelle impostazioni ne modifica il valore, come in Vanilla. Spento, la rotella scorre solo l'elenco.",
   "horizon.extras.pack_browser.tooltip": "Seleziona pacchetti di risorse ottiene un pulsante Aggiungi che cerca Modrinth e installa un pacchetto nella cartella dei pacchetti. Spento, il gioco non contatta mai Modrinth.",
   "horizon.extras.splitscreen.tooltip": "In un mondo, un altro controller può unirsi come nuovo giocatore: premi A quando richiesto, quindi scegli un profilo e dove giocare.",
   "horizon.splitscreen.setup.monitor": "Monitorare %s",
