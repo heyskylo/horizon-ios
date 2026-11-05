@@ -659,6 +659,9 @@ pub struct EntityView {
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
     pub nbt: Option<horizon_world::nbt::Tag>,
+    /// `Entity.getTeam().getName()` (a tamed pet answers its owner's team);
+    /// `None` without a team or where the identity is not bound.
+    pub team: Option<String>,
 }
 /// What `PlayerPredicate` reads of a player beyond its entity. Each part is
 /// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
@@ -1041,6 +1044,11 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                 .as_bool()
                 .is_none_or(|want| e.fishing_open_water == Some(want)),
             "minecraft:components" => components(p, &e.components),
+            // `TeamPredicate.matches`: a non-null effective team whose name
+            // equals the string exactly.
+            "minecraft:team" => {
+                matches!((p.as_str(), &e.team), (Some(want), Some(have)) if want == have)
+            }
             "minecraft:predicates" => true,
             _ => false,
         };
@@ -2153,6 +2161,29 @@ mod tests {
             kind: kind.into(),
             ..Default::default()
         }
+    }
+    /// `TeamPredicate.matches`: the effective team's name, exactly.
+    #[test]
+    fn team_predicate_needs_the_exact_team_name() {
+        let team = |v: &str| serde_json::json!({ v: "audit_team" });
+        let member = EntityView {
+            team: Some("audit_team".into()),
+            ..mob("minecraft:zombie")
+        };
+        for key in ["team", "minecraft:team"] {
+            assert!(entity(&team(key), &member, &Flat, [0.0; 3]));
+        }
+        let other = EntityView {
+            team: Some("Audit_Team".into()),
+            ..mob("minecraft:zombie")
+        };
+        assert!(!entity(&team("team"), &other, &Flat, [0.0; 3]));
+        assert!(!entity(
+            &team("team"),
+            &mob("minecraft:zombie"),
+            &Flat,
+            [0.0; 3]
+        ));
     }
     /// `entity_killed_player` by a mob's melee hit: the mob is the killer and
     /// the blow's causing and direct entity.

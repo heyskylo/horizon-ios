@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "Au démarrage et avant de jouer, ce que vous avez installé depuis le registre d'Horizon passe à sa version la plus récente pour ce jeu. Jamais dans un modpack, et une mise à jour qui retirerait des blocs ou des objets vous attend.",
   "Updated automatically: {list}.": "Mis à jour automatiquement : {list}.",
   "{title} wasn't updated: {error}": "{title} n'a pas été mis à jour : {error}",
+  "Builds on the Horizon you play": "Se compile sur le Horizon auquel vous jouez",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Nécessite les points d'accroche natifs v{needs}, le Horizon auquel vous jouez a la v{has} : mettez d'abord Horizon à jour",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Fait pour Horizon {pin}, mais {mods} visent un autre commit : la compilation vous demandera « Compiler quand même » et risque d'échouer",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Fait pour Horizon {pin}, vous jouez à {yours} : le launcher compile votre jeu sur {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} vous attend : il n'a plus {ids}, que vos mondes utilisent peut-être. Mettez-le à jour depuis la page Mods quand vous serez prêt."
 }
