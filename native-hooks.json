@@ -1422,6 +1422,9 @@
       "name": "world_drawn",
       "version": 1,
       "target": "horizon_client_render::gfx::native_render::native_world_drawn",
+      "neoforge": "RenderLevelStageEvent (the drawn world's colour, depth and matrices, once the whole level is drawn, before the hand)",
+      "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
