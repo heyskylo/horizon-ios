@@ -4,7 +4,7 @@
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
 use super::{
-    details::{Details, Link},
+    details::{Details, GitHub, Link},
     download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
 };
 use horizon_mods::index::{self, Index, Trust};
@@ -359,6 +359,22 @@ fn github_login(login: &str) -> bool {
         && !login.contains("--")
 }
 
+/// The GitHub repository a project's `source` is in, `https://github.com/<owner>/<repo>`: a
+/// deeper path (a folder of a monorepo) or a trailing `.git` names the same repository. None
+/// when the source isn't on GitHub, or its owner or name isn't one GitHub allows.
+pub fn github_repo(source: &str) -> Option<String> {
+    let path = source.strip_prefix("https://github.com/")?;
+    let mut parts = path.split(['/', '?', '#']);
+    let owner = parts.next().filter(|o| github_login(o))?;
+    let repo = parts.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    if repo.is_empty() || repo.len() > 100 || repo.starts_with('.') || !repo.bytes().all(allowed) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
 /// The words of a query found in a project's id, name, summary, authors or tags.
 fn matches(p: &index::Project, text: &str) -> bool {
     let hay = format!(
@@ -565,6 +581,10 @@ impl Source for Registry {
             updated: newest.map(|v| v.published.clone()).unwrap_or_default(),
             categories: p.categories.clone(),
             gallery: gallery_of(p),
+            github: github_repo(&p.source).map(|url| GitHub {
+                url,
+                stars: p.stars,
+            }),
             ..Details::default()
         })
     }

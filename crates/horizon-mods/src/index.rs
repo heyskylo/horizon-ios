@@ -151,6 +151,10 @@ pub struct Project {
     /// GitHub's counts, added by the registry's publish job (hourly).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub downloads: u64,
+    /// The GitHub stars of its `source` repository, added by the registry's
+    /// publish job (hourly); 0 when it has none or isn't on GitHub.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stars: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
