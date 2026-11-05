@@ -334,6 +334,7 @@ mod storage;
 mod structure_blocks;
 mod structure_edit;
 mod structures;
+mod studio;
 mod subtitle_hud;
 mod sulfur_cubes;
 mod tempban;
