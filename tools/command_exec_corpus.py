@@ -4088,6 +4088,129 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
 
 
 
+def mob_nbt_damage_cooldown():
+    """Unrelated NBT edits retain a live mob's internal damage protection."""
+    objective = 'rewrite_hit'
+    out = setup('/gamerule minecraft:spawn_mobs false', '/forceload remove 0 0 31 15')
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    def action(command, accepted=1):
+        check(f'/scoreboard players set #r {objective} 31', 31)
+        check(f'/scoreboard players set #s {objective} 17', 17)
+        out.append(cmd(f'/execute store result score #r {objective} '
+                       f'store success score #s {objective} run {command.lstrip("/")}'))
+        check(f'/scoreboard players get #r {objective}', accepted)
+        check(f'/scoreboard players get #s {objective}', accepted)
+
+    def state(health, hurt, custom='before', silent=False):
+        # Identity and actual values precede every rejected-hit observation.
+        check(f'/execute as {uid} if entity @s[type=minecraft:pig,tag=rewrite_hit_{serial}]')
+        check(f'/execute if data entity {uid} {{UUID:[I;294,0,0,{serial}],'
+              f'Health:{health}f,HurtTime:{hurt}s,Pos:[{x}d,200d,10.5d],'
+              f'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,CustomName:"{custom}"}}')
+        check(f'/data get entity {uid} Health', health)
+        check(f'/data get entity {uid} HurtTime', hurt)
+        check(f'/data get entity {uid} CustomName', len(custom))
+        check(f'/execute as {uid} {"if" if silent else "unless"} entity @s[nbt={{Silent:1b}}]')
+        out.extend(setup(f'/execute store result score #clock {objective} run time query gametime'))
+        check(f'/scoreboard players operation #clock {objective} -= #before {objective}', elapsed)
+
+    check('/tick freeze')
+    check('/gamerule minecraft:spawn_mobs', 0)
+    check('/forceload add 0 0 31 15', 2)
+    out.append({'op': 'settle'})
+    check('/execute if loaded 0 200 0')
+    check('/execute if loaded 31 200 15')
+    out.extend(setup('/kill @e[type=!player]', '/fill 0 199 0 31 203 15 air'))
+    check(f'/scoreboard objectives add {objective} dummy')
+    cases = ['no_write', 'name', 'silent', 'unchanged', 'stronger', 'expiry',
+             'fresh_write', 'health_write', 'hurt_write']
+    for serial, case in enumerate(cases, 1):
+        x = 2.5 + 3 * (serial - 1)
+        uid = f'00000126-0000-0000-0000-{serial:012x}'
+        elapsed = 0
+        check(f'/execute if block {int(x)} 200 10 air')
+        check(f'/setblock {int(x)} 199 10 stone')
+        check(f'/execute if block {int(x)} 199 10 stone')
+        out.extend(setup(f'/execute store result score #before {objective} run time query gametime'))
+        check(f'/summon pig {x} 200 10.5 {{UUID:[I;294,0,0,{serial}],'
+              f'Tags:["rewrite_hit","rewrite_hit_{serial}"],NoAI:1b,NoGravity:1b,'
+              'Silent:0b,PersistenceRequired:1b,Health:10f,CustomName:"before"}')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        state(10, 0)
+        if case == 'fresh_write':
+            action(f'/data merge entity {uid} {{CustomName:"after"}}')
+            state(10, 0, 'after')
+            action(f'/damage {uid} 1 generic')
+            state(9, 10, 'after')
+            action(f'/damage {uid} 1 generic', 0)
+            state(9, 10, 'after')
+        else:
+            action(f'/damage {uid} 1 generic')
+            state(9, 10)
+            action(f'/damage {uid} 1 generic', 0)
+            state(9, 10)
+            custom, silent, health, hurt = 'before', False, 9, 10
+            if case != 'no_write':
+                changes = {'name': 'CustomName:"after"', 'silent': 'Silent:1b',
+                           'unchanged': 'CustomName:"before"', 'stronger': 'Silent:1b',
+                           'expiry': 'CustomName:"after"', 'health_write': 'Health:6f,Silent:1b',
+                           'hurt_write': 'HurtTime:0s,CustomName:"after"'}[case]
+                action(f'/data merge entity {uid} {{{changes}}}', int(case != 'unchanged'))
+                if case in ('name', 'expiry', 'hurt_write'):
+                    custom = 'after'
+                if case in ('silent', 'stronger', 'health_write'):
+                    silent = True
+                if case == 'health_write':
+                    health = 6
+                if case == 'hurt_write':
+                    hurt = 0
+                state(health, hurt, custom, silent)
+            if case == 'expiry':
+                check('/tick step 9')
+                out.append({'op': 'tick', 'n': 9})
+                elapsed = 9
+                state(9, 1, custom)
+                action(f'/damage {uid} 1 generic', 0)
+                state(9, 1, custom)
+                check('/tick step 1')
+                out.append({'op': 'tick', 'n': 1})
+                elapsed = 10
+                state(9, 0, custom)
+                action(f'/damage {uid} 1 generic')
+                state(8, 10, custom)
+            elif case == 'stronger':
+                action(f'/damage {uid} 2 generic')
+                state(8, 10, custom, silent)
+                action(f'/damage {uid} 2 generic', 0)
+                state(8, 10, custom, silent)
+            else:
+                action(f'/damage {uid} 1 generic', 0)
+                state(health, hurt, custom, silent)
+                if case == 'no_write':
+                    action(f'/damage {uid} 2 generic')
+                    state(8, 10)
+                    # Prove ordinary expiry independently of any NBT rewrite.
+                    check('/tick step 9')
+                    out.append({'op': 'tick', 'n': 9})
+                    elapsed = 9
+                    state(8, 1)
+                    action(f'/damage {uid} 2 generic', 0)
+                    state(8, 1)
+                    check('/tick step 1')
+                    out.append({'op': 'tick', 'n': 1})
+                    elapsed = 10
+                    state(8, 0)
+                    action(f'/damage {uid} 2 generic')
+                    state(6, 10)
+        out.extend(setup(f'/kill {uid}'))
+    return out + setup(f'/scoreboard objectives remove {objective}',
+                       '/fill 0 199 0 31 203 15 air', '/forceload remove 0 0 31 15', '/tick unfreeze')
+
+
 def mob_full_resistance_hits():
     lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
     for x, z in [(0, 0), (16, 0), (0, 16), (16, 16)]:
@@ -5142,6 +5265,7 @@ def groups():
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
+        ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
