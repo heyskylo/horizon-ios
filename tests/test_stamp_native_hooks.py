@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "stamp_native_hooks", Path(__file__).resolve().parents[1] / "tools/stamp_native_hooks.py"
@@ -87,6 +88,84 @@ class StampTests(unittest.TestCase):
         self.assertIn("NATIVE_HOOKS_API: u32 = 8;", (self.root / stamp.SOURCE).read_text())
         self.assertEqual(json.loads((self.root / stamp.CATALOG).read_text())["hooks"], [])
         self.assertEqual(json.loads((self.root / stamp.CATALOG).read_text())["helpers"], fragment["helpers"])
+
+    def test_selected_fragments_keep_merge_order_and_others_stay_pending(self):
+        self.git("add", ".")
+        self.git("commit", "-qm", "base")
+        # An older, unfinished API must not stop two later, reviewed APIs being registered.
+        for name in ("blocked", "z", "a"):
+            self.fragment(name)
+            self.git("add", ".")
+            self.git("commit", "-qm", name)
+        blocked = self.root / stamp.FRAGMENTS / "blocked.json"
+        pending_comment = self.root / "pending.rs"
+        pending_comment.write_text("/// Since API @API:blocked@.\n")
+        fragment = json.loads(blocked.read_text())
+        fragment["comments"] = ["pending.rs"]
+        blocked.write_text(json.dumps(fragment))
+        api = self.root / stamp.MOD_API
+        api.write_text("/// APIs @API:blocked@, @API:z@ and @API:a@.\n")
+        before = {path: path.read_bytes() for path in (blocked, pending_comment)}
+
+        # CLI order must not override merge order; duplicate selections must not consume numbers.
+        self.assertFalse(stamp.stamp(False, ["a", "z", "a"]))
+        source = (self.root / stamp.SOURCE).read_text()
+        self.assertIn("API 8 adds z.", source)
+        self.assertIn("API 9 adds a.", source)
+        self.assertIn("NATIVE_HOOKS_API: u32 = 9;", source)
+        self.assertEqual(api.read_text(), "/// APIs @API:blocked@, 8 and 9.\n")
+        docs = (self.root / stamp.DOCS).read_text()
+        self.assertIn("API 8 adds z; requires 8.", docs)
+        self.assertIn("API 9 adds a; requires 9.", docs)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(sorted(path.stem for path in blocked.parent.glob("*.json")), ["blocked"])
+        hooks = json.loads((self.root / stamp.CATALOG).read_text())["hooks"]
+        self.assertEqual([h["name"] for h in hooks], ["a", "z"])
+
+        # Once ready, the skipped API gets the next free number, even though it merged first.
+        self.assertTrue(stamp.stamp(True))
+        self.assertFalse(stamp.stamp(False))
+        self.assertIn("API 10 adds blocked.", (self.root / stamp.SOURCE).read_text())
+        self.assertIn("API 10 adds blocked; requires 10.", (self.root / stamp.DOCS).read_text())
+        self.assertEqual(api.read_text(), "/// APIs 10, 8 and 9.\n")
+        self.assertEqual(pending_comment.read_text(), "/// Since API 10.\n")
+        hooks = json.loads((self.root / stamp.CATALOG).read_text())["hooks"]
+        self.assertEqual([h["name"] for h in hooks], ["a", "z", "blocked"])
+        self.assertFalse(stamp.stamp(False))
+
+    def test_selection_rejects_unknown_names_before_writing_even_in_check_mode(self):
+        path = self.fragment("ready")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        for check in (False, True):
+            with self.subTest(check=check):
+                with self.assertRaisesRegex(ValueError, "unknown pending fragment.*typo"):
+                    stamp.stamp(check, ["ready", "typo"])
+                self.assertEqual({p: p.read_bytes() for p in before}, before)
+        path.unlink()
+        with self.assertRaisesRegex(ValueError, "unknown pending fragment.*ready"):
+            stamp.stamp(False, ["ready"])
+
+    def test_selection_cli_check_is_read_only_and_can_stamp_helper_only(self):
+        self.git("add", ".")
+        self.git("commit", "-qm", "base")
+        path = self.fragment("ready")
+        fragment = json.loads(path.read_text())
+        fragment["hooks"] = []
+        fragment["helpers"] = [{"name": "helper", "target": "target::helper"}]
+        path.write_text(json.dumps(fragment))
+        blocked = self.fragment("blocked")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        with patch("sys.argv", ["stamp_native_hooks.py", "--check", "--only", "ready"]):
+            self.assertEqual(stamp.main(), 1)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        with patch("sys.argv", ["stamp_native_hooks.py", "--only", "ready"]):
+            self.assertEqual(stamp.main(), 0)
+        catalog = json.loads((self.root / stamp.CATALOG).read_text())
+        self.assertEqual(catalog["hooks"], [])
+        self.assertEqual(catalog["helpers"], fragment["helpers"])
+        self.assertIn("NATIVE_HOOKS_API: u32 = 8;", (self.root / stamp.SOURCE).read_text())
+        self.assertFalse(path.exists())
+        self.assertEqual(blocked.read_bytes(), before[blocked])
 
     def test_catalog_facts_travel_with_the_hook(self):
         self.git("add", ".")
