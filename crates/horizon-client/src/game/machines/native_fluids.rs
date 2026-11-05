@@ -849,6 +849,125 @@ mod tests {
         assert_eq!(tank_room(&[tank], "create:chocolate", |_| true), 3000);
     }
 
+    /// The hook the game asks (`native_block_entity_accepts_fluid`) through
+    /// the same public dispatch `Game::native_fluid_accepts` calls: a water
+    /// tank refuses a mod's fluid, so neither insert pass fills it and it
+    /// offers no room to `native_move_fluids`; water still goes in, and with
+    /// no mod every tank takes every fluid.
+    #[test]
+    fn a_hook_that_refuses_a_fluid_leaves_both_passes_empty_and_offers_no_room() {
+        use horizon_client::mod_api::{
+            BlockEntityAcceptsFluidEvent, Flow, Hooks, Host, dispatch_block_entity_accepts_fluid,
+        };
+        struct TestHost;
+        impl Host for TestHost {}
+        struct WaterTank;
+        impl Hooks for WaterTank {
+            fn block_entity_accepts_fluid(
+                &self,
+                _host: &dyn Host,
+                event: &mut BlockEntityAcceptsFluidEvent<'_>,
+            ) -> Flow {
+                if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+                    Flow::Cancel
+                } else {
+                    Flow::Continue
+                }
+            }
+        }
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(WaterTank)];
+        let accepts = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &mods,
+                "mymod:water_tank",
+                tank,
+                "create:chocolate",
+                &mut cancel,
+            );
+            !cancel
+        };
+        let table = tank_table(&[4000, 4000], &[0, 1]);
+        // Pass 0 tops up a tank already holding the fluid: refused, it keeps
+        // exactly what it had.
+        let mut state = tanks(&[(Some("create:chocolate"), 1000), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[0], "create:chocolate", 500, accepts),
+            500
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        // Pass 1 fills an empty tank: refused, it stays empty.
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(&table, &mut state, &[1], "create:chocolate", 500, accepts),
+            500
+        );
+        assert_eq!(state[1], (None, 0));
+        // `native_move_fluids` counts no room in the tank that refuses it, so
+        // it asks its source for nothing.
+        let tank = NativeFluidTank {
+            tank: 0,
+            fluid: None,
+            amount: 1000,
+            capacity: 4000,
+            can_fill: true,
+            can_drain: true,
+        };
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "create:chocolate", accepts),
+            0
+        );
+        // The same tank takes water (the hook lets it through) and, with no
+        // mod at all, every fluid: existing mods are unchanged.
+        let water = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &mods,
+                "mymod:water_tank",
+                tank,
+                "minecraft:water",
+                &mut cancel,
+            );
+            !cancel
+        };
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "minecraft:water", water),
+            3000
+        );
+        let none: [Box<dyn Hooks>; 0] = [];
+        let no_mod = |tank: usize| {
+            let mut cancel = false;
+            dispatch_block_entity_accepts_fluid(
+                &TestHost,
+                &none,
+                "mymod:water_tank",
+                tank,
+                "create:chocolate",
+                &mut cancel,
+            );
+            !cancel
+        };
+        let mut state = tanks(&[(None, 0), (None, 0)]);
+        assert_eq!(
+            fill_tanks(
+                &table,
+                &mut state,
+                &[0, 1],
+                "create:chocolate",
+                1000,
+                no_mod
+            ),
+            0
+        );
+        assert_eq!(state[0], (Some("create:chocolate".to_owned()), 1000));
+        assert_eq!(
+            tank_room(std::slice::from_ref(&tank), "create:chocolate", no_mod),
+            3000
+        );
+    }
+
     #[test]
     fn an_empty_tank_writes_the_empty_fluid_not_none() {
         let mut nbt = Compound::new();
