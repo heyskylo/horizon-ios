@@ -8588,7 +8588,7 @@ impl Game<'_> {
             self.capture(true);
         }
     }
-    fn draw_item(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
+    pub(super) fn draw_item(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
         // `GuiGraphics.renderItem`: the resolved item model (tints, foil and
         // special renderers included), then the decorations.
         self.draw_item_model(batch, stack, x, y);
@@ -8678,7 +8678,7 @@ impl Game<'_> {
     }
     /// `GuiGraphicsExtractor.itemDecorations`: the count (or `count_text`)
     /// and damage bar.
-    fn draw_item_decorations(
+    pub(super) fn draw_item_decorations(
         &self,
         batch: &mut HudBatch,
         stack: &ItemStack,
@@ -10756,6 +10756,10 @@ impl Game<'_> {
     /// The same live word for Control (`InputWithModifiers.hasControlDown`).
     pub(super) fn has_control_down(&self) -> bool {
         self.modifiers.control_key()
+    }
+    /// The same live word for Alt (`InputWithModifiers.hasAltDown`).
+    pub(super) fn has_alt_down(&self) -> bool {
+        self.modifiers.alt_key()
     }
     /// Real events word the modifiers by their own `ModifiersChanged`; a
     /// control socket's `key` is synthesized, so it words the bit directly
