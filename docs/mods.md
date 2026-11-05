@@ -24,8 +24,9 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 3. A switch applies at once when the mod has only assets and data (textures, models, sounds, languages, recipes, tags,
    loot tables, advancements, functions): the game reloads its resources, then the world's data as `/reload` does,
    and the players of a world open to LAN get the new data. A mod that adds blocks, items, mob effects, entity or menu
-   types, or changes world generation, still loads only when the game starts: the Mods page says to restart
-   ([design/mod-hotload.md](design/mod-hotload.md)).
+   types, or changes world generation, still loads only when the game starts: the Mods page says to restart, and its
+   switch waits outside a world. On another server's world every content mod's switch waits: the server owns its
+   data ([design/mod-hotload.md](design/mod-hotload.md)).
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
