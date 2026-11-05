@@ -1835,7 +1835,7 @@ fn strip_finalize(tag: &mut Tag) {
 }
 /// `riders` under `tag`'s `Passengers`, after the passengers it kept from
 /// loading (`Entity.saveWithoutId`).
-fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
+pub(super) fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
     if let Tag::Compound(c) = tag {
         let mut list = match c.get(&"Passengers".into()) {
             Some(Tag::List(l)) => l.clone(),
