@@ -268,6 +268,7 @@ const PAGES: Ty = Ty::Enum(&[
     "extras",
     "horizon",
     "agent",
+    "video-vanilla",
 ]);
 
 /// `--confirm`, required by destructive commands: the player agreed.

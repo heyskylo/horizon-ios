@@ -126,6 +126,13 @@ version: the Mods page then says which mods pinned the commit the build compiled
 (`native-build --ignore-pins`) builds every mod on the picked version's own commit, where a pinned mod may not
 apply or compile. Its later rebuilds keep doing so.
 
+Before a native mod is installed, the registry browser (and `horizon-launcher mods search`) says how it fits the
+Horizon the selected instance plays: the commit its native build compiled, else the commit of its release or
+Nightly. A mod naming hook points builds there when that commit's `NATIVE_HOOKS_API` is the one it needs or later,
+else it asks for a newer Horizon; a pinned mod fits its own commit, else the line says the build moves the game to
+that commit, or, when mods turned on pin another, that the build will ask for **Build anyway**. The registry's index
+lists each version's `hooks` for this ([api/mod-index.md](api/mod-index.md)).
+
 ### Mods on the hook points
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few

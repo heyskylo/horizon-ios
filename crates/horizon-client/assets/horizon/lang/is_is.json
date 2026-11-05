@@ -469,5 +469,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Auras og slóðir sem aðrir leikmenn klæðast. Slökkt sjálfgefið.",
   "horizon.extras.cosmetics.shown": "Sýnd",
   "horizon.extras.cosmetics.hidden": "Falinn",
-  "horizon.extras.cosmetics.name_tags": "Eingöngu nafnamerki"
+  "horizon.extras.cosmetics.name_tags": "Eingöngu nafnamerki",
+  "Shader Packs...": "Shader pakkar..."
 }

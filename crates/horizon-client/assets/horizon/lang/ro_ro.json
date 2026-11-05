@@ -457,5 +457,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Aurele și traseele pe care le poartă alți jucători. Oprit implicit.",
   "horizon.extras.cosmetics.shown": "Afisat",
   "horizon.extras.cosmetics.hidden": "Ascuns",
-  "horizon.extras.cosmetics.name_tags": "Numai etichete de nume"
+  "horizon.extras.cosmetics.name_tags": "Numai etichete de nume",
+  "Shader Packs...": "Pachete de shader..."
 }

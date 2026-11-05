@@ -1412,6 +1412,9 @@ pub struct Mesher<'a> {
     pub shader_pack_lighting: bool,
     /// OptiFine/Iris separate ambient occlusion: vertex RGB does not include AO, and AO factor is passed in vertex alpha.
     pub separate_ao: bool,
+    /// A `shaders/` pack draws the terrain (with or without its `oldLighting`): fluid tops are
+    /// split into triangles as Iris splits them (`fluid::splits_north_east`).
+    pub shader_pack: bool,
     pub assets: &'a Assets,
     pub render: &'a RenderAssets,
     pub tables: &'a MeshTables,
@@ -1503,6 +1506,7 @@ impl Mesher<'_> {
                             self.nether_shading,
                             self.shader_pack_lighting,
                             self.separate_ao,
+                            self.shader_pack,
                         );
                         fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
                     }

@@ -1144,7 +1144,7 @@
   "Move…": "Mover…",
   "Move and restart": "Mover e reiniciar",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Abrir a loja",
+  "Get more cosmetics on playhorizon.dev": "Mais cosméticos em playhorizon.dev",
   "You don't own any cosmetics yet.": "Você ainda não tem nenhum cosmético.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automático segue a arquitetura deste launcher. No Windows ARM, escolha x64 ou ARM64. Versões sem ARM64 usam a compilação x64 assinada.",
   "Game architecture": "Arquitetura do jogo",
@@ -1174,5 +1174,10 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "Builds on the Horizon you play": "Compila no Horizon que você joga",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Precisa dos pontos de gancho nativos v{needs}, o Horizon que você joga tem a v{has}: atualize o Horizon primeiro",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Feito para o Horizon {pin}, mas {mods} fixam outro commit: a compilação vai pedir \"Compilar mesmo assim\" e pode falhar",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Feito para o Horizon {pin}, você joga {yours}: o launcher compila seu jogo no {pin}",
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Tags"
 }

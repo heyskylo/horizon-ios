@@ -413,6 +413,7 @@
   "Frame Generation": "Frame Sorkuntza",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Bi erreal bakoitzaren artean osaturiko fotograma erakusten du: leunagoa, lag apur bat gehiago.",
   "Shadow Cache": "Itzalen cachea",
+  "Shader Packs...": "Shader paketeak...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Berrerabili paketearen itzal-mapa eguzkia, ikuspegia eta mundua bat datozenean. Desaktibatuta lehenespenez.",
   "Find BlueMap": "Bilatu BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Zerbitzarietan, BlueMap web-mapa aurkitzen du urruneko lursailetarako. Hurrengoa sartu.",
