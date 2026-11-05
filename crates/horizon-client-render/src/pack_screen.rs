@@ -1161,6 +1161,11 @@ impl PackScreen {
         d::fill(out, 0, 0, self.width, TOPBAR_H, SIDEBAR_BG);
         let (bx, by) = self.back_button();
         let back_hover = d::inside(mouse, bx, by, BACK_W, BACK_H);
+        crate::widgets::declare_action(
+            crate::widgets::Action::Back,
+            [bx as f32, by as f32, BACK_W as f32, BACK_H as f32],
+            true,
+        );
         d::button(
             out,
             m,
@@ -1377,6 +1382,13 @@ impl PackScreen {
             let hover = d::inside(mouse, bx, by, 150, 20);
             // The cursor follows the mouse; the highlight also keyboard focus.
             crate::widgets::widget_cursor(hover, true);
+            if i == 1 && self.browser.is_none() {
+                crate::widgets::declare_action(
+                    crate::widgets::Action::Done,
+                    [bx as f32, by as f32, 150.0, 20.0],
+                    true,
+                );
+            }
             d::button(
                 out,
                 m,

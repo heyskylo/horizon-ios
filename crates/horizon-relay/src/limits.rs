@@ -1,9 +1,9 @@
 //! Token buckets for request rates and relayed bandwidth, and the
 //! per-address state behind them (kept in memory, forgotten after ten idle
-//! minutes).
+//! minutes), and the hosts each address holds open.
 use std::{
     collections::{HashMap, VecDeque},
-    net::IpAddr,
+    net::{IpAddr, Ipv6Addr},
     time::{Duration, Instant},
 };
 
@@ -81,6 +81,9 @@ pub struct Rates {
     pub unknown_limit: usize,
     pub unknown_window: Duration,
     pub block: Duration,
+    /// Hosts one address may hold open at once (`RELAY_MAX_HOSTS_PER_ADDRESS`);
+    /// an IPv6 /48 (one site, 65536 homes) may hold [`SITE_HOSTS`] times as many.
+    pub hosts_per_address: usize,
 }
 impl Default for Rates {
     fn default() -> Self {
@@ -92,8 +95,26 @@ impl Default for Rates {
             unknown_limit: 5,
             unknown_window: Duration::from_secs(600),
             block: Duration::from_secs(600),
+            hosts_per_address: 4,
         }
     }
+}
+
+/// How many times an address's open hosts an IPv6 /48 may hold.
+pub const SITE_HOSTS: usize = 4;
+
+/// What open hosts are counted under: the address key, and for IPv6 also its
+/// /48 with the larger cap. The prefix length keeps a /64 key and a /48 key
+/// that print alike apart.
+fn host_keys(ip: IpAddr, per_address: usize) -> Vec<((IpAddr, u8), usize)> {
+    let key = address_key(ip);
+    let mut keys = vec![((key, 64), per_address)];
+    if let IpAddr::V6(v6) = key {
+        let s = v6.segments();
+        let site = IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0));
+        keys.push(((site, 48), per_address.saturating_mul(SITE_HOSTS)));
+    }
+    keys
 }
 
 struct Address {
@@ -111,6 +132,9 @@ pub struct Limiter {
     enabled: bool,
     addresses: HashMap<IpAddr, Address>,
     last_sweep: Instant,
+    /// Open hosts by address key (and IPv6 site); never swept, each count
+    /// is given back by [`Limiter::close_host`].
+    hosts: HashMap<(IpAddr, u8), usize>,
 }
 impl Limiter {
     pub fn new(rates: Rates, enabled: bool) -> Self {
@@ -119,6 +143,39 @@ impl Limiter {
             enabled,
             addresses: HashMap::new(),
             last_sweep: Instant::now(),
+            hosts: HashMap::new(),
+        }
+    }
+    /// Count one more host open from `ip`, unless its address (or IPv6 site)
+    /// holds as many as it may already.
+    pub fn open_host(&mut self, ip: IpAddr) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        let keys = host_keys(ip, self.rates.hosts_per_address);
+        if keys
+            .iter()
+            .any(|(k, cap)| self.hosts.get(k).copied().unwrap_or(0) >= *cap)
+        {
+            return false;
+        }
+        for (k, _) in keys {
+            *self.hosts.entry(k).or_insert(0) += 1;
+        }
+        true
+    }
+    /// A host [`Limiter::open_host`] let in has gone.
+    pub fn close_host(&mut self, ip: IpAddr) {
+        if !self.enabled {
+            return;
+        }
+        for (k, _) in host_keys(ip, self.rates.hosts_per_address) {
+            if let Some(n) = self.hosts.get_mut(&k) {
+                *n -= 1;
+                if *n == 0 {
+                    self.hosts.remove(&k);
+                }
+            }
         }
     }
     fn entry(&mut self, ip: IpAddr, now: Instant) -> &mut Address {
@@ -258,6 +315,42 @@ mod tests {
             l.unknown(ip, t + Duration::from_secs(i * 200));
         }
         assert!(l.allow_join(ip, t + Duration::from_secs(2000)));
+    }
+
+    #[test]
+    fn open_hosts_per_address_and_ipv6_site() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let mut l = Limiter::new(
+            Rates {
+                hosts_per_address: 2,
+                ..Rates::default()
+            },
+            true,
+        );
+        let v4 = ip("198.51.100.1");
+        assert!(l.open_host(v4) && l.open_host(v4));
+        assert!(!l.open_host(v4));
+        assert!(l.open_host(ip("198.51.100.2")), "another address");
+        l.close_host(v4);
+        assert!(l.open_host(v4));
+        // IPv6: 2 per /64, 8 per /48 however many /64s it spreads over.
+        let mut opened = 0;
+        for home in 0..10 {
+            for _ in 0..2 {
+                opened += usize::from(l.open_host(ip(&format!("2001:db8:7:{home}::1"))));
+            }
+        }
+        assert_eq!(opened, 2 * SITE_HOSTS);
+        assert!(l.open_host(ip("2001:db8:8::1")), "another site");
+        l.close_host(ip("2001:db8:7:1::1"));
+        assert!(
+            !l.open_host(ip("2001:db8:7:0::1")),
+            "that home is still full"
+        );
+        assert!(l.open_host(ip("2001:db8:7:9::1")));
+        // Off when the relay can't see client addresses.
+        let mut off = Limiter::new(Rates::default(), false);
+        assert!((0..100).all(|_| off.open_host(v4)));
     }
 
     #[test]

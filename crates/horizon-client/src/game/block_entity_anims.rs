@@ -288,13 +288,99 @@ impl Game<'_> {
             Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])),
         )
     }
+    /// `BellBlockEntity.serverTick`: ringing server bells belong to the world,
+    /// including when no renderer is attached.
+    fn tick_bell_servers(&mut self) {
+        if self.be_anims.bells.is_empty() {
+            return;
+        }
+        let mut positions: Vec<_> = self.be_anims.bells.keys().copied().collect();
+        positions.sort_unstable();
+        let raiders = self
+            .res
+            .stations()
+            .enchantments
+            .entity_tags
+            .get("minecraft:raiders")
+            .cloned()
+            .unwrap_or_default();
+        for pos in positions {
+            if self
+                .be_anims
+                .ticker(self.world.block(pos[0], pos[1], pos[2]).0)
+                != Some(Ticker::Bell)
+            {
+                self.be_anims.bells.remove(&pos);
+            } else if self.tickets.levels().block_ticking_at(pos[0], pos[2]) {
+                self.tick_bell(pos, &raiders);
+            }
+        }
+    }
+
+    /// `BellBlockEntity.tick` and `makeRaidersGlow`, using live entity/tag state.
+    fn tick_bell(&mut self, pos: [i32; 3], raiders: &std::collections::HashSet<String>) {
+        let player = self.player_view().map(|p| BellEntity {
+            position: [p.position.x, p.position.y, p.position.z],
+            alive: p.alive,
+            raider: false,
+        });
+        let mobs = &self.mobs;
+        let entity = |h: u64| {
+            if h == PLAYER {
+                return player;
+            }
+            let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
+            Some(BellEntity {
+                position: [m.position.x, m.position.y, m.position.z],
+                alive: m.alive() && !m.removed,
+                raider: raiders.contains(&m.kind.id),
+            })
+        };
+        let tick = self
+            .be_anims
+            .bells
+            .entry(pos)
+            .or_default()
+            .tick(pos, entity);
+        let centre = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5,
+        ];
+        // On a server its own copy does this and sends the sound.
+        if tick.resonate && self.remote.is_none() {
+            // The server's copy plays the resonance for everyone.
+            self.audio
+                .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
+        }
+        if let Some((particles, glow)) = tick.ended {
+            for (p, color) in particles.into_iter().filter(|_| self.renderer.is_some()) {
+                // ColorParticleOption.create(ENTITY_EFFECT, color): ARGB.
+                let c = color as u32;
+                let channel = |shift: u32| ((c >> shift) & 255) as f32 / 255.0;
+                let options = ParticleOptions {
+                    color: [channel(16), channel(8), channel(0), channel(24)],
+                    ..ParticleOptions::simple(ParticleType::EntityEffect)
+                };
+                self.particles.add(&options, p, [0.0; 3]);
+            }
+            // makeRaidersGlow (the server's effect).
+            for m in self.mobs.iter_mut().filter(|_| self.remote.is_none()) {
+                if glow.contains(&u64::from(m.id)) {
+                    m.add_effect("minecraft:glowing", 60, 0);
+                }
+            }
+        }
+    }
+
     /// The client tickers of the loaded animated block entities, once per
     /// client tick (`ClientLevel.tickBlockEntities`).
     pub(super) fn tick_block_entity_anims(&mut self) {
-        // A server has no window, but its gateways and conduits still run
+        // A server has no window, but its bells, gateways and conduits still run
         // their server tickers; a client of one only animates what it is sent.
         if self.remote.is_none() {
             self.tick_conduit_servers();
+            self.tick_bell_servers();
         }
         let Some(r) = &self.renderer else {
             if self.remote.is_none() {
@@ -311,7 +397,11 @@ impl Game<'_> {
                 .filter_map(|(p, s)| Some((*p, self.be_anims.ticker(*s)?)))
                 .collect();
             present.sort_unstable_by_key(|(p, _)| *p);
-            self.be_anims.retain_present(&present);
+            if self.remote.is_none() {
+                self.be_anims.retain_present_preserving_bells(&present);
+            } else {
+                self.be_anims.retain_present(&present);
+            }
             self.be_anims.present = present;
             self.be_anims.present_revision = Some(revision);
         }
@@ -369,57 +459,10 @@ impl Game<'_> {
                     self.be_anims.skulls.entry(pos).or_default().tick(powered);
                 }
                 Ticker::Bell => {
-                    let player = self.player_view().map(|p| BellEntity {
-                        position: [p.position.x, p.position.y, p.position.z],
-                        alive: p.alive,
-                        raider: false,
-                    });
-                    let mobs = &self.mobs;
-                    let entity = |h: u64| {
-                        if h == PLAYER {
-                            return player;
-                        }
-                        let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
-                        Some(BellEntity {
-                            position: [m.position.x, m.position.y, m.position.z],
-                            alive: m.alive() && !m.removed,
-                            raider: raiders.contains(&m.kind.id),
-                        })
-                    };
-                    let tick = self
-                        .be_anims
-                        .bells
-                        .entry(pos)
-                        .or_default()
-                        .tick(pos, entity);
-                    let centre = [
-                        f64::from(pos[0]) + 0.5,
-                        f64::from(pos[1]) + 0.5,
-                        f64::from(pos[2]) + 0.5,
-                    ];
-                    // On a server its own copy does this and sends the sound.
-                    if tick.resonate && self.remote.is_none() {
-                        // The server's copy plays the resonance for everyone.
-                        self.audio
-                            .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
-                    }
-                    if let Some((particles, glow)) = tick.ended {
-                        for (p, color) in particles {
-                            // ColorParticleOption.create(ENTITY_EFFECT, color): ARGB.
-                            let c = color as u32;
-                            let channel = |shift: u32| ((c >> shift) & 255) as f32 / 255.0;
-                            let options = ParticleOptions {
-                                color: [channel(16), channel(8), channel(0), channel(24)],
-                                ..ParticleOptions::simple(ParticleType::EntityEffect)
-                            };
-                            self.particles.add(&options, p, [0.0; 3]);
-                        }
-                        // makeRaidersGlow (the server's effect).
-                        for m in self.mobs.iter_mut().filter(|_| self.remote.is_none()) {
-                            if glow.contains(&u64::from(m.id)) {
-                                m.add_effect("minecraft:glowing", 60, 0);
-                            }
-                        }
+                    // Integrated servers already ticked this state above, independently
+                    // of drawn block entities. Remote clients only animate their copy.
+                    if self.remote.is_some() {
+                        self.tick_bell(pos, &raiders);
                     }
                 }
                 Ticker::Conduit => {
@@ -595,7 +638,7 @@ impl Game<'_> {
         }
         if short {
             self.audio.play(
-                "minecraft:block.conduit.ambient_short",
+                "minecraft:block.conduit.ambient.short",
                 Some(centre),
                 1.0,
                 1.0,
@@ -937,5 +980,26 @@ mod tests {
         assert_eq!(recheck_opener_count(&mut counts, &open, elsewhere), (0, 1));
         assert_eq!(openers_at(&open, elsewhere), 1);
         assert_eq!(openers_at(&open, (0, 0, 0)), 0);
+    }
+}
+
+#[cfg(test)]
+mod bell_ownership_tests {
+    use horizon_client::block_entity_anim::{Bell, BlockEntityAnims};
+
+    #[test]
+    fn server_bells_survive_visibility_changes_but_remote_bells_do_not() {
+        let pos = [8, 200, 8];
+        let mut anims = BlockEntityAnims::default();
+        let mut bell = Bell::default();
+        bell.trigger_event(1, 2, 100, || vec![7]);
+        anims.bells.insert(pos, bell);
+        anims.pots.insert(pos, Default::default());
+        anims.retain_present_preserving_bells(&[]);
+        assert_eq!(anims.bells[&pos].nearby.as_deref(), Some([7].as_slice()));
+        assert!(anims.bells[&pos].shaking);
+        assert!(anims.pots.is_empty());
+        anims.retain_present(&[]);
+        assert!(anims.bells.is_empty());
     }
 }

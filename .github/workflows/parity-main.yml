@@ -30,7 +30,7 @@ jobs:
     runs-on: [self-hosted, macOS, horizon-parity-main]
     timeout-minutes: 240  # a core-crate batch reruns ~300 harnesses (~60-90 min), a bisect a few rounds of the failures
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -69,7 +69,7 @@ jobs:
           python3 tools/parity_main.py bisect "$BASE_SHA" --comment
       - name: Logs of the failed harnesses
         if: steps.harnesses.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parity-main-logs
           path: .local/parity-main-logs/

@@ -137,7 +137,7 @@ EquipmentTable.createForAllSlots	skip:data		drop chances come from the loot and 
 ExperienceOrb.<init>	port	crates/horizon-client/src/game.rs::Game::add_orb	random yaw and motion from the orb's own random; gap: minor: no rough direction offset and no unstuck when the orb spawns inside a block
 ExperienceOrb.unstuckIfPossible	port	crates/horizon-client/src/entities.rs::ExperienceOrb::unstuck	an orb spawned with its box inside blocks moves to the nearest free position (find_free_position over the border), run by the spawn path
 ExperienceOrb.awardWithDirection	port	crates/horizon-client/src/game.rs::Game::spawn_orbs	gap: minor: the rough direction is never given, so xp bottle orbs do not fly away from the surface they hit
-ExperienceOrb.setUnderwaterMovement	port	crates/horizon-client/src/entities.rs::ExperienceOrb::tick	gap: minor: tests the block at the orb's feet, not its eyes
+ExperienceOrb.setUnderwaterMovement	port	crates/horizon-client/src/entities.rs::ExperienceOrb::set_underwater_movement	widened float arithmetic; gap: minor: caller still tests the block at the orb's feet, not its eyes
 ExperienceOrb.hurtServer	port	crates/horizon-client/src/entities.rs::ExperienceOrb::hurt	ticked in #3514; `ExperienceOrb.hurtServer` is cited at crates/horizon-client/src/entities.rs:538
 ExperienceOrb.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orb_to_nbt	gap: minor: Health is always written as 5
 ExperienceOrb.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orbs_from_nbt	gap: minor: Health is ignored

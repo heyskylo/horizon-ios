@@ -73,6 +73,7 @@ pub mod ravager;
 pub mod render;
 pub mod riders;
 pub mod seen_grid;
+pub mod sheep_dye;
 pub mod shulker;
 pub mod skin;
 pub mod skin_layers;
@@ -1143,6 +1144,9 @@ pub struct Extra {
     /// vanilla code calls `setBred` outside `readAdditionalSaveData`), so only
     /// a save or `/summon` gives it, and `followMommy` reads it.
     pub bred: bool,
+    /// `Hoglin`'s `CannotBeHunted` save flag: a bastion's own hoglins have it,
+    /// so its piglins leave them alone (`Hoglin.canBeHunted`).
+    pub cannot_be_hunted: bool,
     /// `AbstractHorse.allowStandSliding`: the rider's jump sets it, and a
     /// horse still rearing then goes on with the rider's keys until the rear
     /// ends (`tick` clears it).
@@ -1451,6 +1455,25 @@ impl MannequinDescription {
     }
 }
 /// Events a mob tick asks the game to act on.
+impl MobEvent {
+    pub fn entity_sound(
+        mob: &Mob,
+        name: &'static str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+    ) -> Self {
+        Self::EntitySound {
+            mob: mob.id,
+            name,
+            at: [mob.position.x, mob.position.y, mob.position.z],
+            volume,
+            pitch,
+            source,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum MobEvent {
     /// Squid.handleEntityEvent(19), resetting the remote tentacle cycle.
@@ -1507,6 +1530,16 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// The entity overload of `Level.playSound`: keep the emitter and the
+    /// call site's category rather than turning it into a positional sound.
+    EntitySound {
+        mob: u32,
+        name: &'static str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        source: usize,
+    },
     /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
     /// block at `pos` (the splash and bubble particles over it).
     BubbleColumnParticles {
@@ -1989,6 +2022,14 @@ pub enum MobEvent {
         /// `MobEffectInstance` ambient flag (the beacon-style translucent icon).
         ambient: bool,
     },
+    /// Apply an effect to another mob: `IllusionerBlindnessSpellGoal.performSpellCasting`
+    /// blinds whatever `LivingEntity` the illusioner targets, not only a player.
+    EffectMob {
+        target: u32,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+    },
     /// Set an entity on fire.
     Ignite {
         target: Who,
@@ -2099,6 +2140,14 @@ pub enum MobEvent {
         mob: u32,
         table: &'static str,
         at: [f64; 3],
+    },
+    /// `Chicken.aiStep`: the egg timer ran out. The `chicken_lay` gift table
+    /// drops at the chicken; only when it dropped something does the egg sound
+    /// play (at `pitch`) and `entity_place` reach listeners.
+    LayEgg {
+        mob: u32,
+        at: [f64; 3],
+        pitch: f32,
     },
     /// `Armadillo.customServerAiStep`: the armadillo sheds a scute.
     ShedScute {
@@ -2279,6 +2328,8 @@ pub struct Seen {
     pub hunted_recently: bool,
     /// A piglin's `HURT_BY` memory.
     pub hurt_recently: bool,
+    /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
+    pub huntable: bool,
 }
 impl Seen {
     /// `LivingEntity.hasEffect`, by id without namespace.
@@ -2474,6 +2525,7 @@ impl Mob {
                 .collect(),
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
             hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
+            huntable: m.species() == Species::Hoglin && !m.is_baby() && !m.extra.cannot_be_hunted,
         }
     }
     /// `EntityType.getCategory`'s name.
@@ -2988,6 +3040,14 @@ impl Mob {
     #[inline]
     pub fn species(&self) -> Species {
         self.kind.species
+    }
+    /// Entity.getMaxAirSupply and the aquatic species' overrides.
+    pub fn max_air_supply(&self) -> i32 {
+        match self.species() {
+            Species::Axolotl => axolotl::MAX_AIR,
+            Species::Dolphin => 4800,
+            _ => 300,
+        }
     }
     /// `Mob.getMainArm`: the left arm when the mob is left-handed, a player's
     /// `mainHand` option for a player mob.

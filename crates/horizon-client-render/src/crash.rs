@@ -431,30 +431,6 @@ pub fn report_watchdog(home: &Path, side: &'static str, message: String) -> Opti
     )
 }
 
-/// The report for a game that went over the player's RAM limit (`ram_limit`), written by the
-/// watcher thread: it says nothing about where the memory went, so it carries no stack. The player
-/// chose this limit, so it is no bug to send (`telemetry::keep_crash`), and leaving that out ends
-/// the game seconds sooner: it keeps running, over its limit, until the report is written.
-pub fn report_memory_limit(home: &Path, side: &'static str, message: String) {
-    if REPORTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let report = Report {
-        time: Local::now(),
-        description: "RAM limit reached".into(),
-        error: message,
-        stack: String::new(),
-        thread: thread_name(side),
-        side,
-        details: system_details(side),
-        log: crate::logging::recent_lines(),
-    };
-    match report.save(home) {
-        Ok(path) => eprintln!("{SAVED_LINE}{}", path.display()),
-        Err(e) => eprintln!("Horizon: could not save a crash report: {e}"),
-    }
-}
-
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()

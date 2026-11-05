@@ -467,6 +467,12 @@ impl<'r> BlockSection<'r> {
         let id = self.storage.as_ref().map_or(0, |s| s.read(index));
         self.palette[id as usize]
     }
+    /// The state of every block, when the section stores only one (no
+    /// word array).
+    #[inline]
+    pub(crate) fn uniform_state(&self) -> Option<BlockStateId> {
+        self.storage.is_none().then(|| self.palette[0])
+    }
     pub fn set(&mut self, index: usize, state: BlockStateId) -> io::Result<BlockStateId> {
         if index >= 4096 {
             return Err(invalid("section index out of bounds"));

@@ -747,6 +747,13 @@ impl Suggests {
     }
 }
 
+/// The deepest node/redirect recursion `parse_nodes` accepts. `execute … run`
+/// redirects back to the root, so a crafted deeply nested command would recurse
+/// once per level and overflow the parsing thread's stack (measured at ~300 on
+/// the server thread). Far above any real command chain; vanilla likewise caps
+/// command nesting.
+const MAX_PARSE_DEPTH: usize = 128;
+
 /// The command tree (CommandDispatcher). Node 0 is the root.
 #[derive(Clone, Debug)]
 pub struct Dispatcher {
@@ -925,7 +932,20 @@ impl Dispatcher {
         so_far: &Context,
         reg: &Registries,
         level: u8,
+        depth: usize,
     ) -> ParseResults {
+        if depth >= MAX_PARSE_DEPTH {
+            // A crafted command nested through `execute … run` (which redirects
+            // back to the root) recurses here per level; stop before it
+            // overflows the parsing thread's stack. The branch yields no result,
+            // so the whole command simply fails to parse.
+            return ParseResults {
+                context: so_far.clone(),
+                input: input.to_owned(),
+                cursor,
+                errors: Vec::new(),
+            };
+        }
         let mut errors = Vec::new();
         let mut potentials: Vec<ParseResults> = Vec::new();
         let original = Reader {
@@ -961,8 +981,15 @@ impl Dispatcher {
                 reader.skip();
                 if let Some(target) = redirect {
                     let child_context = Context::new(target, reader.cursor);
-                    let parse =
-                        self.parse_nodes(target, input, reader.cursor, &child_context, reg, level);
+                    let parse = self.parse_nodes(
+                        target,
+                        input,
+                        reader.cursor,
+                        &child_context,
+                        reg,
+                        level,
+                        depth + 1,
+                    );
                     context.child = Some(Box::new(parse.context));
                     return ParseResults {
                         context,
@@ -978,6 +1005,7 @@ impl Dispatcher {
                     &context,
                     reg,
                     level,
+                    depth + 1,
                 ));
             } else {
                 potentials.push(ParseResults {
@@ -1007,7 +1035,7 @@ impl Dispatcher {
     /// Parse starting at byte `start` (after a leading '/').
     pub fn parse_at(&self, input: &str, start: usize, reg: &Registries) -> ParseResults {
         let context = Context::new(0, start);
-        self.parse_nodes(0, input, start, &context, reg, reg.permission)
+        self.parse_nodes(0, input, start, &context, reg, reg.permission, 0)
     }
     /// CommandDispatcher.getCompletionSuggestions at `cursor`: brigadier
     /// lists every child, whatever its requirement.

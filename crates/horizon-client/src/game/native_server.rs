@@ -923,11 +923,23 @@ impl Game<'_> {
         }
         let mut commands = Vec::new();
         self.native_register_commands(&mut commands);
-        let (tree, levels, problems) =
+        // Horizon's own moderation commands go in the same tree, so operators' clients complete them
+        // instead of showing them as unknown; the game still runs them itself (`run_guest_command`).
+        let extras = super::tempban::moderation_commands(
+            host.hub.chat_filter_on(),
+            self.server_lists.is_some(),
+        );
+        commands.extend(extras.iter().cloned());
+        let (tree, mut levels, problems) =
             command_tree(&commands, |name| host.hub.vanilla_command(name));
         for p in problems {
             log::warn!("Horizon: a native mod's command was left out: {p}");
         }
+        levels.retain(|name, _| {
+            !extras
+                .iter()
+                .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
+        });
         host.hub.set_mod_commands(0, tree);
         host.native_commands = Some(levels);
     }

@@ -991,6 +991,8 @@ pub struct MotionWorld<'p, 'w, 'r> {
     pub assets: &'r Assets,
     pub collision_binding: &'w BlockCollisionRegistry<'r>,
     pub resources: &'w MotionResources,
+    /// This world's frozen damage definitions and current tags.
+    pub health: &'w crate::health::HealthResources,
 }
 enum TickInput {
     Living([f32; 3]),
@@ -1237,8 +1239,7 @@ impl MotionWorld<'_, '_, '_> {
         // The resident scene accepts the resolved local movement directly.
         // Vanilla dispatches this separately from travel, on packet acceptance.
         self.check_movement_statistics(previous.vector_to(self.player.position))?;
-        self.player
-            .food_tick(&self.resources.health, self.scene.health_rules)
+        self.player.food_tick(self.health, self.scene.health_rules)
     }
     pub fn controlled_simulation_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
         self.controlled_simulation_tick_with_sprint_window(keys, 7)
@@ -1460,7 +1461,6 @@ impl MotionWorld<'_, '_, '_> {
     /// `hurtServer(damageSources().freeze(), 1)` for a fully frozen player.
     fn freeze_damage(&mut self) -> Result<()> {
         let id = self
-            .resources
             .health
             .damage
             .id("minecraft:freeze")
@@ -1469,7 +1469,7 @@ impl MotionWorld<'_, '_, '_> {
             crate::health::HealthEvent::FreezeDamage(1.0),
         ));
         let rules = self.scene.health_rules;
-        self.player.hurt(&self.resources.health, rules, id, 1.0)?;
+        self.player.hurt(self.health, rules, id, 1.0)?;
         Ok(())
     }
     /// `Entity.applyEffectsFromBlocks` for the blocks Horizon's player reacts
@@ -1974,7 +1974,6 @@ impl MotionWorld<'_, '_, '_> {
             && (known.x.abs() >= f64::from(0.003_f32) || known.z.abs() >= f64::from(0.003_f32))
         {
             let id = self
-                .resources
                 .health
                 .damage
                 .id("minecraft:sweet_berry_bush")
@@ -1983,7 +1982,7 @@ impl MotionWorld<'_, '_, '_> {
                 crate::health::HealthEvent::SweetBerryBushDamage(1.0),
             ));
             let rules = self.scene.health_rules;
-            self.player.hurt(&self.resources.health, rules, id, 1.0)?;
+            self.player.hurt(self.health, rules, id, 1.0)?;
         }
         Ok(())
     }
@@ -2119,13 +2118,12 @@ impl MotionWorld<'_, '_, '_> {
                         pitch: 1.0,
                     }));
                 let id = self
-                    .resources
                     .health
                     .damage
                     .id("minecraft:fly_into_wall")
                     .ok_or("missing fly_into_wall damage type")?;
                 let rules = self.scene.health_rules;
-                self.player.hurt(&self.resources.health, rules, id, dmg)?;
+                self.player.hurt(self.health, rules, id, dmg)?;
                 if self.player.server_copy {
                     self.player.wall_hit_events = Some(first..self.player.events.len());
                 }
@@ -3255,6 +3253,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(keys)
             .unwrap()
@@ -3341,6 +3340,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3357,6 +3357,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3394,6 +3395,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3445,6 +3447,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(Default::default())
             .unwrap();
@@ -3506,6 +3509,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
@@ -3520,6 +3524,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_block_damage(from)
         .unwrap();
@@ -3533,6 +3538,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
@@ -3576,6 +3582,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .passenger_block_effects_tick()
             .unwrap();
@@ -3658,6 +3665,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .server_block_damage(from)
             .unwrap();
@@ -3688,6 +3696,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_block_damage(at)
         .unwrap();
@@ -3701,6 +3710,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .controlled_simulation_tick(Default::default())
         .unwrap();
@@ -3730,6 +3740,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .server_travel()
             .unwrap()
@@ -3805,6 +3816,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         }
         .server_travel()
         .unwrap();
@@ -3844,6 +3856,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .controlled_simulation_tick(crate::sprint::Keys {
                 forward: true,
@@ -3902,6 +3915,7 @@ mod tests {
                     assets: &assets,
                     collision_binding: &binding,
                     resources: &resources,
+                    health: &resources.health,
                 }
                 .controlled_simulation_tick(keys)
                 .unwrap();
@@ -4235,6 +4249,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.travel_fall_flying().unwrap();
             let v = w.player.velocity;
@@ -4273,6 +4288,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.player_movement_tick([0.0, 0.0], false).unwrap();
             assert!(w.player.fall_flying);
@@ -4325,6 +4341,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.move_self(Vec3::new(0.0, -30.0, 0.0)).unwrap();
             assert!(w.player.ground.on_ground);
@@ -4362,6 +4379,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             horizon_world::entity_fluid_tick::EntityFluidTickWorld::water_splash(&mut w).unwrap();
             assert_eq!(w.player.events.is_empty(), spectator);
@@ -4395,6 +4413,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.move_self(Vec3::new(0.0, -30.0, 0.0)).unwrap();
             assert!(w.player.ground.on_ground);
@@ -4448,6 +4467,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             for _ in 0..200 {
                 if w.player.ground.on_ground {
@@ -4487,6 +4507,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.update_player_pose().unwrap();
         assert_eq!(w.player.pose, crate::pose::Pose::SpinAttack);
@@ -4530,6 +4551,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.server_player_pose_tick().unwrap();
         assert_eq!(w.player.dimensions.width, 0.6);
@@ -4582,6 +4604,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.passenger_pose_tick().unwrap();
         assert!(!w.player.swimming);
@@ -4615,6 +4638,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         assert!(!w.can_fit_pose(crate::pose::Pose::Standing).unwrap());
         w.passenger_pose_tick().unwrap();
@@ -4689,6 +4713,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         // `fluid_base_tick` samples `was_eye_in_water` before it updates the
         // fluids (`motion/fluids.rs:222`), so a fresh body needs one tick
@@ -4737,6 +4762,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.simulation_tick([0.0, 0.0], false).unwrap();
             if target.is_some() {
@@ -4774,6 +4800,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.move_self(Vec3::new(0.0, -1.0, 0.0)).unwrap();
         assert!(w.player.ground.on_ground);
@@ -4822,6 +4849,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.move_self(Vec3::new(0.0, -1.0, 0.0)).unwrap();
         assert!(w.player.ground.on_ground);
@@ -4894,6 +4922,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.controlled_simulation_tick(Default::default()).unwrap();
         assert!(
@@ -5147,6 +5176,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.player.local_crouching = true;
         let sprint = crate::sprint::Keys {
@@ -5223,6 +5253,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.fluid_base_tick().unwrap();
             assert_eq!(
@@ -5275,6 +5306,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         for (extra_effect, expected_air) in [
             (None, -19),
@@ -5360,6 +5392,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             w.fluid_base_tick().unwrap();
             assert!(w.player.fluids.was_touching_water && w.player.is_in_lava());
@@ -5398,6 +5431,7 @@ mod tests {
                     assets: &assets,
                     collision_binding: &binding,
                     resources: &resources,
+                    health: &resources.health,
                 }
                 .controlled_simulation_tick(keys)
                 .unwrap();
@@ -5469,6 +5503,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             let mut speed = Vec::new();
             for tick in 0..12 {
@@ -5519,6 +5554,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let forward = crate::sprint::Keys {
             forward: true,
@@ -5576,6 +5612,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let forward = crate::sprint::Keys {
             forward: true,
@@ -5627,6 +5664,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         let sprint_key = crate::sprint::Keys {
             forward: true,
@@ -5676,6 +5714,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         // Idle, movement in all directions, and repeated jump presses must
         // neither cancel server-forced flight nor move a zero-speed flyer.
@@ -5728,6 +5767,7 @@ mod tests {
             assets: &assets,
             collision_binding: &binding,
             resources: &resources,
+            health: &resources.health,
         };
         w.player.may_fly = true;
         w.player.flying = true;

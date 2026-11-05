@@ -151,6 +151,7 @@ pub(super) fn centred(image: Arc<RenderImage>, size: f32, scale: f32) -> Div {
 }
 
 /// A picture chosen in the instance dialog, written on Save.
+#[derive(Clone)]
 pub(super) struct Chosen {
     pub(super) png: Vec<u8>,
     pub(super) preview: Arc<RenderImage>,
