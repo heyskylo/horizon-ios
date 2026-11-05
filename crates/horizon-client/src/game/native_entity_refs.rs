@@ -392,4 +392,94 @@ mod client_tests {
         assert_eq!(game.native_entity_position(stand), None);
         assert_eq!(game.native_entity_kind(display), None);
     }
+
+    /// #8589: the server sends entity event 42 (the raid sweat) for a villager;
+    /// the client must draw the particles, as it does for the events it let
+    /// through before. An event with no particle table row (2) draws nothing.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_villager_raid_sweat_event_draws_particles() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(pipe, "Steve").unwrap();
+        let builtin = game.remote.as_ref().unwrap().builtin.clone();
+        let kind = builtin
+            .get("minecraft:entity_type")
+            .unwrap()
+            .id("minecraft:villager")
+            .unwrap();
+        game.handle_packet(C::Login(play::Login {
+            player_id: 7,
+            hardcore: false,
+            levels: vec!["minecraft:overworld".into()],
+            max_players: 20,
+            chunk_radius: 8,
+            simulation_distance: 8,
+            reduced_debug_info: false,
+            show_death_screen: true,
+            limited_crafting: false,
+            spawn: spawn("minecraft:overworld"),
+            online_mode: false,
+            enforces_secure_chat: false,
+        }))
+        .unwrap();
+        game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+            teleport: 1,
+            position: [0.5, 65.0, 0.5],
+            delta: [0.0; 3],
+            yaw: 45.0,
+            pitch: 10.0,
+            relatives: 0,
+        }))
+        .unwrap();
+        game.handle_packet(C::AddEntity(play::AddEntity {
+            id: 21,
+            uuid: 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff,
+            kind,
+            // Within 32 blocks of the camera, which starts at the origin: the
+            // particle engine drops a particle farther away than that.
+            position: [1.5, 1.0, 2.5],
+            velocity: [0.0; 3],
+            pitch: 0,
+            yaw: 64,
+            head_yaw: 64,
+            data: 0,
+        }))
+        .unwrap();
+        // `len` counts only particles already ticked in; `made` counts every
+        // particle created, which is what the event handler does at once.
+        let made = |g: &Game| g.particles.made().values().sum::<u64>();
+        let before = made(&game);
+        game.handle_packet(C::EntityEvent(play::EntityEvent { id: 21, event: 2 }))
+            .unwrap();
+        assert_eq!(made(&game), before, "event 2 has no particle row");
+        game.handle_packet(C::EntityEvent(play::EntityEvent { id: 21, event: 42 }))
+            .unwrap();
+        assert!(made(&game) > before, "event 42 draws the sweat");
+    }
 }
