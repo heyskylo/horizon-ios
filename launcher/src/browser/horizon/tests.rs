@@ -75,6 +75,20 @@ fn only_horizons_own_projects_go_without_the_not_endorsed_line() {
 }
 
 #[test]
+fn only_horizons_own_projects_say_they_come_from_horizon() {
+    let mut index = sample();
+    let id = index.projects[0].id.clone();
+    index.projects[0].authors = vec!["levzzz5154".into()];
+    index.projects[0].source = "https://github.com/levzzz5154/horizon-mod-zoom".into();
+    assert!(!official_in(Some(&index), &id), "a contributor's project");
+    index.projects[0].authors = vec!["Horizon".into()];
+    index.projects[0].source = "https://github.com/horizon-rust/horizon-mod-zoom".into();
+    assert!(official_in(Some(&index), &id));
+    assert!(!official_in(Some(&index), "not_listed"));
+    assert!(!official_in(None, &id), "no index read yet");
+}
+
+#[test]
 fn searches_by_kind_and_words() {
     let index = sample();
     let found = |text: &str, kind| -> Vec<String> {

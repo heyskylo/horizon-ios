@@ -248,6 +248,16 @@ pub fn official(p: &index::Project) -> bool {
     p.authors == ["Horizon"] && p.source.starts_with("https://github.com/horizon-rust/")
 }
 
+/// Whether the registry's project `id` is Horizon's own ([`official`]), by the index already read
+/// (never the network); false when none was read.
+pub fn is_official(id: &str) -> bool {
+    official_in(known_index().as_deref(), id)
+}
+
+fn official_in(index: Option<&Index>, id: &str) -> bool {
+    index.and_then(|i| i.project(id)).is_some_and(official)
+}
+
 /// What the player reads about a registry project before installing it: who made it, whether its
 /// files are signed, and for a mod what it may do, in the game's words (Options > Mods). A native
 /// mod says it runs with the player's rights, and how it fits the Horizon `instance` plays.

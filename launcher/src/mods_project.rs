@@ -580,7 +580,9 @@ impl Launcher {
         if !p.license.is_empty() {
             meta.push(p.license.clone());
         }
-        meta.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            meta.push(trf("from {source}", &[("source", source)]));
+        }
         let authors = match &details {
             Some(Ok(d)) if !d.authors.is_empty() => d.authors.join(", "),
             _ => p.author.clone(),
