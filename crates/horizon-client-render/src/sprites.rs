@@ -865,7 +865,10 @@ mod tests {
     #[test]
     fn labpbr_maps_follow_the_texture_budget() {
         // 1300 layers of 1024 px maps: 64 px at the default budget, 256 px at 1536 MiB.
-        assert_eq!(side_within(1024, 1300, map_bytes(DEFAULT_TEXTURE_BUDGET)), 64);
+        assert_eq!(
+            side_within(1024, 1300, map_bytes(DEFAULT_TEXTURE_BUDGET)),
+            64
+        );
         assert_eq!(side_within(1024, 1300, map_bytes(1536 << 20)), 256);
     }
     #[test]
