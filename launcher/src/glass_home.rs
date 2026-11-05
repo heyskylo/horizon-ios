@@ -808,18 +808,26 @@ impl Launcher {
             .text_color(white(ink::FULL))
             .cursor_text()
             .overflow_hidden()
-            .child(line_edit::content(
-                &self.friend_code,
-                &t,
-                focused,
-                false,
-                false,
-                if wide {
-                    "Paste a friend's invite code"
-                } else {
-                    "Paste an invite code"
-                },
-            ))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .child(line_edit::content(
+                        &self.friend_code,
+                        &t,
+                        focused,
+                        false,
+                        false,
+                        if wide {
+                            "Paste a friend's invite code"
+                        } else {
+                            "Paste an invite code"
+                        },
+                    )),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.friend_focus, cx);
                 cx.notify();
