@@ -1,0 +1,11 @@
+{
+  "ban": {"changed": true, "output": ["Banned Alex: griefing"]},
+  "ban_again": {"changed": false, "output": ["Nothing changed. The player is already banned"]},
+  "pardon": {"changed": true, "output": ["Unbanned Alex"]},
+  "pardon_again": {"changed": false, "output": ["Nothing changed. The player isn't banned"]},
+  "ban_default": {"changed": true, "output": ["Banned Alex: Banned by an operator."]},
+  "ban_ip": {"changed": true, "output": ["Banned IP 203.0.113.7: abuse"]},
+  "ban_ip_again": {"changed": false, "output": ["Nothing changed. That IP is already banned"]},
+  "pardon_ip": {"changed": true, "output": ["Unbanned IP 203.0.113.7"]},
+  "pardon_ip_again": {"changed": false, "output": ["Nothing changed. That IP isn't banned"]}
+}

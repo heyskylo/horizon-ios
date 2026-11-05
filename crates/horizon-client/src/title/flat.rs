@@ -241,6 +241,8 @@ pub struct State {
     pub(super) selected: Option<usize>,
     pub(super) scroll: ui::Scroll,
     preset_selected: Option<usize>,
+    /// The preset last pressed (`PresetsList.Entry.select`): the focus only selects a row.
+    preset_pressed: Option<usize>,
     preset_scroll: ui::Scroll,
     presets: Vec<Preset>,
     blocks: BTreeSet<String>,
@@ -268,6 +270,7 @@ impl State {
             selected: None,
             scroll: ui::Scroll::default(),
             preset_selected: None,
+            preset_pressed: None,
             preset_scroll: ui::Scroll::default(),
             presets,
             blocks,
@@ -277,6 +280,7 @@ impl State {
     pub(super) fn open_presets(&mut self) {
         self.page = Page::Presets;
         self.preset_selected = None;
+        self.preset_pressed = None;
         self.preset_scroll = ui::Scroll::default();
         self.share = self.settings.to_share();
         self.share_focused = false;
@@ -301,7 +305,7 @@ impl State {
         // PresetFlatWorldScreen keeps the selected preset's decorations while
         // the share text supplies its layers and biome.
         let base = self
-            .preset_selected
+            .preset_pressed
             .and_then(|index| self.presets.get(index))
             .map(|preset| preset.settings.clone())
             .unwrap_or_else(|| self.settings.clone());
@@ -319,6 +323,7 @@ impl State {
             return;
         };
         self.preset_selected = Some(index);
+        self.preset_pressed = Some(index);
         self.share = preset.settings.to_share();
         self.share_focused = false;
     }
@@ -564,10 +569,40 @@ pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
         }
     }
 }
+/// The focus landed on the row at `cursor`: it is selected (`AbstractSelectionList.setFocused`),
+/// and the share box keeps its text until the row is pressed. Whether a row was there.
+pub(super) fn focus_row(state: &mut State, cursor: (f32, f32), size: (f32, f32)) -> bool {
+    match state.page {
+        Page::Layers => {
+            let row = layer_row(state, cursor, size);
+            if row.is_some() {
+                state.selected = row;
+            }
+            row.is_some()
+        }
+        Page::Presets => {
+            let row = preset_row(state, cursor, size);
+            if row.is_some() {
+                state.preset_selected = row;
+                state.share_focused = false;
+            }
+            row.is_some()
+        }
+    }
+}
 fn share_field(size: (f32, f32)) -> [f32; 4] {
     [50.0, 40.0, (size.0.ceil() - 100.0).max(1.0), 20.0]
 }
 
+/// A list row the controller can focus and the control socket names, while its
+/// middle is in the list's view.
+pub(super) fn row_target(name: &str, rect: [f32; 4], top: f32, bottom: f32) {
+    let mid = rect[1] + rect[3] / 2.0;
+    if mid > top && mid < bottom {
+        crate::widgets::record_as(name, rect, true, crate::widgets::Kind::Row);
+        crate::widgets::target_as(rect, crate::widgets::Kind::Row);
+    }
+}
 pub(super) fn wheel(state: &mut State, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
     let (top, bottom, _, content) = list_area(state, size);
     if cursor.1 < top || cursor.1 >= bottom {
@@ -694,6 +729,7 @@ fn draw_layers(
     for (row, layer) in state.settings.layers.iter().rev().enumerate() {
         let y = top + 2.0 + HEADER + row as f32 * LAYER_ROW - offset;
         let target = [left - 2.0, y - 1.0, ROW_WIDTH + 4.0, LAYER_ROW];
+        row_target(&item_name(&layer.block), target, top, bottom);
         let hovered = ui::hovered(cursor, target[0], target[1], target[2], target[3]);
         if selected == Some(row) {
             batch.fill(
@@ -842,6 +878,7 @@ fn draw_presets(
     for (row, preset) in state.presets.iter().enumerate() {
         let y = top + 2.0 + row as f32 * PRESET_ROW - offset;
         let target = [left - 2.0, y - 1.0, ROW_WIDTH + 4.0, PRESET_ROW];
+        row_target(&preset_name(&preset.id), target, top, bottom);
         let hovered = ui::hovered(cursor, target[0], target[1], target[2], target[3]);
         if state.preset_selected == Some(row) {
             batch.fill(
@@ -1038,7 +1075,10 @@ pub(super) fn selection_after_removal(row: usize, remaining: usize) -> Option<us
 
 #[cfg(test)]
 mod tests {
-    use super::{layer_item, selection_after_removal};
+    use super::{
+        FlatSettings, Page, Preset, State, click, focus_row, layer_item, list_area,
+        selection_after_removal,
+    };
     use crate::item_render::ItemRenderer;
     use std::path::Path;
 
@@ -1051,6 +1091,31 @@ mod tests {
         assert_eq!(selection_after_removal(2, 3), Some(2));
         assert_eq!(selection_after_removal(3, 3), Some(2), "the last row");
         assert_eq!(selection_after_removal(0, 0), None, "nothing left");
+    }
+
+    /// `PresetsList`: the focus selects a row and leaves the share box to a press
+    /// (`Entry.select`), so stepping through the list keeps what was typed there.
+    #[test]
+    fn only_a_press_puts_a_preset_in_the_share_box() {
+        let mut state = State::new(Path::new("missing"), None);
+        let mut settings = FlatSettings::default();
+        settings.layers.clear();
+        let share = settings.to_share();
+        state.presets.push(Preset {
+            id: "minecraft:test".to_owned(),
+            display: "Test".to_owned(),
+            settings,
+        });
+        state.page = Page::Presets;
+        state.share = "typed".to_owned();
+        let size = (480.0, 262.0);
+        let (top, _, left, _) = list_area(&state, size);
+        let row = (left + 1.0, top + 3.0);
+        assert!(focus_row(&mut state, row, size));
+        assert_eq!(state.selecting(), Some(0));
+        assert_eq!(state.share, "typed");
+        click(&mut state, row, size);
+        assert_eq!(state.share, share);
     }
 
     /// The grass block icon of a Superflat layer is tinted by the grass

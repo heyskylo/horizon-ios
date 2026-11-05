@@ -480,6 +480,10 @@ impl Game<'_> {
                 let Some((ty, i)) = tab_type(n) else { continue };
                 let (x, y) = tab_pos(ty, i);
                 let sprite = tab_sprite(ty, i, ty.3, Some(t) == tab);
+                horizon_client::widgets::target_as(
+                    [left + x, top + y, ty.1, ty.2],
+                    horizon_client::widgets::Kind::Tab(Some(t) == tab),
+                );
                 batch.sprite_scaled(
                     &self.gui.atlas,
                     &sprite,

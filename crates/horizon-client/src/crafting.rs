@@ -1308,6 +1308,17 @@ pub fn recipe_id(name: &str) -> String {
         format!("minecraft:{name}")
     }
 }
+/// The sort key of vanilla's recipe registration order, which first-match
+/// lookups (`RecipeManager.getRecipeFor`'s `findFirst`), the stonecutter's
+/// list and the recipe book's display numbers all follow:
+/// `ResourceManagerRegistryLoadTask` sorts the resource files by `Identifier`
+/// (path, then namespace) and `RecipeMap` keeps that order. The file's path
+/// ends in `.json`, so `prefix-early` sorts before `prefix`. `name` is a
+/// table name (`oak_planks`) or a whole id.
+pub fn registration_key(name: &str) -> (String, String) {
+    let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name));
+    (format!("{path}.json"), namespace.to_owned())
+}
 fn custom_type(v: &Value) -> Option<&str> {
     v["type"]
         .as_str()
@@ -1316,7 +1327,7 @@ fn custom_type(v: &Value) -> Option<&str> {
 pub struct Recipes {
     pub crafting: Vec<(String, Recipe)>,
     pub cooking: Vec<Cooking>,
-    /// The recipes of types of mods' own, by type, in file order.
+    /// The recipes of types of mods' own, by type, in registration order.
     pub custom: HashMap<String, Vec<CustomRecipe>>,
     /// `category` and `group` of each crafting recipe, by file name.
     pub meta: HashMap<String, (String, String)>,
@@ -1515,8 +1526,11 @@ impl Recipes {
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
-        sources: Vec<(String, Value)>,
+        mut sources: Vec<(String, Value)>,
     ) -> Result<Self> {
+        // Every table in registration order, whatever order the sources come
+        // in (the world's packs' files after the game's own).
+        sources.sort_by_cached_key(|(name, _)| registration_key(name));
         let mut crafting = Vec::new();
         let mut cooking = Vec::new();
         let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
@@ -1717,14 +1731,6 @@ impl Recipes {
                 crafting.push((name, recipe));
             }
         }
-        // ResourceManagerRegistryLoadTask registers resource-file Identifiers by
-        // path, then namespace; RecipeMap preserves that first-match order.
-        // Include .json: the resource file, rather than the bare recipe id, is sorted.
-        // Other recipe types retain their existing table order.
-        crafting.sort_by_cached_key(|(name, _)| {
-            let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name.as_str()));
-            (format!("{path}.json"), namespace.to_owned())
-        });
         let facts = items
             .items
             .iter()
@@ -2207,7 +2213,7 @@ mod tests {
         assert_eq!(kind(r#"{"type":7}"#), None);
         assert_eq!(kind("{}"), None);
     }
-    /// Recipes of a mod's own types land in `custom` by type, in file order,
+    /// Recipes of a mod's own types land in `custom` by type, in registration order,
     /// with the id the file has; a data pack overrides by id and adds more; a
     /// `minecraft` type the game doesn't know is dropped.
     #[test]
@@ -2321,19 +2327,27 @@ mod tests {
     }
 
     /// ResourceManagerRegistryLoadTask registers by resource-file Identifier,
-    /// and RecipeMap keeps that order when taking the first matching recipe.
+    /// and RecipeMap keeps that order when taking the first matching recipe,
+    /// for the crafting grid and the furnaces alike.
     #[test]
-    fn crafting_selection_follows_resource_file_order() {
+    fn recipe_selection_follows_resource_file_order() {
         let root =
             std::env::temp_dir().join(format!("horizon-recipe-order-{}", std::process::id()));
         fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
         let items = Items::for_tests(HashMap::new());
-        let recipe = |item: &str| {
+        let crafting = |item: &str| {
             serde_json::json!({
                 "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:flint"],
                 "result": {"id": item}
             })
         };
+        let smelting = |item: &str| {
+            serde_json::json!({
+                "type": "minecraft:smelting", "ingredient": "minecraft:flint",
+                "result": {"id": item}
+            })
+        };
+        let flint = ItemStack::new("minecraft:flint", 1);
         let cases = [
             (vec!["minecraft:z_pick", "parity:a_pick"], "parity:a_pick"),
             (
@@ -2351,22 +2365,33 @@ mod tests {
             ),
             (vec!["z_pick", "parity:a_pick"], "parity:a_pick"),
         ];
+        let kinds: [(&str, &dyn Fn(&str) -> serde_json::Value); 2] =
+            [("crafting", &crafting), ("smelting", &smelting)];
         for (ids, expected) in cases {
-            for reverse in [false, true] {
-                let mut sources: Vec<_> = ids
-                    .iter()
-                    .map(|id| (id.to_string(), recipe("minecraft:stick")))
-                    .collect();
-                if reverse {
-                    sources.reverse();
+            for (kind, recipe) in kinds {
+                for reverse in [false, true] {
+                    let mut sources: Vec<_> = ids
+                        .iter()
+                        .map(|id| (id.to_string(), recipe("minecraft:stick")))
+                        .collect();
+                    if reverse {
+                        sources.reverse();
+                    }
+                    let recipes =
+                        Recipes::from_sources(&root, &items, &PackOverlay::NONE, sources).unwrap();
+                    let (id, result) = match kind {
+                        "crafting" => recipes.find(&[Some(flint.clone())], 1).unwrap(),
+                        _ => {
+                            let c = recipes.cook("minecraft:smelting", &flint).unwrap();
+                            (c.id.as_str(), c.result.clone())
+                        }
+                    };
+                    assert_eq!(
+                        id, expected,
+                        "{kind}, input order: {ids:?}, reversed={reverse}"
+                    );
+                    assert_eq!(&*result.item, "minecraft:stick");
                 }
-                let recipes =
-                    Recipes::from_sources(&root, &items, &PackOverlay::NONE, sources).unwrap();
-                let (id, result) = recipes
-                    .find(&[Some(ItemStack::new("minecraft:flint", 1))], 1)
-                    .unwrap();
-                assert_eq!(id, expected, "input order: {ids:?}, reversed={reverse}");
-                assert_eq!(&*result.item, "minecraft:stick");
             }
         }
         let _ = fs::remove_dir_all(&root);

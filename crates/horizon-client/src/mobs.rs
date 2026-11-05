@@ -430,6 +430,18 @@ impl MobType {
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
         self.layers.get(key)
     }
+
+    /// The vanilla entity type whose class this type's mobs are: the type
+    /// itself, or the template a content mod's living type copies. What a
+    /// class saves and syncs of its own (`Zombie.addAdditionalSaveData`, its
+    /// entity data) follows it; the saved and sent id stays [`Self::id`].
+    pub fn class_id(&self) -> &str {
+        if self.id.starts_with("minecraft:") {
+            &self.id
+        } else {
+            species::vanilla_id(self.species)
+        }
+    }
 }
 /// Each type's default attribute values, parsed exactly (serde_json's
 /// default float parsing can miss the nearest double by one ulp).
@@ -520,8 +532,22 @@ impl MobTypes {
                 .collect(),
         );
         let mut out = HashMap::new();
-        for def in species::ALL {
-            let id = format!("minecraft:{}", def.name);
+        // A content mod's living type (its row names a vanilla `template`) is
+        // its template's mob under its own id: the template's model, sounds
+        // and behaviour, with the attributes its row has.
+        let mod_types = types
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, row)| {
+                let template = row["template"].as_str()?.strip_prefix("minecraft:")?;
+                let def = species::ALL.iter().find(|d| d.name == template)?;
+                Some((id.clone(), def))
+            });
+        let vanilla = species::ALL
+            .iter()
+            .map(|def| (format!("minecraft:{}", def.name), def));
+        for (id, def) in vanilla.chain(mod_types) {
             let t = &types[&id];
             if t.is_null() {
                 continue;
@@ -2695,6 +2721,54 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 }
                 i += 1;
             }
+            // Pufferfish.touch: the poison and playSound sit inside the
+            // hurtServer branch, so only a hit that landed poisons and stings.
+            // In vanilla, this runs in Pufferfish.aiStep during the fish's tick,
+            // so mobs ticking later in the same level tick tick their effects.
+            MobEvent::PufferfishSting {
+                mob,
+                target,
+                amount,
+                source,
+                poison_ticks,
+            } => {
+                let mut sound = None;
+                let mut raised = Vec::new();
+                let (aim, fish_pos, fish_silent) = mobs
+                    .iter()
+                    .find(|m| m.id == mob)
+                    .map(|m| {
+                        (
+                            Aim {
+                                eye: [m.position.x, m.eye_y(), m.position.z],
+                                look: m.look_angle(),
+                                feet: [m.position.x, m.position.y, m.position.z],
+                            },
+                            [m.position.x, m.position.y, m.position.z],
+                            m.silent,
+                        )
+                    })
+                    .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
+                    .unwrap_or((None, None, true));
+                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                    && t.damage_aimed(amount, source, aim)
+                {
+                    t.add_effect("minecraft:poison", poison_ticks, 0);
+                    raised = std::mem::take(&mut t.outbox);
+                    if !fish_silent && let Some(at) = fish_pos {
+                        sound = Some(MobEvent::Sound("entity.puffer_fish.sting", at, 1.0, 1.0));
+                    }
+                }
+                events.remove(i);
+                if let Some(s) = sound {
+                    events.insert(i, s);
+                    i += 1;
+                }
+                for e in raised {
+                    events.insert(i, e);
+                    i += 1;
+                }
+            }
             _ => i += 1,
         }
     }
@@ -3174,6 +3248,28 @@ impl Mob {
         source: Damage,
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
     ) -> bool {
+        self.damage_with_player_context(amount, source, armor_effectiveness, None)
+    }
+    /// The same damage pipeline with a verified causing-player UUID. Unresolved
+    /// callers keep using `damage_with`, including its legacy Allay filter.
+    pub fn damage_with_player_uuid(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        uuid: [i32; 4],
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+    ) -> bool {
+        self.damage_with_player_context(amount, source, armor_effectiveness, Some(uuid))
+    }
+    /// `LivingEntity.hurtServer`'s shared partial mob adapter. The optional
+    /// identity only selects the species filter; the health pipeline is shared.
+    fn damage_with_player_context(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+        player_uuid: Option<[i32; 4]>,
+    ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -3197,7 +3293,11 @@ impl Mob {
         if source.is_fire() && (self.kind.flags.fire_immune) && !reflected {
             return false;
         }
-        if !ai::accepts_damage(self, &source, amount) {
+        let accepts = match player_uuid {
+            Some(uuid) => ai::accepts_damage_from_player(self, &source, amount, uuid),
+            None => ai::accepts_damage(self, &source, amount),
+        };
+        if !accepts {
             return false;
         }
         // LivingEntity.hurtServer refuses fire before hooks and damage processing.
@@ -5127,6 +5227,64 @@ mod armor_hurt_tests {
             Some(8.0),
             "the pre-reduction damage, not the damage the health took"
         );
+    }
+}
+
+#[cfg(test)]
+mod allay_damage_identity_tests {
+    use super::*;
+
+    const ACTUAL: [i32; 4] = [101, 102, 103, 104];
+    const OTHER: [i32; 4] = [10, 20, 30, 40];
+
+    fn allay(liked: Option<[i32; 4]>) -> Mob {
+        let mut kind = (*super::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:allay".into();
+        kind.species = Species::Allay;
+        kind.max_health = 20.0;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.tame = liked.is_some();
+        m.extra.owner = liked;
+        m
+    }
+
+    #[test]
+    fn verified_player_damage_compares_live_liked_uuid() {
+        for liked in [Some(ACTUAL), Some(OTHER), None] {
+            let mut m = allay(liked);
+            let accepted = m.damage_with_player_uuid(2.0, Damage::player([0.0; 3]), ACTUAL, None);
+            assert_eq!(accepted, liked != Some(ACTUAL), "liked={liked:?}");
+            assert_eq!(m.health, if accepted { 18.0 } else { 20.0 });
+            assert_eq!(m.hurt_time, if accepted { 10 } else { 0 });
+            assert_eq!(m.extra.owner, liked);
+        }
+        // A UUID context alone must not turn a source without a player into its liked player.
+        let mut m = allay(Some(ACTUAL));
+        assert!(m.damage_with_player_uuid(2.0, Damage::of(DamageKind::Generic), ACTUAL, None));
+        assert_eq!(m.health, 18.0);
+    }
+
+    #[test]
+    fn unresolved_player_and_projectile_entrypoints_keep_legacy_behavior() {
+        for liked in [Some(ACTUAL), Some(OTHER), None] {
+            let mut m = allay(liked);
+            assert_eq!(m.damage(2.0, Damage::player([0.0; 3])), liked.is_none());
+            assert_eq!(m.health, if liked.is_none() { 18.0 } else { 20.0 });
+            // This is compatibility coverage, not UUID attribution parity for projectiles.
+            let mut m = allay(liked);
+            let arrow = Damage {
+                kind: DamageKind::Arrow,
+                ..Damage::player([0.0; 3])
+            };
+            assert_eq!(
+                m.damage_projectile(2.0, arrow, None, [1.0, 0.0]),
+                liked.is_none()
+            );
+            assert_eq!(m.health, if liked.is_none() { 18.0 } else { 20.0 });
+            assert!(m.projectile_motion.is_none());
+        }
+        let mut m = allay(Some(ACTUAL));
+        assert!(m.damage(2.0, Damage::of(DamageKind::Generic)));
     }
 }
 

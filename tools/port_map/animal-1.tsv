@@ -9,7 +9,7 @@ Animal.getDismountLocationForPassenger	port	crates/horizon-client/src/game/mount
 Allay.createAttributes	skip:data		attributes come from entity-types.json
 Allay.createNavigation	port	crates/horizon-client/src/mobs/allay.rs::register	flying navigation, required path length 48
 Allay.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	dancing and can_duplicate
-Allay.isLikedPlayer	inline	crates/horizon-client/src/mobs/ai.rs::accepts_damage	a tame allay ignores damage from any player (not compared by UUID); considersEntityAsAlly is not ported
+Allay.isLikedPlayer	inline	crates/horizon-client/src/mobs/allay.rs::is_liked_player	verified owner-player UUID routes; unresolved entrypoints retain legacy Who::Player compatibility; considersEntityAsAlly is not ported
 Allay.setJukeboxPlaying	inline	crates/horizon-client/src/game/allays.rs::Game::tick_allays	polls playing jukeboxes within 10 blocks every tick instead of listening for jukebox events; no remembered jukebox
 Allay.wantsToPickUp	inline	crates/horizon-client/src/game/allays.rs::Game::tick_allays	same item within 32 blocks, mob_griefing on
 Allay.allayConsidersItemEqual	inline	crates/horizon-client/src/game/allays.rs::Game::tick_allays	gap: compares item ids only, the held item keeps no potion contents

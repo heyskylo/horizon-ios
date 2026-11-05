@@ -15,6 +15,7 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
 };
+use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -632,6 +633,34 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
+            // Use the same animated, spun, clustered transforms as the draw.
+            // ItemEntity's collision box is only 0.25 blocks and cannot prove
+            // that this larger rendered model stays behind an occluder.
+            let culling = entity.then(|| {
+                state
+                    .posed_bounds(&copies)
+                    .map(|(lo, hi)| {
+                        self.entity_cull_decision_in_bounds(
+                            item,
+                            Aabb::new(
+                                Vec3::new(
+                                    camera.x + f64::from(lo.x),
+                                    camera.y + f64::from(lo.y),
+                                    camera.z + f64::from(lo.z),
+                                ),
+                                Vec3::new(
+                                    camera.x + f64::from(hi.x),
+                                    camera.y + f64::from(hi.y),
+                                    camera.z + f64::from(hi.z),
+                                ),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| self.entity_cull_decision(item, f64::from(partial)))
+            });
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
+            }
             let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
@@ -648,6 +677,8 @@ impl Game<'_> {
                     let color = horizon_client::mobs::render::abgr(rgb);
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
                 self.cull_skinned(out, entity_start, skinned);
             }

@@ -125,6 +125,9 @@ def main():
     parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
+    parser.add_argument("--pufferfish-mob-fixture", action="store_true")
+    parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
+    parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -150,7 +153,7 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
-    isolated_reinforcements = {'command zombie reinforcements', 'command reinforcement once'}
+    isolated_reinforcements = corpus_module.ISOLATED_REINFORCEMENTS
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_reinforcements]
     if args.reinforcement_raw_diagnostic or args.reinforcement_original_diagnostic:
@@ -170,7 +173,7 @@ def main():
                    if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     # These overlays replace built-in recipes: run each in its own world, never
     # beside the generic corpus's fixed vanilla recipe-count controls.
-    isolated_recipes = {'crafting recipe priority', 'crafting base recipe control'}
+    isolated_recipes = corpus_module.ISOLATED_RECIPES
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.loaded_fixture:
@@ -231,6 +234,10 @@ def main():
     if args.boat_item_hit_fixture:
         from boat_item_hit_corpus import boat_item_hits
         groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
+    if args.pufferfish_mob_fixture:
+        from pufferfish_mob_contact_corpus import mob_contacts, overlapping_cod_control
+        groups = [("pufferfish mob contact", overlapping_cod_control() if args.pufferfish_mob_overlap_control
+                   else mob_contacts(args.pufferfish_mob_duration_diagnostic))]
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
@@ -303,6 +310,11 @@ def main():
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
     install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
+    if any(op['op'] == 'crafter_max_map_fixture' for op in script):
+        source = vanilla_dir / 'universe/harness/data/minecraft/maps/31.dat'
+        target = rust_dir / 'saves/harness/data/minecraft/maps/31.dat'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
@@ -332,7 +344,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'light', 'player_state', 'player_loop') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -348,6 +360,8 @@ def main():
             sys.exit(f'Java loaded contract failed: {op}: {reference}')
         if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
             sys.exit(f'Java callback guard failed: {op}: {reference.get("results")}')
+        if 'expect_map' in op and reference.get('messages') != [[[op['expect_map'], [None, False, False, False, False, False]]]]:
+            sys.exit(f'Java map fixture control failed: {op}: {reference}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
         if 'expect_light' in op and reference.get('results') != [[True, n] for n in op['expect_light']]:
@@ -355,7 +369,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'light', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
