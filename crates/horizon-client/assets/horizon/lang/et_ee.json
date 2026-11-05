@@ -321,7 +321,6 @@
   "horizon.osk.close": "Sule",
   "horizon.extras.chat_animation.tooltip": "Uus vestlusliin libiseb vasakult sisse, kui see sumbub, selle asemel, et paista tervena.",
   "horizon.extras.chat_indicator.tooltip": "Vestlusrea vasakul olev värviline riba.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Seadetes nupu kohal olev kerimisratas muudab selle väärtust, nagu vanilje puhul. Väljas, ratas kerib ainult loendit.",
   "horizon.extras.pack_browser.tooltip": "Ressursipaketi valikul kuvatakse nupp Lisa, mis otsib Modrinthi ja installib paketi teie pakettide kausta. Väljas, mäng ei võta kunagi Modrinthiga ühendust.",
   "horizon.extras.splitscreen.tooltip": "Maailmas saab uue mängijana liituda teine kontroller: vajutage A, kui see küsib, seejärel valige profiil ja kus mängida.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

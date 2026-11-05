@@ -334,7 +334,6 @@
   "horizon.osk.close": "閉じる",
   "horizon.extras.chat_animation.tooltip": "新しいチャット ラインは全体として表示されるのではなく、フェードインしながら左側からスライドして表示されます。",
   "horizon.extras.chat_indicator.tooltip": "チャットラインの左側にある色付きのバー。",
-  "horizon.extras.wheel_cycles_settings.tooltip": "バニラと同様に、設定内のボタン上でホイールをスクロールすると、その値が変更されます。オフの場合、ホイールはリストのみをスクロールします。",
   "horizon.extras.pack_browser.tooltip": "[リソース パック] を選択すると、Modrinth を検索してパック フォルダーにパックをインストールする [追加] ボタンが表示されます。オフ、ゲームは決してモドリンスに接触しません。",
   "horizon.extras.splitscreen.tooltip": "ワールドでは、別のコントローラーが新しいプレーヤーとして参加できます。メッセージが表示されたら A を押し、プロフィールとプレイする場所を選択します。",
   "horizon.splitscreen.setup.monitor": "モニター%s",

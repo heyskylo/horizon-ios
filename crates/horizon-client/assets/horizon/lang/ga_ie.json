@@ -319,7 +319,6 @@
   "horizon.osk.close": "Dún",
   "horizon.extras.chat_animation.tooltip": "Sleamhnaíonn líne comhrá nua isteach ón taobh clé agus í ag dul i léig, in ionad a bheith ina hiomláine.",
   "horizon.extras.chat_indicator.tooltip": "An barra daite ar thaobh na láimhe clé den líne chomhrá.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Athraíonn an roth scrollaithe thar chnaipe sna socruithe a luach, mar atá i vanilla. Lasmuigh de, ní scrollaíonn an roth ach an liosta.",
   "horizon.extras.pack_browser.tooltip": "Faigheann Roghnaigh Acmhainne Pacáistí cnaipe Cuir leis a chuardaíonn Modrinth agus a shuiteálann pacáiste isteach i d’fhillteán pacaí. Lasmuigh de, ní théann an cluiche i dteagmháil le Modrinth riamh.",
   "horizon.extras.splitscreen.tooltip": "I ndomhan, is féidir le rialtóir eile a bheith páirteach mar imreoir nua: brúigh A nuair a iarrann sé, ansin roghnaigh próifíl agus cá háit le himirt.",
   "horizon.splitscreen.setup.monitor": "Monatóir %s",

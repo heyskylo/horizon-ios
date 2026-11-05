@@ -895,7 +895,10 @@ def stick_lists(args, name):
 
 def stick_changes_no_value(args, name):
     check = Check()
-    for presses, click, wanted in ((('south', 'south'), None, 'difficulty'), (('west',), 'chat-settings', 'chat')):
+    for presses, click, wanted, in_list in (
+        (('south', 'south'), None, 'difficulty', False),
+        (('west',), 'chat-settings', 'chat', True),
+    ):
         game = Game(args, name)
         try:
             game.press_through(*presses, click=click)
@@ -903,11 +906,19 @@ def stick_changes_no_value(args, name):
             label = game.focused_label()
             game.stick()
             check(game.focused_label() == label, f'{label} is now {game.focused_label()}')
-            # The mouse wheel keeps vanilla's way: it cycles the button under it.
+            # The mouse wheel keeps vanilla's way: it cycles a button of the screen
+            # itself, and a list keeps it to scroll past its rows (#9633).
             x, y, w, h = game.focus()
-            game.ctl('scroll-at', x + w / 2, y + h / 2, -1)
+            # Up in the list: the stick scrolled it down, and the row stays in view.
+            game.ctl('scroll-at', x + w / 2, y + h / 2, 1 if in_list else -1)
             time.sleep(SETTLE)
-            check(game.focused_label() != label, f'the mouse wheel no longer cycles {label}')
+            if in_list:
+                # The row moved with the list, so it is found by its value, not its place.
+                row = next((w for w in game.widgets() if w.get('label') == label), None)
+                check(row is not None, f'the mouse wheel cycled the list row {label}')
+                check(row is None or row['bounds'][1] > y, f'the mouse wheel did not scroll past {label}')
+            else:
+                check(game.focused_label() != label, f'the mouse wheel no longer cycles {label}')
         finally:
             game.quit()
     return check.failures
