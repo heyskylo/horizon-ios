@@ -1482,6 +1482,39 @@ impl Experience {
         }
         sound_level
     }
+    /// `Player.giveExperienceLevels`: play `entity.player.levelup` when
+    /// `amount` is positive, the level landed on is a multiple of 5, and
+    /// 100 ticks have passed since the last one (`lastLevelUpTime < tickCount
+    /// - 100`). The volume is `level / 30` (1 above 30) times 0.75.
+    pub fn level_up_volume(amount: i32, level: i32, ticks: u64, last: u64) -> Option<f32> {
+        if amount > 0 && level % 5 == 0 && last < ticks.saturating_sub(100) {
+            let vol = if level > 30 { 1.0 } else { level as f32 / 30.0 };
+            Some(vol * 0.75)
+        } else {
+            None
+        }
+    }
+}
+#[cfg(test)]
+mod level_up_sound {
+    use super::Experience;
+
+    #[test]
+    fn give_experience_levels_sounds_on_every_fifth_level_after_a_hundred_ticks() {
+        // 5/30 * 0.75 = 0.125, 10/30 * 0.75 = 0.25, and 30/30 and anything
+        // above 30 are both 0.75. A level that is not a multiple of 5, a
+        // loss of levels, and a cooldown that has not elapsed stay quiet.
+        assert_eq!(Experience::level_up_volume(1, 5, 200, 0), Some(0.125));
+        assert_eq!(Experience::level_up_volume(1, 10, 200, 0), Some(0.25));
+        assert_eq!(Experience::level_up_volume(1, 30, 101, 0), Some(0.75));
+        assert_eq!(Experience::level_up_volume(1, 35, 200, 0), Some(0.75));
+        assert_eq!(Experience::level_up_volume(1, 6, 200, 0), None);
+        assert_eq!(Experience::level_up_volume(-1, 5, 200, 0), None);
+        assert_eq!(Experience::level_up_volume(1, 5, 100, 0), None);
+        assert_eq!(Experience::level_up_volume(1, 5, 101, 0), Some(0.125));
+        assert_eq!(Experience::level_up_volume(1, 5, 250, 150), None);
+        assert_eq!(Experience::level_up_volume(1, 5, 251, 150), Some(0.125));
+    }
 }
 /// A painting (`Painting`, a `HangingEntity`): the block it hangs in, the
 /// 2D data value of the direction it faces, and its variant.

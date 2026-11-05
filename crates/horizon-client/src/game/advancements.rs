@@ -10,6 +10,7 @@ use horizon_client::{
     toasts::Slide,
 };
 use horizon_core::geometry::Vec3;
+use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::Clientbound as C;
 use serde_json::Value;
 use std::{
@@ -856,6 +857,20 @@ impl Game<'_> {
             }
         }
     }
+    /// `AdvancementRewards.grant`'s pickup: volume 0.2 at the player's feet,
+    /// pitch `(nextFloat - nextFloat) * 0.7 + 1`, times 2. `playSound(null, …)`
+    /// so the player hears it. The draws are the level random, which is the
+    /// stream item pickup already uses for this pitch.
+    fn advancement_pickup_sound(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let at = [p.position.x, p.position.y, p.position.z];
+        let pitch =
+            ((self.world.random.next_float() - self.world.random.next_float()) * 0.7 + 1.0) * 2.0;
+        self.audio
+            .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
+    }
     /// `PlayerAdvancements.award` once done: `AdvancementRewards.grant`,
     /// then toast and announcement.
     fn award(&mut self, index: usize) {
@@ -886,10 +901,16 @@ impl Game<'_> {
         for table in &a.rewards.loot {
             let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
             for s in items {
-                if let Some(rest) = self.give(s)
-                    && let Some(eye) = self.eye_position()
-                {
-                    self.spawn_item(rest, eye, [0.0; 3], 0);
+                // Inventory.add returns false when anything is left, and
+                // AdvancementRewards then drops that remainder with no
+                // pickup sound. A stack the inventory takes whole plays
+                // entity.item.pickup at the player's feet.
+                if let Some(rest) = self.give(s) {
+                    if let Some(eye) = self.eye_position() {
+                        self.spawn_item(rest, eye, [0.0; 3], 0);
+                    }
+                } else {
+                    self.advancement_pickup_sound();
                 }
             }
         }
