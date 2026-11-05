@@ -285,7 +285,8 @@ pub fn modern_flat_display(left: bool) -> glam::Mat4 {
 /// Whether a model layer's matrix is 26.3's flat-item first-person display (a resource
 /// pack's own display keeps the modern pose).
 pub fn is_modern_flat_display(matrix: &glam::Mat4, left: bool) -> bool {
-    let expected = modern_flat_display(left) * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+    let expected =
+        modern_flat_display(left) * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
     matrix.abs_diff_eq(expected, 1e-4)
 }
 
@@ -1256,7 +1257,11 @@ mod tests {
         assert!(c.abs_diff_eq(expected - Vec3::new(0.0, 0.3, 0.0), 1e-4));
         // A blocking sword sits elsewhere, and poses 1.8.9 lacked stay modern.
         let block = legacy_item_pose(false, 0.0, 0.0, ItemPose::Using, true).unwrap();
-        assert!(!(block * layer).transform_point3(Vec3::splat(0.5)).abs_diff_eq(expected, 0.01));
+        assert!(
+            !(block * layer)
+                .transform_point3(Vec3::splat(0.5))
+                .abs_diff_eq(expected, 0.01)
+        );
         let trident = ItemPose::Trident { ticks_used: 3.0 };
         assert!(legacy_item_pose(false, 0.0, 0.0, trident, false).is_none());
     }
