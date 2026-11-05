@@ -194,10 +194,6 @@ fn bite_impulse(r: &mut impl RandomSource) -> f64 {
     // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
     f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
-/// RandomSource.triangle(mode, deviation).
-fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
-    mode + deviation * (f64::from(r.next_float()) - f64::from(r.next_float()))
-}
 /// `FishingHook.onHitBlock`: `getDeltaMovement().normalize().scale(hit.distanceTo(this))`,
 /// where `HitResult.distanceTo` is the *squared* distance to the hook: the bobber
 /// springs back a little off a wall instead of stopping dead.
@@ -271,9 +267,9 @@ impl Game<'_> {
             let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
             let r = &mut LegacyRandom::new(horizon_client::sound_engine::unique_seed());
             v = Vec3::new(
-                v.x * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.y * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.z * (0.6 / len + triangle(r, 0.5, 0.0103365)),
+                v.x * (0.6 / len + r.triangle(0.5, 0.0103365)),
+                v.y * (0.6 / len + r.triangle(0.5, 0.0103365)),
+                v.z * (0.6 / len + r.triangle(0.5, 0.0103365)),
             );
             self.next_entity += 1;
             self.hook = Some(Hook {
@@ -550,7 +546,7 @@ impl Game<'_> {
             if h.time_until_hooked > 0 {
                 // The fish swimming up: a bubble now and then, and a fishing
                 // particle to each side of its path.
-                h.fish_angle += triangle(&mut self.world.random, 0.0, 9.188) as f32;
+                h.fish_angle += self.world.random.triangle(0.0, 9.188) as f32;
                 let angle = h.fish_angle * (std::f64::consts::PI / 180.0) as f32;
                 let (sin, cos) = (trig::sin(f64::from(angle)), trig::cos(f64::from(angle)));
                 let distance = h.time_until_hooked as f32 * 0.1;
