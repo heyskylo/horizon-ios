@@ -31,6 +31,30 @@ fn percent(caption: &str, value: f32) -> Text {
         ],
     )
 }
+/// `text` cut into lines of at most `width` characters, at spaces where it has them.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let len = line.chars().count();
+        if len > 0 && len + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+        while line.chars().count() > width {
+            let rest: String = line.chars().skip(width).collect();
+            line = line.chars().take(width).collect();
+            lines.push(std::mem::replace(&mut line, rest));
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
 fn on_off(v: bool) -> Text {
     tr(if v { "options.on" } else { "options.off" })
 }
@@ -1254,6 +1278,10 @@ pub enum Page {
     Font,
     Packs,
     Mods,
+    /// Browse mods: the registry's content mods, searched (`mod_browser`).
+    ModBrowser,
+    /// One registry project's page: `OptionsUi::mod_project`.
+    ModProject,
     /// A native mod's settings page: its index in `mods.installed`.
     NativeMod(usize),
     /// Horizon's shader packs, either kind (`shader_pack_list`).
@@ -1332,6 +1360,12 @@ enum Act {
     NativeKey(usize, usize),
     NativeButton(usize, usize),
     OpenModFolder,
+    /// Browse mods: the page of listing `.0` of `mod_browser`.
+    ModProject(usize),
+    /// The open project page's Install or Update.
+    InstallMod,
+    /// The open project page's page on the website.
+    OpenModPage,
     /// Accessibility's "Accessibility Help" link
     /// (`AccessibilityOptionsScreen.addFooter`'s openLinkButton).
     AccessibilityHelp,
@@ -1468,6 +1502,12 @@ pub enum Event {
     /// Data Packs' Open Pack Folder: create the folder if needed and open it.
     OpenDataPackFolder(std::path::PathBuf),
     OpenModFolder,
+    /// Browse mods opened: read the registry's index into `mod_browser`.
+    BrowseMods,
+    /// Install (or update) the registry's content mod with this id.
+    InstallMod(String),
+    /// Open a registry project's page on the website.
+    OpenModPage(String),
     /// Accessibility's Help link: confirm and open
     /// `CommonLinks.ACCESSIBILITY_HELP` over the options screen.
     AccessibilityHelp,
@@ -1578,6 +1618,10 @@ pub struct OptionsUi {
     language_choice: Option<String>,
     language_search: ui::EditBox,
     pub(crate) settings_search: ui::EditBox,
+    /// Browse mods: the registry's projects, filled by the game.
+    pub mod_browser: crate::mod_browser::ModBrowser,
+    /// The project whose page is open (`Page::ModProject`).
+    pub mod_project: String,
     /// Horizon's `packBrowser` extra: the pack screen's Add button.
     pub pack_browser: bool,
     /// Packs: the packs found and the selection the screen opens with.
@@ -1637,6 +1681,9 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// The Extras or PvP & HUD items that take a whole row (`wide_extras`), measured
+    /// when the page is drawn.
+    wide_extras: Vec<crate::extras::Item>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1663,6 +1710,8 @@ impl Default for OptionsUi {
             language_choice: None,
             language_search: search,
             settings_search,
+            mod_browser: Default::default(),
+            mod_project: String::new(),
             pack_browser: false,
             pack_infos: Vec::new(),
             pack_selection: Vec::new(),
@@ -1693,6 +1742,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            wide_extras: Vec::new(),
         }
     }
 }
@@ -1743,6 +1793,40 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         },
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
+}
+/// The Extras or PvP & HUD page's rows: its items under their headers.
+fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
+    match page {
+        Page::Pvp => crate::pvp::rows()
+            .into_iter()
+            .map(|r| r.map(crate::extras::Item::Pvp))
+            .collect(),
+        _ => crate::extras::rows(),
+    }
+}
+/// The items of `page`'s rows whose label, with any of their first values, is wider than a
+/// half-width button holds (`width` measures text with the screen's font): those take the
+/// whole row, so no label slides past its edges, in any language.
+fn wide_extras(s: &Settings, page: Page, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
+    // A button's label keeps 2 px off each edge (`AbstractButton.renderString`'s margin),
+    // past which it slides back and forth.
+    let room = 150.0 - 4.0;
+    extras_rows(page)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|&item| {
+            let mut e = s.extras.clone();
+            (0..4).any(|_| {
+                let label = Text::option_name_value(
+                    Text::literal(item.caption_text()),
+                    Text::literal(item.value(&e)),
+                )
+                .plain();
+                item.cycle(&mut e, false);
+                width(&label) > room
+            })
+        })
+        .collect()
 }
 /// What a button opening one of Horizon's pages says on hover.
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
@@ -2118,7 +2202,10 @@ impl OptionsUi {
     }
     fn settings_search_active(&self) -> bool {
         self.settings_search.focused
-            && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
     }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
@@ -2259,7 +2346,10 @@ impl OptionsUi {
         self.focus = None;
         self.focus_from_keyboard = false;
         self.can_change_value = false;
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.set_value("");
             self.settings_search.focused = false;
         }
@@ -2305,6 +2395,12 @@ impl OptionsUi {
                     self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
                     self.push(Page::HdrCalibration);
                 }
+                // The Shaders page's Shader Packs...: the list of either kind, as the page
+                // opens it from anywhere.
+                Action::ShaderPacks => {
+                    events.push(Event::ListShaderPacks);
+                    self.push(Page::ShaderPacks);
+                }
                 Action::Done => events.extend(self.back(s)),
             }
         }
@@ -2336,6 +2432,11 @@ impl OptionsUi {
             Page::PadBinds => Some(crate::controller_ui::Page::Bindings),
             _ => None,
         }
+    }
+    /// Whether a video settings screen is open, Horizon's or vanilla's: the fullscreen mode
+    /// waits for it to close, and Ctrl with the wheel steps the GUI scale.
+    pub fn video_open(&self) -> bool {
+        self.page() == Page::Video || Self::graphics_page(self.page()).is_some()
     }
     /// Whether the controller screen is open: a controller button pressed now may bind.
     pub fn controller_open(&self) -> bool {
@@ -2374,6 +2475,8 @@ impl OptionsUi {
             Page::Font => "options.font.title",
             Page::Packs => "resourcePack.title",
             Page::Mods => "horizon.pages.mods",
+            Page::ModBrowser => "horizon.mods.browse.title",
+            Page::ModProject => "horizon.mods.browse.project",
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
@@ -2440,6 +2543,144 @@ impl OptionsUi {
         filtered
     }
 
+    /// Browse mods: what the registry offers this game, by the search box.
+    fn mod_browser_rows(&self) -> Vec<Row> {
+        use crate::mod_browser::Status;
+        let b = &self.mod_browser;
+        match &b.status {
+            Status::Idle | Status::Loading => {
+                return vec![Row::Note(lang::get("horizon.mods.browse.loading"))];
+            }
+            Status::Failed(why) => {
+                return vec![Row::Note(lang::tr("horizon.mods.browse.failed", &[why]))];
+            }
+            Status::Ready => {}
+        }
+        let found = b.found(&self.settings_search.value);
+        if found.is_empty() {
+            return vec![Row::Note(lang::get("horizon.mods.browse.none"))];
+        }
+        let mut rows = Vec::new();
+        for i in found {
+            let l = &b.listings[i];
+            let mut label = Text::literal(format!("{} {}", l.name, l.version));
+            if l.has_update() {
+                label = label.append(tr("horizon.mods.browse.has_update"));
+            } else if l.installed.is_some() {
+                label = label.append(tr("horizon.mods.browse.is_installed"));
+            }
+            rows.push(Row::Buttons(
+                button(0.0, 0.0, 310.0, label, Act::ModProject(i)),
+                None,
+            ));
+            rows.extend(wrap(&l.summary, 64).into_iter().take(1).map(Row::Note));
+        }
+        rows
+    }
+    /// A registry project's page: what it is, Install or Update, its switch
+    /// once installed, its description and changelog.
+    fn mod_project_rows(&self, s: &Settings) -> Vec<Row> {
+        let b = &self.mod_browser;
+        let Some(l) = b.listing(&self.mod_project) else {
+            return vec![Row::Note(lang::get("horizon.mods.browse.none"))];
+        };
+        let mut rows = vec![Row::Note(format!("{} {}", l.name, l.version))];
+        let by = [
+            lang::tr("horizon.mods.browse.by", &[&l.authors.join(", ")]),
+            l.license.clone(),
+            l.published.clone(),
+        ];
+        let by: Vec<&str> = by
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !t.is_empty())
+            .collect();
+        rows.push(Row::Note(by.join(" · ")));
+        let labels: Vec<&str> = l
+            .categories
+            .iter()
+            .chain(&l.tags)
+            .map(String::as_str)
+            .collect();
+        if !labels.is_empty() {
+            rows.push(Row::Note(labels.join(", ")));
+        }
+        let installing = b.installing.as_deref() == Some(l.id.as_str());
+        let install = match (&l.installed, installing) {
+            (_, true) => inactive(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.installing"),
+                Act::None,
+            )),
+            (None, false) => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.install"),
+                Act::InstallMod,
+            ),
+            (Some(_), false) if l.has_update() => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.update"),
+                Act::InstallMod,
+            ),
+            (Some(_), false) => inactive(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.installed"),
+                Act::None,
+            )),
+        };
+        let page = button(
+            0.0,
+            0.0,
+            150.0,
+            tr("horizon.mods.browse.open_page"),
+            Act::OpenModPage,
+        );
+        let row = s.mods.installed.iter().position(|m| m.id == l.id && !m.dev);
+        match row.filter(|_| l.installed.is_some()) {
+            Some(i) => {
+                let label =
+                    Text::literal(format!("{}: ", lang::get("horizon.mods.browse.enabled")))
+                        .append(on_off(s.mods.is_on(i)));
+                let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                rows.push(Row::Buttons(install, Some(toggle)));
+                rows.push(Row::Buttons(page, None));
+            }
+            None => rows.push(Row::Buttons(install, Some(page))),
+        }
+        if let Some((message, _)) = &b.message {
+            rows.extend(wrap(message, 64).into_iter().map(Row::Note));
+        }
+        let description = crate::mod_browser::plain_lines(if l.description.is_empty() {
+            &l.summary
+        } else {
+            &l.description
+        });
+        rows.extend(
+            description
+                .iter()
+                .flat_map(|line| wrap(line, 64))
+                .map(Row::Note),
+        );
+        let changelog = crate::mod_browser::plain_lines(&l.changelog);
+        if !changelog.is_empty() {
+            rows.push(Row::Heading("horizon.mods.browse.changelog".into()));
+            rows.extend(
+                changelog
+                    .iter()
+                    .flat_map(|line| wrap(line, 64))
+                    .map(Row::Note),
+            );
+        }
+        rows
+    }
     /// A native mod's page: its name, its keys as Key Binds rows (the
     /// player's choice, else the default), then its buttons.
     fn native_rows(&self, s: &Settings, i: usize) -> Vec<Row> {
@@ -2482,8 +2723,9 @@ impl OptionsUi {
             Page::SplitSetup => Vec::new(),
             Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
-                // OptionsList.addSmall lays out an options screen.
-                let extra = |item: crate::extras::Item| {
+                // OptionsList.addSmall lays out an options screen; one whose label would run
+                // past half a row in this language (`wide_extras`) gets the whole row.
+                let extra = |item: crate::extras::Item, width: f32| {
                     let value = Text::option_name_value(
                         Text::literal(item.caption_text()),
                         Text::literal(item.value(&s.extras)),
@@ -2495,7 +2737,7 @@ impl OptionsUi {
                     } else {
                         Text::literal(value)
                     };
-                    let widget = button(0.0, 0.0, 150.0, label, Act::Extra(item));
+                    let widget = button(0.0, 0.0, width, label, Act::Extra(item));
                     // A setting of a switch that is off does nothing: inactive,
                     // as vanilla greys out an option that can't apply.
                     if item
@@ -2507,37 +2749,29 @@ impl OptionsUi {
                         widget
                     }
                 };
-                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
+                // PvP & HUD opens with its preset; Extras doesn't repeat it, nor the way there
+                // (Horizon Settings has it).
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
-                let mut rows = vec![Row::Buttons(
-                    preset,
-                    (self.page() == Page::Extras).then(|| {
-                        button(
-                            0.0,
-                            0.0,
-                            150.0,
-                            tr("horizon.pages.open.pvp"),
-                            Act::Push(Page::Pvp),
-                        )
-                    }),
-                )];
+                let mut rows = Vec::new();
+                if self.page() == Page::Pvp {
+                    rows.push(Row::Buttons(preset, None));
+                }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
-                    rows.extend(
-                        section
-                            .chunks(2)
-                            .map(|c| Row::Buttons(extra(c[0]), c.get(1).map(|&b| extra(b)))),
-                    );
-                    section.clear();
+                    let mut half = None;
+                    for item in section.drain(..) {
+                        if self.wide_extras.contains(&item) {
+                            rows.extend(half.take().map(|h| Row::Buttons(extra(h, 150.0), None)));
+                            rows.push(Row::Buttons(extra(item, 310.0), None));
+                        } else if let Some(h) = half.take() {
+                            rows.push(Row::Buttons(extra(h, 150.0), Some(extra(item, 150.0))));
+                        } else {
+                            half = Some(item);
+                        }
+                    }
+                    rows.extend(half.map(|h| Row::Buttons(extra(h, 150.0), None)));
                 };
-                let page_rows = match self.page() {
-                    Page::Pvp => crate::pvp::rows()
-                        .into_iter()
-                        .map(|r| r.map(crate::extras::Item::Pvp))
-                        .collect(),
-                    _ => crate::extras::rows(),
-                };
-                for row in page_rows {
+                for row in extras_rows(self.page()) {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
@@ -2551,24 +2785,15 @@ impl OptionsUi {
             }
             Page::Horizon => {
                 // Two to a row, as vanilla's OptionsList.addSmall lays out
-                // buttons; each opens one of Horizon's settings pages.
+                // buttons; each opens one of Horizon's settings pages. Each page has
+                // one way in: graphics and shader packs are Video Settings' (the graphics
+                // screen), the controller is Controls', mods are the Options screen's.
                 let open =
                     |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
                 vec![
                     Row::Buttons(
-                        open("horizon.pages.open.graphics", Page::Graphics),
-                        Some(open(
-                            "horizon.pages.open.graphics_advanced",
-                            Page::GraphicsAdvanced,
-                        )),
-                    ),
-                    Row::Buttons(
-                        open("horizon.pages.open.shader_packs", Page::ShaderPacks),
-                        Some(open("horizon.pages.open.controller", Page::Controller)),
-                    ),
-                    Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.mods", Page::Mods)),
+                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
                     ),
                     Row::Buttons(
                         open(
@@ -2579,9 +2804,8 @@ impl OptionsUi {
                                 Page::SplitSetup
                             },
                         ),
-                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
+                        Some(open("horizon.pages.open.studio", Page::Studio)),
                     ),
-                    Row::Buttons(open("horizon.pages.open.studio", Page::Studio), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -2639,24 +2863,10 @@ impl OptionsUi {
                 rows
             }
             Page::Video => {
-                // Horizon's graphics settings screen, at General and at Advanced.
-                let mut rows = vec![Row::Buttons(
-                    button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.horizon_graphics"),
-                        Act::Push(Page::Graphics),
-                    ),
-                    Some(button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.graphics_advanced"),
-                        Act::Push(Page::GraphicsAdvanced),
-                    )),
-                )];
-                rows.push(Row::Header("options.video.display.header"));
+                // Vanilla's VideoSettingsScreen as vanilla lays it out. No menu opens it (Video
+                // Settings... opens the graphics screen, which has all of it); it stays for
+                // `horizon-ctl options video-vanilla` and the tests that pin vanilla's screen.
+                let mut rows = vec![Row::Header("options.video.display.header")];
                 rows.push(Row::Big(Opt::ExclusiveMode));
                 rows.extend(pairs(&[
                     Opt::MaxFps,
@@ -2839,61 +3049,64 @@ impl OptionsUi {
             }
             Page::Font => pairs(&[Opt::ForceUnicode, Opt::JapaneseGlyphs]),
             Page::Mods => {
+                let browse = button(
+                    0.0,
+                    0.0,
+                    310.0,
+                    tr("horizon.mods.browse"),
+                    Act::Push(Page::ModBrowser),
+                );
+                let mut rows = vec![Row::Buttons(browse, None)];
                 if s.mods.installed.is_empty() {
-                    return vec![Row::Header("horizon.mods.empty")];
+                    rows.push(Row::Header("horizon.mods.empty"));
+                    return rows;
                 }
-                s.mods
-                    .installed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, installed)| {
-                        let mut label = Text::option_name_value(
-                            Text::literal(installed.title.clone()),
-                            on_off(s.mods.is_on(i)),
+                rows.extend(s.mods.installed.iter().enumerate().map(|(i, installed)| {
+                    let mut label = Text::option_name_value(
+                        Text::literal(installed.title.clone()),
+                        on_off(s.mods.is_on(i)),
+                    );
+                    if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
+                        label = label.append(tr("horizon.mods.not_built"));
+                    } else if installed.problem.is_some() {
+                        label = label.append(tr("horizon.mods.stopped"));
+                    } else if installed.dev {
+                        label = label.append(tr("horizon.mods.dev"));
+                    }
+                    // A content mod's set feeds the block-state tables the
+                    // open world's chunks were decoded with: changing it
+                    // mid-world remaps their ids (Forge/Fabric freeze the
+                    // registry before a world opens). A native mod toggles
+                    // live through `native_on`, so it stays available.
+                    let content = installed.native.is_none();
+                    if self.in_world && content {
+                        label = label.append(tr("horizon.mods.in_world"));
+                    }
+                    let dead = installed.dev || installed.id.is_empty() || self.in_world && content;
+                    // Only native mods with actual settings need a second button.
+                    if installed
+                        .native
+                        .as_ref()
+                        .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
+                    {
+                        let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                        let settings = button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.mods.settings"),
+                            Act::ModSettings(i),
                         );
-                        if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
-                            label = label.append(tr("horizon.mods.not_built"));
-                        } else if installed.problem.is_some() {
-                            label = label.append(tr("horizon.mods.stopped"));
-                        } else if installed.dev {
-                            label = label.append(tr("horizon.mods.dev"));
-                        }
-                        // A content mod's set feeds the block-state tables the
-                        // open world's chunks were decoded with: changing it
-                        // mid-world remaps their ids (Forge/Fabric freeze the
-                        // registry before a world opens). A native mod toggles
-                        // live through `native_on`, so it stays available.
-                        let content = installed.native.is_none();
-                        if self.in_world && content {
-                            label = label.append(tr("horizon.mods.in_world"));
-                        }
-                        let dead =
-                            installed.dev || installed.id.is_empty() || self.in_world && content;
-                        // Only native mods with actual settings need a second button.
-                        if installed
-                            .native
-                            .as_ref()
-                            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
-                        {
-                            let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
-                            let settings = button(
-                                0.0,
-                                0.0,
-                                150.0,
-                                tr("horizon.mods.settings"),
-                                Act::ModSettings(i),
-                            );
-                            Row::Buttons(
-                                if dead { inactive(toggle) } else { toggle },
-                                Some(settings),
-                            )
-                        } else {
-                            let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
-                            Row::Buttons(if dead { inactive(widget) } else { widget }, None)
-                        }
-                    })
-                    .collect()
+                        Row::Buttons(if dead { inactive(toggle) } else { toggle }, Some(settings))
+                    } else {
+                        let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
+                        Row::Buttons(if dead { inactive(widget) } else { widget }, None)
+                    }
+                }));
+                rows
             }
+            Page::ModBrowser => self.mod_browser_rows(),
+            Page::ModProject => self.mod_project_rows(s),
             Page::NativeMod(i) => self.native_rows(s, i),
             Page::ShaderPacks => {
                 if s.shader_packs.is_empty() {
@@ -2971,7 +3184,10 @@ impl OptionsUi {
         let mut rows = ListRows::default();
         let page = self.page();
         let cx = (w / 2.0).floor();
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.x = cx - 100.0;
             self.settings_search.y = 17.0;
         }
@@ -3004,7 +3220,9 @@ impl OptionsUi {
                 let entries = [
                     ("options.skinCustomisation", Some(Page::Skin)),
                     ("options.sounds", Some(Page::Sound)),
-                    ("options.video", Some(Page::Video)),
+                    // Video Settings... opens Horizon's graphics screen, which holds every
+                    // video option, as Sodium's replaces vanilla's.
+                    ("options.video", Some(Page::Graphics)),
                     ("options.controls", Some(Page::Controls)),
                     (
                         "options.language",
@@ -3311,12 +3529,12 @@ impl OptionsUi {
             // Drawn by `pack_screen`.
             Page::Packs => {}
             _ => {
-                if matches!(page, Page::Video | Page::Controls) {
+                if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
                     top = 38.0;
                 }
                 out.push(Widget {
                     x: 0.0,
-                    y: if matches!(page, Page::Video | Page::Controls) {
+                    y: if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
                         4.0
                     } else {
                         12.0
@@ -3603,6 +3821,9 @@ impl OptionsUi {
             packs.bind_icons(&mut draws, atlas, &mut batch.patches);
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
+        }
+        if matches!(self.page(), Page::Extras | Page::Pvp) {
+            self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
@@ -3892,23 +4113,30 @@ impl OptionsUi {
             }
             self.language_search = search;
         }
-        if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            self.page(),
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             let mut search = self.settings_search.clone();
             if self.focus == Some(FocusId::Search) {
                 search.focused = true;
             }
             search.draw(batch, atlas, None);
+            let hint = match self.page() {
+                Page::ModBrowser => "horizon.mods.browse.search",
+                _ => "horizon.options.search",
+            };
             // Horizon's search box sits in the header, before the list.
             crate::widgets::last_narratable(|n| {
                 n.order = -1;
                 if let crate::widgets::What::EditBox { message, .. } = &mut n.what {
-                    *message = tr("horizon.options.search").plain();
+                    *message = tr(hint).plain();
                 }
             });
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
                     atlas,
-                    &tr("horizon.options.search").with_color(text::GRAY).italic(),
+                    &tr(hint).with_color(text::GRAY).italic(),
                     search.text_x(),
                     search.text_y(),
                     u32::MAX,
@@ -4068,7 +4296,12 @@ impl OptionsUi {
         self.size = size;
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
-        if !drag && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
+        if !drag
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
+        {
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -4224,6 +4457,9 @@ impl OptionsUi {
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
+                            if p == Page::ModBrowser {
+                                events.push(Event::BrowseMods);
+                            }
                             self.push(p)
                         }
                         Act::Done => events.extend(self.back(s)),
@@ -4274,6 +4510,21 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ModProject(i) => {
+                            if let Some(listing) = self.mod_browser.listings.get(i) {
+                                self.mod_project = listing.id.clone();
+                                self.push(Page::ModProject);
+                            }
+                        }
+                        Act::InstallMod => {
+                            self.mod_browser.message = None;
+                            events.push(Event::InstallMod(self.mod_project.clone()));
+                        }
+                        Act::OpenModPage => {
+                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
+                                events.push(Event::OpenModPage(l.page.clone()));
+                            }
+                        }
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -5179,6 +5430,9 @@ impl OptionsUi {
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
+                            if p == Page::ModBrowser {
+                                events.push(Event::BrowseMods);
+                            }
                             self.push(p);
                         }
                         Act::Done => {
@@ -5236,6 +5490,21 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ModProject(i) => {
+                            if let Some(listing) = self.mod_browser.listings.get(i) {
+                                self.mod_project = listing.id.clone();
+                                self.push(Page::ModProject);
+                            }
+                        }
+                        Act::InstallMod => {
+                            self.mod_browser.message = None;
+                            events.push(Event::InstallMod(self.mod_project.clone()));
+                        }
+                        Act::OpenModPage => {
+                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
+                                events.push(Event::OpenModPage(l.page.clone()));
+                            }
+                        }
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -5941,8 +6210,6 @@ mod tests {
         let (texts, missed) = page_texts("de_de", &[Page::Horizon, Page::Extras, Page::PadBinds]);
         for want in [
             "Splitscreen …",
-            "Partikel",
-            "Blockpartikel weg: Aus",
             "Weicher Chat: Aus",
             "Nachrichtenmarkierung: An",
             "Kanäle für UI-Töne: Aus",
@@ -5961,7 +6228,7 @@ mod tests {
         assert_eq!(missed, Vec::<String>::new());
         let (texts, _) = page_texts("pl_pl", &[Page::Extras, Page::PadBinds]);
         for want in [
-            "Ukryj cząstki bloków: Wył.",
+            "Płynny czat: Wył.",
             "Pasek szybkiego wyboru: poprzednie pole",
         ] {
             assert!(texts.iter().any(|t| t == want), "{want:?} not in {texts:?}");
@@ -6584,12 +6851,11 @@ mod tests {
                 Row::Pair(a, b) => *a == opt || *b == Some(opt),
                 _ => false,
             }));
-            assert!(rows.iter().any(|row| matches!(row, Row::Buttons(..))));
         }
         ui.settings_search.set_value("no matching video setting");
         let rows = ui.list_rows(&settings);
         assert!(headers(ui.list_rows(&settings)).is_empty());
-        assert!(rows.iter().all(|row| matches!(row, Row::Buttons(..))));
+        assert!(rows.is_empty(), "{}", rows.len());
         ui.settings_search.set_value("");
         assert_eq!(headers(ui.list_rows(&settings)), all_headers);
     }
@@ -7567,6 +7833,222 @@ mod tests {
         assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true)]);
     }
 
+    /// An Extras or PvP & HUD label wider than half a row takes the whole row, so every label
+    /// fits its button: "Keep channels for UI sounds: Off" did not.
+    #[test]
+    fn extras_labels_fit_their_buttons() {
+        // Vanilla's font: 6 px a glyph, a few narrower ones.
+        let width = |t: &str| {
+            t.chars()
+                .map(|c| match c {
+                    'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
+                    'l' => 3.0,
+                    ' ' | 't' | 'I' => 4.0,
+                    'f' | 'k' => 5.0,
+                    _ => 6.0,
+                })
+                .sum::<f32>()
+        };
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        for page in [Page::Extras, Page::Pvp] {
+            ui.stack = vec![Page::Main, page];
+            ui.wide_extras = wide_extras(&s, page, width);
+            let rows = ui.list_rows(&s);
+            let buttons: Vec<&Widget> = rows
+                .iter()
+                .flat_map(|r| match r {
+                    Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for b in &buttons {
+                let WKind::Button { label, .. } = &b.kind else {
+                    continue;
+                };
+                let label = label.plain();
+                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+            }
+            // Short ones keep vanilla's two to a row.
+            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
+        }
+        ui.stack = vec![Page::Main, Page::Extras];
+        ui.wide_extras = wide_extras(&s, Page::Extras, width);
+        for item in [
+            crate::extras::Item::UiSoundReserve,
+            crate::extras::Item::WheelCyclesSettings,
+        ] {
+            assert!(ui.wide_extras.contains(&item), "{item:?}");
+        }
+        assert!(!ui.wide_extras.contains(&crate::extras::Item::AutoReconnect));
+    }
+
+    /// Every setting a player reaches, from the Options screen through every button that opens
+    /// a page, is in one place, and every page has one way in. Vanilla's own repeats stay as
+    /// vanilla has them; the graphics screen stands for Video Settings, so the vanilla video
+    /// options it shows count as Video Settings' (Menu Background Blur is in both of
+    /// vanilla's). Vanilla's Video Settings rows are all on the graphics screen.
+    #[test]
+    fn every_setting_and_page_is_reached_from_one_place() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut s = Settings::default();
+        // The Music page shows once its extra is on.
+        s.extras.music_page = true;
+        let mut ui = OptionsUi::default();
+        let mut places: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut ways_in: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut put = |id: String, page: &str| {
+            places.entry(id).or_default().insert(page.to_owned());
+        };
+        // The graphics screen, drawn by `graphics_ui`.
+        let mut graphics_rows = BTreeSet::new();
+        for (page, groups) in crate::graphics_ui::rows() {
+            for row in groups.into_iter().flat_map(|(_, rows)| rows) {
+                use crate::graphics_ui::{H, Item};
+                let id = match row.item {
+                    // Vanilla's Graphics API button sets the same setting.
+                    Item::Horizon(H::GraphicsApi) => "graphics-api".to_owned(),
+                    Item::Horizon(H::ShaderPacks) => {
+                        ways_in
+                            .entry(format!("{:?}", Page::ShaderPacks))
+                            .or_default()
+                            .insert(format!("Graphics/{page:?}"));
+                        continue;
+                    }
+                    Item::Vanilla(o) => format!("{o:?}"),
+                    Item::Horizon(h) => format!("graphics:{h:?}"),
+                    Item::Extra(e) => format!("extra:{e:?}"),
+                };
+                graphics_rows.insert(id.clone());
+                put(id, "Graphics");
+            }
+        }
+        // Every page from the Options screen, through its buttons.
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![Page::Main];
+        while let Some(page) = todo.pop() {
+            if !seen.insert(format!("{page:?}")) {
+                continue;
+            }
+            ui.stack = vec![page];
+            let (widgets, _, _, _) = ui.layout(&s, 427.0, 4000.0);
+            let name = format!("{page:?}");
+            for w in &widgets {
+                let id = match &w.kind {
+                    WKind::Slider { opt, .. } => format!("{opt:?}"),
+                    WKind::Button { act, .. } => match act {
+                        Act::Cycle(Opt::GraphicsBackend) => "graphics-api".to_owned(),
+                        Act::Cycle(opt) => format!("{opt:?}"),
+                        Act::Extra(e) => format!("extra:{e:?}"),
+                        Act::PvpPreset => "pvp-preset".to_owned(),
+                        Act::Push(to) => {
+                            ways_in
+                                .entry(format!("{to:?}"))
+                                .or_default()
+                                .insert(name.clone());
+                            // The graphics screen's pages are one screen, listed above.
+                            if OptionsUi::graphics_page(*to).is_none() {
+                                todo.push(*to);
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                put(id, &name);
+            }
+        }
+        // Vanilla's own: the same option on two of its screens.
+        let vanilla_repeats: BTreeMap<&str, &[&str]> = [
+            ("MenuBlur", &["Accessibility", "Graphics"][..]),
+            ("ShowSubtitles", &["Accessibility", "Sound"][..]),
+            ("Narrator", &["Accessibility", "Chat"][..]),
+            ("ChatOpacity", &["Accessibility", "Chat"][..]),
+            ("TextBackgroundOpacity", &["Accessibility", "Chat"][..]),
+            ("ChatLineSpacing", &["Accessibility", "Chat"][..]),
+        ]
+        .into();
+        for (id, pages) in &places {
+            let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+            match vanilla_repeats.get(id.as_str()) {
+                Some(expected) => assert_eq!(&pages, expected, "{id}"),
+                None => assert_eq!(pages.len(), 1, "{id} is on {pages:?}"),
+            }
+        }
+        // AccessibilityOptionsScreen links Controls, as vanilla's does.
+        for (page, from) in &ways_in {
+            let from: Vec<&str> = from.iter().map(String::as_str).collect();
+            match page.as_str() {
+                "Controls" => assert_eq!(from, ["Accessibility", "Main"]),
+                _ => assert_eq!(from.len(), 1, "{page} opens from {from:?}"),
+            }
+        }
+        assert_eq!(
+            ways_in.get("ShaderPacks").map(|f| f.len()),
+            Some(1),
+            "{ways_in:?}"
+        );
+        assert!(
+            !seen.contains("Video"),
+            "vanilla's own layout has no way in"
+        );
+        // Every row of vanilla's Video Settings is on the graphics screen.
+        ui.stack = vec![Page::Video];
+        for row in ui.list_rows(&s) {
+            let opts = match row {
+                Row::Big(o) => vec![o],
+                Row::Pair(a, b) => std::iter::once(a).chain(b).collect(),
+                _ => Vec::new(),
+            };
+            for o in opts {
+                let id = match o {
+                    Opt::GraphicsBackend => "graphics-api".to_owned(),
+                    o => format!("{o:?}"),
+                };
+                // macOS has one graphics API: the graphics screen leaves the row out.
+                if id == "graphics-api" && cfg!(target_os = "macos") {
+                    continue;
+                }
+                assert!(
+                    graphics_rows.contains(&id),
+                    "{id} is not on the graphics screen"
+                );
+            }
+        }
+    }
+
+    /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
+    /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
+    #[test]
+    fn the_graphics_shaders_page_opens_the_shader_pack_list() {
+        use crate::graphics_ui::{H, Item, Target};
+        use winit::keyboard::KeyCode;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi {
+            size: (427.0, 240.0),
+            ..Default::default()
+        };
+        ui.show(Page::Graphics);
+        ui.graphics.open(crate::graphics_ui::Page::Shaders);
+        let packs = Target::Item(Item::Horizon(H::ShaderPacks));
+        assert!(
+            (0..40).any(|_| {
+                ui.key(&mut s, &atlas, KeyCode::Tab, None);
+                ui.graphics.focus == Some(packs)
+            }),
+            "{:?}",
+            ui.graphics.focus
+        );
+        let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert_eq!(ui.page(), Page::ShaderPacks);
+        assert!(events.contains(&Event::ListShaderPacks), "{events:?}");
+        ui.back(&mut s);
+        assert_eq!(ui.page(), Page::Graphics);
+        assert_eq!(ui.graphics.page(), crate::graphics_ui::Page::Shaders);
+    }
+
     #[test]
     fn horizon_settings_hang_off_options_and_reach_every_horizon_page() {
         let s = Settings::default();
@@ -7592,18 +8074,15 @@ mod tests {
             &main[main.len() - 3..],
             [Page::Horizon, Page::Mods, Page::Credits]
         );
+        // Video Settings... is the graphics screen, as Sodium's.
+        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
         ui.push(Page::Horizon);
         assert_eq!(
             pushes(&mut ui),
             [
-                Page::Graphics,
-                Page::GraphicsAdvanced,
-                Page::ShaderPacks,
-                Page::Controller,
                 Page::Extras,
-                Page::Mods,
-                Page::SplitSetup,
                 Page::Pvp,
+                Page::SplitSetup,
                 Page::Studio,
                 Page::Agent,
             ]
@@ -7632,12 +8111,6 @@ mod tests {
             .collect();
         assert!(acts.contains(&&Act::Extra(crate::extras::Item::AgentControl)));
         assert!(acts.contains(&&Act::CopyAgentDetails));
-        // Vanilla's own pages keep the Horizon pages they had.
-        ui.stack = vec![Page::Main, Page::Video];
-        let video = pushes(&mut ui);
-        for page in [Page::Graphics, Page::GraphicsAdvanced] {
-            assert!(video.contains(&page), "{page:?}");
-        }
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
     }

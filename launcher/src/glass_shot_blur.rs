@@ -1,13 +1,14 @@
 //! Blurring the screenshots on screen (the mockup's `PrivacyToggle`, `launcher-views.tsx`): the
 //! eye button beside Overview's and the Screenshots tab's pictures, which draws them as
 //! `blur-2xl` would. GPUI has no image filter, so each picture is made once, small and blurred,
-//! in the background, and drawn stretched. For the session only, like the mockup's.
+//! in the background (`picture_cache`), and drawn stretched. For the session only, like the
+//! mockup's.
 use super::*;
 use crate::glass_ui::{self as ui, white};
+use crate::picture_cache::{self, Look};
 use gpui::RenderImage;
 use horizon_theme::glass::{fill, radius};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 /// The blurred copy is made this wide (and 16:9 tall), its blur this many of its pixels: about
@@ -21,9 +22,6 @@ const SHOWN: (u32, u32) = (288, 162);
 pub(super) struct ShotBlur {
     /// Whether the screenshots are blurred.
     pub(super) hidden: bool,
-    /// Each picture's blurred copy (None: it couldn't be read).
-    made: HashMap<PathBuf, Option<Arc<RenderImage>>>,
-    making: HashSet<PathBuf>,
 }
 
 impl Launcher {
@@ -45,52 +43,34 @@ impl Launcher {
         }))
     }
 
-    /// Screenshot `path` filling its tile, round at `radius::ROW`: blurred while they are
-    /// hidden (a plain fill until its copy is made).
+    /// Screenshot `path` filling its tile, round at `radius::ROW`, made at the tile's size
+    /// (`picture_cache`): blurred while they are hidden; a plain fill until it is made.
     pub(super) fn shot_picture(&mut self, path: &Path, cx: &mut Context<Self>) -> AnyElement {
-        if !self.shot_blur.hidden {
-            return gpui::img(path.to_path_buf())
-                .size_full()
-                .rounded(px(radius::ROW))
-                .object_fit(gpui::ObjectFit::Cover)
-                .into_any_element();
-        }
-        match self.shot_blur.made.get(path) {
-            Some(Some(image)) => gpui::img(image.clone())
+        let look = match self.shot_blur.hidden {
+            true => Look::Blurred,
+            false => Look::Fit(picture_cache::THUMB),
+        };
+        match self.picture(path, look, cx) {
+            Some(image) => gpui::img(image)
                 .size_full()
                 .rounded(px(radius::ROW))
                 .object_fit(gpui::ObjectFit::Cover)
                 .into_any_element(),
-            made => {
-                if made.is_none() && self.shot_blur.making.insert(path.to_path_buf()) {
-                    let read = path.to_path_buf();
-                    let task = cx
-                        .background_executor()
-                        .spawn(async move { blurred(&read) });
-                    let path = path.to_path_buf();
-                    cx.spawn(async move |this, cx| {
-                        let image = task.await;
-                        let _ = this.update(cx, |this, cx| {
-                            this.shot_blur.making.remove(&path);
-                            this.shot_blur.made.insert(path, image);
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                }
-                div()
-                    .size_full()
-                    .rounded(px(radius::ROW))
-                    .bg(white(fill::HOVER))
-                    .into_any_element()
-            }
+            None => div()
+                .size_full()
+                .rounded(px(radius::ROW))
+                .bg(white(fill::HOVER))
+                .into_any_element(),
         }
     }
 }
 
 /// The picture at `path`, small, blurred and smoothed up, as GPUI draws it (BGRA, premultiplied).
-fn blurred(path: &Path) -> Option<Arc<RenderImage>> {
-    let picture = image::open(path).ok()?;
+/// Read already shrunk (`pictures::load_fitted`): never the whole screenshot.
+pub(super) fn blurred(path: &Path) -> Option<Arc<RenderImage>> {
+    let picture = image::DynamicImage::ImageRgba8(
+        horizon_launcher::pictures::load_fitted(path, SMALL.0 * 4).ok()?,
+    );
     let small = picture
         .resize_to_fill(SMALL.0, SMALL.1, image::imageops::FilterType::Triangle)
         .to_rgba8();

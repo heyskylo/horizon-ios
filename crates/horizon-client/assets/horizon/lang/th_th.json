@@ -429,6 +429,7 @@
   "Frame Generation": "การสร้างเฟรม",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "แสดงเฟรมที่ถูกสร้างขึ้นระหว่างเฟรมจริงสองเฟรม: นุ่มนวลกว่า แลคกว่าเล็กน้อย",
   "Shadow Cache": "แคชเงา",
+  "Shader Packs...": "เชเดอร์แพ็ค...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "ใช้แผนที่เงาแพ็คซ้ำเมื่อดวงอาทิตย์ มุมมอง และโลกตรงกัน ปิดโดยค่าเริ่มต้น",
   "Find BlueMap": "ค้นหาบลูแมป",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "บนเซิร์ฟเวอร์ ค้นหาแผนที่เว็บ BlueMap สำหรับภูมิประเทศที่ห่างไกล เข้าร่วมต่อไป.",
