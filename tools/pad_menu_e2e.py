@@ -46,6 +46,7 @@ import sys
 import tempfile
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2127,21 +2128,25 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--only', nargs='*', choices=sorted(CASES), help='run only these cases')
     parser.add_argument('--shots', type=Path, help='keep screenshots in this folder')
+    parser.add_argument('--jobs', type=int, default=1, help='cases at once; each has its own game and home')
     args = parser.parse_args()
     args.game, args.ctl, args.resources = args.game.resolve(), args.ctl.resolve(), args.resources.resolve()
-    failed = []
-    for name in args.only or CASES:
+    def run(name):
         # A case that dies takes only itself down, and leaves no game behind it.
         try:
-            failures = CASES[name](args, name)
+            return name, CASES[name](args, name)
         except Exception as error:
-            failures = [f'{type(error).__name__}: {error}']
-        for failure in failures:
-            print(f'FAIL {name}: {failure}')
-        if failures:
-            failed.append(name)
-        else:
-            print(f'ok   {name}')
+            return name, [f'{type(error).__name__}: {error}']
+
+    failed = []
+    with ThreadPoolExecutor(args.jobs) as pool:
+        for name, failures in pool.map(run, args.only or CASES):
+            for failure in failures:
+                print(f'FAIL {name}: {failure}', flush=True)
+            if failures:
+                failed.append(name)
+            else:
+                print(f'ok   {name}', flush=True)
     sys.exit(1 if failed else 0)
 
 
