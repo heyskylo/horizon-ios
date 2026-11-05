@@ -512,7 +512,8 @@ fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
 }
 @vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);
-    return corner_vertex(s.c, slot_origins[block_slots[s.slot >> 8u]]);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    return corner_vertex(s.c, origin);
 }
 @vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);
