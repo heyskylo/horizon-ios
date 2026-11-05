@@ -360,6 +360,9 @@ pub struct Guest {
     /// The hand-over its record came with (`player-import`): `player-confirm` and
     /// `player-drop` name it, and another hand-over's record is not taken.
     pub arrival_handover: Option<u128>,
+    /// The import of that hand-over moved the view to another chunk (`recentered` in its reply),
+    /// kept so a retried import or a confirm after it answers the same.
+    pub arrival_recentered: bool,
     /// Leaving for another server (`player-release moved`) without the "left the
     /// game" line.
     pub quiet_leave: bool,
@@ -548,6 +551,7 @@ impl Guest {
             imported: false,
             arrival_announce: true,
             arrival_handover: None,
+            arrival_recentered: false,
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),

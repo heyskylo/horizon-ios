@@ -348,9 +348,13 @@ takes four optional fields, which win over the compound:
 `position` is `[x, y, z]`, `rotation` is `[yaw, pitch]` in degrees, `on_ground` is a boolean and `velocity` is
 `[x, y, z]` in blocks a tick. The pitch is taken as vanilla's `Entity.setXRot` takes it: modulo 360, then cut to ±90;
 the yaw is kept as it is. A velocity component over 10 blocks a tick is taken as 0, as `Entity.load` takes a saved
-`Motion`. They belong to the `position` part: a request that gives one and does not import that part is refused. A
-position that is not finite, or farther than the record's own may be (30,000,512 blocks from the origin, 20,000,000 up
-or down), is refused, and so is a rotation or a velocity that is not finite numbers. The border, the blocks and the chunks are not checked,
+`Motion`. The velocity is the server's: the arrival's teleport carries no motion, as a vanilla login's does not, so
+the client starts still, and since a player's client moves itself, its first move replaces it. They belong to the `position` part: a
+request that gives one and does not import that part is refused. A position that is not finite, or farther than the
+record's own may be (30,000,512 blocks from the origin, 20,000,000 up or down), is refused, and so is a rotation or a
+velocity that is not finite numbers (a rotation past what a float holds too). A record with a vehicle still to restore
+(`RootVehicle`) puts the player back on it at the vehicle's own place, so a request that names a position for such a
+record is refused. The border, the blocks and the chunks are not checked,
 as a vanilla server does not check the place its player file names. The player is teleported to the position (the
 client confirms a new teleport id), so an anticheat never sees the arrival as a move, however far it is from the
 export.
