@@ -13,9 +13,6 @@ pub struct Compositor {
     config: wgpu::SurfaceConfiguration,
     present_modes: Vec<wgpu::PresentMode>,
     suspended: bool,
-    /// `present` found the surface texture Outdated or Lost: Split drains the render
-    /// queues and calls `reconfigure`, which must not race a frame still being submitted.
-    needs_reconfigure: bool,
 }
 
 impl Renderer {
@@ -100,40 +97,17 @@ impl Compositor {
             config,
             present_modes: caps.present_modes,
             suspended: !super::drawable_size(size[0], size[1], max),
-            needs_reconfigure: false,
         })
     }
 
     /// Vsync on: presents wait for the display. Off: they don't (Mailbox, else Immediate).
     pub fn set_vsync(&mut self, vsync: bool) {
-        if self.will_reconfigure(vsync) {
-            self.config.present_mode = self.mode_for(vsync);
-            self.surface.configure(&self.device, &self.config);
-        }
-    }
-
-    /// Whether `set_vsync` would reconfigure the surface: configuring waits for the GPU
-    /// to come idle and breaks if a frame is submitted while it waits, so the game can
-    /// drain its render queues before letting that happen.
-    pub fn will_reconfigure(&self, vsync: bool) -> bool {
-        self.mode_for(vsync) != self.config.present_mode
-    }
-
-    fn mode_for(&self, vsync: bool) -> wgpu::PresentMode {
-        [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
+        let mode = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
             .into_iter()
             .find(|m| !vsync && self.present_modes.contains(m))
-            .unwrap_or(wgpu::PresentMode::Fifo)
-    }
-
-    /// Whether a `reconfigure` is owed after `present` found the surface Outdated or Lost.
-    pub fn reconfigure_pending(&self) -> bool {
-        self.needs_reconfigure
-    }
-
-    /// Configure the surface again after `present` found its texture Outdated or Lost.
-    pub fn reconfigure(&mut self) {
-        if std::mem::take(&mut self.needs_reconfigure) {
+            .unwrap_or(wgpu::PresentMode::Fifo);
+        if mode != self.config.present_mode {
+            self.config.present_mode = mode;
             self.surface.configure(&self.device, &self.config);
         }
     }
@@ -160,9 +134,7 @@ impl Compositor {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                // Configuring here would wait for the GPU amid the players' frames still
-                // on their submit threads; Split drains them and reconfigures after.
-                self.needs_reconfigure = true;
+                self.surface.configure(&self.device, &self.config);
                 return false;
             }
             _ => return false,
