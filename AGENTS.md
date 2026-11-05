@@ -9,7 +9,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).
   `tools/check_public_tree.py` rejects them; `git config core.hooksPath .githooks` runs it on commit.
 - **Keep your runs away from real player data.** Any game or launcher you start gets fresh `mktemp -d`
-  folders in `HORIZON_HOME` (logs and crash reports only), `HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and
+  folders in `HORIZON_HOME` (logs, crash reports, telemetry consent, recordings; not saves), `HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and
   `XDG_CONFIG_HOME`, plus `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` and `HORIZON_NO_AUDIO=1`. Saves, `options.txt` and
   caches go in the game folder, by default the working directory: start the game from a scratch folder with
   `--game-dir` pointing at it, or they land in the repo root, hidden by `.gitignore`. For the
