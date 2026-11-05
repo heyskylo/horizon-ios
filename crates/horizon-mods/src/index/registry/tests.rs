@@ -216,7 +216,10 @@ fn lists_every_problem_of_a_registry() {
         "{errors:?}"
     );
     assert!(has("glow: its icon \"icons/cozy.png\""), "{errors:?}");
-    assert!(has("other: its icon \"icons/coords_hud.png\""), "{errors:?}");
+    assert!(
+        has("other: its icon \"icons/coords_hud.png\""),
+        "{errors:?}"
+    );
     assert_eq!(errors.len(), 7, "{errors:?}");
 }
 
