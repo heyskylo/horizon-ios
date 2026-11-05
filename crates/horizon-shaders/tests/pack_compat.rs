@@ -15,6 +15,15 @@ impl Drop for Fixture {
 }
 
 fn load(fragment: &str) -> Post {
+    load_program(
+        "#version 120\nvarying vec2 texcoord;\nvoid main() {\n\
+         gl_Position = ftransform();\ntexcoord = gl_MultiTexCoord0.xy;\n}\n",
+        fragment,
+    )
+}
+
+/// `gbuffers_terrain` with both its stages, as the game's terrain loads it.
+fn load_program(vertex: &str, fragment: &str) -> Post {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "horizon-pack-compat-{}-{}",
@@ -23,12 +32,7 @@ fn load(fragment: &str) -> Post {
     )));
     let shaders = fixture.0.join("shaders");
     std::fs::create_dir_all(&shaders).unwrap();
-    std::fs::write(
-        shaders.join("gbuffers_terrain.vsh"),
-        "#version 120\nvarying vec2 texcoord;\nvoid main() {\n\
-         gl_Position = ftransform();\ntexcoord = gl_MultiTexCoord0.xy;\n}\n",
-    )
-    .unwrap();
+    std::fs::write(shaders.join("gbuffers_terrain.vsh"), vertex).unwrap();
     std::fs::write(shaders.join("gbuffers_terrain.fsh"), fragment).unwrap();
     let pack = Pack::open(&fixture.0).unwrap();
     let mut macros = Macros::standard();
@@ -119,6 +123,32 @@ fn a_local_constant_that_divides_by_a_zero_constant_runs_at_run_time() {
          return x > toeX ? x : tm;\n}\n\
          void main() { gl_FragData[0] = vec4(curve(0.5)); }\n",
     );
+}
+
+#[test]
+fn an_integer_vertex_output_without_flat_travels_flat() {
+    // Alpha Piscium: `out uint frag_worldTN;` in the vertex stage, `flat in uint` in the
+    // fragment stage. Only the fragment stage's qualifier counts (GLSL 4.30 on).
+    let mut post = load_program(
+        "#version 330\nin vec2 mc_Entity;\nout uint id;\nout ivec2 cell;\n\
+         void main() { gl_Position = ftransform(); id = uint(mc_Entity.x); cell = ivec2(1); }\n",
+        "#version 330\nflat in uint id;\nflat in ivec2 cell;\n\
+         layout(location = 0) out vec4 color;\n\
+         void main() { color = vec4(float(id), vec2(cell), 1.0); }\n",
+    );
+    let terrain = post
+        .terrain
+        .take()
+        .unwrap_or_else(|| panic!("terrain was skipped: {:?}", post.notes));
+    let program = terrain.program.expect("draw program");
+    for module in [&program.vertex, &program.fragment] {
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(module)
+        .unwrap();
+    }
 }
 
 #[test]
