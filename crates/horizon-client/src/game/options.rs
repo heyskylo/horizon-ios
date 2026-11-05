@@ -346,6 +346,7 @@ impl Game<'_> {
                 Event::Changed => {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
+                    self.sync_native_switches();
                     self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
@@ -425,6 +426,16 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                Event::BrowseMods => {
+                    let ui = &mut self.ui.options.mod_browser;
+                    self.mods.jobs.browse(ui, Self::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.ui.options.mod_browser;
+                    self.mods.jobs.install(ui, Self::game_dir(), id);
+                }
+                // The website, through ConfirmLinkScreen as other links.
+                Event::OpenModPage(url) => self.confirm_trusted_link(&url, Screen::Options),
                 Event::ListShaderPacks => {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());

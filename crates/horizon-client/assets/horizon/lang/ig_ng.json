@@ -460,8 +460,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Zoro ezo: Onye ọkpụkpọ ọ bụla Horizon na-ahụ gị na-enweghị ihe ịchọ mma gị, ị gụnyere. Otu mgbanwe dị ka Wardrobe nke onye mbido.",
   "horizon.extras.cosmetics_others": "Ngwa mma ndị egwuregwu ndị ọzọ",
   "horizon.extras.cosmetics_others.tooltip": "Ihe ndị ọzọ Horizon Player na-eyi: ihe niile, naanị aha mkpado styles, ma ọ bụ ihe ọ bụla. Na nzuzo, egwuregwu anaghị ajụ ihe ha na-eyi.",
-  "horizon.extras.cosmetics_auras": "Auras na ụzọ ndị ọzọ",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras na ụzọ ndị egwuregwu ndị ọzọ na-eyi. Gbanyụọ na ndabara.",
+  "horizon.extras.cosmetics_hide_fx": "Zoo akara ụkwụ na aura ndị egwuregwu ndị ọzọ",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Akara ụkwụ na aura ndị egwuregwu ndị ọzọ na-anọgide zoro ezo; ihe ịchọ mma ha ndị ọzọ ka na-egosi. Gbanyụrụ na ndabara.",
   "horizon.extras.cosmetics.shown": "Egosiri",
   "horizon.extras.cosmetics.hidden": "Zoro ezo",
   "horizon.extras.cosmetics.name_tags": "Naanị mkpado aha"

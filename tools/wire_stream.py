@@ -203,6 +203,19 @@ def compare(vanilla, horizon, ticks):
     return out
 
 
+def compare_answered(vanilla, horizon, ticks, av, ah):
+    """compare, for a scenario the server answers once (a teleport): the tick each client received the answer
+    in (`av`, `ah`) compares with the other client's, every other tick with the same tick, on the script's
+    clock. A loaded server answers a few ticks later in one run than in the other, while the script's own
+    packets (a button released, the position resent every 20 ticks) keep its clock. Numbers are vanilla's."""
+    out = [d for d in compare(vanilla, horizon, ticks) if d[0] not in (av, ah)]
+    v = vanilla[av]['packets'] if av < len(vanilla) else None
+    h = horizon[ah]['packets'] if ah < len(horizon) else None
+    if v != h:
+        out.append((av, v, h))
+    return sorted(out, key=lambda d: d[0])
+
+
 def describe(packets):
     if packets is None:
         return '    (no such tick)'

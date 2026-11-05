@@ -142,10 +142,10 @@ SCENARIOS = {
                          75: ['mouse right up']}),
     'eat': dict(
         setup=[f'item replace entity {PLAYER} weapon.mainhand with minecraft:golden_apple 4'],
-        # Two bites cut short: when a full one ends is the server's to say (its entity event), and a busy
-        # server says it ticks late.
-        ticks=70, steps={5: ['mouse right down'], 25: ['mouse right up'], 35: ['mouse right down'],
-                         55: ['mouse right up']}),
+        # Two bites of 10 ticks, a third of the 32 a golden apple takes: when a full one ends is the server's to
+        # say (its entity event), and a loaded server that catches up runs its ticks in a burst.
+        ticks=50, steps={5: ['mouse right down'], 15: ['mouse right up'], 25: ['mouse right down'],
+                         35: ['mouse right up']}),
     'bridge': dict(
         setup=[f'fill -2 {FLOOR + 1} -2 2 {FLOOR + 2} 2 minecraft:stone', f'tp {PLAYER} 0.5 {FLOOR + 3} 2.2 180 78',
                f'item replace entity {PLAYER} weapon.mainhand with minecraft:stone 64'],
@@ -430,18 +430,15 @@ def run(args, out):
 
 def anchored_diffs(v, h, ticks, anchor, problems, names=('vanilla', 'Horizon')):
     """wire_stream.compare over the scenario's ticks. With an anchor (a frame packet the server's answer brings,
-    as AcceptTeleportation), the ticks before it compare one to one and the ticks from it on are aligned on it:
-    a loaded server answers a tick or more later in one run than in the other. Numbers are vanilla's ticks."""
+    as AcceptTeleportation), the two ticks that answer arrived in compare with each other
+    (wire_stream.compare_answered). Numbers are vanilla's ticks."""
     if not anchor:
         return wire_stream.compare(v, h, ticks)
     av, ah = wire_stream.first_frame(v, anchor), wire_stream.first_frame(h, anchor)
     if av is None or ah is None:
         problems.append(f'  no {anchor}: {names[0]} at tick {av}, {names[1]} at tick {ah}')
         return wire_stream.compare(v, h, ticks)
-    # Between the two anchors both clients wait for the server: the ticks after the shorter wait are left out.
-    before = wire_stream.compare(v[:min(av, ah)], h[:min(av, ah)], min(av, ah) - 1)
-    after = wire_stream.compare(v[av:], h[ah:], ticks - max(av, ah))
-    return before + [(i + av, vt, ht) for i, vt, ht in after]
+    return wire_stream.compare_answered(v, h, ticks, av, ah)
 
 
 def compare(captures, scenarios):

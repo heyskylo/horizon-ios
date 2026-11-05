@@ -478,8 +478,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Яшерен: һәр Horizon плейер сезне косметикасыз күрә, сез керттегез. Эшләткечнең гардеробы белән бер үк ачкыч.",
   "horizon.extras.cosmetics_others": "Башка уенчыларның косметикасы",
   "horizon.extras.cosmetics_others.tooltip": "Башка Horizon уйнаучылар нәрсә киеп йөриләр: барысы да, аларның исеме теге стильләре, яки бернәрсә дә. Яшерен, уен беркайчан да нәрсә кигәннәрен сорамый.",
-  "horizon.extras.cosmetics_auras": "Башкаларның ауралары һәм юллары",
-  "horizon.extras.cosmetics_auras.tooltip": "Ауралар һәм башка уенчылар кигән эзләр. Килешү буенча сүндерелгән.",
+  "horizon.extras.cosmetics_hide_fx": "Башка уенчыларның эзләрен һәм аураларын яшерү",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Башка уенчыларның эзләре һәм ауралары яшерен кала; аларның башка косметикасы күренә. Гадәттә сүндерелгән.",
   "horizon.extras.cosmetics.shown": "Күрсәтелә",
   "horizon.extras.cosmetics.hidden": "Яшерен",
   "horizon.extras.cosmetics.name_tags": "Тэгларның исеме генә"

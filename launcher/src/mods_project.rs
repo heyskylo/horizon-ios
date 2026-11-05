@@ -132,7 +132,7 @@ pub(super) struct Browse {
 
 /// What the background sends this module.
 pub(super) enum Loaded {
-    Details((SourceId, String), Result<Details, String>),
+    Details((SourceId, String), Result<Arc<Details>, String>),
     Versions((SourceId, String), Result<Vec<ProjectVersion>, String>),
     Checked(
         (SourceId, String),
@@ -157,7 +157,7 @@ impl Launcher {
         match loaded {
             Loaded::Details(key, d) => {
                 if let Some(o) = open(b, &key) {
-                    o.details = Some(d.map(Arc::new));
+                    o.details = Some(d);
                 }
             }
             Loaded::Versions(key, v) => {
@@ -195,7 +195,7 @@ impl Launcher {
             let Some(source) = browser::source(p.source) else {
                 return;
             };
-            let d = source.details(&p);
+            let d = source.details(&p).map(Arc::new);
             let _ = tx.send(Event::Loaded(Loaded::Details(key.clone(), d)));
             let v = source.versions(&p).map(|versions| {
                 let home = backend::game_home();
@@ -688,10 +688,18 @@ impl Launcher {
             &[("count", &thousands(p.downloads))],
         )];
         if let Some(Ok(d)) = &details {
-            meta.push(trf(
-                "{count} followers",
-                &[("count", &thousands(d.followers))],
-            ));
+            // A registry project has no followers: its source repository's stars stand there.
+            match &d.github {
+                Some(g) => meta.push(trf(
+                    "{count} stars on GitHub",
+                    &[("count", &thousands(g.stars))],
+                )),
+                None if p.source != SourceId::Horizon => meta.push(trf(
+                    "{count} followers",
+                    &[("count", &thousands(d.followers))],
+                )),
+                None => {}
+            }
             if let Some(day) = d.updated.get(..10) {
                 meta.push(trf("updated {date}", &[("date", day)]));
             }
@@ -792,9 +800,14 @@ impl Launcher {
             .gap(px(24.))
             .child(div().flex().child(back))
             .child(head);
-        // Registry projects are rated on the site, signed in with GitHub (one rating per account).
+        // Registry projects are rated on the site, signed in with GitHub (one rating per account),
+        // and starred on their source repository, which the player does there themselves.
         if p.source == SourceId::Horizon {
             let url = browser::horizon::rate_url(&p.id);
+            let repo = match &details {
+                Some(Ok(d)) => d.github.as_ref().map(|g| g.url.clone()),
+                _ => None,
+            };
             page = page.child(
                 div()
                     .flex()
@@ -804,7 +817,11 @@ impl Launcher {
                     .child(
                         button("mods-rate", "Sign in with GitHub to rate", Kind::Ghost, &t)
                             .on_click(move |_, _, cx| cx.open_url(&url)),
-                    ),
+                    )
+                    .children(repo.map(|repo| {
+                        button("mods-star", "Star on GitHub", Kind::Ghost, &t)
+                            .on_click(move |_, _, cx| cx.open_url(&repo))
+                    })),
             );
         }
         if let Some(why) = support.reason() {

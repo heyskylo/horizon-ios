@@ -14,6 +14,8 @@ pub(super) struct ModsState {
     pub(super) dev: Vec<PathBuf>,
     /// The WebAssembly mods found that no longer run, for the one-time notice.
     stopped: Vec<String>,
+    /// Browse mods' worker (`mod_browser`).
+    pub(super) jobs: super::mod_browser::Jobs,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
@@ -391,6 +393,7 @@ impl Game<'_> {
             .collect();
         // A mod with a native version built in says so instead, and isn't news.
         self.list_native_mods();
+        self.sync_native_switches();
         let built = std::env::current_exe()
             .ok()
             .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
@@ -418,6 +421,15 @@ impl Game<'_> {
             .filter(|row| row.problem.as_deref() == Some(STOPPED))
             .map(|row| row.title.clone())
             .collect();
+    }
+    /// Trait mods follow the player's switches at once
+    /// (`mod_api::set_mod_on`): the next dispatch skips a mod turned off.
+    /// Mixin code checks `native_on` itself.
+    pub(super) fn sync_native_switches(&self) {
+        for id in horizon_client::mod_api::mod_ids() {
+            let on = !self.settings.mods.disabled.contains(*id);
+            horizon_client::mod_api::set_mod_on(id, on);
+        }
     }
     /// Once, in the first world after the update: which WebAssembly mods stopped.
     pub(super) fn tell_native_now(&mut self) {

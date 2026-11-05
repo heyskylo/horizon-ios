@@ -31,6 +31,30 @@ fn percent(caption: &str, value: f32) -> Text {
         ],
     )
 }
+/// `text` cut into lines of at most `width` characters, at spaces where it has them.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let len = line.chars().count();
+        if len > 0 && len + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+        while line.chars().count() > width {
+            let rest: String = line.chars().skip(width).collect();
+            line = line.chars().take(width).collect();
+            lines.push(std::mem::replace(&mut line, rest));
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
 fn on_off(v: bool) -> Text {
     tr(if v { "options.on" } else { "options.off" })
 }
@@ -1254,6 +1278,10 @@ pub enum Page {
     Font,
     Packs,
     Mods,
+    /// Browse mods: the registry's content mods, searched (`mod_browser`).
+    ModBrowser,
+    /// One registry project's page: `OptionsUi::mod_project`.
+    ModProject,
     /// A native mod's settings page: its index in `mods.installed`.
     NativeMod(usize),
     /// Horizon's shader packs, either kind (`shader_pack_list`).
@@ -1332,6 +1360,12 @@ enum Act {
     NativeKey(usize, usize),
     NativeButton(usize, usize),
     OpenModFolder,
+    /// Browse mods: the page of listing `.0` of `mod_browser`.
+    ModProject(usize),
+    /// The open project page's Install or Update.
+    InstallMod,
+    /// The open project page's page on the website.
+    OpenModPage,
     /// Accessibility's "Accessibility Help" link
     /// (`AccessibilityOptionsScreen.addFooter`'s openLinkButton).
     AccessibilityHelp,
@@ -1468,6 +1502,12 @@ pub enum Event {
     /// Data Packs' Open Pack Folder: create the folder if needed and open it.
     OpenDataPackFolder(std::path::PathBuf),
     OpenModFolder,
+    /// Browse mods opened: read the registry's index into `mod_browser`.
+    BrowseMods,
+    /// Install (or update) the registry's content mod with this id.
+    InstallMod(String),
+    /// Open a registry project's page on the website.
+    OpenModPage(String),
     /// Accessibility's Help link: confirm and open
     /// `CommonLinks.ACCESSIBILITY_HELP` over the options screen.
     AccessibilityHelp,
@@ -1578,6 +1618,10 @@ pub struct OptionsUi {
     language_choice: Option<String>,
     language_search: ui::EditBox,
     pub(crate) settings_search: ui::EditBox,
+    /// Browse mods: the registry's projects, filled by the game.
+    pub mod_browser: crate::mod_browser::ModBrowser,
+    /// The project whose page is open (`Page::ModProject`).
+    pub mod_project: String,
     /// Horizon's `packBrowser` extra: the pack screen's Add button.
     pub pack_browser: bool,
     /// Packs: the packs found and the selection the screen opens with.
@@ -1666,6 +1710,8 @@ impl Default for OptionsUi {
             language_choice: None,
             language_search: search,
             settings_search,
+            mod_browser: Default::default(),
+            mod_project: String::new(),
             pack_browser: false,
             pack_infos: Vec::new(),
             pack_selection: Vec::new(),
@@ -2156,7 +2202,10 @@ impl OptionsUi {
     }
     fn settings_search_active(&self) -> bool {
         self.settings_search.focused
-            && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
     }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
@@ -2297,7 +2346,10 @@ impl OptionsUi {
         self.focus = None;
         self.focus_from_keyboard = false;
         self.can_change_value = false;
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.set_value("");
             self.settings_search.focused = false;
         }
@@ -2423,6 +2475,8 @@ impl OptionsUi {
             Page::Font => "options.font.title",
             Page::Packs => "resourcePack.title",
             Page::Mods => "horizon.pages.mods",
+            Page::ModBrowser => "horizon.mods.browse.title",
+            Page::ModProject => "horizon.mods.browse.project",
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
@@ -2489,6 +2543,144 @@ impl OptionsUi {
         filtered
     }
 
+    /// Browse mods: what the registry offers this game, by the search box.
+    fn mod_browser_rows(&self) -> Vec<Row> {
+        use crate::mod_browser::Status;
+        let b = &self.mod_browser;
+        match &b.status {
+            Status::Idle | Status::Loading => {
+                return vec![Row::Note(lang::get("horizon.mods.browse.loading"))];
+            }
+            Status::Failed(why) => {
+                return vec![Row::Note(lang::tr("horizon.mods.browse.failed", &[why]))];
+            }
+            Status::Ready => {}
+        }
+        let found = b.found(&self.settings_search.value);
+        if found.is_empty() {
+            return vec![Row::Note(lang::get("horizon.mods.browse.none"))];
+        }
+        let mut rows = Vec::new();
+        for i in found {
+            let l = &b.listings[i];
+            let mut label = Text::literal(format!("{} {}", l.name, l.version));
+            if l.has_update() {
+                label = label.append(tr("horizon.mods.browse.has_update"));
+            } else if l.installed.is_some() {
+                label = label.append(tr("horizon.mods.browse.is_installed"));
+            }
+            rows.push(Row::Buttons(
+                button(0.0, 0.0, 310.0, label, Act::ModProject(i)),
+                None,
+            ));
+            rows.extend(wrap(&l.summary, 64).into_iter().take(1).map(Row::Note));
+        }
+        rows
+    }
+    /// A registry project's page: what it is, Install or Update, its switch
+    /// once installed, its description and changelog.
+    fn mod_project_rows(&self, s: &Settings) -> Vec<Row> {
+        let b = &self.mod_browser;
+        let Some(l) = b.listing(&self.mod_project) else {
+            return vec![Row::Note(lang::get("horizon.mods.browse.none"))];
+        };
+        let mut rows = vec![Row::Note(format!("{} {}", l.name, l.version))];
+        let by = [
+            lang::tr("horizon.mods.browse.by", &[&l.authors.join(", ")]),
+            l.license.clone(),
+            l.published.clone(),
+        ];
+        let by: Vec<&str> = by
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !t.is_empty())
+            .collect();
+        rows.push(Row::Note(by.join(" · ")));
+        let labels: Vec<&str> = l
+            .categories
+            .iter()
+            .chain(&l.tags)
+            .map(String::as_str)
+            .collect();
+        if !labels.is_empty() {
+            rows.push(Row::Note(labels.join(", ")));
+        }
+        let installing = b.installing.as_deref() == Some(l.id.as_str());
+        let install = match (&l.installed, installing) {
+            (_, true) => inactive(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.installing"),
+                Act::None,
+            )),
+            (None, false) => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.install"),
+                Act::InstallMod,
+            ),
+            (Some(_), false) if l.has_update() => button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.update"),
+                Act::InstallMod,
+            ),
+            (Some(_), false) => inactive(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.mods.browse.installed"),
+                Act::None,
+            )),
+        };
+        let page = button(
+            0.0,
+            0.0,
+            150.0,
+            tr("horizon.mods.browse.open_page"),
+            Act::OpenModPage,
+        );
+        let row = s.mods.installed.iter().position(|m| m.id == l.id && !m.dev);
+        match row.filter(|_| l.installed.is_some()) {
+            Some(i) => {
+                let label =
+                    Text::literal(format!("{}: ", lang::get("horizon.mods.browse.enabled")))
+                        .append(on_off(s.mods.is_on(i)));
+                let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                rows.push(Row::Buttons(install, Some(toggle)));
+                rows.push(Row::Buttons(page, None));
+            }
+            None => rows.push(Row::Buttons(install, Some(page))),
+        }
+        if let Some((message, _)) = &b.message {
+            rows.extend(wrap(message, 64).into_iter().map(Row::Note));
+        }
+        let description = crate::mod_browser::plain_lines(if l.description.is_empty() {
+            &l.summary
+        } else {
+            &l.description
+        });
+        rows.extend(
+            description
+                .iter()
+                .flat_map(|line| wrap(line, 64))
+                .map(Row::Note),
+        );
+        let changelog = crate::mod_browser::plain_lines(&l.changelog);
+        if !changelog.is_empty() {
+            rows.push(Row::Heading("horizon.mods.browse.changelog".into()));
+            rows.extend(
+                changelog
+                    .iter()
+                    .flat_map(|line| wrap(line, 64))
+                    .map(Row::Note),
+            );
+        }
+        rows
+    }
     /// A native mod's page: its name, its keys as Key Binds rows (the
     /// player's choice, else the default), then its buttons.
     fn native_rows(&self, s: &Settings, i: usize) -> Vec<Row> {
@@ -2857,61 +3049,64 @@ impl OptionsUi {
             }
             Page::Font => pairs(&[Opt::ForceUnicode, Opt::JapaneseGlyphs]),
             Page::Mods => {
+                let browse = button(
+                    0.0,
+                    0.0,
+                    310.0,
+                    tr("horizon.mods.browse"),
+                    Act::Push(Page::ModBrowser),
+                );
+                let mut rows = vec![Row::Buttons(browse, None)];
                 if s.mods.installed.is_empty() {
-                    return vec![Row::Header("horizon.mods.empty")];
+                    rows.push(Row::Header("horizon.mods.empty"));
+                    return rows;
                 }
-                s.mods
-                    .installed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, installed)| {
-                        let mut label = Text::option_name_value(
-                            Text::literal(installed.title.clone()),
-                            on_off(s.mods.is_on(i)),
+                rows.extend(s.mods.installed.iter().enumerate().map(|(i, installed)| {
+                    let mut label = Text::option_name_value(
+                        Text::literal(installed.title.clone()),
+                        on_off(s.mods.is_on(i)),
+                    );
+                    if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
+                        label = label.append(tr("horizon.mods.not_built"));
+                    } else if installed.problem.is_some() {
+                        label = label.append(tr("horizon.mods.stopped"));
+                    } else if installed.dev {
+                        label = label.append(tr("horizon.mods.dev"));
+                    }
+                    // A content mod's set feeds the block-state tables the
+                    // open world's chunks were decoded with: changing it
+                    // mid-world remaps their ids (Forge/Fabric freeze the
+                    // registry before a world opens). A native mod toggles
+                    // live through `native_on`, so it stays available.
+                    let content = installed.native.is_none();
+                    if self.in_world && content {
+                        label = label.append(tr("horizon.mods.in_world"));
+                    }
+                    let dead = installed.dev || installed.id.is_empty() || self.in_world && content;
+                    // Only native mods with actual settings need a second button.
+                    if installed
+                        .native
+                        .as_ref()
+                        .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
+                    {
+                        let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                        let settings = button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.mods.settings"),
+                            Act::ModSettings(i),
                         );
-                        if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
-                            label = label.append(tr("horizon.mods.not_built"));
-                        } else if installed.problem.is_some() {
-                            label = label.append(tr("horizon.mods.stopped"));
-                        } else if installed.dev {
-                            label = label.append(tr("horizon.mods.dev"));
-                        }
-                        // A content mod's set feeds the block-state tables the
-                        // open world's chunks were decoded with: changing it
-                        // mid-world remaps their ids (Forge/Fabric freeze the
-                        // registry before a world opens). A native mod toggles
-                        // live through `native_on`, so it stays available.
-                        let content = installed.native.is_none();
-                        if self.in_world && content {
-                            label = label.append(tr("horizon.mods.in_world"));
-                        }
-                        let dead =
-                            installed.dev || installed.id.is_empty() || self.in_world && content;
-                        // Only native mods with actual settings need a second button.
-                        if installed
-                            .native
-                            .as_ref()
-                            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
-                        {
-                            let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
-                            let settings = button(
-                                0.0,
-                                0.0,
-                                150.0,
-                                tr("horizon.mods.settings"),
-                                Act::ModSettings(i),
-                            );
-                            Row::Buttons(
-                                if dead { inactive(toggle) } else { toggle },
-                                Some(settings),
-                            )
-                        } else {
-                            let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
-                            Row::Buttons(if dead { inactive(widget) } else { widget }, None)
-                        }
-                    })
-                    .collect()
+                        Row::Buttons(if dead { inactive(toggle) } else { toggle }, Some(settings))
+                    } else {
+                        let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
+                        Row::Buttons(if dead { inactive(widget) } else { widget }, None)
+                    }
+                }));
+                rows
             }
+            Page::ModBrowser => self.mod_browser_rows(),
+            Page::ModProject => self.mod_project_rows(s),
             Page::NativeMod(i) => self.native_rows(s, i),
             Page::ShaderPacks => {
                 if s.shader_packs.is_empty() {
@@ -2989,7 +3184,10 @@ impl OptionsUi {
         let mut rows = ListRows::default();
         let page = self.page();
         let cx = (w / 2.0).floor();
-        if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            page,
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             self.settings_search.x = cx - 100.0;
             self.settings_search.y = 17.0;
         }
@@ -3331,12 +3529,12 @@ impl OptionsUi {
             // Drawn by `pack_screen`.
             Page::Packs => {}
             _ => {
-                if matches!(page, Page::Video | Page::Controls) {
+                if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
                     top = 38.0;
                 }
                 out.push(Widget {
                     x: 0.0,
-                    y: if matches!(page, Page::Video | Page::Controls) {
+                    y: if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
                         4.0
                     } else {
                         12.0
@@ -3915,23 +4113,30 @@ impl OptionsUi {
             }
             self.language_search = search;
         }
-        if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
+        if matches!(
+            self.page(),
+            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+        ) {
             let mut search = self.settings_search.clone();
             if self.focus == Some(FocusId::Search) {
                 search.focused = true;
             }
             search.draw(batch, atlas, None);
+            let hint = match self.page() {
+                Page::ModBrowser => "horizon.mods.browse.search",
+                _ => "horizon.options.search",
+            };
             // Horizon's search box sits in the header, before the list.
             crate::widgets::last_narratable(|n| {
                 n.order = -1;
                 if let crate::widgets::What::EditBox { message, .. } = &mut n.what {
-                    *message = tr("horizon.options.search").plain();
+                    *message = tr(hint).plain();
                 }
             });
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
                     atlas,
-                    &tr("horizon.options.search").with_color(text::GRAY).italic(),
+                    &tr(hint).with_color(text::GRAY).italic(),
                     search.text_x(),
                     search.text_y(),
                     u32::MAX,
@@ -4091,7 +4296,12 @@ impl OptionsUi {
         self.size = size;
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
-        if !drag && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
+        if !drag
+            && matches!(
+                self.page(),
+                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
+            )
+        {
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -4247,6 +4457,9 @@ impl OptionsUi {
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
+                            if p == Page::ModBrowser {
+                                events.push(Event::BrowseMods);
+                            }
                             self.push(p)
                         }
                         Act::Done => events.extend(self.back(s)),
@@ -4297,6 +4510,21 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ModProject(i) => {
+                            if let Some(listing) = self.mod_browser.listings.get(i) {
+                                self.mod_project = listing.id.clone();
+                                self.push(Page::ModProject);
+                            }
+                        }
+                        Act::InstallMod => {
+                            self.mod_browser.message = None;
+                            events.push(Event::InstallMod(self.mod_project.clone()));
+                        }
+                        Act::OpenModPage => {
+                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
+                                events.push(Event::OpenModPage(l.page.clone()));
+                            }
+                        }
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -5202,6 +5430,9 @@ impl OptionsUi {
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
+                            if p == Page::ModBrowser {
+                                events.push(Event::BrowseMods);
+                            }
                             self.push(p);
                         }
                         Act::Done => {
@@ -5259,6 +5490,21 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ModProject(i) => {
+                            if let Some(listing) = self.mod_browser.listings.get(i) {
+                                self.mod_project = listing.id.clone();
+                                self.push(Page::ModProject);
+                            }
+                        }
+                        Act::InstallMod => {
+                            self.mod_browser.message = None;
+                            events.push(Event::InstallMod(self.mod_project.clone()));
+                        }
+                        Act::OpenModPage => {
+                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
+                                events.push(Event::OpenModPage(l.page.clone()));
+                            }
+                        }
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);

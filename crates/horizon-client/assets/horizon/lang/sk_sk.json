@@ -450,8 +450,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Skryté: každý hráč Horizon vás vidí bez vašej kozmetiky vrátane vás. Rovnaký vypínač ako šatník odpaľovača.",
   "horizon.extras.cosmetics_others": "Kozmetika ostatných hráčov",
   "horizon.extras.cosmetics_others.tooltip": "Čo nosia ostatní hráči Horizon: všetko, iba štýly menoviek alebo nič. Skryté, hra sa nikdy nepýta, čo nosia.",
-  "horizon.extras.cosmetics_auras": "Aury a stopy iných",
-  "horizon.extras.cosmetics_auras.tooltip": "Aury a chodníky, ktoré nosia ostatní hráči. Predvolene vypnuté.",
+  "horizon.extras.cosmetics_hide_fx": "Skryť stopy a aury ostatných hráčov",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Stopy a aury ostatných hráčov zostanú skryté; ich ostatná kozmetika je stále vidieť. Predvolene vypnuté.",
   "horizon.extras.cosmetics.shown": "Zobrazené",
   "horizon.extras.cosmetics.hidden": "Skryté",
   "horizon.extras.cosmetics.name_tags": "Iba menovky"

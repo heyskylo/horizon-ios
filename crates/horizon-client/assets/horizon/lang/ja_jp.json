@@ -487,8 +487,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "非表示: すべての Horizon プレイヤーは、あなたも含め、化粧品を着用していないあなたを見ます。ランチャーのワードローブと同じスイッチ。",
   "horizon.extras.cosmetics_others": "他のプレイヤーの化粧品",
   "horizon.extras.cosmetics_others.tooltip": "他の Horizon プレイヤーが着ているもの: すべて、名札のスタイルのみ、または何も着ていません。隠されていますが、ゲームでは彼らが何を着ているかは尋ねられません。",
-  "horizon.extras.cosmetics_auras": "他人のオーラと軌跡",
-  "horizon.extras.cosmetics_auras.tooltip": "他のプレイヤーが身に着けているオーラと軌跡。デフォルトではオフです。",
+  "horizon.extras.cosmetics_hide_fx": "他のプレイヤーの軌跡とオーラを隠す",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "他のプレイヤーの軌跡とオーラを非表示にします。それ以外のコスメティックは表示されたままです。デフォルトはオフ。",
   "horizon.extras.cosmetics.shown": "示されている",
   "horizon.extras.cosmetics.hidden": "隠された",
   "horizon.extras.cosmetics.name_tags": "ネームタグのみ"

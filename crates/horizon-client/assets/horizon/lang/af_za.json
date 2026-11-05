@@ -472,8 +472,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Versteek: elke Horizon-speler sien jou sonder jou skoonheidsmiddels, jy ingesluit. Dieselfde skakelaar as die lanseerder se klerekas.",
   "horizon.extras.cosmetics_others": "Ander spelers se skoonheidsmiddels",
   "horizon.extras.cosmetics_others.tooltip": "Wat ander Horizon-spelers dra: alles, net hul naamplaatjiestyle, of niks. Versteek, die speletjie vra nooit wat hulle dra nie.",
-  "horizon.extras.cosmetics_auras": "Ander se aura's en roetes",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras en roetes wat ander spelers dra. Af by verstek.",
+  "horizon.extras.cosmetics_hide_fx": "Versteek ander spelers se spore en auras",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Ander spelers se spore en auras bly versteek; hul ander kosmetiese items wys steeds. By verstek af.",
   "horizon.extras.cosmetics.shown": "Getoon",
   "horizon.extras.cosmetics.hidden": "Versteek",
   "horizon.extras.cosmetics.name_tags": "Slegs naamplaatjies"
