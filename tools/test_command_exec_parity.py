@@ -98,6 +98,7 @@ def main():
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
+    parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
@@ -293,6 +294,9 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.merchant_gate_fixture:
+        from merchant_gate_corpus import cases
+        groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -328,7 +332,7 @@ def main():
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
-    java_options = []
+    java_options = ['-Dhorizon.merchantFixture=true'] if args.merchant_gate_fixture else []
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
         direct_input = build / 'orb-water-inputs.json'
@@ -345,13 +349,15 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'menu_state') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'menu_state', 'merchant_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
             sys.exit('reference-only record count differs')
         for op, row in zip(recorded, reference):
             require_anger_reference(op, row)
+            if "expect_merchant" in op and row.get("state") != op["expect_merchant"]:
+                sys.exit(f"Java merchant admission failed: {op}: {row}")
             if "expect_observation" in op and row.get("state") != op["expect_observation"]:
                 sys.exit(f"Java observation prerequisite failed: {op}: {row}")
             if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
@@ -382,6 +388,9 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    if args.merchant_gate_fixture:
+        env['HORIZON_COMMAND_PACKET_TRACE'] = str(build / 'rust-packets.jsonl')
+        env['HORIZON_COMMAND_RECEIPTS'] = str(build / 'rust-receipts.jsonl')
     if args.loaded_fixture:
         env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
         env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
@@ -395,11 +404,12 @@ def main():
         java = json.loads((build / 'client_config.json').read_text())
         if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
             sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
-        for name in ['java.log', 'rust.log']:
-            waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
-            if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
-                    for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
-                sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
+        if not args.merchant_gate_fixture:
+            for name in ['java.log', 'rust.log']:
+                waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
+                if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
+                        for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
+                    sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
         native = json.loads((build / 'rust-client-config.json').read_text())
         if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
             sys.exit(f'native settings/join prerequisite failed: {native}')
@@ -407,13 +417,15 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state', 'merchant_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
         require_anger_reference(op, reference)
+        if "expect_merchant" in op and reference.get("state") != op["expect_merchant"]:
+            sys.exit(f"Java merchant admission failed: {op}: {reference}")
         if "expect_observation" in op and reference.get("state") != op["expect_observation"]:
             sys.exit(f"Java observation prerequisite failed: {op}: {reference}")
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
@@ -433,14 +445,14 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state', 'merchant_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = compare(v, r, recorded_ops[position].get('comparison'))
+        kind = ('strict_record' if v != r else None) if args.merchant_gate_fixture else compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})

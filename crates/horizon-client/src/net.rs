@@ -100,6 +100,9 @@ pub enum Event {
     },
 }
 
+// Opt-in command-oracle diagnostics only. Studio's privacy policy is unchanged.
+mod command_trace;
+
 pub struct Session {
     events: Receiver<Event>,
     writer: Arc<Mutex<Option<ConnWriter>>>,
@@ -405,7 +408,13 @@ impl Session {
         if let Some(w) = self.writer.lock().unwrap().take() {
             w.shutdown();
         }
-        drop(self.thread.take());
+        if std::env::var_os("HORIZON_COMMAND_PACKET_TRACE").is_some() {
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        } else {
+            drop(self.thread.take());
+        }
     }
 }
 impl Drop for Session {
@@ -819,12 +828,13 @@ fn run(
         cookies,
         resources,
     )?;
+    command_trace::start(profile.uuid, &profile.name).map_err(|e| Reason::plain(e.to_string()))?;
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
         uuid: profile.uuid,
         name: profile.name,
     });
-    receive_play(
+    let result = receive_play(
         &mut reader,
         shared_writer,
         configuring,
@@ -834,7 +844,9 @@ fn run(
         far,
         resources,
         recorder,
-    )
+    );
+    command_trace::finish().map_err(|e| Reason::plain(e.to_string()))?;
+    result
 }
 
 fn receive_play(
@@ -852,6 +864,7 @@ fn receive_play(
         let (id, payload) = reader
             .recv()
             .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
+        command_trace::packet(id, &payload).map_err(|e| Reason::plain(e.to_string()))?;
         let packet = match play::Clientbound::decode(id, &payload) {
             Ok(p) => p,
             Err(err) => {

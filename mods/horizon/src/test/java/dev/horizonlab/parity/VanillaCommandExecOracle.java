@@ -392,8 +392,15 @@ public final class VanillaCommandExecOracle {
                     messages.add(spans(chatType.decorate(message.content())));
                 }
             };
+            if(Boolean.getBoolean("horizon.merchantFixture")) this.tickRateManager().setFrozen(true);
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
-            EmbeddedChannel channel = new EmbeddedChannel(connection);
+            EmbeddedChannel channel = Boolean.getBoolean("horizon.merchantFixture") ? new EmbeddedChannel(
+                new io.netty.channel.ChannelInitializer<io.netty.channel.Channel>() {
+                    @Override protected void initChannel(io.netty.channel.Channel ch) {
+                        Connection.configureSerialization(ch.pipeline(),PacketFlow.SERVERBOUND,false,null);
+                        ch.pipeline().addLast("packet_handler",connection);
+                    }
+                }) : new EmbeddedChannel(connection);
             JsonObject login = new JsonObject();
             if (Boolean.getBoolean("horizon.loadedFixture")) {
                 channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
@@ -407,7 +414,43 @@ public final class VanillaCommandExecOracle {
                     }
                 });
             }
+            java.io.BufferedWriter packetTrace = null;
+            long[] packetSequence = {0};
+            long packetStart = System.nanoTime();
+            if (Boolean.getBoolean("horizon.merchantFixture")) {
+                packetTrace = Files.newBufferedWriter(output.resolveSibling("java-packets.jsonl"));
+                var trace = packetTrace;
+                JsonObject header = new JsonObject(); header.addProperty("event","start");header.addProperty("connection",0);
+                header.addProperty("uuid",player.getUUID().toString().replace("-",""));header.addProperty("name",player.getGameProfile().name());
+                header.addProperty("unix_ns",Long.toString(System.currentTimeMillis()*1000000L));
+                trace.write(header.toString()+"\n");trace.flush();
+                // Copy the actual official encoder's output, before framing. Never mutate
+                // the buffer's indices or reject an emitted packet based on a reader check.
+                channel.pipeline().addAfter("prepender","merchant_raw_trace",new io.netty.channel.ChannelOutboundHandlerAdapter() {
+                    @Override public void write(io.netty.channel.ChannelHandlerContext context,Object message,
+                            io.netty.channel.ChannelPromise promise) throws Exception {
+                        if(!(message instanceof io.netty.buffer.ByteBuf original)) {
+                            JsonObject control=new JsonObject();control.addProperty("event","control");control.addProperty("connection",0);
+                            control.addProperty("elapsed_ns",Long.toString(System.nanoTime()-packetStart));control.addProperty("class",message.getClass().getName());
+                            trace.write(control.toString()+"\n");trace.flush();super.write(context,message,promise);return;
+                        }
+                        var bytes=original.duplicate();
+                        int id=new net.minecraft.network.FriendlyByteBuf(bytes).readVarInt();
+                        byte[] payload=new byte[bytes.readableBytes()];bytes.readBytes(payload);
+                        JsonObject row=new JsonObject();row.addProperty("event","packet");row.addProperty("connection",0);
+                        row.addProperty("sequence",packetSequence[0]++);row.addProperty("elapsed_ns",Long.toString(System.nanoTime()-packetStart));
+                        row.addProperty("state","play");row.addProperty("dir","s2c");row.addProperty("id",id);
+                        row.addProperty("data",java.util.HexFormat.of().formatHex(payload));row.addProperty("size",payload.length);
+                        trace.write(row.toString()+"\n");trace.flush();
+                        super.write(context,message,promise);
+                    }
+                });
+            }
+            if(Boolean.getBoolean("horizon.merchantFixture")) connection.setupOutboundProtocol(
+                net.minecraft.network.protocol.game.GameProtocols.CLIENTBOUND_TEMPLATE.bind(
+                    net.minecraft.network.RegistryFriendlyByteBuf.decorator(this.registryAccess())));
             this.getPlayerList().placeNewPlayer(connection, player, cookie);
+            if(Boolean.getBoolean("horizon.merchantFixture")) {channel.runPendingTasks();channel.flushOutbound();channel.checkException();}
             if (Boolean.getBoolean("horizon.loadedFixture")) {
                 new net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket().handle(player.connection);
             }
@@ -423,6 +466,8 @@ public final class VanillaCommandExecOracle {
             try { writeFishingFallbackReference(); } catch (Exception e) { throw new IOException(e); }
             StringBuilder out = new StringBuilder();
             Gson gson = new Gson();
+            var receipts = Boolean.getBoolean("horizon.merchantFixture") ? Files.newBufferedWriter(output.resolveSibling("java-receipts.jsonl")) : null;
+            long receiptSequence=0;
             for (String line : Files.readAllLines(script, StandardCharsets.UTF_8)) {
                 if (line.isBlank()) {
                     continue;
@@ -733,6 +778,43 @@ public final class VanillaCommandExecOracle {
                         out.append(gson.toJson(record)).append('\n');
                     }
                     case "close_menu" -> player.closeContainer();
+                    case "merchant_action" -> {
+                        switch(op.get("action").getAsString()) {
+                            case "open" -> {
+                                var entity=player.level().getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                                if(!(entity instanceof net.minecraft.world.entity.npc.villager.Villager))throw new IllegalStateException("missing real villager");
+                                player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
+                                    entity.getId(),net.minecraft.world.InteractionHand.MAIN_HAND,new net.minecraft.world.phys.Vec3(0,0,0),false));
+                            }
+                            case "select" -> player.connection.handleSelectTrade(new net.minecraft.network.protocol.game.ServerboundSelectTradePacket(op.get("index").getAsInt()));
+                            case "click" -> {
+                                if(!(player.containerMenu instanceof net.minecraft.world.inventory.MerchantMenu))throw new IllegalStateException("no merchant menu");
+                                player.connection.handleContainerClick(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(
+                                    player.containerMenu.containerId,player.containerMenu.getStateId(),(short)op.get("slot").getAsInt(),
+                                    (byte)(op.has("button")?op.get("button").getAsInt():0),
+                                    net.minecraft.world.inventory.ContainerInput.values()[op.has("input")?op.get("input").getAsInt():0],
+                                    new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(),net.minecraft.network.HashedStack.EMPTY));
+                            }
+                            case "close" -> player.connection.handleContainerClose(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
+                            default -> throw new IllegalStateException("unknown merchant action");
+                        }
+                    }
+                    case "merchant_state" -> {
+                        if(!(player.containerMenu instanceof net.minecraft.world.inventory.MerchantMenu menu))throw new IllegalStateException("no merchant menu");
+                        var trader=merchantOwner(menu);
+                        JsonObject state=new JsonObject();state.addProperty("window",menu.containerId);
+                        JsonArray uuid=new JsonArray(); for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(trader.getUUID()))uuid.add(n);state.add("merchant",uuid);
+                        uuid=new JsonArray();for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(player.getUUID()))uuid.add(n);state.add("player",uuid);
+                        JsonArray slots=new JsonArray();for(int n=0;n<3;n++)slots.add(merchantStack(menu.getSlot(n).getItem()));state.add("slots",slots);
+                        state.add("carried",merchantStack(menu.getCarried()));state.addProperty("xp",menu.getTraderXp());
+                        JsonArray offers=new JsonArray();for(var offer:menu.getOffers()) {
+                            JsonObject o=new JsonObject();o.addProperty("uses",offer.getUses());o.addProperty("special",offer.getSpecialPriceDiff());
+                            o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
+                        }state.add("offers",offers);
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#merchant_state "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(record.toString()).append('\n');
+                    }
                     case "menu_state" -> {
                         int slots = player.containerMenu == player.inventoryMenu ? 0 : player.containerMenu.slots.size() - 36;
                         JsonObject state = new JsonObject();state.addProperty("own_slots", slots);
@@ -818,8 +900,36 @@ public final class VanillaCommandExecOracle {
                     }
                     default -> throw new IllegalArgumentException(line);
                 }
+                if(receipts!=null) {
+                    channel.runPendingTasks();channel.flushOutbound();channel.checkException();
+                    JsonObject actual=new JsonObject();actual.addProperty("connection",0);
+                    actual.addProperty("uuid",player.getUUID().toString().replace("-",""));actual.addProperty("game_time",player.level().getGameTime());actual.addProperty("connected",connection.isConnected());actual.addProperty("channel_active",channel.isActive());actual.addProperty("outbound_messages",channel.outboundMessages().size());actual.addProperty("flushed",true);
+                    JsonObject menu=new JsonObject();menu.addProperty("window",player.containerMenu.containerId);menu.addProperty("revision",player.containerMenu.getStateId());
+                    actual.add("menu",menu);
+                    JsonObject receipt=new JsonObject();receipt.addProperty("event","receipt");receipt.addProperty("sequence",receiptSequence++);
+                    receipt.addProperty("elapsed_ns",Long.toString(System.nanoTime()-packetStart));receipt.addProperty("unix_ns",Long.toString(System.currentTimeMillis()*1000000L));receipt.add("operation",op);receipt.add("actual",actual);
+                    receipts.write(receipt.toString()+"\n");receipts.flush();
+                }
             }
+            if(receipts!=null)receipts.close();
             Files.writeString(output, out.toString(), StandardCharsets.UTF_8);
+            if(packetTrace!=null) {
+                JsonObject end=new JsonObject();end.addProperty("event","end");end.addProperty("connection",0);end.addProperty("packets",packetSequence[0]);end.addProperty("channel_open",connection.isConnected());end.addProperty("flushed",true);
+                packetTrace.write(end.toString()+"\n");packetTrace.close();
+            }
+        }
+
+        static net.minecraft.world.entity.npc.villager.Villager merchantOwner(net.minecraft.world.inventory.MerchantMenu menu) {
+            try {
+                var field=net.minecraft.world.inventory.MerchantMenu.class.getDeclaredField("trader");field.setAccessible(true);
+                return (net.minecraft.world.entity.npc.villager.Villager)field.get(menu);
+            } catch(ReflectiveOperationException error) {throw new IllegalStateException(error);}
+        }
+
+        static com.google.gson.JsonElement merchantStack(net.minecraft.world.item.ItemStack stack) {
+            if(stack.isEmpty())return com.google.gson.JsonNull.INSTANCE;
+            JsonArray value=new JsonArray();value.add(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+            value.add(stack.getCount());return value;
         }
 
         /** One iteration of MinecraftServer.runServer: the delayed tick profiler start, then the tick. */
