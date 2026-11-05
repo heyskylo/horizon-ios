@@ -614,8 +614,8 @@ pub fn name_mods(ids: &'static [&'static str]) {
     let _ = OFF.set(ids.iter().map(|_| AtomicBool::new(false)).collect());
 }
 
-/// One flag per entry of [`mods`]: the player turned that mod off in Options
-/// > Mods. Its hooks are skipped from the next dispatch on (its `RenderHooks`,
+/// One flag per entry of [`mods`]: the player turned that mod off on the
+/// Mods page of the options. Its hooks are skipped from the next dispatch on (its `RenderHooks`,
 /// installed apart at start, keep drawing until a restart); it stays loaded,
 /// and what it keeps stays, so turning it on again resumes it at once
 /// (docs/design/mod-hotload.md). Registration hooks run at start, before the
@@ -648,7 +648,6 @@ fn is_off(index: usize) -> bool {
         .and_then(|flags| flags.get(index))
         .is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
-
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
 /// panic in it names the mod. The generated dispatch loops over it.
