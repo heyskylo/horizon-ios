@@ -41,8 +41,9 @@ y points down, as in vanilla's `ModelPart`s and Blockbench's "Modded Entity" mod
 }
 ```
 
-- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag` or `emote` (below); a player wears at
-  most one item per slot, and plays emotes. A `torso` item is hidden under a chestplate (not an elytra).
+- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag`, `emote`, `companion`, `trail` or
+  `aura` (the last four below); a player wears at most one item per slot, and plays emotes. A
+  `torso` item is hidden under a chestplate (not an elytra).
 - `bone`: the player model part the item follows (`head`, `body`, `left_arm`, `right_arm`,
   `left_leg`, `right_leg`; `head` if left out). The item sits at the bone's matrix times `attach` (offset in pixels,
   rotation in degrees, a uniform scale in (0, 2]).
@@ -75,6 +76,53 @@ Limits, checked when an item is read (`Item::parse`); an item past one is refuse
 | Reach | 24 pixels from the bone's pivot, animations included | items stay near their wearer |
 
 Unknown fields are refused, so a file never carries anything the game would silently ignore.
+
+### Companions, trails and auras (`fx.rs`)
+
+Three kinds ride no bone (no `bone` for the item or a part), so each goes with any other item, a
+shoulder pet included. Like everything else they are worn (`PUT /v1/equipped`), reach other players
+through `/v1/worn`, and change nothing in the game: no entity, no collision, no packet.
+
+- **A companion** (`"slot": "companion"`): a small model floating beside the player. Its block says
+  where it floats at rest (`anchor`: pixels from the neck in the wearer's body space, y down, +x the
+  wearer's left, +z behind), how slowly it catches up when the player moves (`lag`, the follow's
+  time constant, 1 to 40 ticks; 6 if left out) and which part, if any, turns to look where the
+  wearer looks (`look`); `glow` draws it at full light. Idle motion is the usual `animations` (a
+  `bob`, a wing's `swing`).
+
+  ```json
+  "companion": { "anchor": [-14, -6, 8], "lag": 8, "look": "head", "glow": false }
+  ```
+
+- **A trail** (`"slot": "trail"`): particles left behind while the player moves, no model (`parts`
+  stays empty). The texture is a row of `sprites` square sprites of at most 16 texels; each
+  particle shows one. `rate` is particles per block moved, `lifetime` ticks each lives, `size` its
+  smallest and largest side in pixels, `gravity` blocks per tick² (negative rises, as embers),
+  `drift` how far it sways sideways (pixels), `spin` degrees a tick, `from` `feet` (the default) or
+  `body`, `fade` fades it over its last third, `glow` draws it at full light.
+
+  ```json
+  "trail": { "sprites": 4, "rate": 2, "lifetime": 30, "size": [1.5, 3], "gravity": 0.01,
+             "drift": 1.5, "spin": 8, "from": "feet", "fade": true, "glow": false }
+  ```
+
+- **An aura** (`"slot": "aura"`): a see-through model whose origin is the middle of the player's
+  feet (y down, so up is negative), `at` the `feet` or the `body`, drawn at `alpha`, at full
+  light with `glow`.
+
+  ```json
+  "aura": { "at": "feet", "alpha": 0.5, "glow": true }
+  ```
+
+Their limits, on top of the vertices, texture and parts above:
+
+| Limit | Value | Why |
+|---|---|---|
+| Companion size | 8 pixels from its origin, animations included | a small creature, not a second player |
+| Companion anchor | 28 pixels from the neck at most; from the head's centre, 11 plus its size at least | it floats near the player and never over their face |
+| Trail particles | `rate` ≤ 4 per block, `lifetime` ≤ 40 ticks, `size` ≤ 4 pixels, `gravity` within 0.04, `drift` ≤ 4, `spin` ≤ 20 | a short trail of small particles |
+| Aura reach | 14 pixels sideways from the feet's middle; 6 pixels up at the feet, 30 around the body; 1 below | it frames the player without hiding anyone near them |
+| Aura opacity | 0.6 at the feet, 0.35 around the body | a player inside one is as easy to see and hit |
 
 ## Emotes (`horizon_cosmetics::Emote`)
 
