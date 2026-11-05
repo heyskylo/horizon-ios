@@ -6086,7 +6086,7 @@ impl Game<'_> {
     /// is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`;
     /// `id` is the advancement id, the first recipe id, the tutorial hint
     /// (`move`, `look`, `find_tree`, `punch_tree`, `open_inventory`,
-    /// `craft_planks`), the system toast's id (`narrator_toggle`,
+    /// `craft_planks`, `socialInteractions`), the system toast's id (`narrator_toggle`,
     /// `pack_load_failure`, `pack_download`, `low_disk_space`,
     /// `chunk_load_failure`, `chunk_save_failure`), or empty for
     /// `now_playing`. An update to a toast already queued or shown is not an

@@ -2886,7 +2886,7 @@ before it is queued, so a mod can drop recipe toasts, tutorial hints or the adva
 and `id` say which:
 
 - `advancement`: the advancement id; `recipe`: the first recipe id of the toast;
-- `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory` or `craft_planks`;
+- `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
 - `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
   `chunk_load_failure` or `chunk_save_failure`;
 - `now_playing`: an empty id, each time the music toast shows a new song.

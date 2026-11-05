@@ -44,6 +44,7 @@ impl Hint {
             Hint::PunchTree => "punch_tree",
             Hint::OpenInventory => "open_inventory",
             Hint::CraftPlanks => "craft_planks",
+            Hint::SocialInteractions => "socialInteractions",
         }
     }
 }
@@ -274,8 +275,12 @@ impl super::Game<'_> {
         if !self.settings.file.bool("joinedFirstServer")
             && (!self.has_singleplayer_server() || self.is_published())
         {
-            let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
-            self.tutorial_toasts.push(toast);
+            // ToastManager.addToast: a mod may cancel it; the hint is still
+            // spent (`joinedFirstServer`), as vanilla sets it either way.
+            if self.toast_allowed("tutorial", Hint::SocialInteractions.name()) {
+                let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
+                self.tutorial_toasts.push(toast);
+            }
             self.settings.file.set(
                 "joinedFirstServer",
                 horizon_client::options_file::V::Bool(true),
