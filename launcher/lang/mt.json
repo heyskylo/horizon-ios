@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "L-ebda kont ta' Minecraft: Java Edition m'għandu dak l-isem.",
   "That account already owns everything in the basket.": "Dak il-kont diġà għandu kollox fil-basket.",
   "The shop isn't selling right now. Nothing was charged.": "Il-ħanut mhux qed ibigħ bħalissa. Ma ġie ċċarġjat xejn.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma setax jibda l-ħlas. Ma ġie ċċarġjat xejn."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma setax jibda l-ħlas. Ma ġie ċċarġjat xejn.",
+  "Shop": "Ħanut",
+  "Owned": "Tiegħek",
+  "Claim the founder set": "Itlob is-sett tal-fundatur",
+  "Claiming…": "Qed jintalab…",
+  "The shop didn't load.": "Is-susta ma tagħbietx.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Affarijiet x'tilbes għall-plejer tiegħek, li jarahom kull min jilgħab fuq Horizon.",
+  "Free for founders": "B'xejn għall-fundaturi",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Għal-plejers li kienu hawn l-ewwel. B'xejn biex titlob; ladarba titlobha, tibqa' tiegħek.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Spiċċa l-ħlas b'xejn fil-browser tiegħek. Is-sett jasal hawn ftit wara.",
+  "{n} items": "{n} oġġetti",
+  "Nothing is on sale right now.": "Xejn mhu għall-bejgħ bħalissa."
 }

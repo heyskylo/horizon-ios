@@ -113,6 +113,9 @@ enum Page {
     Servers,
     /// What the player wears (`wardrobe_page.rs`), with the cosmetics flag on.
     Wardrobe,
+    /// Cosmetics to try on and buy (`wardrobe_page/shop.rs`), beside the Wardrobe and under the
+    /// same rule. A plain tab: no badge, and it never opens by itself.
+    Shop,
     Notes,
     Settings,
 }
@@ -128,6 +131,7 @@ impl Page {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
             Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
+            Ok("shop") if horizon_cosmetics::forced() => Page::Shop,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -143,22 +147,23 @@ impl Page {
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
     /// own button.
-    const ALL: [(Page, &'static str, &'static str); 7] = [
+    const ALL: [(Page, &'static str, &'static str); 8] = [
         (Page::Play, "Home", "home"),
         (Page::Mods, "Mods", "package"),
         (Page::Servers, "Servers", "server"),
         (Page::Wardrobe, "Wardrobe", "user"),
+        (Page::Shop, "Shop", "bag"),
         (Page::Versions, "Versions", "archive"),
         (Page::Notes, "Patch notes", "notes"),
         (Page::Settings, "Settings", "sliders"),
     ];
 
-    /// The pages the top bar shows: all but Settings, and the Wardrobe only when `wardrobe`
-    /// (`Launcher::wardrobe_shown`).
+    /// The pages the top bar shows: all but Settings, and the Wardrobe and the Shop only when
+    /// `wardrobe` (`Launcher::wardrobe_shown`).
     fn in_top_bar(wardrobe: bool) -> impl Iterator<Item = (Page, &'static str, &'static str)> {
         Self::ALL.into_iter().filter(move |(page, ..)| match page {
             Page::Settings => false,
-            Page::Wardrobe => wardrobe,
+            Page::Wardrobe | Page::Shop => wardrobe,
             _ => true,
         })
     }
@@ -317,6 +322,8 @@ struct Launcher {
     wardrobe_marks: wardrobe_page::Marks,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
+    /// The Shop page's basket and choices (`wardrobe_page/shop.rs`).
+    shop: wardrobe_page::Shop,
     /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
@@ -631,6 +638,7 @@ impl Launcher {
             wardrobe: None,
             wardrobe_marks: Default::default(),
             wardrobe_reload: false,
+            shop: Default::default(),
             shop_status: None,
             shop_kept: None,
             // The first draw takes the launcher theme from Settings.
@@ -793,7 +801,10 @@ impl Launcher {
             this.open_instance_dialog(this.selected_instance().cloned());
         }
         if cfg!(debug_assertions)
-            && std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("wardrobe")
+            && matches!(
+                std::env::var("HORIZON_LAUNCHER_PAGE").as_deref(),
+                Ok("wardrobe" | "shop")
+            )
         {
             this.wardrobe_preview();
         }
@@ -866,7 +877,7 @@ impl Launcher {
             self.load_auth_statuses(false);
         }
         self.load_profile_heads();
-        self.wardrobe_reload |= page == Page::Wardrobe;
+        self.wardrobe_reload |= matches!(page, Page::Wardrobe | Page::Shop);
         if page != self.page {
             self.page = page;
             self.switches += 1;
@@ -1079,7 +1090,7 @@ impl Launcher {
         match self.bench.as_mut().map(|b| b.tick(&self.perf)) {
             Some(perf::Step::Go(page)) => {
                 let pages: Vec<Page> = (Page::ALL.iter().map(|p| p.0))
-                    .filter(|p| *p != Page::Wardrobe || self.wardrobe_shown())
+                    .filter(|p| !matches!(p, Page::Wardrobe | Page::Shop) || self.wardrobe_shown())
                     .collect();
                 self.go(pages[page % pages.len()]);
                 changed = true;
@@ -5318,6 +5329,7 @@ impl Render for Launcher {
             Page::Mods => self.mods_page(cx),
             Page::Servers => self.servers_page(cx),
             Page::Wardrobe => self.wardrobe_page(cx),
+            Page::Shop => self.shop_page(cx),
             Page::Notes => self.notes_page(cx),
             Page::Settings => self.settings_page(cx),
         };

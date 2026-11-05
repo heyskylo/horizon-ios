@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Žiadny účet Minecraft: Java Edition nemá toto meno.",
   "That account already owns everything in the basket.": "Tento účet už vlastní všetko v košíku.",
   "The shop isn't selling right now. Nothing was charged.": "Obchod teraz nepredáva. Nič nebolo účtované.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nemohol spustiť platbu. Nič nebolo účtované."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nemohol spustiť platbu. Nič nebolo účtované.",
+  "Shop": "Obchod",
+  "Owned": "Vlastníš",
+  "Claim the founder set": "Nárokovať zakladateľský set",
+  "Claiming…": "Získava sa…",
+  "The shop didn't load.": "Obchod sa nenačítal.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Veci pre tvojho hráča, ktoré vidí každý, kto hrá na Horizone.",
+  "Free for founders": "Zadarmo pre zakladateľov",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pre hráčov, ktorí tu boli prví. Zadarmo; keď ho získaš, ostane tvoj.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Dokonči bezplatnú platbu v prehliadači. Sada sa tu o chvíľu objaví.",
+  "{n} items": "{n} predmetov",
+  "Nothing is on sale right now.": "Teraz sa nič nepredáva."
 }

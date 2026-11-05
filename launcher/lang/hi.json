@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "इस नाम का कोई Minecraft: Java Edition खाता नहीं है।",
   "That account already owns everything in the basket.": "उस खाते के पास टोकरी की हर चीज़ पहले से है।",
   "The shop isn't selling right now. Nothing was charged.": "दुकान अभी नहीं बेच रही है। कुछ भी नहीं काटा गया।",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle भुगतान शुरू नहीं कर सका। कुछ भी नहीं काटा गया।"
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle भुगतान शुरू नहीं कर सका। कुछ भी नहीं काटा गया।",
+  "Shop": "दुकान",
+  "Owned": "आपका",
+  "Claim the founder set": "फ़ाउंडर सेट लें",
+  "Claiming…": "प्राप्त किया जा रहा है…",
+  "The shop didn't load.": "दुकान लोड नहीं हुई।",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "आपके खिलाड़ी के पहनने की चीज़ें, जो Horizon पर खेलने वाले सभी देखते हैं।",
+  "Free for founders": "संस्थापकों के लिए मुफ़्त",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "उन खिलाड़ियों के लिए जो सबसे पहले आए। मुफ़्त; एक बार मिलने पर हमेशा आपका।",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "अपने ब्राउज़र में मुफ़्त चेकआउट पूरा करें। सेट कुछ ही देर में यहाँ आ जाएगा।",
+  "{n} items": "{n} चीज़ें",
+  "Nothing is on sale right now.": "अभी कुछ भी बिक्री पर नहीं है।"
 }

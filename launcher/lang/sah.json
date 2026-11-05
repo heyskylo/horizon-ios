@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Маннык ааттаах Minecraft: Java Edition аккаунт суох.",
   "That account already owns everything in the basket.": "Бу аккаунтка корзинаҕа баар барыта баар.",
   "The shop isn't selling right now. Nothing was charged.": "Маҕаһыын билигин атыылаабат. Туох да ылыллыбата.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөбүрү саҕалыы барбата. Туох да ылыллыбата."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle төлөбүрү саҕалыы барбата. Туох да ылыллыбата.",
+  "Shop": "Маҕаһыын",
+  "Owned": "Баар",
+  "Claim the founder set": "Төрүттээччи наборун ирдиир",
+  "Claiming…": "Ылан эрэбин…",
+  "The shop didn't load.": "Маагыаһын киирбэтэ.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Оонньооччуҥҥа кэтэр таҥас, Horizon-ҥа оонньооччулар барылара көрөллөр.",
+  "Free for founders": "Төрдүттэргэ босхо",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Бастаан кэлбит оонньооччулартан. Босхо ылыллар; биирдэ ылбыккар, эйиэхэ хаалар.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Босхо төлөбүрү браузергар түмүктээ. Хомуурунньук манна быдан кэлин көстөр.",
+  "{n} items": "{n} мал",
+  "Nothing is on sale right now.": "Билигин туох да атыыламмат."
 }

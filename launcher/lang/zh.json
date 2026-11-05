@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "没有使用该名称的 Minecraft: Java Edition 账户。",
   "That account already owns everything in the basket.": "该账户已拥有购物篮中的全部物品。",
   "The shop isn't selling right now. Nothing was charged.": "商店目前不在销售。未扣任何费用。",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle 无法开始结账。未扣任何费用。"
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle 无法开始结账。未扣任何费用。",
+  "Shop": "商店",
+  "Owned": "已拥有",
+  "Claim the founder set": "领取创始者套装",
+  "Claiming…": "领取中…",
+  "The shop didn't load.": "商店未能加载。",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "给你的角色穿戴的物品，所有在 Horizon 上游玩的人都能看到。",
+  "Free for founders": "创始者免费",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "献给最早到来的玩家。免费领取，领取后永久归你。",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "请在浏览器中完成免费结账，稍后套装就会出现在这里。",
+  "{n} items": "{n} 件物品",
+  "Nothing is on sale right now.": "目前没有在售的物品。"
 }

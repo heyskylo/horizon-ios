@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Nėra Minecraft: Java Edition paskyros tokiu vardu.",
   "That account already owns everything in the basket.": "Ši paskyra jau turi viską, kas yra krepšelyje.",
   "The shop isn't selling right now. Nothing was charged.": "Parduotuvė dabar neparduoda. Nieko nenuskaičiuota.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nepavyko pradėti mokėjimo. Nieko nenuskaičiuota."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nepavyko pradėti mokėjimo. Nieko nenuskaičiuota.",
+  "Shop": "Parduotuvė",
+  "Owned": "Turima",
+  "Claim the founder set": "Pretenduokite į steigėjų rinkinį",
+  "Claiming…": "Atsiimama…",
+  "The shop didn't load.": "Parduotuvė neįsikėlė.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Daiktai tavo žaidėjui, kuriuos mato visi, žaidžiantys Horizon.",
+  "Free for founders": "Nemokama įkūrėjams",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Žaidėjams, kurie čia buvo pirmieji. Nemokamai; atsiėmus lieka tau.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Užbaik nemokamą atsiskaitymą naršyklėje. Rinkinys čia pasirodys po akimirkos.",
+  "{n} items": "{n} daiktai",
+  "Nothing is on sale right now.": "Šiuo metu niekas neparduodama."
 }

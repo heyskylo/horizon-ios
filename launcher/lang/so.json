@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Ma jiro koonto Minecraft: Java Edition oo magacaas leh.",
   "That account already owns everything in the basket.": "Koontadaas horey ayay u leedahay wax kasta oo dambiisha ku jira.",
   "The shop isn't selling right now. Nothing was charged.": "Dukaanku hadda wax ma iibinayo. Waxba lagama jarin.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma bilaabi karin lacag bixinta. Waxba lagama jarin."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ma bilaabi karin lacag bixinta. Waxba lagama jarin.",
+  "Shop": "Dukaan",
+  "Owned": "La leeyahay",
+  "Claim the founder set": "Sheeg aasaasaha",
+  "Claiming…": "Waa la qaadanayaa…",
+  "The shop didn't load.": "Dukaanka ma soo shubmin.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Waxyaabo lagu xidho ciyaartoygaaga, ay arkaan qof kasta oo ku ciyaara Horizon.",
+  "Free for founders": "Bilaash aasaasayaasha",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Ciyaartoyda halkan ugu horreeyay. Bilaash ayaa loo qaadan karaa; marka la qaato, adigaa leh weligaa.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Dhammaystir bixinta bilaashka ah browser-kaaga. Xirmadu halkan ayay imaan doontaa daqiiqad ka dib.",
+  "{n} items": "{n} shay",
+  "Nothing is on sale right now.": "Hadda waxba lama iibinayo."
 }

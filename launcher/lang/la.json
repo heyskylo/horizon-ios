@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Nulla ratio Minecraft: Java Edition hoc nomen habet.",
   "That account already owns everything in the basket.": "Illa ratio iam omnia in corbe possidet.",
   "The shop isn't selling right now. Nothing was charged.": "Taberna nunc non vendit. Nihil exactum est.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle solutionem incipere non potuit. Nihil exactum est."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle solutionem incipere non potuit. Nihil exactum est.",
+  "Shop": "Taberna",
+  "Owned": "Possessum",
+  "Claim the founder set": "Set dici auctor",
+  "Claiming…": "Vindicatur…",
+  "The shop didn't load.": "Taberna non est onerata.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Res quas lusor tuus gerat, ab omnibus visae qui in Horizon ludunt.",
+  "Free for founders": "Gratis conditoribus",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Lusoribus qui primi hic fuerunt. Gratis vindicare; semel vindicatum, tuum semper est.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Solutionem gratuitam in navigatro tuo perfice. Paulo post copia hic apparebit.",
+  "{n} items": "{n} res",
+  "Nothing is on sale right now.": "Nihil nunc venit."
 }

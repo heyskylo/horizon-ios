@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Nincs ilyen nevű Minecraft: Java Edition-fiók.",
   "That account already owns everything in the basket.": "Ez a fiók már mindent birtokol, ami a kosárban van.",
   "The shop isn't selling right now. Nothing was charged.": "A bolt most nem árul. Semmit sem terheltünk.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "A Paddle nem tudta elindítani a fizetést. Semmit sem terheltünk."
+  "Paddle couldn't start the checkout. Nothing was charged.": "A Paddle nem tudta elindítani a fizetést. Semmit sem terheltünk.",
+  "Shop": "Bolt",
+  "Owned": "Megvan",
+  "Claim the founder set": "Igényelje az alapítókészletet",
+  "Claiming…": "Beváltás…",
+  "The shop didn't load.": "A bolt nem töltődött be.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Viselnivaló a játékosodnak, amit mindenki lát, aki Horizonon játszik.",
+  "Free for founders": "Ingyenes az alapítóknak",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Azoknak, akik elsőként voltak itt. Ingyenes; ha beváltod, végleg a tiéd.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Fejezd be az ingyenes fizetést a böngészőben. A szett egy pillanattal később megjelenik itt.",
+  "{n} items": "{n} tárgy",
+  "Nothing is on sale right now.": "Most semmi sincs eladó."
 }

@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Kò sí àkáùntì Minecraft: Java Edition tí ó ní orúkọ yẹn.",
   "That account already owns everything in the basket.": "Àkáùntì yẹn ti ní gbogbo ohun tí ó wà nínú agbọ̀n.",
   "The shop isn't selling right now. Nothing was charged.": "Ṣọ́ọ̀bù kò tà báyìí. A kò gba owó kankan.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kò lè bẹ̀rẹ̀ ìsanwó. A kò gba owó kankan."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle kò lè bẹ̀rẹ̀ ìsanwó. A kò gba owó kankan.",
+  "Shop": "Ṣọ́ọ̀bù",
+  "Owned": "Ti ní",
+  "Claim the founder set": "Beere oludasilẹ ṣeto",
+  "Claiming…": "N gbà…",
+  "The shop didn't load.": "Ṣọ́ọ̀bù kò gbé jáde.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Àwọn ohun láti wọ̀ fún oṣere rẹ, tí gbogbo ẹni tó ń ṣeré lórí Horizon ń rí.",
+  "Free for founders": "Ọ̀fẹ́ fún àwọn olùdásílẹ̀",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Fún àwọn oṣere tí wọ́n wà níbí ní àkọ́kọ́. Ọ̀fẹ́ láti gbà; nígbà tí o bá ti gbà á, ìwọ ni o ni títí láé.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Parí sísan owó ọ̀fẹ́ náà nínú ẹ̀rọ aṣàwákiri rẹ. Àpótí náà yóò dé síbí láìpẹ́ lẹ́yìn náà.",
+  "{n} items": "Ohun {n}",
+  "Nothing is on sale right now.": "Kò sí ohun tí à ń tà báyìí."
 }

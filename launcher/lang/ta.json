@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "அந்தப் பெயரில் Minecraft: Java Edition கணக்கு இல்லை.",
   "That account already owns everything in the basket.": "அந்தக் கணக்கிடம் கூடையில் உள்ள அனைத்தும் ஏற்கனவே உள்ளன.",
   "The shop isn't selling right now. Nothing was charged.": "கடை இப்போது விற்கவில்லை. எதுவும் வசூலிக்கப்படவில்லை.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle கட்டணத்தைத் தொடங்க முடியவில்லை. எதுவும் வசூலிக்கப்படவில்லை."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle கட்டணத்தைத் தொடங்க முடியவில்லை. எதுவும் வசூலிக்கப்படவில்லை.",
+  "Shop": "கடை",
+  "Owned": "உரிமையுள்ளது",
+  "Claim the founder set": "நிறுவனர் தொகுப்பைக் கோருங்கள்",
+  "Claiming…": "பெறுகிறது…",
+  "The shop didn't load.": "கடை ஏற்றப்படவில்லை.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "உங்கள் வீரருக்கு அணிய வேண்டியவை, Horizon இல் விளையாடும் அனைவருக்கும் தெரியும்.",
+  "Free for founders": "நிறுவனர்களுக்கு இலவசம்",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "முதலில் இங்கே இருந்த வீரர்களுக்காக. இலவசமாகப் பெறலாம்; பெற்றதும் அது எப்போதும் உங்களுடையது.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "உங்கள் உலாவியில் இலவச செக்அவுட்டை முடிக்கவும். சிறிது நேரத்தில் செட் இங்கே வந்து சேரும்.",
+  "{n} items": "{n} பொருட்கள்",
+  "Nothing is on sale right now.": "இப்போது எதுவும் விற்பனையில் இல்லை."
 }

@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Nav neviena Minecraft: Java Edition konta ar šādu vārdu.",
   "That account already owns everything in the basket.": "Šim kontam jau pieder viss, kas ir grozā.",
   "The shop isn't selling right now. Nothing was charged.": "Veikals pašlaik nepārdod. Nekas netika iekasēts.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nevarēja sākt maksājumu. Nekas netika iekasēts."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle nevarēja sākt maksājumu. Nekas netika iekasēts.",
+  "Shop": "Veikals",
+  "Owned": "Piederošs",
+  "Claim the founder set": "Pieprasiet dibinātāja komplektu",
+  "Claiming…": "Saņem…",
+  "The shop didn't load.": "Veikals neielādējās.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Lietas, ko valkāt jūsu spēlētājam, kuras redz ikviens, kas spēlē Horizon.",
+  "Free for founders": "Bezmaksas dibinātājiem",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Spēlētājiem, kas bija šeit pirmie. Saņemams bez maksas; kad esat to saņēmuši, tas ir jūsu uz visiem laikiem.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Pabeidziet bezmaksas norēķinu pārlūkprogrammā. Komplekts šeit parādīsies pēc brīža.",
+  "{n} items": "{n} priekšmeti",
+  "Nothing is on sale right now.": "Pašlaik nekas netiek pārdots."
 }

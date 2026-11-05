@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Ez dago izen hori duen Minecraft: Java Edition konturik.",
   "That account already owns everything in the basket.": "Kontu horrek dagoeneko saskiko guztia du.",
   "The shop isn't selling right now. Nothing was charged.": "Dendak ez du orain saltzen. Ez da ezer kobratu.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-k ezin izan du ordainketa hasi. Ez da ezer kobratu."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-k ezin izan du ordainketa hasi. Ez da ezer kobratu.",
+  "Shop": "Denda",
+  "Owned": "Zurea",
+  "Claim the founder set": "Erreklamatu sortzaile multzoa",
+  "Claiming…": "Eskatzen…",
+  "The shop didn't load.": "Dendak ez du kargatu.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Zure jokalariak jantzitako gauzak, Horizon-en jokatzen duen guztiek ikusiak.",
+  "Free for founders": "Sortzaileentzat doakoa",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Lehenengo hemen egon ziren jokalarientzat. Doan eska daiteke; behin eskatuta, zurea da betiko.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Amaitu doako ordainketa zure nabigatzailean. Multzoa pixka bat geroago iritsiko da hona.",
+  "{n} items": "{n} elementu",
+  "Nothing is on sale right now.": "Orain ez dago ezer salgai."
 }

@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Κανένας λογαριασμός Minecraft: Java Edition δεν έχει αυτό το όνομα.",
   "That account already owns everything in the basket.": "Αυτός ο λογαριασμός έχει ήδη όλα όσα είναι στο καλάθι.",
   "The shop isn't selling right now. Nothing was charged.": "Το κατάστημα δεν πουλάει αυτή τη στιγμή. Δεν χρεώθηκε τίποτα.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Το Paddle δεν μπόρεσε να ξεκινήσει την πληρωμή. Δεν χρεώθηκε τίποτα."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Το Paddle δεν μπόρεσε να ξεκινήσει την πληρωμή. Δεν χρεώθηκε τίποτα.",
+  "Shop": "Κατάστημα",
+  "Owned": "Στην κατοχή σας",
+  "Claim the founder set": "Διεκδικήστε το ιδρυτικό σύνολο",
+  "Claiming…": "Διεκδίκηση…",
+  "The shop didn't load.": "Το κατάστημα δεν φόρτωσε.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Πράγματα για να φορέσει ο παίκτης σας, ορατά σε όλους όσοι παίζουν στο Horizon.",
+  "Free for founders": "Δωρεάν για ιδρυτές",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Για τους παίκτες που ήταν εδώ πρώτοι. Δωρεάν διεκδίκηση· μόλις το διεκδικήσετε, είναι δικό σας για πάντα.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Ολοκληρώστε τη δωρεάν πληρωμή στο πρόγραμμα περιήγησής σας. Το σετ εμφανίζεται εδώ λίγο αργότερα.",
+  "{n} items": "{n} αντικείμενα",
+  "Nothing is on sale right now.": "Τίποτα δεν πωλείται αυτή τη στιγμή."
 }

@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "その名前の Minecraft: Java Edition アカウントはありません。",
   "That account already owns everything in the basket.": "そのアカウントはカートの中身をすでにすべて持っています。",
   "The shop isn't selling right now. Nothing was charged.": "ショップは今は販売していません。請求はされていません。",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle が支払いを開始できませんでした。請求はされていません。"
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle が支払いを開始できませんでした。請求はされていません。",
+  "Shop": "ショップ",
+  "Owned": "所持",
+  "Claim the founder set": "ファウンダーセットを受け取る",
+  "Claiming…": "受け取り中…",
+  "The shop didn't load.": "ショップを読み込めませんでした。",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "あなたのプレイヤーが身につけるもの。Horizon で遊ぶみんなに見えます。",
+  "Free for founders": "ファウンダーは無料",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "最初からいたプレイヤーへ。無料で受け取れます。受け取ればずっとあなたのものです。",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "ブラウザで無料のチェックアウトを完了してください。しばらくするとセットがここに届きます。",
+  "{n} items": "{n} 点",
+  "Nothing is on sale right now.": "いま販売中のものはありません。"
 }

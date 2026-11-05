@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Bu adda Minecraft: Java Edition hesabı yoxdur.",
   "That account already owns everything in the basket.": "Bu hesab artıq səbətdəki hər şeyə sahibdir.",
   "The shop isn't selling right now. Nothing was charged.": "Mağaza hazırda satış etmir. Heç nə tutulmayıb.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ödənişi başlada bilmədi. Heç nə tutulmayıb."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ödənişi başlada bilmədi. Heç nə tutulmayıb.",
+  "Shop": "Mağaza",
+  "Owned": "Sahibsiniz",
+  "Claim the founder set": "Təsisçi dəstini tələb edin",
+  "Claiming…": "Əldə edilir…",
+  "The shop didn't load.": "Mağaza yüklənmədi.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Oyunçunuz üçün geyimlər, Horizon-da oynayan hər kəsə görünür.",
+  "Free for founders": "Qurucular üçün pulsuz",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Ən əvvəl burada olan oyunçular üçün. Pulsuz əldə etmək olar; əldə etdikdən sonra həmişəlik sizindir.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Pulsuz ödənişi brauzerinizdə tamamlayın. Dəst bir az sonra burada görünəcək.",
+  "{n} items": "{n} əşya",
+  "Nothing is on sale right now.": "Hazırda heç nə satışda deyil."
 }

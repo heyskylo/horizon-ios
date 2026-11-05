@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Ningunha conta de Minecraft: Java Edition ten ese nome.",
   "That account already owns everything in the basket.": "Esa conta xa ten todo o que hai na cesta.",
   "The shop isn't selling right now. Nothing was charged.": "A tenda non está a vender agora. Non se cobrou nada.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle non puido iniciar o pagamento. Non se cobrou nada."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle non puido iniciar o pagamento. Non se cobrou nada.",
+  "Shop": "Tenda",
+  "Owned": "Adquirido",
+  "Claim the founder set": "Reclama o conxunto do fundador",
+  "Claiming…": "Reclamando…",
+  "The shop didn't load.": "A tenda non se cargou.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Cousas para levar co teu xogador, que ve todo o mundo que xoga en Horizon.",
+  "Free for founders": "Gratis para fundadores",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Para os xogadores que estiveron aquí primeiro. Gratis para reclamar; unha vez reclamado, é teu para sempre.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Remata o pagamento gratuíto no navegador. O set chegará aquí un momento despois.",
+  "{n} items": "{n} obxectos",
+  "Nothing is on sale right now.": "Agora mesmo non hai nada á venda."
 }

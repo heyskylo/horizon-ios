@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Eingin Minecraft: Java Edition-konta hevur hetta navnið.",
   "That account already owns everything in the basket.": "Henda kontan eigur longu alt í kurvini.",
   "The shop isn't selling right now. Nothing was charged.": "Handilin selur ikki júst nú. Einki varð kravt.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle fekk ikki byrjað gjaldingina. Einki varð kravt."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle fekk ikki byrjað gjaldingina. Einki varð kravt.",
+  "Shop": "Handil",
+  "Owned": "Eigur",
+  "Claim the founder set": "Krev stovnarasettið",
+  "Claiming…": "Krevur…",
+  "The shop didn't load.": "Handilin legði ikki.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Hlutir at bera á spælaranum hjá tær, sjónligir fyri øll sum spæla á Horizon.",
+  "Free for founders": "Ókeypis til stovnarar",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Til spælararnar sum vóru her fyrstir. Ókeypis at krevja; tá tú hevur kravt tað, er tað títt fyri altíð.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Enda tann ókeypis útrokningina í tínum kaga. Settið kemur higar eina løtu seinni.",
+  "{n} items": "{n} lutir",
+  "Nothing is on sale right now.": "Einki er til sølu júst nú."
 }

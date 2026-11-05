@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Sellise nimega Minecraft: Java Editioni kontot pole.",
   "That account already owns everything in the basket.": "Sellel kontol on juba kõik korvis olev olemas.",
   "The shop isn't selling right now. Nothing was charged.": "Pood praegu ei müü. Midagi ei võetud.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei saanud makset alustada. Midagi ei võetud."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei saanud makset alustada. Midagi ei võetud.",
+  "Shop": "Pood",
+  "Owned": "Omatud",
+  "Claim the founder set": "Nõudke asutajakomplekti",
+  "Claiming…": "Välja võtmine…",
+  "The shop didn't load.": "Poodi ei õnnestunud laadida.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Asjad mängija jaoks, mida näevad kõik, kes Horizonis mängivad.",
+  "Free for founders": "Tasuta asutajatele",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Mängijatele, kes olid siin esimesed. Tasuta välja võtta; kui olete selle välja võtnud, jääb see teile igaveseks.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Lõpetage tasuta makse oma brauseris. Komplekt ilmub siia hetke pärast.",
+  "{n} items": "{n} eset",
+  "Nothing is on sale right now.": "Praegu pole midagi müügil."
 }

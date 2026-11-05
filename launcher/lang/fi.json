@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Millään Minecraft: Java Edition -tilillä ei ole tuota nimeä.",
   "That account already owns everything in the basket.": "Tili omistaa jo kaiken korissa olevan.",
   "The shop isn't selling right now. Nothing was charged.": "Kauppa ei myy juuri nyt. Mitään ei veloitettu.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei voinut aloittaa maksua. Mitään ei veloitettu."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ei voinut aloittaa maksua. Mitään ei veloitettu.",
+  "Shop": "Kauppa",
+  "Owned": "Omistettu",
+  "Claim the founder set": "Lunasta perustajasarja",
+  "Claiming…": "Lunastetaan…",
+  "The shop didn't load.": "Kauppa ei latautunut.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Puettavaa pelaajallesi, kaikkien Horizonissa pelaavien nähtäväksi.",
+  "Free for founders": "Ilmainen perustajille",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pelaajille, jotka olivat täällä ensin. Ilmainen; lunastettuna se on pysyvästi sinun.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Viimeistele ilmainen kassa selaimessasi. Setti ilmestyy tänne hetken kuluttua.",
+  "{n} items": "{n} esinettä",
+  "Nothing is on sale right now.": "Mitään ei ole nyt myynnissä."
 }

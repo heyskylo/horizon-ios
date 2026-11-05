@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Cap compte de Minecraft: Java Edition no té aquest nom.",
   "That account already owns everything in the basket.": "Aquest compte ja té tot el que hi ha a la cistella.",
   "The shop isn't selling right now. Nothing was charged.": "La botiga no ven ara mateix. No s'ha cobrat res.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle no ha pogut començar el pagament. No s'ha cobrat res."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle no ha pogut començar el pagament. No s'ha cobrat res.",
+  "Shop": "Botiga",
+  "Owned": "Tens",
+  "Claim the founder set": "Reclama el conjunt del fundador",
+  "Claiming…": "Reclamant…",
+  "The shop didn't load.": "La botiga no s’ha carregat.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Coses per portar al vostre jugador, que veu tothom qui juga a Horizon.",
+  "Free for founders": "Gratuït per als fundadors",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Per als jugadors que hi eren des del principi. Es pot reclamar gratis; un cop reclamat, és teu per sempre.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Acabeu el pagament gratuït al navegador. El set arribarà aquí d'aquí a un moment.",
+  "{n} items": "{n} objectes",
+  "Nothing is on sale right now.": "Ara mateix no hi ha res a la venda."
 }

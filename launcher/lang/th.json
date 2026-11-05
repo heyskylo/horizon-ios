@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "ไม่มีบัญชี Minecraft: Java Edition ที่ใช้ชื่อนั้น",
   "That account already owns everything in the basket.": "บัญชีนั้นมีทุกอย่างในตะกร้าอยู่แล้ว",
   "The shop isn't selling right now. Nothing was charged.": "ร้านค้ายังไม่ขายตอนนี้ ไม่มีการเรียกเก็บเงิน",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle เริ่มการชำระเงินไม่ได้ ไม่มีการเรียกเก็บเงิน"
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle เริ่มการชำระเงินไม่ได้ ไม่มีการเรียกเก็บเงิน",
+  "Shop": "ร้านค้า",
+  "Owned": "เป็นเจ้าของแล้ว",
+  "Claim the founder set": "เคลมชุดผู้ก่อตั้ง",
+  "Claiming…": "กำลังรับ…",
+  "The shop didn't load.": "โหลดร้านค้าไม่สำเร็จ",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "สิ่งที่สวมใส่ให้ผู้เล่นของคุณ ทุกคนที่เล่นบน Horizon มองเห็น",
+  "Free for founders": "ฟรีสำหรับผู้ก่อตั้ง",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "สำหรับผู้เล่นที่อยู่ที่นี่มาก่อน รับได้ฟรี เมื่อรับแล้วจะเป็นของคุณตลอดไป",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "ชำระเงินแบบฟรีให้เสร็จในเบราว์เซอร์ของคุณ ชุดจะมาปรากฏที่นี่อีกสักครู่",
+  "{n} items": "{n} ชิ้น",
+  "Nothing is on sale right now.": "ตอนนี้ไม่มีสินค้าวางขาย"
 }

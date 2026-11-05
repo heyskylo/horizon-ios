@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Ку ятлă Minecraft: Java Edition аккаунт çук.",
   "That account already owns everything in the basket.": "Ку аккаунтăн корзинкăри пĕтĕм япала пур ĕнтĕ.",
   "The shop isn't selling right now. Nothing was charged.": "Лавкка халĕ сутмасть. Нимĕн те илмен.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle тӳлеве пуçлайман. Нимĕн те илмен."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle тӳлеве пуçлайман. Нимĕн те илмен.",
+  "Shop": "Лавкка",
+  "Owned": "Санӑн",
+  "Claim the founder set": "Учредительсен пуххине илӗр",
+  "Claiming…": "Илет…",
+  "The shop didn't load.": "Лавкка тиеннӗ мар.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Вылякана тăхӑнмалли япаласем, Horizon çинче вылякан пурне те курӑнаççӗ.",
+  "Free for founders": "Никӗслекенсем валли тӳлевсӗр",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Пирвайхи килнӗ вылякансем валли. Тӳлевсӗр илме пулать; илсен яланлӑхах санӑн.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Тӳлевсӗр тӳлевне браузерта вӗçлесе хурӑр. Пухӑм кунта кӑшт та иртсен курӑнать.",
+  "{n} items": "{n} япала",
+  "Nothing is on sale right now.": "Халĕ нимĕн те сутăнмасть."
 }

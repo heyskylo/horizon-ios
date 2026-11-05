@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "هیچ حساب Minecraft: Java Edition با این نام وجود ندارد.",
   "That account already owns everything in the basket.": "این حساب از قبل همه چیزهای سبد را دارد.",
   "The shop isn't selling right now. Nothing was charged.": "فروشگاه الان نمی‌فروشد. هیچ مبلغی کسر نشد.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle نتوانست پرداخت را شروع کند. هیچ مبلغی کسر نشد."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle نتوانست پرداخت را شروع کند. هیچ مبلغی کسر نشد.",
+  "Shop": "فروشگاه",
+  "Owned": "مال شما",
+  "Claim the founder set": "مجموعه موسس را ادعا کنید",
+  "Claiming…": "در حال دریافت…",
+  "The shop didn't load.": "فروشگاه بارگذاری نشد.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "چیزهایی برای پوشیدن بازیکن شما که همهٔ کسانی که در Horizon بازی می‌کنند می‌بینند.",
+  "Free for founders": "رایگان برای بنیان‌گذاران",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "برای بازیکنانی که اولین بار اینجا بودند. رایگان قابل دریافت است؛ پس از دریافت، برای همیشه مال شماست.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "پرداخت رایگان را در مرورگر خود کامل کنید. مجموعه چند لحظه بعد اینجا ظاهر می‌شود.",
+  "{n} items": "{n} آیتم",
+  "Nothing is on sale right now.": "الان چیزی برای فروش نیست."
 }

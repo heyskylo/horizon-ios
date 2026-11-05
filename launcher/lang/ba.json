@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Был исемле Minecraft: Java Edition иҫәп яҙмаһы юҡ.",
   "That account already owns everything in the basket.": "Был иҫәп яҙмаһында кәрзиндәге бар нәмә лә бар инде.",
   "The shop isn't selling right now. Nothing was charged.": "Магазин хәҙер һатмай. Бер нәмә лә алынманы.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle түләүҙе башлай алманы. Бер нәмә лә алынманы."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle түләүҙе башлай алманы. Бер нәмә лә алынманы.",
+  "Shop": "Магазин",
+  "Owned": "Һинеке",
+  "Claim the founder set": "Нигеҙ һалыусылар йыйылмаһына дәғүә итегеҙ",
+  "Claiming…": "Алына…",
+  "The shop didn't load.": "Магазин ыңғайланманы.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Уйынсыңа кейем, Horizon-да уйнаусы һәр кемгә күренә.",
+  "Free for founders": "Нигеҙләүселәр өсөн бушлай",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Беренсе булып килгән уйынсылар өсөн. Бушлай алырға була; алғас, мәңгелеккә һинеке.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Бушлай түләүҙе браузерҙа тамамлағыҙ. Йыйылма бер аҙҙан бында барлыҡҡа килә.",
+  "{n} items": "{n} әйбер",
+  "Nothing is on sale right now.": "Хәҙер бер нәмә лә һатылмай."
 }

@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "ამ სახელით Minecraft: Java Edition ანგარიში არ არსებობს.",
   "That account already owns everything in the basket.": "ამ ანგარიშს უკვე აქვს ყველაფერი, რაც კალათაშია.",
   "The shop isn't selling right now. Nothing was charged.": "მაღაზია ახლა არ ყიდის. არაფერი ჩამოგეჭრათ.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-მა გადახდა ვერ დაიწყო. არაფერი ჩამოგეჭრათ."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle-მა გადახდა ვერ დაიწყო. არაფერი ჩამოგეჭრათ.",
+  "Shop": "მაღაზია",
+  "Owned": "ფლობთ",
+  "Claim the founder set": "მოითხოვეთ დამფუძნებელი ნაკრები",
+  "Claiming…": "მიიღება…",
+  "The shop didn't load.": "მაღაზია ვერ ჩაიტვირთა.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "ნივთები თქვენი მოთამაშისთვის, რომლებსაც ხედავს ყველა, ვინც Horizon-ზე თამაშობს.",
+  "Free for founders": "უფასო დამფუძნებლებისთვის",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "მოთამაშეებისთვის, რომლებიც აქ პირველები იყვნენ. უფასოდ მისაღებია; მიღების შემდეგ ის სამუდამოდ თქვენია.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "დაასრულეთ უფასო გადახდა ბრაუზერში. ნაკრები აქ ცოტა ხანში გამოჩნდება.",
+  "{n} items": "{n} ნივთი",
+  "Nothing is on sale right now.": "ახლა არაფერი იყიდება."
 }

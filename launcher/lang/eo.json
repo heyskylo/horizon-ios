@@ -1187,5 +1187,16 @@
   "No Minecraft: Java Edition account has that name.": "Neniu konto de Minecraft: Java Edition havas tiun nomon.",
   "That account already owns everything in the basket.": "Tiu konto jam posedas ĉion en la korbo.",
   "The shop isn't selling right now. Nothing was charged.": "La butiko nun ne vendas. Nenio estis pagigita.",
-  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ne povis komenci la pagon. Nenio estis pagigita."
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ne povis komenci la pagon. Nenio estis pagigita.",
+  "Shop": "Vendejo",
+  "Owned": "Posedata",
+  "Claim the founder set": "Postulu la fondinton",
+  "Claiming…": "Postulante…",
+  "The shop didn't load.": "La vendejo ne ŝargiĝis.",
+  "Things to wear for your player, seen by everyone who plays on Horizon.": "Aĵoj por porti sur via ludanto, videblaj al ĉiuj, kiuj ludas en Horizon.",
+  "Free for founders": "Senpaga por fondintoj",
+  "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Por la ludantoj, kiuj estis ĉi tie unue. Senpage postuleblas; post la postulo ĝi estas via por ĉiam.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Finu la senpagan pagon en via retumilo. La aro aperos ĉi tie post momento.",
+  "{n} items": "{n} aĵoj",
+  "Nothing is on sale right now.": "Nenio estas vendata nun."
 }
