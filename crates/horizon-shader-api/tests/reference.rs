@@ -137,7 +137,7 @@ fn the_frame_s_wgsl_layout_is_the_uploaded_struct_s() {
     let (wgsl, span) = frame_layout(Api::V0_2);
     assert_eq!(span, std::mem::size_of::<Frame>());
     assert_eq!(wgsl, rust);
-    // 🤖 Agent: 0.1 declares the start of the same buffer.
+    // 0.1 declares the start of the same buffer.
     let (wgsl, span) = frame_layout(Api::V0_1);
     assert_eq!(wgsl, rust[..Frame::FIELDS_0_1]);
     assert_eq!(span, rust[Frame::FIELDS_0_1].1);

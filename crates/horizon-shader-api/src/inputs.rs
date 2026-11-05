@@ -362,7 +362,7 @@ mod tests {
         let wgsl = Frame::WGSL;
         assert_eq!(wgsl.fields.len(), 54);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 🤖 Agent: 0.1's 49 fields, then 0.2's five and the padding to a multiple of 16.
+        // 0.1's 49 fields, then 0.2's five and the padding to a multiple of 16.
         assert_eq!(
             std::mem::size_of::<Frame>(),
             6 * 64 + 15 * 16 + 8 * 16 + 2 * 16

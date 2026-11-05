@@ -647,7 +647,7 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
                 ));
             }
             let m = pack.manifest;
-            // 🤖 Agent: players get only what the game draws without a switch, and a line that may
+            // Players get only what the game draws without a switch, and a line that may
             // still change in any release would break the packs listed for it.
             if m.api != horizon_shader_api::Api::V0_1 {
                 return Err(format!(

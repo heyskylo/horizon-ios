@@ -1528,7 +1528,7 @@ pub fn frame_inputs(
             let k = super::native_shadow::distortion(s.distance, s.resolution);
             2.0 * s.distance / s.resolution.max(1) as f32 * (1.0 - k)
         }),
-        // 🤖 Agent: shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, also
+        // Shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, also
         // with HDR on, until HDR output is served for 0.2 packs.
         hdr: 0,
         headroom: 1.0,
