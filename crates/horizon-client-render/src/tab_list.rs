@@ -713,5 +713,8 @@ mod tests {
         assert!(!visible(true, true, true, 1, false));
         assert!(visible(true, true, true, 1, true));
         assert!(visible(true, true, false, 1, false));
+        // F1 (`Hud.isHidden`) takes the list away however it was held up.
+        assert!(!visible(false, true, false, 2, false));
+        assert!(!visible(false, true, true, 1, true));
     }
 }

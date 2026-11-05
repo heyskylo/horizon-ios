@@ -1011,6 +1011,10 @@ mod tab_list_tests {
         assert_eq!(players.len(), 1);
         assert!(!tab_list::visible(true, true, true, players.len(), false));
         assert!(tab_list::visible(true, true, true, players.len(), true));
+        // F1 (`Hud.isHidden`) takes the list away: `extractRenderState` draws
+        // it inside `if (!isHidden)`, the key and the objective aside.
+        assert!(!tab_list::visible(false, true, true, players.len(), true));
+        assert!(!tab_list::visible(false, true, false, 2, false));
     }
 
     #[test]
