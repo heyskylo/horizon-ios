@@ -994,6 +994,7 @@ impl Game<'_> {
             }
         }
         let uuid = self.level.player_uuid;
+        let level_id = self.dim.id();
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
@@ -1163,8 +1164,13 @@ impl Game<'_> {
                     ..base
                 };
                 w.controlling_player_movement = controlling_player_movement;
+                // `horizon-report`'s cost by mob type (tick_profile.rs).
+                let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
                 let kept =
                     horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
+                if let Some((started, kind)) = sampled {
+                    super::tick_profile::add(level_id, &kind, started);
+                }
                 let m = &mut mobs[i];
                 if seen_guest.is_none() {
                     base.player = w.player;

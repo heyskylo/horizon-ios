@@ -101,6 +101,7 @@ mod cosmetics;
 mod creaking;
 mod creative_hotbar;
 mod creatures;
+mod tick_profile;
 mod crossbow;
 pub(crate) mod cushions;
 mod debug_keys;
