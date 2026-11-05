@@ -3687,6 +3687,7 @@ mod tests {
         for (template, id) in [
             ("minecraft:zombie", "ruby:ghoul"),
             ("minecraft:villager", "ruby:settler"),
+            ("minecraft:wandering_trader", "ruby:merchant"),
         ] {
             assert_eq!(
                 meta_of(id),

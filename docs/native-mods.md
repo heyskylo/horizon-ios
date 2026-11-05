@@ -2584,7 +2584,8 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
 ([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a
 class whose `registerGoals` skips `super`'s, or add to them. A villager acts through its brain, which goals don't replace:
-a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. A goal is a
+a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. For a
+neutral mob whose goals are all the mod's, copy `minecraft:wandering_trader`. A goal is a
 Rust type implementing
 `horizon_client::mobs::goals::Goal` (a bundle compiles into the game, so nothing is loaded at run time): its `flags` (`MOVE`,
 `LOOK`, `JUMP`, `TARGET`), `can_use`, `can_continue`, `start`, `tick` and `stop` run by priority and flag as vanilla's
