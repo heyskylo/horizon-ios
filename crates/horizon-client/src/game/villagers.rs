@@ -314,6 +314,10 @@ impl Game<'_> {
             .item_tags
             .get("minecraft:villager_picks_up")
             .cloned();
+        // A villager with no item near skips its scan; one near an item scans
+        // as before, testing the cheap reach first: a server's villagers and
+        // dropped items each run into the hundreds or thousands.
+        let mut near_items = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if m.species() != Species::Villager || !m.alive() {
@@ -321,6 +325,13 @@ impl Game<'_> {
             }
             let (pos, half) = (m.position, f64::from(m.width()) / 2.0 + 1.0);
             let top = f64::from(m.height());
+            let reach = horizon_core::geometry::Aabb::new(
+                Vec3::new(pos.x - half, pos.y - 0.25, pos.z - half),
+                Vec3::new(pos.x + half, pos.y + top, pos.z + half),
+            );
+            if !near_items.may_meet(&self.dropped, self.next_entity, reach) {
+                continue;
+            }
             let requested = villager::requested_items(m);
             let mut j = 0;
             while j < self.dropped.len() {
@@ -329,11 +340,15 @@ impl Game<'_> {
                     && (e.position.z - pos.z).abs() <= half
                     && e.position.y >= pos.y - 0.25
                     && e.position.y <= pos.y + top;
+                if !near || e.pickup_delay > 0 {
+                    j += 1;
+                    continue;
+                }
                 let item = e.stack.item.clone();
                 let wants = villager::food_points(&item) > 0
                     || picks_up.as_ref().is_some_and(|t| t.contains(&*item))
                     || requested.contains(&&*item);
-                if !near || e.pickup_delay > 0 || !wants {
+                if !wants {
                     j += 1;
                     continue;
                 }
