@@ -632,7 +632,7 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
-            let glowing = self.entity_glowing(item.id);
+            let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
                 .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
@@ -642,8 +642,7 @@ impl Game<'_> {
                     self.submit_item_world(&state, copy, vertex_light(packed), out);
                 }
             }
-            if glowing {
-                let rgb = super::glowing::team_color(self.mob_team(item.id));
+            if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if let Some(((first, _, _), _)) = skinned {
                     let color = horizon_client::mobs::render::abgr(rgb);

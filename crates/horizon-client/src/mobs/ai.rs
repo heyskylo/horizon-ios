@@ -48,9 +48,13 @@ pub struct Ai {
     /// `Mob.homePosition` and `homeRadius`: where a restricted mob stays
     /// (a lead's holder, a happy ghast's float area).
     pub home: Option<([i32; 3], i32)>,
+    /// Mob keeps homePosition even when clearHome makes homeRadius -1.
+    /// Active homes still use `home`; this only retains its hidden position.
+    last_home_position: [i32; 3],
     pub goals: GoalSelector,
     pub targets: GoalSelector,
     pub nav: Navigation,
+    pub(super) navigation_redirect: Option<Box<super::nav::Redirect>>,
     pub mov: MoveControl,
     pub look: LookControl,
     pub body: BodyRotation,
@@ -83,6 +87,22 @@ pub struct Ai {
     pub swing_duration: i32,
     /// Walked distance and the next footstep.
     pub steps: super::living::Steps,
+}
+impl Ai {
+    /// `Mob.getHomePosition`, including the position retained by clearHome.
+    pub fn home_position(&self) -> [i32; 3] {
+        self.home.map_or(self.last_home_position, |(pos, _)| pos)
+    }
+    /// Adopt only the two persistent home fields after loading Mob data.
+    pub fn restore_home(&mut self, pos: [i32; 3], radius: i32) {
+        self.last_home_position = pos;
+        self.home = (radius != -1).then_some((pos, radius));
+    }
+    /// `Mob.clearHome`: clear the radius, retaining the position.
+    pub fn clear_home(&mut self) {
+        self.last_home_position = self.home_position();
+        self.home = None;
+    }
 }
 impl Mob {
     /// `LivingEntity.getCurrentSwingDuration`: 6 ticks unless a swing set its own.
@@ -4800,5 +4820,61 @@ mod ravager_noai_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+
+    /// A mob of `kind` in a pool, its eyes under, after `ticks` base ticks.
+    fn air_after(kind: &str, air: i32, ticks: u32) -> Option<i32> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let water = registry.default_state("minecraft:water").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    for y in 0..=8 {
+                        world.set(x, y, z, water).unwrap();
+                    }
+                }
+            }
+        };
+        let mut out = None;
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types[kind].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            m.air = air;
+            let mut events = Vec::new();
+            for _ in 0..ticks {
+                base_tick(&mut m, w, &mut events);
+            }
+            out = Some(m.air);
+        });
+        out
+    }
+
+    /// `Dolphin.handleAirSupply` is empty and the dolphin isn't in
+    /// `#can_breathe_under_water`: under water it loses a breath a tick from
+    /// its 4800, as `LivingEntity.baseTick` takes it, so it must surface.
+    #[test]
+    fn a_dolphin_holds_its_breath_under_water() {
+        let Some(air) = air_after("minecraft:dolphin", 4800, 10) else {
+            return;
+        };
+        assert_eq!(air, 4790);
+    }
+
+    /// A copper golem is in `#can_breathe_under_water`: its air stays full.
+    #[test]
+    fn a_copper_golem_breathes_under_water() {
+        let Some(air) = air_after("minecraft:copper_golem", 300, 10) else {
+            return;
+        };
+        assert_eq!(air, 300);
     }
 }

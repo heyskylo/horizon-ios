@@ -289,6 +289,13 @@ impl Game<'_> {
         ];
         for (i, label) in labels.iter().enumerate() {
             let hover = ui::hovered(self.cursor, xs[i], fy, FOOTER_BUTTONS[i], 20.0);
+            if i == 3 {
+                horizon_client::widgets::declare_action(
+                    horizon_client::widgets::Action::Done,
+                    [xs[i], fy, FOOTER_BUTTONS[i], 20.0],
+                    true,
+                );
+            }
             ui::button(
                 batch,
                 atlas,

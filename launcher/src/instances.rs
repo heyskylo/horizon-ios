@@ -491,6 +491,19 @@ pub fn create_java(name: &str, minecraft: &str) -> Result<Instance, String> {
     )
 }
 
+/// What creating or renaming an instance says when another already has `name`.
+pub fn name_taken(name: &str) -> String {
+    crate::i18n::trf(
+        "There is already an instance called {name}. Choose another name.",
+        &[("name", name)],
+    )
+}
+
+/// `name_taken` for `instance copy-from`, whose flag for another name is `--as`.
+pub fn name_taken_with_flag(name: &str) -> String {
+    format!("{} (`--as NAME`)", name_taken(name))
+}
+
 fn create_in(
     game_home: &Path,
     data: &Path,
@@ -504,7 +517,7 @@ fn create_in(
     }
     let all = list_in(game_home, data);
     if all.iter().any(|i| i.name.eq_ignore_ascii_case(name)) {
-        return Err(format!("There is already an instance called {name}."));
+        return Err(name_taken(name));
     }
     if let Some(from) = from.filter(|f| matches!(f.kind, Kind::Port | Kind::Pack)) {
         return Err(format!(
@@ -623,7 +636,7 @@ fn edit_in(
                 .iter()
                 .any(|i| i.id != instance.id && i.name.eq_ignore_ascii_case(name))
         {
-            return Err(format!("There is already an instance called {name}."));
+            return Err(name_taken(name));
         }
     }
     store.save(data)?;

@@ -269,6 +269,9 @@ pub struct Hub {
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
+    /// `[transfer]` on (a dedicated server's `--transfers`): the players a proxy
+    /// said would arrive (`player-expect`). None while it is off.
+    pub transfers: Option<super::arrivals::Transfers>,
     /// The entities players started and stopped tracking, collected by
     /// `collect_tracking`, for the game to tell the mods.
     pub native_tracking: Vec<TrackingBatch>,
@@ -297,6 +300,7 @@ pub struct Hub {
     pub seat_order: u64,
     /// `Level.soundSeedGenerator`: a fresh `nextLong` per `playSound`.
     pub(super) sound_seeds: Mutex<LegacyRandom>,
+    pub(super) sound_order: Mutex<super::sound_order::SoundOrder>,
     /// The `player_movement_check` and `elytra_movement_check` game rules,
     /// set by the game before each tick.
     pub movement_checks: (bool, bool),
@@ -631,6 +635,7 @@ impl Hub {
             ticks: 0,
             seat_order: 0,
             sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,
             limited_crafting: false,
@@ -668,6 +673,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             pending_kicks: Vec::new(),
+            transfers: None,
             native_tracking: Vec::new(),
             attachment_snapshots: Vec::new(),
             sync_attachments: false,
@@ -729,6 +735,12 @@ impl Hub {
 
     /// `PlayerList.broadcastAll`: send a packet to every placed player.
     pub fn broadcast(&self, packet: &C) {
+        if let C::RemoveEntities(p) = packet {
+            for guest in self.guests.iter().filter(|g| g.placed) {
+                self.send_ordered_removal(guest, &p.ids);
+            }
+            return;
+        }
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed) {
             g.sender.send(body.clone());
@@ -989,6 +1001,35 @@ impl Hub {
                 port,
             }),
         );
+    }
+
+    /// Lets go of what a proxy that stopped answering left behind: the players
+    /// it said would come and did not, and the freezes no hand-over ended.
+    /// Neither may last for ever.
+    fn expire_arrivals(&mut self, events: &mut Vec<HostEvent>) {
+        // Off: nothing to do (and no player can be frozen).
+        let Some(transfers) = &self.transfers else {
+            return;
+        };
+        for uuid in transfers.table().expire(std::time::Instant::now()) {
+            events.push(HostEvent::Warn(format!(
+                "player {} was expected from another server and never came",
+                horizon_protocol::crypto::uuid_string(uuid)
+            )));
+        }
+        let max = transfers.settings.max_freeze_ticks;
+        for g in &mut self.guests {
+            if g.handover
+                .as_ref()
+                .is_some_and(|h| super::arrivals::frozen_too_long(h.since, self.ticks, max))
+            {
+                g.handover = None;
+                events.push(HostEvent::Warn(format!(
+                    "{} was frozen for a hand-over for {max} ticks and nothing finished it: let go",
+                    g.name,
+                )));
+            }
+        }
     }
 
     /// Whether a player of `permission` sees the player `uuid`: not one a
@@ -1705,6 +1746,7 @@ impl Hub {
         self.ticks += 1;
         self.anticheat_tick(ctx.tick_rate);
         let mut events = std::mem::take(&mut self.pending_kicks);
+        self.expire_arrivals(&mut events);
         for event in self.lan.poll() {
             match event {
                 NetEvent::Joined(j) => {
@@ -1779,6 +1821,41 @@ impl Hub {
         events
     }
 
+    /// Keeps, in a frozen player's inbox, the packets that answer the server
+    /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
+    /// information) and drops the rest. A chat message or signed command is
+    /// dropped too, but the messages it says the client has seen are taken
+    /// first (`unpackAndApplyLastSeen`), and a chat acknowledgement is handled
+    /// here, in the order they came: the client counts them as acknowledged,
+    /// and its next message after the freeze would not validate otherwise.
+    pub(crate) fn keep_acknowledgements(&mut self, i: usize, events: &mut Vec<HostEvent>) {
+        let inbox = std::mem::take(&mut self.guests[i].inbox);
+        let mut bytes = 0;
+        for (packet, size) in inbox {
+            match &packet {
+                S::Chat(c) => {
+                    self.apply_last_seen(i, &c.last_seen, events);
+                }
+                S::ChatCommandSigned(c) => {
+                    self.apply_last_seen(i, &c.last_seen, events);
+                }
+                S::ChatAck(c) => self.chat_ack(i, c.offset, events),
+                S::AcceptTeleportation(_)
+                | S::PlayerLoaded(_)
+                | S::ChunkBatchReceived(_)
+                | S::ClientInformation(_)
+                | S::ClientTickEnd(_)
+                | S::KeepAlive(_)
+                | S::Pong(_) => {
+                    bytes += size;
+                    self.guests[i].inbox.push_back((packet, size));
+                }
+                _ => {}
+            }
+        }
+        self.guests[i].inbox_bytes = bytes;
+    }
+
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
     /// for each), before the level's scheduled block ticks so a place landed in
     /// the same tick as a falling block's schedule still sees the support
@@ -1789,10 +1866,19 @@ impl Hub {
         let timed = crate::spans::recording_here();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
+                let frozen = self.guests[i].handover.is_some();
+                if frozen {
+                    // Frozen for a hand-over: it answers the server and nothing more.
+                    self.keep_acknowledgements(i, &mut events);
+                }
                 let started = timed.then(std::time::Instant::now);
                 let waiting = self.guests[i].inbox.len();
                 self.process_inbox(i, ctx, &mut events);
-                self.tick_floating(i, &mut events);
+                // Its moves are dropped, so whether the last one left it floating is
+                // stale: a player frozen in a jump is not kicked for flying.
+                if !frozen {
+                    self.tick_floating(i, &mut events);
+                }
                 // A slow tick's line says whose packets took it (`spans::note`).
                 if let Some(started) = started {
                     let g = &self.guests[i];
@@ -2697,20 +2783,47 @@ impl Hub {
             .extend(joined);
     }
 
-    /// The entities of this level its tracking has not met yet, as they are at
-    /// the end of the tick that added them (after the tick's tracking pass:
-    /// falling blocks, primed TNT and block entities tick after it). The next
-    /// tick's pass pairs them as they were, as ChunkMap.addEntity would have;
-    /// a later one ignores them.
+    /// `ChunkMap.addEntity` for late arrivals, before their sounds are sent.
+    /// Pairing does not run another tracking pass or advance entity clocks.
     pub fn note_joined(&mut self, entities: &[EntityState]) {
-        let level = self.entities.get(&self.config.dimension);
-        let joined = entities
+        if entities.is_empty() {
+            return;
+        }
+        let dimension = &self.config.dimension;
+        let mut outs: Vec<Vec<Vec<u8>>> = self
+            .guests
             .iter()
-            .filter(|e| level.is_none_or(|l| !l.tracks(e.id)))
-            .cloned()
+            .filter(|g| self.here(g))
+            .map(|_| Vec::new())
             .collect();
-        self.joined
-            .insert(self.config.dimension.clone(), (self.ticks, joined));
+        let mut viewers: Vec<Viewer> = self
+            .guests
+            .iter_mut()
+            .filter(|g| g.placed && g.dimension == *dimension)
+            .zip(outs.iter_mut())
+            .map(|(g, out)| Viewer {
+                entity_id: g.entity_id,
+                spectator: g.spectator(),
+                permission: g.permission,
+                moved: false,
+                position: g.position,
+                view_distance: g.view_distance,
+                chunks: &g.sent_chunks,
+                tracker: &mut g.tracker,
+                out,
+                gone: None,
+            })
+            .collect();
+        let level = self.entities.entry(dimension.clone()).or_default();
+        level.range_percent = Some(self.entity_range_percent);
+        let (types, sync) = (&mut self.entity_types, &self.sync);
+        level.pair_after_tick(entities, &self.riding, &mut viewers, |kind| {
+            entity_type(types, sync, kind)
+        });
+        drop(viewers);
+        for (g, out) in self.guests.iter().filter(|g| self.here(g)).zip(&mut outs) {
+            g.sender.send_many(out.drain(..));
+        }
     }
 
     /// All entities as one client sees them: the world's and the other players.
@@ -2808,6 +2921,7 @@ impl Hub {
         });
         drop(viewers);
         for (g, out) in self.guests.iter().filter(|g| here(g)).zip(outs.iter_mut()) {
+            self.hold_sound_removals(g.conn, out);
             g.sender.send_many(out.drain(..));
         }
         let ticks = self.ticks;
@@ -4445,6 +4559,7 @@ fn listed_properties(
 
 #[cfg(test)]
 mod tests {
+    mod sound_tests;
     use super::*;
     use crate::fast_hash::FxHashSet;
 
@@ -4500,6 +4615,7 @@ mod tests {
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             1,
             [0.5, 64.0, 0.5],

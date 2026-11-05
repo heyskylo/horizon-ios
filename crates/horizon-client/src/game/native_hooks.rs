@@ -1024,10 +1024,12 @@ use horizon_client::{
     music::{Music, MusicLayer},
     particles::{ParticleOptions, ParticleType},
     text::Text,
+    world_primitives::WorldPrimitives,
 };
 use horizon_core::{
     geometry::Direction,
     position::BlockPos,
+    random::LegacyRandom,
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
@@ -1997,15 +1999,15 @@ impl OpenNativeScreen {
 /// The player as a native mod reads it.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NativePlayer {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) z: f64,
+pub struct NativePlayer {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
     /// Degrees; 0 faces south, 90 west (`Direction.fromYRot`).
-    pub(crate) yaw: f32,
-    pub(crate) pitch: f32,
+    pub yaw: f32,
+    pub pitch: f32,
     /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
-    pub(crate) dimension: &'static str,
+    pub dimension: &'static str,
 }
 
 /// The world's clock as a client mod reads it (`native_clock`).
@@ -2181,6 +2183,22 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// Client initialization, before any outgoing connection; a window need not exist yet.
+    pub(super) fn native_client_start(&mut self) {
+        mod_api::dispatch_client_start(self, mod_api::mods());
+    }
+    /// Before an actual connection is discarded, not on a dimension change.
+    pub(super) fn native_client_disconnecting(&self) {
+        mod_api::dispatch_client_disconnecting(self, mod_api::mods());
+    }
+    /// Once before this client's final save/exit. A mod can flush and join its worker here.
+    pub(super) fn native_client_stopping(&self) {
+        mod_api::dispatch_client_stopping(self, mod_api::mods());
+    }
+    /// The normal menu blur request, before finite/range validation. None disables it.
+    pub(super) fn native_menu_background(&self, radius: &mut Option<f32>) {
+        mod_api::dispatch_menu_background(self, mod_api::mods(), radius);
+    }
     /// Declare categories for custom recipe types, with registered item icons.
     /// Asked lazily once per recipe table by `native_recipe_book_category`.
     /// Invalid declarations are logged and skipped; the first valid category
@@ -2267,13 +2285,23 @@ impl Game<'_> {
         mod_api::dispatch_block_highlight(self, mod_api::mods(), pos, state, partial, canceled);
     }
     /// The world frame's local visual sources. Push requests; Horizon validates
-    /// and limits them before rendering. Called only while a world is visible.
+    /// and limits them before rendering, each mod within its own budget (256
+    /// rims and 4096 rim edges, 8 lights). Called only while a world is visible.
     pub(super) fn native_visuals(
         &self,
         rims: &mut Vec<NativeBlockRim>,
         lights: &mut Vec<NativeColoredLight>,
     ) {
-        mod_api::dispatch_visuals(self, mod_api::mods(), rims, lights);
+        // Each trait mod fills lists of its own, bounded on their own; what is already
+        // here, from bundles' injections, shares one budget.
+        let (mut own_rims, mut own_lights) = (std::mem::take(rims), std::mem::take(lights));
+        self.budget_visuals(&mut own_rims, &mut own_lights, rims, lights);
+        let mods = mod_api::mods();
+        for index in 0..mods.len() {
+            let one = &mods[index..=index];
+            mod_api::dispatch_visuals(self, one, &mut own_rims, &mut own_lights);
+            self.budget_visuals(&mut own_rims, &mut own_lights, rims, lights);
+        }
     }
     /// At most 32 pairs of already-loaded base and transparent overlay sprites.
     /// Per-pixel alpha in the overlay marks full-bright material, without
@@ -2473,6 +2501,21 @@ impl Game<'_> {
     /// says is taken.
     pub(super) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         mod_api::dispatch_hud(self, mod_api::mods(), batch, corners);
+    }
+    /// After the complete normal GUI batch, including screens, prompts, toasts,
+    /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
+    /// file/world loading and resource-reload overlays do not fire it. The batch
+    /// is in GUI pixels. `native_camera` is this frame's world camera (None on
+    /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
+    /// A mod decides whether its foreground indicator respects those flags.
+    /// Client only; the host is read-only. API @API:gui_render_post@.
+    pub(super) fn native_gui_render_post(
+        &self,
+        batch: &mut HudBatch,
+        gui_hidden: bool,
+        focused: bool,
+    ) {
+        mod_api::dispatch_gui_render_post(self, mod_api::mods(), batch, gui_hidden, focused);
     }
     /// Before one of vanilla's HUD layers is drawn (`RenderGuiLayerEvent.Pre`):
     /// draw here to put something below the layer, or set `canceled` to hide
@@ -2728,6 +2771,20 @@ impl Game<'_> {
     pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
         mod_api::dispatch_camera_shake(self, mod_api::mods(), partial, shake);
     }
+    /// Once a frame while the world is drawn, `partial` ticks past the last tick (0 to 1), the
+    /// camera at `camera`: add lines, box outlines, filled boxes, beacon-style beams and text
+    /// facing the camera, in world coordinates, to `primitives`, each depth tested or seen
+    /// through walls (`horizon_client::world_primitives`). Horizon draws them with its own
+    /// pipelines after the entities and before the first-person hand, at the world's
+    /// resolution, depth and TAA. Not on the title screen. API @API:world_primitives@.
+    pub(super) fn native_world_primitives(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        primitives: &mut WorldPrimitives,
+    ) {
+        mod_api::dispatch_world_primitives(self, mod_api::mods(), partial, camera, primitives);
+    }
     /// Name tag visibility and optional replacement text. API 372.
     pub(super) fn native_render_name_tag(
         &self,
@@ -2746,6 +2803,24 @@ impl Game<'_> {
             visible,
             text,
         );
+    }
+    /// Whether an entity the client draws has the glowing outline, and in which
+    /// colour (`Entity.isCurrentlyGlowing` and `getTeamColor`, what Fabric's and
+    /// NeoForge's glowing and team colour overrides change). `outline` comes
+    /// in as vanilla's answer: `Some(0xRRGGBB)`, the team's colour or white,
+    /// when the entity glows, None when it doesn't. Set `Some` to make any
+    /// entity glow in that colour, None to take its outline away. It changes
+    /// only what this client draws: the entity's `Glowing` flag, what the
+    /// server and other players see, stays. Asked each frame for every mob,
+    /// player (yourself in third person), dropped item and projectile drawn.
+    /// API @API:entity_outline@.
+    pub(super) fn native_entity_outline(
+        &self,
+        entity_id: u32,
+        kind: &str,
+        outline: &mut Option<u32>,
+    ) {
+        mod_api::dispatch_entity_outline(self, mod_api::mods(), entity_id, kind, outline);
     }
     /// Before one first-person hand and its displayed stack are drawn (RenderHandEvent).
     /// Equip progress is the inverse arm height, including the item's swap animation scale.
@@ -3143,6 +3218,36 @@ impl Game<'_> {
         tag: &mut Option<Compound>,
     ) {
         mod_api::dispatch_block_entity_update_tag(mod_api::mods(), pos, entity, tag);
+    }
+    /// May `stack` go into slot `slot` of the mod block entity at `pos`
+    /// (`entity`, read only), put in through `face` (none when no face is
+    /// asked)? NeoForge's `IItemHandler.isItemValid`, vanilla's
+    /// `Container.canPlaceItem`: a millstone takes only what it has a recipe
+    /// for, so a wrong item can't block it. Asked on the server for every
+    /// item a hopper, a dropper or `native_insert_item` would put in, once
+    /// the block's `ModContainer` lets that slot be filled through that face
+    /// (its `inputs` and `faces`). Set `cancel` to refuse the item there; the
+    /// mover tries the next slot. Not asked for a player's clicks in a menu
+    /// (`native_menu_slot_rules`). Bundles need "hooks": @API:container_accepts@.
+    pub(super) fn native_container_accepts(
+        &self,
+        pos: [i32; 3],
+        entity: &ModBlockEntity,
+        slot: usize,
+        stack: &ItemStack,
+        face: Option<Direction>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_container_accepts(
+            self,
+            mod_api::mods(),
+            pos,
+            entity,
+            slot,
+            stack,
+            face,
+            cancel,
+        );
     }
     /// Draw the mod block entity at `pos`, of block `block`
     /// (`mymod:machine`), on this client: once a frame while it is in view
@@ -8521,10 +8626,7 @@ impl Game<'_> {
     /// `next_float`...). `None` on a client of a server, and for a level not
     /// open: the Nether and the End open when someone first goes there and
     /// close after 300 ticks with nobody in them (`close_idle_levels`). API 43.
-    pub(super) fn native_level_random(
-        &mut self,
-        dimension: &str,
-    ) -> Option<&mut horizon_core::random::LegacyRandom> {
+    pub(super) fn native_level_random(&mut self, dimension: &str) -> Option<&mut LegacyRandom> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return None;
         }
@@ -9015,6 +9117,7 @@ impl Game<'_> {
         self.res.facts().get(state).name.to_string()
     }
     /// The most recently extracted world frame's camera, if one exists.
+    /// During GUI rendering this is the current frame, including bob/spin and FOV.
     pub(super) fn native_camera(&self) -> Option<NativeCamera> {
         self.native_camera_frame.clone()
     }
@@ -10272,7 +10375,7 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
 /// Read by mods only.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub(super) struct NativeItemEntity {
+pub struct NativeItemEntity {
     /// The entity's ID, for `native_set_item_entity`.
     pub id: u32,
     pub position: [f64; 3],

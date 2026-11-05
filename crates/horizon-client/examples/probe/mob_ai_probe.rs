@@ -1611,7 +1611,14 @@ pub fn main() -> horizon_client::Result<()> {
                 let _ = writeln!(out, "{t} leads {dropped_leads}");
             }
             for e in &events {
-                if let MobEvent::Sound(name, _, volume, pitch) = e {
+                if let MobEvent::Sound(name, _, volume, pitch)
+                | MobEvent::EntitySound {
+                    name,
+                    volume,
+                    pitch,
+                    ..
+                } = e
+                {
                     let _ = writeln!(
                         out,
                         "{t} sound minecraft:{name} {} {}",

@@ -10,9 +10,6 @@ import math
 import subprocess
 import threading
 
-import lab
-import lan_e2e as lan
-
 
 def until(game, observe, predicate, ticks=100):
     value = observe()
@@ -25,7 +22,24 @@ def until(game, observe, predicate, ticks=100):
     return value
 
 
+def wait_for_quiet_sensor(host, phase, ticks=100):
+    # Inactive does not mean idle: a selected vibration still has to travel to
+    # the sensor. Require a quiet window longer than its eight-block range,
+    # letting any setup vibration finish its active and cooldown phases first.
+    quiet = 0
+    state = None
+    for _ in range(ticks):
+        host.wait(1)
+        state = phase(host)
+        quiet = quiet + 1 if 'sculk_sensor_phase=inactive' in state else 0
+        if quiet == 10:
+            return
+    raise AssertionError(f'sensor did not settle during setup: {state}')
+
+
 def check_walk(host, guest, out, role):
+    import lan_e2e as lan
+
     player = host if role == 'host' else guest
     hx, y, hz = (math.floor(v) for v in lan.pos_of(host))
     x, z = hx + 6, hz + (-8 if role == 'host' else 8)
@@ -41,9 +55,7 @@ def check_walk(host, guest, out, role):
     host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
     phase = lambda game: game.raw('getblock', *sensor)['block']
     try:
-        until(host, lambda: phase(host), lambda s: 'sculk_sensor_phase=inactive' in s)
-        player.wait(10)
-        assert 'sculk_sensor_phase=inactive' in phase(host), 'setup activated the sensor'
+        wait_for_quiet_sensor(host, phase)
         # The sensor stays active 30 ticks. Each client samples it every tick from inside one ctl script, so a
         # runner that answers control requests slowly (frames drawn on the CPU) can't miss that window between
         # separate requests; the other client samples alongside the walk.
@@ -73,6 +85,9 @@ def check_walk(host, guest, out, role):
 
 
 def main():
+    import lab
+    import lan_e2e as lan
+
     subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib',
                     '--bin', 'horizon-client', '--bin', 'horizon-ctl'], cwd=lab.ROOT, check=True)
     metadata = json.loads(subprocess.check_output(

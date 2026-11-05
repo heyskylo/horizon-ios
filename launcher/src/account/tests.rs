@@ -627,6 +627,10 @@ fn a_no_from_the_services_blocks_at_once() {
         NoOwner.to_string(),
         "Sign in with a Microsoft account that owns Minecraft: Java Edition to play."
     );
+    assert_eq!(
+        NoOwner::in_window(),
+        "Sign in with a Microsoft account that owns Minecraft: Java Edition to play. Open Settings and sign in under Account."
+    );
 }
 
 #[test]

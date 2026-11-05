@@ -246,7 +246,12 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   what the window does while you play (stays by default; Minimise, or Hide on macOS, puts it away
   when the game starts and brings it back to the front when the game closes; `settings
   while-playing stay|minimize|hide`), the game's extra command-line arguments, an HTTP proxy for
-  downloads, and the launcher's own version and update state.
+  downloads, and the launcher's own version and update state. On Windows ARM, **Game
+  architecture** chooses Automatic, x64 or ARM64 independently from the launcher; automatic
+  preserves the launcher's architecture, and a release without ARM64 uses the signed x64 build.
+  A changed choice reinstalls the selected version when automatic updates are on, and the game
+  won't launch an installed build that conflicts with a manual choice. `horizon-launcher settings
+  game-architecture auto|x64|arm64`.
 - **Updates**: Horizon ships only the Nightly (since 2026-10-28, docs/release-flow.md). The
   launcher installs the current one (the `nightly` pre-release, checksums signed for the Nightly
   channel) as `nightly-<date>-<commit>` and selects it when the player was on a Nightly, on the
@@ -299,8 +304,18 @@ themselves come from their download links, which that limit doesn't cover.
 
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
-every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, replaces its
-own binary, and offers "Restart" in the footer. Development builds and
+every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, checks it
+against the release's signed `SHA256SUMS`, and says "A new version is available" in the sidebar with
+**Update**: the window closes, the launcher's own file runs again as the installer (`apply-update`,
+`src/update_handoff.rs`), which waits for the window's process to exit, puts the new launcher in place (the
+binary, the `.app` bundle or the AppImage) and starts it. Closing the window with an update downloaded installs
+it the same way, so the next start is the new launcher. When the installer can't put it in place, the old
+launcher starts again and says why. Each process stages in its own folder, and the installer checks the signed
+SHA-256 again before anything goes in; when the launcher in place is already that version or newer, it changes
+nothing. Servers keep running through **Update**. A copy that can't replace itself says so at once and offers
+**Download again** (the website's install page): one in a read-only folder (the disk image, or the read-only copy
+macOS runs a downloaded app from until it is moved to Applications), or on Windows one running from the temporary
+folder, as a program opened inside a `.zip` does. `horizon-launcher update` replaces it at once. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
 
 On Linux the release also comes as an AppImage, `horizon-launcher-linux-x86_64.AppImage`: one file

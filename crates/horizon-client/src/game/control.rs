@@ -917,11 +917,10 @@ impl Game<'_> {
             }
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();
-                if self.remote.is_some() {
-                    self.send_chat(text);
-                    return ok();
-                }
                 self.require_world()?;
+                // As if typed: a client mod's command runs before the line
+                // reaches the server, and the Chat option's restrictions and
+                // the recent list apply to a connected server too.
                 self.handle_chat_input(text);
                 Ok(Some(
                     json!({ "ok": true, "chat": self.ui.chat.recent_lines(5) }),
@@ -979,6 +978,7 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
+                    "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
                     "agent" => Page::Agent,

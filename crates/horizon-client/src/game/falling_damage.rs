@@ -197,9 +197,9 @@ impl Game<'_> {
         } else {
             amount
         };
-        let hurt = match (self.player.as_mut(), self.motion.health.damage.id(kind)) {
+        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
             (Some(p), Some(id)) => p
-                .hurt(&self.motion.health, self.world.health_rules, id, amount)
+                .hurt(&self.health_resources, self.world.health_rules, id, amount)
                 .unwrap_or(false),
             _ => false,
         };
