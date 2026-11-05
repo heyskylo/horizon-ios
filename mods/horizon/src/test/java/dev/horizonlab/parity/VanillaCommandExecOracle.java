@@ -453,6 +453,21 @@ public final class VanillaCommandExecOracle {
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "projectile_saved_type" -> {
+                        var entity=level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) || !entity.isAlive())
+                            throw new IllegalStateException("projectile type: missing actual arrow");
+                        var uuid=entity.getUUID();
+                        int[] words={(int)(uuid.getMostSignificantBits()>>32),(int)uuid.getMostSignificantBits(),
+                            (int)(uuid.getLeastSignificantBits()>>32),(int)uuid.getLeastSignificantBits()};
+                        JsonObject state=new JsonObject();state.add("uuid",gson.toJsonTree(words));
+                        state.addProperty("kind",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+                        state.add("pos",gson.toJsonTree(new double[]{entity.getX(),entity.getY(),entity.getZ()}));
+                        state.addProperty("no_gravity",entity.isNoGravity());
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#projectile_saved_type "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "mob_anger" -> {
                         try {
                         var entity=player.level().getEntity(UUID.fromString(op.get("uuid").getAsString()));

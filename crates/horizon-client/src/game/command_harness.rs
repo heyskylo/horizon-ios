@@ -294,6 +294,36 @@ impl Game<'_> {
                         }
                     }
                 }
+                "projectile_saved_type" => {
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("projectile type: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let state = self.harness_owner(|g| {
+                        let Some(super::commands::Target::Projectile(id)) = g.target_by_uuid(uuid) else {
+                            return Err("projectile type: missing loaded projectile".into());
+                        };
+                        let actual = *g.persist.uuids.get(&id).ok_or("projectile type: missing actual UUID")?;
+                        if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
+                            return Err("projectile type: UUID mismatch".into());
+                        }
+                        let p = g.creatures.projectiles.iter().find(|p| p.id == id)
+                            .ok_or("projectile type: missing model")?;
+                        // Read the live save adapter's type, not the generic selector alias.
+                        // No Duration value is supplied by this admission observation.
+                        let saved = horizon_client::entity_nbt::arrow_to_nbt(p, actual, None, None, None)
+                            .ok_or("projectile type: not an actual arrow")?;
+                        Ok(json!({"uuid":actual,"kind":horizon_client::entity_nbt::kind(&saved)
+                            .ok_or("projectile type: missing saved type")?,
+                            "pos":[p.position.x,p.position.y,p.position.z],"no_gravity":p.no_gravity}))
+                    })?;
+                    out.push_str(&json!({"cmd":format!("#projectile_saved_type {}",op["label"].as_str().unwrap_or("")),
+                        "messages":[],"results":[],"state":state}).to_string());
+                    out.push('\n');
+                }
                 "mob_anger" => {
                     // Metadata-state equality through the production writer, not packet delivery.
                     let uuid = u128::from_str_radix(
