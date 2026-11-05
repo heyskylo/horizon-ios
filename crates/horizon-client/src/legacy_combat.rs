@@ -17,6 +17,11 @@
 //!   operation 2 products, clamped to the attribute's minimum 0.
 //! - `EnchantmentDamage.calcDamageByCreature`: Sharpness 1.25 per level, Smite 2.5 per level
 //!   against `UNDEAD`, Bane of Arthropods 2.5 per level against `ARTHROPOD`.
+//! - `EntityLivingBase.knockBack`: resisted only by chance (`rand.nextDouble() < knockbackResistance`); otherwise
+//!   the motion halves, the push of 0.4 goes away from the attacker, and up by 0.4 (at most 0.4 in all), in the air
+//!   too (26.3 lifts only from the ground and scales the push by the resistance).
+//! - The sprint and Knockback push in `attackTargetEntityWithCurrentItem`: `addVelocity(-sin(yaw) * i * 0.5, 0.1,
+//!   cos(yaw) * i * 0.5)`, added to the motion as it is (26.3 halves it first, through `knockback`).
 use std::sync::Arc;
 
 /// `ToolMaterial.getDamageVsEntity` by the item id's material. Netherite and copper didn't
@@ -136,6 +141,30 @@ pub fn damage(attribute: f32, crit: Option<f32>, enchant: f32) -> f32 {
     base + enchant
 }
 
+/// `EntityLivingBase.knockBack` on `velocity`: `power` away from the direction (`xd`, `zd`), which points at the
+/// attacker, and up, in the air as on the ground. The caller has already rolled the resistance.
+pub fn knockback(velocity: [f64; 3], power: f64, (xd, zd): (f64, f64)) -> [f64; 3] {
+    let len = (xd * xd + zd * zd).sqrt();
+    [
+        velocity[0] / 2.0 - xd / len * power,
+        (velocity[1] / 2.0 + power).min(0.4),
+        velocity[2] / 2.0 - zd / len * power,
+    ]
+}
+/// Whether a knockback resistance of `resistance` stops the push, from a roll of `roll` in [0, 1).
+pub fn resists(resistance: f64, roll: f64) -> bool {
+    roll < resistance
+}
+/// The extra push of a sprinting or Knockback hit, `strength` along (`xd`, `zd`) (the attacker's look, as
+/// `extra_knockback_direction` gives it: 26.3's `knockback` pushes away from it), and 0.1 up.
+pub fn extra_knockback(velocity: [f64; 3], strength: f64, (xd, zd): (f64, f64)) -> [f64; 3] {
+    [
+        velocity[0] - xd * strength,
+        velocity[1] + 0.1,
+        velocity[2] - zd * strength,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +254,25 @@ mod tests {
         assert_eq!(damage(8.0, Some(CRIT), 6.25), 18.25);
         assert_eq!(damage(0.0, Some(CRIT), 1.25), 1.25);
         assert_eq!(damage(8.0, None, 0.0), 8.0);
+    }
+
+    #[test]
+    fn a_hit_lifts_a_player_in_the_air_too() {
+        // Hit from z = +1 while falling at 0.5 a tick: 1.8.9 halves the fall and adds 0.4 (0.15 up);
+        // 26.3 would leave the fall as it was.
+        let v = knockback([0.0, -0.5, 0.0], 0.4, (0.0, 1.0));
+        assert_eq!(v, [0.0, 0.15000000000000002, -0.4]);
+        // Already rising fast: capped at 0.4.
+        assert_eq!(knockback([0.2, 0.6, 0.0], 0.4, (3.0, 4.0))[1], 0.4);
+        assert!((knockback([0.2, 0.6, 0.0], 0.4, (3.0, 4.0))[0] - (0.1 - 0.24)).abs() < 1e-12);
+        // Resistance is a chance, not a cut: 0.6 stops 60% of the rolls.
+        assert!(resists(0.6, 0.59) && !resists(0.6, 0.6) && !resists(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_sprint_hit_adds_its_push_without_halving() {
+        // A sprint hit (i = 1) looking along +x: (sin, -cos) of yaw -90 is (-1, 0); the target flies to +x.
+        let v = extra_knockback([0.1, 0.0, 0.0], 0.5, (-1.0, 0.0));
+        assert_eq!(v, [0.6, 0.1, 0.0]);
     }
 }

@@ -179,6 +179,9 @@ own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrent
 - Strength multiplies by 1 + 1.3 per level, Weakness subtracts 0.5 per level;
 - Sharpness adds 1.25 per level, Smite and Bane of Arthropods 2.5 per level against their targets;
 - a critical hit (×1.5) needs a fall, not a charge, and can be a sprinting hit.
+- knockback on players as `EntityLivingBase.knockBack`: it lifts a player in the air too (combos), and knockback
+  resistance is a chance to take none instead of a cut; the sprint and Knockback push is added on top (0.1 up)
+  instead of halving the motion first.
 
 Code: `crates/horizon-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
 `game/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.

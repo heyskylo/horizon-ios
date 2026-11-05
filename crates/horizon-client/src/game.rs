@@ -12315,7 +12315,19 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
+                if self.legacy_rules() {
+                    let m = &mut self.mobs[index];
+                    let v = [m.velocity.x, m.velocity.y, m.velocity.z];
+                    let [x, y, z] = horizon_client::legacy_combat::extra_knockback(
+                        v,
+                        f64::from(knockback),
+                        (xd, zd),
+                    );
+                    m.velocity = Vec3::new(x, y, z);
+                    m.needs_sync = true;
+                } else {
+                    self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
+                }
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
