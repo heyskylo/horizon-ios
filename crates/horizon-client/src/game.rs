@@ -7725,18 +7725,29 @@ impl Game<'_> {
     /// farmland breaks. The local player's and every server player's landings.
     /// The level events they send go out too: a turtle egg's break particles
     /// and sound (`decreaseEggs`' 2001, `Level.destroyBlock`'s for the last).
-    fn landing_block_updates(&mut self, event: &horizon_client::landing::FallEvent) {
+    ///
+    /// A mod hears the change first (`native_entity_change_block_v2`, Bukkit's
+    /// `EntityChangeBlockEvent`): cancelling puts the block back and skips the
+    /// updates and the events, so nothing the change would have caused happens -
+    /// the crop on trampled farmland stays, because breaking it is the
+    /// neighbour update below and not a write of its own.
+    fn landing_block_updates(
+        &mut self,
+        player: Option<u128>,
+        event: &horizon_client::landing::FallEvent,
+    ) {
         use horizon_client::landing::FallEvent;
-        let (position, flags) = match *event {
+        // The block the landing changed, what it replaced, and what it became.
+        let (position, from, to, flags) = match *event {
             FallEvent::Write {
-                position, flags, ..
-            } => (position, flags as i32),
+                position,
+                from,
+                state,
+                flags,
+            } => (position, from, state, flags as i32),
             FallEvent::Destroy {
                 position, state, ..
-            } => {
-                self.level_event_at(2001, [position.x, position.y, position.z], state.0 as i32);
-                (position, level_flags::UPDATE_ALL)
-            }
+            } => (position, state, self.air_state(), level_flags::UPDATE_ALL),
             FallEvent::LevelEvent {
                 event,
                 position,
@@ -7747,7 +7758,48 @@ impl Game<'_> {
             }
             _ => return,
         };
+        if self.landing_change_cancelled(player, position, from, to) {
+            self.world
+                .set(position.x, position.y, position.z, from)
+                .ok();
+            return;
+        }
+        if matches!(event, FallEvent::Destroy { .. }) {
+            self.level_event_at(2001, [position.x, position.y, position.z], from.0 as i32);
+        }
         self.with_level(|b, level, ticks| b.notify_written(level, ticks, position, flags));
+    }
+    /// `Blocks.AIR.defaultBlockState`: what a landing's destroy leaves.
+    fn air_state(&self) -> BlockStateId {
+        self.pack
+            .assets
+            .registry
+            .default_state("minecraft:air")
+            .unwrap_or(BlockStateId(0))
+    }
+    /// Whether a mod cancelled a landing's block change
+    /// (`native_entity_change_block_v2`): asked with the two blocks' names and
+    /// the player whose landing it was (`None` when no player did it).
+    fn landing_change_cancelled(
+        &mut self,
+        player: Option<u128>,
+        position: BlockPos,
+        from: BlockStateId,
+        to: BlockStateId,
+    ) -> bool {
+        let name = |s: BlockStateId| self.res.facts().get(s).name.to_string();
+        let (from, to) = (name(from), name(to));
+        let mut cancel = false;
+        self.native_entity_change_block_v2(
+            player,
+            None,
+            "minecraft:player",
+            [position.x, position.y, position.z],
+            &from,
+            &to,
+            &mut cancel,
+        );
+        cancel
     }
     /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
     /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
