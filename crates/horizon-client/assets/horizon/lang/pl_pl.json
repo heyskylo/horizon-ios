@@ -316,6 +316,7 @@
   "Frame Generation": "Generowanie klatek",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Pokazuje wygenerowaną klatkę między każdymi dwiema prawdziwymi: płynniej, trochę większe opóźnienie.",
   "Shadow Cache": "Pamięć cieni",
+  "Shader Packs...": "Paczki shaderów…",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Używa ponownie mapy cieni paczki, gdy słońce, widok i świat się zgadzają. Domyślnie wyłączone.",
   "Synchronous": "Synchroniczne",
   "Asynchronous": "Asynchroniczne",

@@ -130,7 +130,15 @@ impl CommandTree {
         let suggestions: HashMap<&str, &'static str> = SUGGESTIONS.iter().copied().collect();
         let mut paths: HashMap<Vec<String>, usize> = HashMap::new();
         paths.insert(Vec::new(), 0);
-        for root in [&self.root, extra] {
+        let horizon = if crate::command::vanilla::game_dispatcher()
+            .find("pregen")
+            .is_some()
+        {
+            crate::pregen::command_tree()
+        } else {
+            Value::Null
+        };
+        for root in [&self.root, extra, &horizon] {
             fill(
                 root,
                 0,
@@ -361,6 +369,38 @@ fn properties(parser: &str, p: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pregen_completion_keeps_permissions_and_radius_bounds() {
+        let tree = CommandTree {
+            root: crate::pregen::command_tree(),
+        };
+        let builtin = Builtin::default();
+        assert_eq!(tree.packet(0, false, &builtin).nodes.len(), 1);
+        let packet = tree.packet(2, false, &builtin);
+        let root = packet.nodes.iter().find(|n| n.name == "pregen").unwrap();
+        assert!(root.restricted && !root.executable);
+        let radius = packet.nodes.iter().find(|n| n.name == "radius").unwrap();
+        assert!(radius.executable);
+        assert_eq!(
+            radius.parser.as_ref().unwrap().1,
+            vec![3, 0, 0, 0, 0, 1, 201, 195, 128]
+        );
+        let shapes: Vec<_> = radius
+            .children
+            .iter()
+            .map(|&i| packet.nodes[i as usize].name.as_str())
+            .collect();
+        assert_eq!(shapes, ["circle", "square"]);
+        assert_eq!(
+            packet
+                .nodes
+                .iter()
+                .filter(|n| n.name == "center" && n.executable)
+                .count(),
+            2
+        );
+    }
 
     #[test]
     fn integer_bounds_and_entity_flags() {

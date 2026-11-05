@@ -221,5 +221,6 @@
   "How frames reach the screen, and the performance overlay.": "Karelerin ekrana nasıl ulaştığı ve performans kaplaması.",
   "Brighter-than-white output on an HDR display.": "HDR ekranda beyazdan parlak çıkış.",
   "Results for \"%s\"": "\"%s\" için sonuçlar",
-  "No settings match.": "Eşleşen ayar yok."
+  "No settings match.": "Eşleşen ayar yok.",
+  "Shader Packs...": "Gölgelendirici Paketleri..."
 }

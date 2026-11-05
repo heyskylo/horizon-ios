@@ -129,6 +129,8 @@ mod hardware {
     #[derive(Default)]
     pub(in crate::game) struct PadRouter {}
     impl PadRouter {
+        pub(in crate::game) fn adopt(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn hand_back(&mut self, _: &mut Pads) {}
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
         }

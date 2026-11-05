@@ -411,6 +411,7 @@
   "Frame Generation": "Framegeneratie",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Toont een verzonnen frame tussen elke twee echte: vloeiender, iets meer vertraging.",
   "Shadow Cache": "Schaduwcache",
+  "Shader Packs...": "Shader-pakketten...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Hergebruikt de roedelschaduwkaart wanneer zon, zicht en wereld overeenkomen. Standaard uitgeschakeld.",
   "Find BlueMap": "Zoek BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Vindt op servers hun BlueMap-webkaart voor ver terrein. Volgende meedoen.",
