@@ -507,7 +507,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let pitch = 0.9 + self.random().next_float() * 0.2;
         self.sound(
             pos,
-            &std::sync::Arc::from("minecraft:block.turtle_egg.break"),
+            &std::sync::Arc::from("minecraft:entity.turtle.egg_break"),
             0.7,
             pitch,
         );

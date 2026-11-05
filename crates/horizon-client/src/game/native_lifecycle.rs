@@ -15,6 +15,12 @@ pub(super) use horizon_client::mod_api::{
 /// launch), so the counter is process-wide.
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+/// A process-wide epoch no handle has carried yet: a server open's, or a
+/// client level's (`native_entity_refs.rs`), so a handle never crosses sides.
+pub(super) fn fresh_epoch() -> NativeWorldEpoch {
+    NativeWorldEpoch::new(NEXT_EPOCH.fetch_add(1, Ordering::Relaxed))
+}
+
 /// Internal state for deciding which events can fire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpenState {
@@ -71,7 +77,7 @@ impl NativeLifecycle {
 
     /// The open starts: a fresh process-wide epoch, never reused.
     pub(super) fn begin_open(&mut self, authority: NativeAuthority) {
-        let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        let epoch = fresh_epoch().get();
         self.attempt = Some(OpenAttempt {
             authority,
             epoch,

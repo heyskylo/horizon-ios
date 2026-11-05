@@ -18,11 +18,12 @@ pub use horizon_client_render::{
     json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap, mipmap, mod_list,
     model_library, models, multiline_edit, native_emissive, options_file, options_fixes,
     options_ui, overlay, pack_browser, pack_screen, packs, pad_cursor, par, particles,
-    poi_sections, post_chain, potent_sulfur, preedit, providers, pvp, screen_draw, screen_effects,
-    sculk, section_mask, server_terrain, settings, shader_options, shader_pack_list, signs, skins,
-    sound_engine, sound_events, sound_preview, spans, split_layout, split_map, split_profiles,
-    sprites, streaming, structure_block, tab_list, telemetry, test_block, test_instance_block,
-    testgen, title_edition, trims, ui, vault, weather, widgets, world, worldborder, zip,
+    poi_sections, post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud, screen_draw,
+    screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
+    shader_pack_list, signs, skins, sound_engine, sound_events, sound_preview, spans, split_layout,
+    split_map, split_profiles, sprites, streaming, structure_block, tab_list, telemetry,
+    test_block, test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets,
+    world, worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;
@@ -129,6 +130,7 @@ pub mod sprint;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
+pub mod studio;
 pub mod text_display;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
@@ -137,6 +139,7 @@ pub mod toasts;
 pub mod ui_theme;
 pub mod vanillagen;
 pub mod win_screen;
+pub mod world_primitives;
 pub mod world_spawn;
 pub use horizon_client_core::Result;
 pub use horizon_client_core::block_entity_nbt;

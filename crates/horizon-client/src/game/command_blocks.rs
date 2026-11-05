@@ -673,6 +673,14 @@ impl Game<'_> {
         }
         for (b, x, y, bw) in CommandBlockScreen::buttons(w, h, s.cart.is_some()) {
             let hover = ui::hovered(self.cursor, x, y, bw, 20.0);
+            let action = match b {
+                Button::Done => Some(horizon_client::widgets::Action::Done),
+                Button::Cancel => Some(horizon_client::widgets::Action::Cancel),
+                _ => None,
+            };
+            if let Some(action) = action {
+                horizon_client::widgets::declare_action(action, [x, y, bw, 20.0], true);
+            }
             ui::button_as(
                 batch,
                 atlas,
