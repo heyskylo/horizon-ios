@@ -97,7 +97,7 @@ impl SceneSound {
     /// (`TurtleEggBlock.decreaseEggs`), a shelf mushroom bouncing.
     pub fn block_sound(self) -> Option<&'static str> {
         match self {
-            Self::Block(LandingSound::TurtleEggBreak) => Some("minecraft:block.turtle_egg.break"),
+            Self::Block(LandingSound::TurtleEggBreak) => Some("minecraft:entity.turtle.egg_break"),
             Self::Block(LandingSound::ShelfMushroomBounce) => {
                 Some("minecraft:block.shelf_mushroom.bounce")
             }
@@ -691,7 +691,7 @@ mod tests {
     fn block_sounds_map_to_block_events() {
         assert_eq!(
             SceneSound::Block(LandingSound::TurtleEggBreak).block_sound(),
-            Some("minecraft:block.turtle_egg.break")
+            Some("minecraft:entity.turtle.egg_break")
         );
         assert_eq!(
             SceneSound::Block(LandingSound::ShelfMushroomBounce).block_sound(),
