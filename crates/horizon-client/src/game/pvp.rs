@@ -1,13 +1,13 @@
 //! The PvP & HUD page's options in the game (`horizon_client::pvp`, `docs/pvp.md`). Each
 //! does nothing while it is off.
-use super::Game;
+use super::{Dim, Game};
 use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
     hud::{HudBatch, rgba},
     mesher::Vertex,
     pvp::{Colour, CrosshairCache},
-    pvp_hud::{self, Durability, Icon, Line, Widget},
+    pvp_hud::{self, Combo, Durability, Icon, Line, Widget},
 };
 use std::sync::Arc;
 
@@ -20,6 +20,16 @@ pub(super) struct PvpState {
     effects: Widget<Vec<(&'static str, i32, i32)>>,
     /// The counted item's slot and the total.
     held: Widget<Option<(usize, Arc<str>, u32)>>,
+    ping: Widget<Option<i32>>,
+    /// The block position and the direction faced.
+    coords: Widget<Option<([i32; 3], &'static str)>>,
+    server: Widget<Option<String>>,
+    combo: Combo,
+    combo_count: Widget<u32>,
+    /// The open chat's box holds a chat search's query (Ctrl+F).
+    pub(super) chat_search: bool,
+    /// What the chat box held when the search borrowed it.
+    pub(super) chat_search_aside: String,
 }
 /// `GuiGraphicsExtractor`'s grey for a detail line (an effect's time left).
 const DETAIL: u32 = 0xFF7F_7F7F;
@@ -131,6 +141,45 @@ impl Game<'_> {
             }
         }
     }
+    /// Once per frame: the options that live outside the game's state.
+    pub(super) fn pvp_frame(&mut self) {
+        let tweaks = self.settings.extras.pvp.tweaks;
+        horizon_client::enchant::set_numeric_levels(tweaks.numeric_enchants);
+    }
+    /// Whether this window may draw PvP & HUD's own time and weather: only a client of a server
+    /// (single player's included) draws them, never the server that ticks the world.
+    fn own_view(&self) -> bool {
+        self.remote.is_some() && self.dim == Dim::Overworld
+    }
+    /// The day time the frame draws (sky, sun, moon, the sky's light): PvP & HUD's time of day,
+    /// else the world's. The world's own `day_time` and everything that plays by it stay.
+    pub(super) fn view_day_time(&self) -> i64 {
+        let fixed = self.settings.extras.pvp.tweaks.time;
+        horizon_client::pvp::view_day_time(self.world.day_time, fixed.filter(|_| self.own_view()))
+    }
+    /// The rain and thunder levels the frame draws (rain, the sky's colour and light, fog): PvP &
+    /// HUD's weather, else the world's. Gameplay (riptide, mobs, crops) keeps the world's.
+    pub(super) fn view_weather(&self, partial: f32) -> (f32, f32) {
+        match self.settings.extras.pvp.tweaks.weather {
+            Some(w) if self.own_view() && self.can_have_weather() => w.levels(),
+            _ => self.weather_levels(partial),
+        }
+    }
+    /// This player attacked entity `id` (the combo counter waits for the server's report).
+    pub(super) fn pvp_attacked(&mut self, id: i32) {
+        let now = self.started.elapsed().as_secs_f64();
+        self.pvp.combo.attacked(id, now);
+    }
+    /// The server reports entity `id` hurt; `own` when it is this player,
+    /// `by_me` whether this player was the damage's direct entity (if named).
+    pub(super) fn pvp_hurt(&mut self, id: i32, own: bool, by_me: Option<bool>) {
+        if own {
+            self.pvp.combo.broken();
+        } else {
+            let now = self.started.elapsed().as_secs_f64();
+            self.pvp.combo.hurt(id, by_me, now);
+        }
+    }
     /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
     pub(super) fn pvp_effects_shown(&self) -> bool {
         self.settings.extras.pvp.hud.effects
@@ -149,6 +198,18 @@ impl Game<'_> {
             Some((s.item.clone(), s.damage, max))
         });
         let held = if hud.held { self.held_count() } else { None };
+        let multiplayer = self.remote.is_some() && !self.has_singleplayer_server();
+        let ping = self.own_latency().filter(|_| multiplayer);
+        let coords = self.player.as_ref().filter(|_| !self.reduced_debug_info());
+        let coords = coords.map(|p| {
+            let at = [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32);
+            (at, pvp_hud::facing(self.yaw))
+        });
+        // The address is copied only when it changed (`server_address` borrows the whole game).
+        let server = self.server_address().filter(|_| multiplayer);
+        let server = (hud.server && self.pvp.server.next.as_deref() != server)
+            .then(|| server.map(str::to_owned));
+        let now = self.started.elapsed().as_secs_f64();
         let atlas = &self.gui.atlas;
         let width = |s: &str| HudBatch::text_width(atlas, s);
         let state = &mut self.pvp;
@@ -229,25 +290,88 @@ impl Game<'_> {
         } else {
             state.held.clear();
         }
+        let text = |key: &str, args: &[&dyn std::fmt::Display]| {
+            let line = horizon_client::lang::tr(key, args);
+            Line::new(Icon::None, line, &width)
+        };
+        if hud.ping {
+            state.ping.next = ping;
+            state.ping.refresh(|ping, lines| {
+                lines.extend(ping.map(|ms| text("horizon.pvp.hud.ping", &[&ms])));
+            });
+        } else {
+            state.ping.clear();
+        }
+        if hud.coords {
+            state.coords.next = coords;
+            state.coords.refresh(|coords, lines| {
+                if let Some(([x, y, z], facing)) = coords {
+                    lines.push(text("horizon.pvp.hud.coords", &[x, y, z]));
+                    let key = format!("horizon.pvp.hud.direction.{facing}");
+                    let name = horizon_client::lang::get_or(&key, facing);
+                    lines.push(text("horizon.pvp.hud.facing", &[&name]));
+                }
+            });
+        } else {
+            state.coords.clear();
+        }
+        if hud.server {
+            // A new String only when the address changes.
+            let w = &mut state.server;
+            if let Some(address) = server {
+                w.next = address;
+            }
+            w.refresh(|address, lines| {
+                if let Some(address) = address {
+                    let shown = horizon_client::net::shown_address(address);
+                    lines.push(Line::new(Icon::None, shown, &width));
+                }
+            });
+        } else {
+            state.server.clear();
+        }
+        if hud.combo {
+            state.combo_count.next = state.combo.count(now);
+            state.combo_count.refresh(|count, lines| {
+                lines.push(text("horizon.pvp.hud.combo", &[count]));
+            });
+        } else {
+            state.combo_count.clear();
+        }
         let background = hud.background;
+        let p = &self.pvp;
         let widgets = [
             (
                 hud.armour,
                 hud.armour_corner,
-                &self.pvp.armour.lines,
-                self.pvp.armour.size,
+                &p.armour.lines,
+                p.armour.size,
             ),
             (
                 hud.effects,
                 hud.effects_corner,
-                &self.pvp.effects.lines,
-                self.pvp.effects.size,
+                &p.effects.lines,
+                p.effects.size,
+            ),
+            (hud.held, hud.held_corner, &p.held.lines, p.held.size),
+            (hud.ping, hud.ping_corner, &p.ping.lines, p.ping.size),
+            (
+                hud.coords,
+                hud.coords_corner,
+                &p.coords.lines,
+                p.coords.size,
             ),
             (
-                hud.held,
-                hud.held_corner,
-                &self.pvp.held.lines,
-                self.pvp.held.size,
+                hud.server,
+                hud.server_corner,
+                &p.server.lines,
+                p.server.size,
+            ),
+            (
+                hud.combo,
+                hud.combo_corner,
+                &p.combo_count.lines,
+                p.combo_count.size,
             ),
         ];
         for (on, corner, lines, size) in widgets {

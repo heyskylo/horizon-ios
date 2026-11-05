@@ -126,7 +126,7 @@ impl Game<'_> {
         })
     }
     /// Load terrain until the player stands in lit chunks.
-    fn harness_settle(&mut self, deadline: Instant) -> Result<()> {
+    fn harness_settle(&mut self, deadline: Instant, required: Option<&Value>) -> Result<()> {
         loop {
             self.update_world();
             if let Some(p) = &self.player {
@@ -136,8 +136,23 @@ impl Game<'_> {
                 );
                 // Finish requested terrain before inspecting it, so worker
                 // timing cannot change which command positions are loaded.
-                if !self.streaming.busy()
-                    && (-1..=1).all(|dz| (-1..=1).all(|dx| self.streaming.is_lit(cx + dx, cz + dz)))
+                if (std::env::var_os("HORIZON_HARNESS_TERRAIN_ONLY").is_some()
+                    || !self.streaming.busy())
+                    && required.and_then(Value::as_array).map_or_else(
+                        || {
+                            (-1..=1).all(|dz| {
+                                (-1..=1).all(|dx| self.streaming.is_lit(cx + dx, cz + dz))
+                            })
+                        },
+                        |chunks| {
+                            chunks.iter().all(|chunk| {
+                                chunk[0]
+                                    .as_i64()
+                                    .zip(chunk[1].as_i64())
+                                    .is_some_and(|(x, z)| self.streaming.is_lit(x as i32, z as i32))
+                            })
+                        },
+                    )
                 {
                     // The oracle's settle also waits for the entities saved
                     // in those chunks (areEntitiesActuallyLoadedAndTicking):
@@ -181,7 +196,7 @@ impl Game<'_> {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        self.harness_owner(|g| g.harness_settle(deadline))?;
+        self.harness_owner(|g| g.harness_settle(deadline, None))?;
         let mut out = String::new();
         for line in std::fs::read_to_string(script)?.lines() {
             if line.trim().is_empty() {
@@ -271,7 +286,7 @@ impl Game<'_> {
                         }
                         std::thread::sleep(Duration::from_millis(2));
                     }
-                    self.harness_owner(|g| g.harness_settle(deadline))?;
+                    self.harness_owner(|g| g.harness_settle(deadline, op.get("required_chunks")))?;
                 }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.

@@ -65,6 +65,9 @@ pub struct Tree {
     /// The triggers with a criterion that may test what the player looks at
     /// (`index_looking_at`).
     looking_at_triggers: BTreeSet<String>,
+    /// The triggers with a criterion that may test an entity's `nbt`
+    /// (`index_nbt`).
+    nbt_triggers: BTreeSet<String>,
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -146,6 +149,7 @@ impl Tree {
         }
         tree.index_recipes();
         tree.index_looking_at();
+        tree.index_nbt();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -187,6 +191,32 @@ impl Tree {
     /// Whether a criterion of `trigger` may test what the player looks at.
     pub fn may_look(&self, trigger: &str) -> bool {
         self.looking_at_triggers.contains(trigger)
+    }
+    /// Index the triggers whose criteria name `nbt`, or a
+    /// `minecraft:reference` to a predicate file that might: the text is
+    /// searched, nothing is read.
+    pub fn index_nbt(&mut self) {
+        let keys = [
+            "\"nbt\"",
+            "\"minecraft:nbt\"",
+            "\"minecraft:reference\"",
+            "\"reference\"",
+        ];
+        self.nbt_triggers = (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                keys.iter().any(|k| json.contains(k))
+            })
+            .map(|c| c.trigger.clone())
+            .collect();
+    }
+    /// Whether a criterion of `trigger` may test an entity's `nbt`.
+    pub fn may_test_nbt(&self, trigger: &str) -> bool {
+        self.nbt_triggers.contains(trigger)
+    }
+    /// Whether any criterion may test an entity's `nbt`.
+    pub fn tests_nbt(&self) -> bool {
+        !self.nbt_triggers.is_empty()
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
@@ -512,6 +542,9 @@ pub struct EntityView {
     pub variant: Option<String>,
     /// The data components the entity reports (`Entity.get`): id and value.
     pub components: Vec<(String, String)>,
+    /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
+    /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
+    pub nbt: Option<horizon_world::nbt::Tag>,
 }
 fn range_f(v: &Value, x: f64) -> bool {
     match v {
@@ -534,6 +567,14 @@ pub fn full(id: &str) -> std::borrow::Cow<'_, str> {
     } else {
         format!("minecraft:{id}").into()
     }
+}
+/// The entry of a map keyed by registry ids (`Identifier.parse` on the key),
+/// such as an item predicate's `components` or `predicates`.
+fn keyed<'a>(map: &'a Value, id: &str) -> Option<&'a Value> {
+    map.as_object()?
+        .iter()
+        .find(|(k, _)| full(k) == id)
+        .map(|(_, v)| v)
 }
 /// A registry id, `#tag`, or list matched against one id.
 pub fn id_matches(v: &Value, registry: &str, id: &str, w: &dyn World) -> bool {
@@ -607,18 +648,18 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     }
     // Data components: exact matches on the few the data uses.
     let comps = &v["components"];
-    if let Some(p) = comps["minecraft:potion_contents"].as_str()
-        && it.potion.as_deref() != Some(p)
+    if let Some(p) = keyed(comps, "minecraft:potion_contents").and_then(Value::as_str)
+        && !it.potion.as_deref().is_some_and(|h| full(h) == full(p))
     {
         return false;
     }
-    if let Some(d) = comps["minecraft:damage"].as_u64()
+    if let Some(d) = keyed(comps, "minecraft:damage").and_then(Value::as_u64)
         && u64::from(it.damage) != d
     {
         return false;
     }
     let preds = &v["predicates"];
-    if let Some(list) = preds["minecraft:enchantments"].as_array() {
+    if let Some(list) = keyed(preds, "minecraft:enchantments").and_then(Value::as_array) {
         for e in list {
             let ok = it.enchantments.iter().any(|(id, lvl)| {
                 id_matches(&e["enchantments"], "enchantment", id, w)
@@ -629,7 +670,7 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
             }
         }
     }
-    if let Some(d) = preds["minecraft:damage"].as_object() {
+    if let Some(d) = keyed(preds, "minecraft:damage").and_then(Value::as_object) {
         let damage = Value::Object(d.clone());
         if !range_i(&damage["damage"], i64::from(it.damage)) {
             return false;
@@ -812,6 +853,13 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                             && range_i(&want["amplifier"], i64::from(*amp))
                             && range_i(&want["duration"], i64::from(*dur))
                     })
+                })
+            }),
+            // `EntityNbtPredicate.matches`: the entity's compound holds the
+            // pattern (`NbtUtils.compareNbt`); no compound known fails.
+            "minecraft:nbt" => p.as_str().is_some_and(|s| {
+                horizon_world::nbt::parse_snbt(s).is_ok_and(|(pattern, _)| {
+                    crate::nbt_path::compare_nbt(&pattern, e.nbt.as_ref())
                 })
             }),
             "minecraft:type_specific/player" => {
@@ -1579,6 +1627,58 @@ mod tests {
         let none = serde_json::json!({});
         assert!(can_unlock(&none, false, None, &Flat));
     }
+    /// `ItemPredicate`'s `components` and `predicates` are keyed by registry
+    /// ids, so a key without a namespace is a `minecraft:` one. An unread key
+    /// used to be skipped, which let every stack pass.
+    #[test]
+    fn item_predicate_reads_bare_component_keys() {
+        let potion = ItemView {
+            id: "minecraft:potion".into(),
+            count: 1,
+            potion: Some("minecraft:swiftness".into()),
+            ..Default::default()
+        };
+        let sword = ItemView {
+            id: "minecraft:iron_sword".into(),
+            count: 1,
+            damage: 3,
+            enchantments: vec![("minecraft:sharpness".into(), 2)],
+            ..Default::default()
+        };
+        let cases = [
+            (
+                serde_json::json!({"components": {"potion_contents": "minecraft:swiftness"}}),
+                serde_json::json!({"components": {"potion_contents": "minecraft:healing"}}),
+                &potion,
+            ),
+            (
+                serde_json::json!({"components": {"damage": 3}}),
+                serde_json::json!({"components": {"damage": 4}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": 2}
+                ]}}),
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": {"min": 3}}
+                ]}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"damage": {"damage": {"max": 3}}}}),
+                serde_json::json!({"predicates": {"damage": {"damage": {"min": 4}}}}),
+                &sword,
+            ),
+        ];
+        for (yes, no, stack) in cases {
+            assert!(item(&yes, stack, &Flat), "{yes} should match");
+            assert!(!item(&no, stack, &Flat), "{no} should not match");
+        }
+        // The potion is a registry id too.
+        let bare = serde_json::json!({"components": {"minecraft:potion_contents": "swiftness"}});
+        assert!(item(&bare, &potion, &Flat));
+    }
     /// `PassengerPredicate.matches`: ride_a_boat_with_a_goat's vehicle holds a goat.
     #[test]
     fn passenger_predicate_needs_a_matching_passenger() {
@@ -1596,6 +1696,72 @@ mod tests {
         assert!(!super::entity(&want, &boat, &Flat, [0.0; 3]));
         boat.passengers.push(entity("minecraft:goat"));
         assert!(super::entity(&want, &boat, &Flat, [0.0; 3]));
+    }
+    /// `EntityNbtPredicate.matches`: the entity's saved compound holds the
+    /// pattern (`NbtUtils.compareNbt(…, true)`); without one it fails.
+    #[test]
+    fn an_entity_predicates_nbt_tests_the_saved_compound() {
+        let snbt = |s: &str| horizon_world::nbt::parse_snbt(s).unwrap().0;
+        let view = |kind: &str, nbt: &str| EntityView {
+            kind: kind.into(),
+            nbt: Some(snbt(nbt)),
+            ..Default::default()
+        };
+        let check = |v: serde_json::Value, e: &EntityView| super::entity(&v, e, &Flat, [0.0; 3]);
+        let nbt = |s: &str| serde_json::json!({"minecraft:nbt": s});
+        let axolotl = view("minecraft:axolotl", "{Variant:1,FromBucket:1b}");
+        assert!(check(nbt("{Variant:1}"), &axolotl));
+        assert!(check(nbt("{}"), &axolotl));
+        assert!(!check(nbt("{Variant:0}"), &axolotl));
+        assert!(
+            !check(nbt("{FromBucket:1}"), &axolotl),
+            "a byte, not an int"
+        );
+        let pig = serde_json::json!({"minecraft:entity_type": "minecraft:pig",
+            "minecraft:nbt": "{Variant:1}"});
+        assert!(
+            !check(pig, &axolotl),
+            "the other sub-predicates still apply"
+        );
+        let villager = view(
+            "minecraft:villager",
+            r#"{VillagerData:{level:2,profession:"minecraft:farmer",type:"minecraft:taiga"}}"#,
+        );
+        assert!(check(
+            nbt(r#"{VillagerData:{profession:"minecraft:farmer"}}"#),
+            &villager
+        ));
+        assert!(!check(
+            nbt(r#"{VillagerData:{profession:"minecraft:librarian"}}"#),
+            &villager
+        ));
+        let player = view(
+            "minecraft:player",
+            r#"{Inventory:[{Slot:0b,id:"minecraft:spyglass",count:1},{Slot:3b,id:"minecraft:stick",count:2}],SelectedItem:{id:"minecraft:spyglass",count:1}}"#,
+        );
+        assert!(check(
+            nbt(r#"{Inventory:[{id:"minecraft:stick"}]}"#),
+            &player
+        ));
+        assert!(!check(
+            nbt(r#"{Inventory:[{id:"minecraft:stick",count:3}]}"#),
+            &player
+        ));
+        assert!(
+            !check(nbt("{Inventory:[]}"), &player),
+            "an empty list wants an empty one"
+        );
+        assert!(check(
+            nbt(r#"{SelectedItem:{id:"minecraft:spyglass"}}"#),
+            &player
+        ));
+        let bare = EntityView {
+            kind: "minecraft:axolotl".into(),
+            ..Default::default()
+        };
+        assert!(!check(nbt("{}"), &bare), "no compound known");
+        assert!(!check(nbt("{Variant:"), &axolotl), "unparsable");
+        assert!(!check(serde_json::json!({"minecraft:nbt": 3}), &axolotl));
     }
     /// Return to Sender's `killing_blow`: only the ghast's own fireball, as a
     /// projectile, kills it for the advancement; a sword or an arrow does not.

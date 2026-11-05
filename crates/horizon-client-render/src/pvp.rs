@@ -175,6 +175,103 @@ impl Shape {
     }
 }
 
+/// A time of day this player's view can stay at (`ViewTime::day_time` in vanilla's ticks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewTime {
+    Morning,
+    Noon,
+    Sunset,
+    Midnight,
+}
+impl ViewTime {
+    pub const ALL: [ViewTime; 4] = [
+        ViewTime::Morning,
+        ViewTime::Noon,
+        ViewTime::Sunset,
+        ViewTime::Midnight,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewTime::Morning => "morning",
+            ViewTime::Noon => "noon",
+            ViewTime::Sunset => "sunset",
+            ViewTime::Midnight => "midnight",
+        }
+    }
+    fn english(self) -> &'static str {
+        match self {
+            ViewTime::Morning => "Morning",
+            ViewTime::Noon => "Noon",
+            ViewTime::Sunset => "Sunset",
+            ViewTime::Midnight => "Midnight",
+        }
+    }
+    /// The time of day it shows, as `/time set` takes it.
+    pub fn day_time(self) -> i64 {
+        match self {
+            ViewTime::Morning => 1000,
+            ViewTime::Noon => 6000,
+            ViewTime::Sunset => 12500,
+            ViewTime::Midnight => 18000,
+        }
+    }
+    pub fn label(self) -> String {
+        crate::lang::get_or(&format!("horizon.pvp.time.{}", self.name()), self.english())
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+/// The weather this player's view can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewWeather {
+    Clear,
+    Rain,
+    Thunder,
+}
+impl ViewWeather {
+    pub const ALL: [ViewWeather; 3] = [ViewWeather::Clear, ViewWeather::Rain, ViewWeather::Thunder];
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewWeather::Clear => "clear",
+            ViewWeather::Rain => "rain",
+            ViewWeather::Thunder => "thunder",
+        }
+    }
+    fn english(self) -> &'static str {
+        match self {
+            ViewWeather::Clear => "Clear",
+            ViewWeather::Rain => "Rain",
+            ViewWeather::Thunder => "Thunder",
+        }
+    }
+    /// `Level.getRainLevel` and `getThunderLevel` as `/weather` leaves them.
+    pub fn levels(self) -> (f32, f32) {
+        match self {
+            ViewWeather::Clear => (0.0, 0.0),
+            ViewWeather::Rain => (1.0, 0.0),
+            ViewWeather::Thunder => (1.0, 1.0),
+        }
+    }
+    pub fn label(self) -> String {
+        crate::lang::get_or(
+            &format!("horizon.pvp.weather.{}", self.name()),
+            self.english(),
+        )
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+/// The day time this player sees with `fixed` set: the same day (the moon's phase follows the
+/// world's), at that time.
+pub fn view_day_time(world: i64, fixed: Option<ViewTime>) -> i64 {
+    match fixed {
+        Some(t) => world.div_euclid(24000) * 24000 + t.day_time(),
+        None => world,
+    }
+}
+
 /// The crosshair's look. Its defaults draw vanilla's: a 15-pixel cross, one pixel thick,
 /// inverting what is under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,12 +536,15 @@ pub struct Frame {
     pub outline: Option<(u32, f32)>,
     /// The hurt overlay texel ([`Hit::texel`]), 0 for vanilla's.
     pub hurt_texel: u32,
+    /// The glint's colour ([`Tweaks::glint_texel`]), 0 for vanilla's.
+    pub glint: u32,
 }
 impl Pvp {
     pub fn frame(&self) -> Frame {
         Frame {
             outline: self.outline.stroke(),
             hurt_texel: self.hit.texel(),
+            glint: self.tweaks.glint_texel(),
         }
     }
 }
@@ -462,6 +562,19 @@ pub struct Hud {
     /// How many of the held item the inventory holds (arrows with a bow or crossbow).
     pub held: bool,
     pub held_corner: Corner,
+    /// The latency the server reports for this player (the tab list's bars), in multiplayer.
+    pub ping: bool,
+    pub ping_corner: Corner,
+    /// The block position and the direction faced, as F3 shows them; hidden when F3 is
+    /// reduced (`reducedDebugInfo`).
+    pub coords: bool,
+    pub coords_corner: Corner,
+    /// The server's address, in multiplayer.
+    pub server: bool,
+    pub server_corner: Corner,
+    /// Hits in a row the server confirmed, until this player is hurt or 3 seconds pass.
+    pub combo: bool,
+    pub combo_corner: Corner,
     /// A dark box behind each widget.
     pub background: bool,
 }
@@ -475,13 +588,98 @@ impl Default for Hud {
             effects_corner: Corner::TopRight,
             held: false,
             held_corner: Corner::BottomRight,
+            ping: false,
+            ping_corner: Corner::TopLeft,
+            coords: false,
+            coords_corner: Corner::TopLeft,
+            server: false,
+            server_corner: Corner::TopLeft,
+            combo: false,
+            combo_corner: Corner::TopLeft,
             background: true,
         }
     }
 }
 pub use crate::extras::Corner;
+/// The value of the view options while they follow the world.
+fn world_label() -> String {
+    crate::lang::get_or("horizon.pvp.view.world", "World's")
+}
 fn corner_label(c: Corner) -> String {
     crate::lang::get_or(&format!("horizon.pvp.corner.{}", c.name()), c.label())
+}
+
+/// Smaller changes to what vanilla shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tweaks {
+    /// Enchantment levels as numbers in tooltips ("Sharpness 5").
+    pub numeric_enchants: bool,
+    /// How far down the first-person fire overlay moves, in percent of its height (0: vanilla).
+    pub fire_lower: u8,
+    /// The first-person shield's size, in percent (100: vanilla).
+    pub shield_size: u8,
+    /// The totem animation's size, in percent (100: vanilla).
+    pub totem_size: u8,
+    /// The enchantment glint's colour; `None` is vanilla's purple.
+    pub glint: Option<Colour>,
+    /// Water fog as after 30 seconds under water (vanilla's clearest), from the first moment.
+    pub clear_water: bool,
+    /// Lava fog as with Fire Resistance (vanilla's clearest), without the effect.
+    pub clear_lava: bool,
+    /// The time of day this player sees, `None` for the world's. Never sent to the server.
+    pub time: Option<ViewTime>,
+    /// The weather this player sees, `None` for the world's. Never sent to the server.
+    pub weather: Option<ViewWeather>,
+}
+impl Default for Tweaks {
+    fn default() -> Self {
+        Self {
+            numeric_enchants: false,
+            fire_lower: 0,
+            shield_size: 100,
+            totem_size: 100,
+            glint: None,
+            clear_water: false,
+            clear_lava: false,
+            time: None,
+            weather: None,
+        }
+    }
+}
+pub const FIRE_LOWER: (u8, u8) = (0, 80);
+pub const SHIELD_SIZES: (u8, u8) = (50, 100);
+pub const TOTEM_SIZES: (u8, u8) = (25, 100);
+impl Tweaks {
+    /// `colour` as the glint shaders read it: `0` for vanilla's, else `0xFF` alpha over RGB in
+    /// little-endian bytes (`unpack4x8unorm`'s order).
+    pub fn glint_texel(&self) -> u32 {
+        self.glint.map_or(0, |c| {
+            let [_, r, g, b] = c.argb().to_be_bytes();
+            u32::from_le_bytes([r, g, b, 255])
+        })
+    }
+}
+
+/// Chat options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatOptions {
+    /// The local time before each message.
+    pub timestamps: bool,
+    /// A message repeated in a row shows once with its count.
+    pub compact: bool,
+    /// A click on a message (where it has no click action) copies it.
+    pub copy: bool,
+    /// Ctrl+F in the chat searches the chat's messages.
+    pub search: bool,
+}
+impl ChatOptions {
+    /// What `chat::Chat` lays its lines out with.
+    pub fn qol(&self) -> crate::chat::ChatQol {
+        crate::chat::ChatQol {
+            timestamps: self.timestamps,
+            compact: self.compact,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -490,6 +688,8 @@ pub struct Pvp {
     pub outline: Outline,
     pub hit: Hit,
     pub hud: Hud,
+    pub tweaks: Tweaks,
+    pub chat: ChatOptions,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -506,6 +706,7 @@ impl Pvp {
     pub fn parse_line(&mut self, key: &str, value: &str) -> bool {
         let c = &mut self.crosshair;
         let (o, h, u) = (&mut self.outline, &mut self.hit, &mut self.hud);
+        let t = &mut self.tweaks;
         match key {
             "crosshair" => c.custom = flag(value, c.custom),
             "crosshairShape" => c.shape = Shape::parse(value).unwrap_or(c.shape),
@@ -542,6 +743,42 @@ impl Pvp {
             "hudHeld" => u.held = flag(value, u.held),
             "hudHeldCorner" => u.held_corner = Corner::parse(value, u.held_corner),
             "hudBackground" => u.background = flag(value, u.background),
+            "hudPing" => u.ping = flag(value, u.ping),
+            "hudPingCorner" => u.ping_corner = Corner::parse(value, u.ping_corner),
+            "hudCoords" => u.coords = flag(value, u.coords),
+            "hudCoordsCorner" => u.coords_corner = Corner::parse(value, u.coords_corner),
+            "hudServer" => u.server = flag(value, u.server),
+            "hudServerCorner" => u.server_corner = Corner::parse(value, u.server_corner),
+            "hudCombo" => u.combo = flag(value, u.combo),
+            "hudComboCorner" => u.combo_corner = Corner::parse(value, u.combo_corner),
+            "numericEnchants" => t.numeric_enchants = flag(value, t.numeric_enchants),
+            "lowFire" => t.fire_lower = num(value, FIRE_LOWER, t.fire_lower),
+            "shieldSize" => t.shield_size = num(value, SHIELD_SIZES, t.shield_size),
+            "totemSize" => t.totem_size = num(value, TOTEM_SIZES, t.totem_size),
+            "glintColour" => {
+                t.glint = match value {
+                    "off" => None,
+                    v => Colour::parse(v).or(t.glint),
+                }
+            }
+            "clearWater" => t.clear_water = flag(value, t.clear_water),
+            "clearLava" => t.clear_lava = flag(value, t.clear_lava),
+            "chatTimestamps" => self.chat.timestamps = flag(value, self.chat.timestamps),
+            "chatCompact" => self.chat.compact = flag(value, self.chat.compact),
+            "chatCopy" => self.chat.copy = flag(value, self.chat.copy),
+            "chatSearch" => self.chat.search = flag(value, self.chat.search),
+            "viewTime" => {
+                t.time = match value {
+                    "off" => None,
+                    v => ViewTime::parse(v).or(t.time),
+                }
+            }
+            "viewWeather" => {
+                t.weather = match value {
+                    "off" => None,
+                    v => ViewWeather::parse(v).or(t.weather),
+                }
+            }
             _ => return false,
         }
         true
@@ -589,6 +826,65 @@ impl Pvp {
             u.held_corner.name(),
             u.background,
         );
+        let _ = write!(
+            out,
+            "hudPing:{}\nhudPingCorner:{}\nhudCoords:{}\nhudCoordsCorner:{}\nhudServer:{}\nhudServerCorner:{}\nhudCombo:{}\nhudComboCorner:{}\n",
+            u.ping,
+            u.ping_corner.name(),
+            u.coords,
+            u.coords_corner.name(),
+            u.server,
+            u.server_corner.name(),
+            u.combo,
+            u.combo_corner.name(),
+        );
+        let t = &self.tweaks;
+        let _ = write!(
+            out,
+            "numericEnchants:{}\nlowFire:{}\nshieldSize:{}\ntotemSize:{}\nglintColour:{}\nclearWater:{}\nclearLava:{}\n",
+            t.numeric_enchants,
+            t.fire_lower,
+            t.shield_size,
+            t.totem_size,
+            t.glint.map_or("off", Colour::name),
+            t.clear_water,
+            t.clear_lava,
+        );
+        let _ = write!(
+            out,
+            "viewTime:{}\nviewWeather:{}\n",
+            t.time.map_or("off", ViewTime::name),
+            t.weather.map_or("off", ViewWeather::name),
+        );
+        let c = &self.chat;
+        let _ = write!(
+            out,
+            "chatTimestamps:{}\nchatCompact:{}\nchatCopy:{}\nchatSearch:{}\n",
+            c.timestamps, c.compact, c.copy, c.search,
+        );
+    }
+}
+
+/// The official mods the PvP preset turns on when they are installed: the FPS counter and the
+/// keystrokes with clicks per second.
+pub const PRESET_MODS: [&str; 2] = ["fps_overlay", "keystrokes"];
+/// Fire overlay's place under the PvP preset (percent of its height down).
+const PRESET_FIRE_LOWER: u8 = 40;
+/// The PvP preset: the custom crosshair, the armour and effects widgets, vanilla's toggle sprint
+/// and toggle sneak, lower fire, and the FPS and keystrokes mods when installed. It only turns
+/// things on; each keeps its own settings, so it can be undone option by option.
+pub fn apply_preset(s: &mut crate::settings::Settings) {
+    let p = &mut s.extras.pvp;
+    p.crosshair.custom = true;
+    p.hud.armour = true;
+    p.hud.effects = true;
+    if p.tweaks.fire_lower == 0 {
+        p.tweaks.fire_lower = PRESET_FIRE_LOWER;
+    }
+    s.toggle_sprint = true;
+    s.toggle_crouch = true;
+    for id in PRESET_MODS {
+        s.mods.turn_on(id);
     }
 }
 
@@ -649,7 +945,41 @@ opts! {
     HudHeld, "hud_held", "Held item count",
         "How many of the item in your hand your inventory holds; arrows with a bow or crossbow.";
     HudHeldCorner, "hud_held_corner", "Held count corner", "Where the count shows.";
+    HudPing, "hud_ping", "Ping", "The latency the server reports for you, in milliseconds. Multiplayer only.";
+    HudPingCorner, "hud_ping_corner", "Ping corner", "Where the ping shows.";
+    HudCoords, "hud_coords", "Coordinates",
+        "Your block position and the direction you face, as F3 shows them. Hidden when the world or server reduces F3.";
+    HudCoordsCorner, "hud_coords_corner", "Coordinates corner", "Where the coordinates show.";
+    HudServer, "hud_server", "Server address", "The address of the server you play on. Multiplayer only.";
+    HudServerCorner, "hud_server_corner", "Server corner", "Where the address shows.";
+    HudCombo, "hud_combo", "Combo counter",
+        "Hits in a row the server confirmed, until you are hurt or 3 seconds pass without one.";
+    HudComboCorner, "hud_combo_corner", "Combo corner", "Where the combo shows.";
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
+    NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
+        "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
+    FireLower, "fire_lower", "Lower fire",
+        "Moves the flames you see while burning down, so they cover less of the screen.";
+    ShieldSize, "shield_size", "Shield size", "The size of the shield in your hand, in first person.";
+    TotemSize, "totem_size", "Totem animation size",
+        "The size of the totem that fills the screen when it saves you.";
+    GlintColour, "glint_colour", "Enchantment glint colour",
+        "The colour of the shimmer on enchanted items and armour. Off is vanilla's purple.";
+    ClearWater, "clear_water", "Clear water",
+        "Under water, see as far as vanilla lets you after 30 seconds there, from the start.";
+    ClearLava, "clear_lava", "Clear lava",
+        "In lava, see as far as vanilla's Fire Resistance lets you, without the effect.";
+    ViewTime, "view_time", "Time of day",
+        "The time of day you see: the sky and its light only. The world's time goes on and nothing is sent to the server.";
+    ViewWeather, "view_weather", "Weather",
+        "The weather you see: rain, its light and fog only. The world's weather goes on and nothing is sent to the server.";
+    ChatTimestamps, "chat_timestamps", "Timestamps", "The time each message came in, before it.";
+    ChatCompact, "chat_compact", "Compact chat",
+        "A message repeated in a row shows once, with how many times it came: (x3).";
+    ChatCopy, "chat_copy", "Copy on click",
+        "Clicking a message in the open chat copies its text, unless the click does something else.";
+    ChatSearch, "chat_search", "Chat search",
+        "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -692,10 +1022,27 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
             HudEffectsCorner,
             HudHeld,
             HudHeldCorner,
+            HudPing,
+            HudPingCorner,
+            HudCoords,
+            HudCoordsCorner,
+            HudServer,
+            HudServerCorner,
+            HudCombo,
+            HudComboCorner,
             HudBackground,
         ]
         .map(Ok),
     );
+    rows.push(Err("horizon.pvp.header.items"));
+    rows.push(Ok(NumericEnchants));
+    rows.push(Ok(GlintColour));
+    rows.push(Err("horizon.pvp.header.visual"));
+    rows.extend([FireLower, ShieldSize, TotemSize, ClearWater, ClearLava].map(Ok));
+    rows.push(Err("horizon.pvp.header.view"));
+    rows.extend([ViewTime, ViewWeather].map(Ok));
+    rows.push(Err("horizon.pvp.header.chat"));
+    rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
     rows
 }
 impl Opt {
@@ -706,7 +1053,15 @@ impl Opt {
             Crosshair | Outline | Hit => None,
             OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
             HitColour | HitOpacity => Some(Hit),
-            HudArmour | HudEffects | HudHeld | HudBackground => None,
+            HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
+            | HudBackground | NumericEnchants => None,
+            FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
+            ViewTime | ViewWeather => None,
+            ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
+            HudPingCorner => Some(HudPing),
+            HudCoordsCorner => Some(HudCoords),
+            HudServerCorner => Some(HudServer),
+            HudComboCorner => Some(HudCombo),
             HudArmourCorner | HudArmourPercent => Some(HudArmour),
             HudEffectsCorner => Some(HudEffects),
             HudHeldCorner => Some(HudHeld),
@@ -726,6 +1081,17 @@ impl Opt {
             Opt::HudEffects => p.hud.effects,
             Opt::HudHeld => p.hud.held,
             Opt::HudBackground => p.hud.background,
+            Opt::HudPing => p.hud.ping,
+            Opt::HudCoords => p.hud.coords,
+            Opt::HudServer => p.hud.server,
+            Opt::HudCombo => p.hud.combo,
+            Opt::NumericEnchants => p.tweaks.numeric_enchants,
+            Opt::ClearWater => p.tweaks.clear_water,
+            Opt::ClearLava => p.tweaks.clear_lava,
+            Opt::ChatTimestamps => p.chat.timestamps,
+            Opt::ChatCompact => p.chat.compact,
+            Opt::ChatCopy => p.chat.copy,
+            Opt::ChatSearch => p.chat.search,
             _ => return None,
         })
     }
@@ -754,6 +1120,25 @@ impl Opt {
             Opt::HudArmourCorner => corner_label(p.hud.armour_corner),
             Opt::HudEffectsCorner => corner_label(p.hud.effects_corner),
             Opt::HudHeldCorner => corner_label(p.hud.held_corner),
+            Opt::HudPingCorner => corner_label(p.hud.ping_corner),
+            Opt::HudCoordsCorner => corner_label(p.hud.coords_corner),
+            Opt::HudServerCorner => corner_label(p.hud.server_corner),
+            Opt::HudComboCorner => corner_label(p.hud.combo_corner),
+            Opt::FireLower => match p.tweaks.fire_lower {
+                0 => crate::lang::get_or("Off", "Off"),
+                v => format!("{v}%"),
+            },
+            Opt::ShieldSize => format!("{}%", p.tweaks.shield_size),
+            Opt::TotemSize => format!("{}%", p.tweaks.totem_size),
+            Opt::GlintColour => match p.tweaks.glint {
+                Some(colour) => colour.label(),
+                None => crate::lang::get_or("Off", "Off"),
+            },
+            Opt::ViewTime => p.tweaks.time.map_or_else(world_label, ViewTime::label),
+            Opt::ViewWeather => p
+                .tweaks
+                .weather
+                .map_or_else(world_label, ViewWeather::label),
             _ => return None,
         })
     }
@@ -761,6 +1146,7 @@ impl Opt {
     pub fn cycle(self, p: &mut Pvp, back: bool) {
         let c = &mut p.crosshair;
         let (o, h, u) = (&mut p.outline, &mut p.hit, &mut p.hud);
+        let t = &mut p.tweaks;
         let corner = |c: Corner| step(&Corner::ALL, c, back);
         // Off, then every solid colour.
         let solid_or_off = |v: Option<Colour>| {
@@ -805,6 +1191,37 @@ impl Opt {
             Opt::HudHeld => u.held = !u.held,
             Opt::HudHeldCorner => u.held_corner = corner(u.held_corner),
             Opt::HudBackground => u.background = !u.background,
+            Opt::HudPing => u.ping = !u.ping,
+            Opt::HudPingCorner => u.ping_corner = corner(u.ping_corner),
+            Opt::HudCoords => u.coords = !u.coords,
+            Opt::HudCoordsCorner => u.coords_corner = corner(u.coords_corner),
+            Opt::HudServer => u.server = !u.server,
+            Opt::HudServerCorner => u.server_corner = corner(u.server_corner),
+            Opt::HudCombo => u.combo = !u.combo,
+            Opt::HudComboCorner => u.combo_corner = corner(u.combo_corner),
+            Opt::NumericEnchants => p.tweaks.numeric_enchants = !p.tweaks.numeric_enchants,
+            Opt::FireLower => t.fire_lower = step_by(t.fire_lower, FIRE_LOWER, 10, back),
+            Opt::ShieldSize => t.shield_size = step_by(t.shield_size, SHIELD_SIZES, 10, back),
+            Opt::TotemSize => t.totem_size = step_by(t.totem_size, TOTEM_SIZES, 25, back),
+            Opt::GlintColour => t.glint = solid_or_off(t.glint),
+            Opt::ClearWater => t.clear_water = !t.clear_water,
+            Opt::ClearLava => t.clear_lava = !t.clear_lava,
+            Opt::ViewTime => {
+                let all: Vec<_> = std::iter::once(None)
+                    .chain(ViewTime::ALL.map(Some))
+                    .collect();
+                t.time = step(&all, t.time, back);
+            }
+            Opt::ChatTimestamps => p.chat.timestamps = !p.chat.timestamps,
+            Opt::ChatCompact => p.chat.compact = !p.chat.compact,
+            Opt::ChatCopy => p.chat.copy = !p.chat.copy,
+            Opt::ChatSearch => p.chat.search = !p.chat.search,
+            Opt::ViewWeather => {
+                let all: Vec<_> = std::iter::once(None)
+                    .chain(ViewWeather::ALL.map(Some))
+                    .collect();
+                t.weather = step(&all, t.weather, back);
+            }
         }
     }
 }
@@ -942,6 +1359,17 @@ mod tests {
         assert_eq!(p.crosshair.shape, Shape::T);
         assert_eq!(p.crosshair.size, 8);
         assert_eq!(p.crosshair.hover, Some(Colour::Inverted));
+        // From vanilla's values, one click: the overlays' sizes wrap to their smallest.
+        let t = p.tweaks;
+        assert_eq!((t.fire_lower, t.shield_size, t.totem_size), (10, 50, 25));
+        assert_eq!(t.glint, Some(Colour::White));
+        assert!(t.clear_water && t.clear_lava);
+        assert_eq!(
+            (t.time, t.weather),
+            (Some(ViewTime::Morning), Some(ViewWeather::Clear))
+        );
+        let c = p.chat;
+        assert!(c.timestamps && c.compact && c.copy && c.search);
         let mut text = String::new();
         p.serialize(&mut text);
         let mut read = Pvp::default();
@@ -959,6 +1387,59 @@ mod tests {
         assert!(p.parse_line("crosshairSize", "99") && p.crosshair.size == SIZES.1);
         assert!(p.parse_line("crosshairColour", "plaid") && p.crosshair.colour == Colour::White);
         assert!(!p.parse_line("fullbright", "true"));
+        assert!(p.parse_line("totemSize", "5") && p.tweaks.totem_size == TOTEM_SIZES.0);
+    }
+
+    #[test]
+    fn the_pvp_preset_turns_its_options_on_and_keeps_their_settings() {
+        use crate::mod_list::{Installed, NativePage};
+        let mut s = crate::settings::Settings::default();
+        s.extras.pvp.crosshair.colour = Colour::Green;
+        s.extras.pvp.tweaks.fire_lower = 60;
+        let installed = |id: &str| Installed {
+            id: id.into(),
+            title: id.into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        };
+        s.mods.installed = vec![installed("fps_overlay"), installed("zoom")];
+        s.mods.disabled.insert("fps_overlay".into());
+        apply_preset(&mut s);
+        let p = &s.extras.pvp;
+        assert!(p.crosshair.custom && p.hud.armour && p.hud.effects);
+        assert!(s.toggle_sprint && s.toggle_crouch);
+        // What the player had chosen stays: the crosshair's colour, a lower fire already set.
+        assert_eq!(p.crosshair.colour, Colour::Green);
+        assert_eq!(p.tweaks.fire_lower, 60);
+        // The FPS counter the player had turned off is on; keystrokes isn't installed: nothing.
+        assert!(!s.mods.disabled.contains("fps_overlay"));
+        assert!(s.mods.enabled.contains("fps_overlay") && !s.mods.enabled.contains("keystrokes"));
+        let mut fresh = crate::settings::Settings::default();
+        apply_preset(&mut fresh);
+        assert_eq!(fresh.extras.pvp.tweaks.fire_lower, PRESET_FIRE_LOWER);
+    }
+
+    #[test]
+    fn a_fixed_time_keeps_the_worlds_day() {
+        // Day 9 at 5000: the moon's phase (the day number) stays, the time of day is the chosen.
+        let world = 9 * 24000 + 5000;
+        assert_eq!(view_day_time(world, None), world);
+        assert_eq!(
+            view_day_time(world, Some(ViewTime::Midnight)),
+            9 * 24000 + 18000
+        );
+        assert_eq!(view_day_time(-100, Some(ViewTime::Noon)), -24000 + 6000);
+    }
+
+    #[test]
+    fn the_glint_colour_reaches_the_shaders_as_rgb_bytes() {
+        let mut t = Tweaks::default();
+        assert_eq!(t.glint_texel(), 0, "vanilla's glint");
+        t.glint = Some(Colour::Red);
+        // unpack4x8unorm reads the low byte first: r = 1, g = 0, b = 0, a = 1.
+        assert_eq!(t.glint_texel().to_le_bytes(), [255, 0, 0, 255]);
     }
 
     #[test]
@@ -1029,7 +1510,11 @@ mod tests {
         }
         let names = Colour::ALL.map(|c| (format!("horizon.pvp.colour.{}", c.name()), c.english()));
         let shapes = Shape::ALL.map(|c| (format!("horizon.pvp.shape.{}", c.name()), c.english()));
-        for (key, english) in names.iter().chain(&shapes) {
+        let times = ViewTime::ALL.map(|c| (format!("horizon.pvp.time.{}", c.name()), c.english()));
+        let weathers =
+            ViewWeather::ALL.map(|c| (format!("horizon.pvp.weather.{}", c.name()), c.english()));
+        assert_eq!(en.get("horizon.pvp.view.world"), Some("World's"));
+        for (key, english) in names.iter().chain(&shapes).chain(&times).chain(&weathers) {
             assert_eq!(en.get(key), Some(*english), "{key}");
         }
     }

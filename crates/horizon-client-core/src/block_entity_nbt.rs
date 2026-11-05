@@ -143,7 +143,9 @@ impl<'a> Fields<'a> {
     /// `RandomizableContainer.tryLoadLootTable` / `trySaveLootTable`; true when the
     /// block entity has a loot table (and so saves no items).
     fn loot_table(&mut self) -> bool {
-        let Some(table) = text(self.input.get("LootTable")) else {
+        let Some(table) =
+            text(self.input.get("LootTable")).and_then(|id| crate::identifier::normalize_id(&id))
+        else {
             return false;
         };
         self.put("LootTable", string(&table));
@@ -903,6 +905,16 @@ mod tests {
         assert!(out.get("Items").is_none());
         assert!(out.get("LootTableSeed").is_none());
         assert_eq!(out.get("LootTable"), Some(&string("minecraft:chests/x")));
+    }
+
+    #[test]
+    fn invalid_loot_table_leaves_items_intact() {
+        let out = canon(
+            "{id:\"minecraft:barrel\",x:1,y:2,z:3,LootTable:\"INVALID TABLE\",\
+             Items:[{Slot:0b,id:\"minecraft:stone\",count:1}]}",
+        );
+        assert!(out.get("Items").is_some());
+        assert!(out.get("LootTable").is_none());
     }
 
     #[test]

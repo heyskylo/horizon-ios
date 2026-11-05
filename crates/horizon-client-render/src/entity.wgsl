@@ -250,11 +250,18 @@ fn armor_glint_uv(model: vec2<f32>) -> vec2<f32> {
     return vec2(scaled.x * c - scaled.y * s - offset0,
                 scaled.x * s + scaled.y * c + offset1);
 }
+// PvP & HUD's glint colour (pvp.rs `Tweaks::glint_texel`, 0 for vanilla's): the sample's
+// brightest channel over the chosen colour, so the shimmer keeps its pattern and strength.
+fn tinted_glint(glint: vec4<f32>, packed: u32) -> vec4<f32> {
+    if packed == 0u { return glint; }
+    let tint = unpack4x8unorm(packed).rgb;
+    return vec4(max(glint.r, max(glint.g, glint.b)) * tint, glint.a);
+}
 // RenderPipelines.GLINT: the source colour is scaled by itself, so `GlintAlpha`
 // is squared along with the sample.
 fn glint_over(color: vec4<f32>, glint: vec4<f32>) -> vec4<f32> {
     let alpha = globals.fog_ends.w;
-    let g = alpha * glint;
+    let g = alpha * tinted_glint(glint, globals.colored_count.z);
     return vec4(color.rgb + g.rgb * g.rgb, max(color.a, alpha));
 }
 // CRUMBLING_UV_BEGIN
