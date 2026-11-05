@@ -669,6 +669,7 @@ pub fn tick(
             farm::chicken_egg_step(m, events);
         }
         if m.species() == Species::Allay {
+            super::allay::passive_heal(m);
             super::allay::update_duplication_cooldown(m);
         }
         if horse {
@@ -4751,6 +4752,51 @@ mod iron_golem_push_tests {
         }
         for ((kind, hand, modifier), (base, hit)) in cases.iter().zip(got) {
             assert_eq!(hit, Some(base + modifier), "{kind} holding {hand:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod allay_healing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn allays_heal_on_tenth_ticks_without_enabling_noai_work() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            for no_ai in [true, false] {
+                for initial in [10.0_f32, 19.5, 20.0] {
+                    let kind = Arc::new(types.types["minecraft:allay"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(16.5, 101.0, 16.5), 0.0);
+                    mob.no_ai = no_ai;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.health = initial;
+                    mob.extra.ints[2] = 37;
+                    mob.extra.ints[3] = 41;
+                    mob.extra.egg_time = 30;
+                    assert_eq!(mob.attrs.max_health, 20.0);
+                    assert_eq!(mob.age, 0);
+                    let mut random = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    for elapsed in 1..=20 {
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        assert_eq!(mob.age, elapsed);
+                        assert_eq!(
+                            mob.health,
+                            (initial + (elapsed / 10) as f32).min(20.0),
+                            "NoAI={no_ai}, initial={initial}, tick={elapsed}"
+                        );
+                        assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
+                        let skipped = if no_ai { 0 } else { elapsed as i32 };
+                        assert_eq!(mob.extra.ints[2], 37 - skipped);
+                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                    }
+                }
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Allay tick coverage did not run");
         }
     }
 }

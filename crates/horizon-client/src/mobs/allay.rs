@@ -410,9 +410,7 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
 }
 /// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
 pub fn ai_step(m: &mut Mob) {
-    if m.alive() && m.age.is_multiple_of(10) {
-        m.heal(1.0);
-    }
+    passive_heal(m);
     for i in [2, 3] {
         if m.extra.ints[i] > 0 {
             m.extra.ints[i] -= 1;
@@ -420,6 +418,12 @@ pub fn ai_step(m: &mut Mob) {
     }
     update_duplication_cooldown(m);
     animate(m);
+}
+/// `Allay.aiStep`: server-side healing runs independently of the AI gate.
+pub fn passive_heal(m: &mut Mob) {
+    if m.alive() && m.age.is_multiple_of(10) {
+        m.heal(1.0);
+    }
 }
 /// `Allay.updateDuplicationCooldown`: the server decrements positive counters,
 /// independently of the AI goal gate.

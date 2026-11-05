@@ -4848,17 +4848,20 @@ def loaded_ticket_removal(blocks=False):
 
 def groups():
     try:
+        from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .carpet_farm_corpus import carpet_farms
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
     except ImportError:
+        from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from carpet_farm_corpus import carpet_farms
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
     return [
         ('setup', group_setup()),
+        ('allay passive healing', allay_healing(cmd, setup)),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),
