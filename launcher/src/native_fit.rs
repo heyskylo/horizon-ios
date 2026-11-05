@@ -92,10 +92,20 @@ pub fn describe(fit: &Fit, plays: &Plays) -> String {
 /// [`Plays`] by the version an instance plays (kept for good once its hook points are known, a
 /// failure for [`RETRY`]), and hook points' versions by commit: reading them asks GitHub, and a
 /// search asks for every native mod it finds.
-type Known = HashMap<String, (Instant, Option<Plays>)>;
+type CacheKey = (String, Option<String>);
+type Known = HashMap<CacheKey, (Instant, Option<Plays>)>;
 static PLAYS: Mutex<Option<Known>> = Mutex::new(None);
 static HOOKS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 const RETRY: Duration = Duration::from_secs(60);
+
+fn cached(cache: &Known, key: &CacheKey) -> Option<Option<Plays>> {
+    cache
+        .get(key)
+        .filter(|(at, plays)| {
+            plays.as_ref().is_some_and(|p| p.hooks.is_some()) || at.elapsed() < RETRY
+        })
+        .map(|(_, plays)| plays.clone())
+}
 
 /// The Horizon `instance` plays; None for a Java instance, when nothing is installed, or when
 /// GitHub can't say its commit.
@@ -104,22 +114,18 @@ pub fn plays(instance: &Instance) -> Option<Plays> {
         return None;
     }
     let version = instance.resolve_version(None).ok()?;
-    let known = PLAYS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&version)
-        .filter(|(at, plays)| {
-            plays.as_ref().is_some_and(|p| p.hooks.is_some()) || at.elapsed() < RETRY
-        })
-        .map(|(_, plays)| plays.clone());
+    // Native builds can be rebuilt under the same version name on a different commit.
+    // Read the build record before consulting the cache so the cached answer follows it.
+    let native_revision = native_mods::about(&version).map(|about| about.horizon);
+    let key = (version.clone(), native_revision.clone());
+    let known = cached(PLAYS.lock().unwrap().get_or_insert_default(), &key);
     if let Some(plays) = known {
         return plays;
     }
     // A native build is the commit it compiled; anything else, the commit of the release or
     // Nightly a build would start from.
-    let revision = match native_mods::about(&version) {
-        Some(about) => Some(about.horizon),
+    let revision = match native_revision {
+        Some(revision) => Some(revision),
         None => native_mods::base_for(Some(&version), &backend::installed(), false)
             .and_then(|base| native_mods::revision_of(&base).ok()),
     };
@@ -131,7 +137,7 @@ pub fn plays(instance: &Instance) -> Option<Plays> {
         .lock()
         .unwrap()
         .get_or_insert_default()
-        .insert(version, (Instant::now(), plays.clone()));
+        .insert(key, (Instant::now(), plays.clone()));
     plays
 }
 
@@ -181,6 +187,20 @@ mod tests {
 
     fn pin(id: &str, revision: &str) -> (String, String) {
         (id.into(), revision.into())
+    }
+
+    #[test]
+    fn rebuilding_a_native_version_does_not_reuse_its_previous_compatibility() {
+        let version = "native-example".to_string();
+        let old_key = (version.clone(), Some(YOURS.to_string()));
+        let rebuilt_key = (version.clone(), Some(OTHER.to_string()));
+        let unbuilt_key = (version, None);
+        let old = plays(Some(28));
+        let mut cache = Known::new();
+        cache.insert(old_key.clone(), (Instant::now(), Some(old.clone())));
+        assert_eq!(cached(&cache, &old_key), Some(Some(old)));
+        assert_eq!(cached(&cache, &rebuilt_key), None);
+        assert_eq!(cached(&cache, &unbuilt_key), None);
     }
 
     #[test]
