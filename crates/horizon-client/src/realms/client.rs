@@ -67,6 +67,9 @@ pub struct RealmServer {
     /// The invited players: only in the detail answer (`RealmsClient.getOwnRealm`).
     #[serde(default, deserialize_with = "nullable")]
     pub players: Vec<PlayerInfo>,
+    /// The world slots: only in the detail answer too.
+    #[serde(default, deserialize_with = "nullable")]
+    pub slots: std::collections::HashMap<i32, RealmSlot>,
 }
 
 /// `PlayerInfo`: a Realm's invited player.
@@ -90,6 +93,62 @@ pub struct PlayerInfo {
 pub struct Ops {
     #[serde(default, deserialize_with = "nullable")]
     pub ops: Vec<String>,
+}
+
+/// `RealmsSetting`: a slot's named setting (the hardcore marker).
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+pub struct RealmSetting {
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub value: String,
+}
+
+/// `RealmsSlot`: one of the Realm's four world slots.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmSlot {
+    #[serde(default, deserialize_with = "nullable")]
+    pub slot_id: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub options: RealmWorldOptions,
+    #[serde(default, deserialize_with = "nullable")]
+    pub settings: Vec<RealmSetting>,
+}
+
+impl RealmSlot {
+    /// `RealmsSlot.isHardcore`: `RealmsSetting.isHardcore` of the settings.
+    pub fn is_hardcore(&self) -> bool {
+        self.settings
+            .iter()
+            .any(|s| s.name == "hardcore" && s.value == "true")
+    }
+}
+
+/// `RealmsWorldOptions`: a slot's options.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmWorldOptions {
+    #[serde(default, deserialize_with = "nullable")]
+    pub spawn_protection: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub force_game_mode: bool,
+    #[serde(default, deserialize_with = "nullable")]
+    pub difficulty: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub game_mode: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub slot_name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub version: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub compatibility: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub template_id: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub template_image: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub empty: bool,
 }
 
 impl RealmServer {
@@ -486,6 +545,34 @@ impl RealmsClient {
     pub fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/invite/{}", undashed(uuid)?));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
+    }
+
+    /// `RealmsClient.updateSlot`: `POST worlds/{id}/slot/{slotId}` with
+    /// `RealmsSlotUpdateDto`'s JSON.
+    pub fn update_slot(&self, realm_id: i64, slot: &RealmSlot) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "slotId": slot.slot_id,
+            "spawnProtection": slot.options.spawn_protection,
+            "forceGameMode": slot.options.force_game_mode,
+            "difficulty": slot.options.difficulty,
+            "gameMode": slot.options.game_mode,
+            "slotName": slot.options.slot_name,
+            "version": slot.options.version,
+            "compatibility": slot.options.compatibility,
+            "templateId": slot.options.template_id,
+            "templateImage": slot.options.template_image,
+            "hardcore": slot.is_hardcore(),
+        })
+        .to_string();
+        let url = self.url(&format!("worlds/{realm_id}/slot/{}", slot.slot_id));
+        Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
+    }
+
+    /// `RealmsClient.switchSlot`: `PUT worlds/{id}/slot/{slotId}`, the service's yes or no.
+    pub fn switch_slot(&self, realm_id: i64, slot_id: i32) -> Result<bool, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/slot/{slot_id}"));
+        let json = Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some(""))?;
+        json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
     }
 
     /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
