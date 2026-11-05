@@ -104,11 +104,12 @@ public final class VanillaCommandExecOracle {
             LevelSettings settings = new LevelSettings("Harness", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, config);
             WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, config, false, true);
             WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED, LevelBasedPermissionSet.OWNER);
-            WorldOptions options = new WorldOptions(seed, true, false);
+            boolean flat = Boolean.getBoolean("horizon.parity.flat");
+            WorldOptions options = new WorldOptions(seed, !flat, false);
             WorldStem stem = Util.<WorldStem>blockUntilDone(executor -> WorldLoader.load(init, context -> {
                 Registry<LevelStem> noDatapackDimensions = new MappedRegistry<>(Registries.LEVEL_STEM, Lifecycle.stable()).freeze();
                 WorldDimensions dimensions = context.datapackWorldRegistries().lookupOrThrow(Registries.WORLD_PRESET)
-                    .getOrThrow(WorldPresets.NORMAL).value().createWorldDimensions();
+                    .getOrThrow(flat ? WorldPresets.FLAT : WorldPresets.NORMAL).value().createWorldDimensions();
                 WorldDimensions.Complete complete = dimensions.bake(noDatapackDimensions);
                 PrimaryLevelData data = new PrimaryLevelData(settings, complete.specialWorldProperty(), complete.lifecycle());
                 return new WorldLoader.DataLoadOutput<>(
@@ -147,6 +148,7 @@ public final class VanillaCommandExecOracle {
             ran = true;
             try {
                 runScript();
+                if (Boolean.getBoolean("horizon.parity.flat")) saveEverything(true, true, true);
             } catch (Throwable t) {
                 t.printStackTrace();
                 Runtime.getRuntime().halt(2);
@@ -352,7 +354,24 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
-                    case "settle" -> settle();
+                    case "settle" -> {
+                        settle();
+                        if (op.has("required_chunks")) {
+                            long deadline = System.nanoTime() + 120_000_000_000L;
+                            while (true) {
+                                boolean ready = true;
+                                for (var element : op.getAsJsonArray("required_chunks")) {
+                                    var pair = element.getAsJsonArray();
+                                    ready &= player.level().areEntitiesActuallyLoadedAndTicking(
+                                        new net.minecraft.world.level.ChunkPos(pair.get(0).getAsInt(), pair.get(1).getAsInt()));
+                                }
+                                if (ready) break;
+                                if (System.nanoTime() > deadline) throw new IllegalStateException("required chunks did not load");
+                                tick();
+                                Thread.yield();
+                            }
+                        }
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
