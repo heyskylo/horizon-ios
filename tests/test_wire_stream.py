@@ -61,6 +61,17 @@ class WireStreamTest(unittest.TestCase):
                                                                    'data': 0}))
         self.assertEqual(run[0]['misplaced'], ['pong'])
 
+    def test_a_block_position_decodes_signed_as_vanilla_packs_it(self):
+        # BlockPos.asLong: (x & 2^26-1) << 38 | (z & 2^26-1) << 12 | (y & 2^12-1).
+        def as_long(x, y, z):
+            v = (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF)
+            return struct.pack('>q', v - (1 << 64) if v >= 1 << 63 else v)
+        data = varint(0) + as_long(-2, -61, 3) + varint(1) + struct.pack('>fff', 0.5, 1.0, 0.25) + b'\0\0' + varint(7)
+        fields = wire_stream.decode('use_item_on', data)
+        self.assertEqual((fields['pos'], fields['face'], fields['sequence']), ([-2, -61, 3], 1, 7))
+        self.assertEqual(wire_stream.decode('player_action', varint(0) + as_long(29999999, 2047, -30000000)
+                                            + b'\1' + varint(3))['pos'], [29999999, 2047, -30000000])
+
     def test_compare_reports_the_first_field_that_differs(self):
         tick = lambda y: {'packets': [('move_player_pos', {'x': 0.5, 'y': y})], 'frame': [], 'misplaced': []}  # noqa
         diffs = wire_stream.compare([tick(-60.0)], [tick(-60.0000001)], 0)

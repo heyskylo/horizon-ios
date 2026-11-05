@@ -131,7 +131,10 @@ SCENARIOS = {
                          75: ['mouse right up']}),
     'eat': dict(
         setup=[f'item replace entity {PLAYER} weapon.mainhand with minecraft:golden_apple 4'],
-        ticks=70, steps={5: ['mouse right down'], 50: ['mouse right up']}),
+        # Two bites cut short: when a full one ends is the server's to say (its entity event), and a busy
+        # server says it ticks late.
+        ticks=70, steps={5: ['mouse right down'], 25: ['mouse right up'], 35: ['mouse right down'],
+                         55: ['mouse right up']}),
     'bridge': dict(
         setup=[f'fill -2 {FLOOR + 1} -2 2 {FLOOR + 2} 2 minecraft:stone', f'tp {PLAYER} 0.5 {FLOOR + 3} 2.2 180 78',
                f'item replace entity {PLAYER} weapon.mainhand with minecraft:stone 64'],
@@ -337,7 +340,8 @@ def play_all(client, server, scenarios, scripts, horizon, capture):
     for name in scenarios:
         spec = SCENARIOS[name]
         # The place settles: blocks and items reach the client, the player stands still on the ground.
-        commands = RESET + spec.get('setup', []) + [f'tp {PLAYER} ~ ~ ~']
+        # From the console `~` is the world spawn: the player teleports onto itself.
+        commands = RESET + spec.get('setup', []) + [f'tp {PLAYER} {PLAYER}']
         accepted = counts.update().accepted + sum(c.startswith('tp ') for c in commands)
         for command in commands:
             server.console(command)

@@ -55,8 +55,10 @@ class Reader:
         return self.take(1)[0] != 0
 
     def pos_long(self):
+        # BlockPos.asLong: x in the top 26 bits, z in the next 26, y in the low 12, each signed.
         v = struct.unpack('>q', self.take(8))[0]
-        return [v >> 38, (v << 52) >> 52, (v << 26) >> 38]
+        signed = lambda value, bits: value - (1 << bits) if value >= 1 << (bits - 1) else value  # noqa: E731
+        return [v >> 38, signed(v & 0xFFF, 12), signed((v >> 12) & 0x3FFFFFF, 26)]
 
     def string(self):
         return self.take(self.varint()).decode('utf-8')
