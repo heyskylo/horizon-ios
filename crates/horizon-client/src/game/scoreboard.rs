@@ -397,9 +397,10 @@ impl Game<'_> {
             };
             match cond {
                 AdvCondition::Done(want) => self.adv.progress.done(a) == *want,
-                AdvCondition::Criteria(list) => list
-                    .iter()
-                    .all(|(c, want)| self.adv.progress.has(id, c) == *want),
+                AdvCondition::Criteria(list) => list.iter().all(|(c, want)| {
+                    a.criteria.iter().any(|criterion| criterion.name == *c)
+                        && self.adv.progress.has(id, c) == *want
+                }),
             }
         })
     }
@@ -1122,3 +1123,6 @@ mod team_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod criterion_tests;
