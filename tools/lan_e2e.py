@@ -13123,8 +13123,8 @@ def check_recipes_hmod(host, guest, out):
     Opt in with --check recipes-hmod and --bin-dir pointing at a game compiled with the official
     native Recipes mod. The fixture is ours; no Java mod, copied assets or synthetic game replies.
     """
-    item = 'recipe_pilot:pressed_fragment'
-    recipe = 'recipe_pilot:flint_to_fragment'
+    item = 'minecraft:echo_shard'
+    recipe = 'recipe_pilot:flint_to_echo_shard'
     seen = {}
 
     def widget(game, predicate):
@@ -13147,14 +13147,14 @@ def check_recipes_hmod(host, guest, out):
         game.wait(5)
 
     def page(game):
-        result = widget(game, lambda w: w.get('label') == 'Pilot Pressed Fragment'
+        result = widget(game, lambda w: w.get('label') == 'Echo Shard'
                         and w['kind'] == 'button')
         game.raw('click', result['id'])
         game.wait(5)
         return widget(game, lambda w: (w.get('label') or '').startswith('+ '))
 
     def contents(game):
-        return {'flint': server_count(game, 'flint'), 'fragment': server_count(game, item)}
+        return {'flint': server_count(game, 'flint'), 'echo_shard': server_count(game, item)}
 
     for game, supplied in ((host, 4), (guest, 5)):
         game('command', command='clear @s')
@@ -13167,9 +13167,9 @@ def check_recipes_hmod(host, guest, out):
         game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
         assert game('screen').get('craft_size') == 3
 
-        # Search has a negative control as well as the custom namespace/name positive control.
+        # The output exists in vanilla; its flint recipe is original .hmod content.
         search(game, 'recipe_pilot:no_such_item')
-        assert not any(w.get('label') == 'Pilot Pressed Fragment' for w in game.raw('ui')['widgets'])
+        assert not any(w.get('label') == 'Echo Shard' for w in game.raw('ui')['widgets'])
         search(game, item)
         game.shot(out, 'recipes-hmod-search')
         unknown = page(game)
@@ -13188,7 +13188,7 @@ def check_recipes_hmod(host, guest, out):
         game.raw('click', known['id'])
         game.wait(10)
         missing = contents(game)
-        assert missing == {'flint': 0, 'fragment': 0}, missing
+        assert missing == {'flint': 0, 'echo_shard': 0}, missing
         assert not any(i for i, _ in grid_of(game, 100, 109).values())
         assert not result_of(game)[0], f'{game.name}: missing ingredients fabricated a result'
         game.shot(out, 'recipes-hmod-missing')
@@ -13210,7 +13210,7 @@ def check_recipes_hmod(host, guest, out):
         assert not result_of(game)[0], f'{game.name}: consumed input left another result'
         back_to_game(game)
         crafted = contents(game)
-        assert crafted == {'flint': supplied - 1, 'fragment': 2}, crafted
+        assert crafted == {'flint': supplied - 1, 'echo_shard': 2}, crafted
         seen[game.name] = {'missing': missing, 'grid': grid, 'result': result, 'crafted': crafted}
         game('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:air')
 
