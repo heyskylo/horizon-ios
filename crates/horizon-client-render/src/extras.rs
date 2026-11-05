@@ -815,7 +815,7 @@ impl Item {
                 "Show the Horizon logo next to Horizon players: a small logo before the names of other players who use Horizon, above their heads and in the player list. Only Horizon players see it: servers receive nothing."
             }
             Item::HorizonMe => {
-                "Show me as a Horizon player: other Horizon players see the logo by your name. Off, Horizon's cosmetics service never reports you as a Horizon player."
+                "Show me as a Horizon player: other Horizon players see the logo by your name. On, the service answers anyone who asks about you that you played Horizon in the last 3 hours; off, it never reports you."
             }
             Item::Pvp(o) => o.description(),
             Item::WheelCyclesSettings => {

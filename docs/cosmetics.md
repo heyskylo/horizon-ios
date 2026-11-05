@@ -111,6 +111,9 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   service reports them for 3 hours after the last time (`COSMETICS_PRESENCE_WINDOW`). Off, the game
   sends `{"listed": false}` and the service forgets them at once: it never reports them again until
   they turn it back on. An offline account sends nothing and is never reported.
+- **Anyone can ask**: `/v1/worn` takes no sign-in (as for what players wear), so anyone, a server
+  included, can learn whether a UUID played Horizon in the last 3 hours while that player shows
+  themselves. *Show me as Horizon*'s tooltip says so.
 - **Settings** (Extras › Cosmetics, both on by default): *Horizon logos* ("Show the Horizon logo
   next to Horizon players"; off: the game draws no mark, and asks for nothing more than cosmetics
   need) and *Show me as Horizon* ("Show me as a Horizon player").
