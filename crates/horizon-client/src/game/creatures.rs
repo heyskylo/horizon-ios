@@ -2329,14 +2329,13 @@ impl Game<'_> {
                     });
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
-                    // carries its kind. Sulfur cubes use TNT drop decay rules
-                    // (ExplosionInteraction.TNT / tnt_explosion_drop_decay).
-                    let result = match mob_blast_kind(species) {
-                        MobBlastKind::HiveEmptyingMob => {
+                    // carries its kind. A sulfur cube's blast is TNT's.
+                    let result = match species {
+                        Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius))
                         }
-                        MobBlastKind::Tnt => self.explode_tnt(at, radius, false),
-                        MobBlastKind::Mob => self.explode(at, radius),
+                        Species::SulfurCube => self.explode_sulfur_cube(at, radius),
+                        _ => self.explode(at, radius),
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
@@ -7874,47 +7873,13 @@ fn mob_effect_instance(
     Some(instance)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum MobBlastKind {
-    /// Creeper or Wither: mob explosion that empties hives (`ExplosionInteraction.MOB`).
-    HiveEmptyingMob,
-    /// SulfurCube: TNT explosion (`ExplosionInteraction.TNT` / `tnt_explosion_drop_decay`).
-    Tnt,
-    /// Other mobs: regular mob explosion (`ExplosionInteraction.MOB` / `mob_explosion_drop_decay`).
-    Mob,
-}
-
-pub(super) fn mob_blast_kind(species: Species) -> MobBlastKind {
-    match species {
-        Species::Creeper | Species::Wither => MobBlastKind::HiveEmptyingMob,
-        Species::SulfurCube => MobBlastKind::Tnt,
-        _ => MobBlastKind::Mob,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::perspective::CameraType;
-    use super::mob_blast_kind;
     use super::mob_effect_instance;
     use super::thrown_item_axes;
     use super::thrown_item_quad;
-    use super::{MobBlastKind, ProjectileKind, is_item_billboard};
-    use horizon_client::mobs::Species;
-
-    #[test]
-    fn sulfur_cube_explosion_uses_tnt_drop_decay_rules() {
-        assert_eq!(mob_blast_kind(Species::SulfurCube), MobBlastKind::Tnt);
-        assert_eq!(
-            mob_blast_kind(Species::Creeper),
-            MobBlastKind::HiveEmptyingMob
-        );
-        assert_eq!(
-            mob_blast_kind(Species::Wither),
-            MobBlastKind::HiveEmptyingMob
-        );
-        assert_eq!(mob_blast_kind(Species::Ghast), MobBlastKind::Mob);
-    }
+    use super::{ProjectileKind, is_item_billboard};
 
     /// The component-wise lowest and highest corner of the quad.
     fn bounds(corners: &[glam::Vec3; 4]) -> (glam::Vec3, glam::Vec3) {

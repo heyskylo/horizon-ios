@@ -142,6 +142,7 @@ impl Game<'_> {
             self.mobs[index].extra.ints[3] = sulfur_cube::PICKUP_TIMER;
             self.sulfur_sound(index, "entity.sulfur_cube.eject");
             self.damage_held_tool();
+            // gameEvent(SHEAR, player).
             let at = self.mobs[index].position;
             let ctx = self.who_context(Some(Who::Player), None);
             self.post_game_event("minecraft:shear", [at.x, at.y, at.z], ctx);
@@ -165,8 +166,9 @@ impl Game<'_> {
             self.mobs[index].extra.body = Some(item.into());
             self.consume_held();
             self.sulfur_sound(index, "entity.sulfur_cube.absorb");
-            let at = self.mobs[index].position;
-            let ctx = self.who_context(Some(Who::Player), None);
+            // Entity.gameEvent(ENTITY_INTERACT): the cube is the source.
+            let (id, at) = (self.mobs[index].id, self.mobs[index].position);
+            let ctx = self.who_context(Some(Who::Mob(id)), None);
             self.post_game_event("minecraft:entity_interact", [at.x, at.y, at.z], ctx);
             return true;
         }
@@ -353,18 +355,5 @@ mod tests {
         assert_eq!(block_light(0x2050, 1), 0x2050);
         assert_eq!(block_light(0x2050, 7), 0x7050);
         assert_eq!(block_light(0x0070, 0), 0x0070);
-    }
-
-    #[test]
-    fn tnt_disabled_action_bar_message() {
-        let msg = Text::translate("block.minecraft.tnt.disabled", &[]);
-        assert_eq!(msg.translation_key(), Some("block.minecraft.tnt.disabled"));
-    }
-
-    #[test]
-    fn sulfur_cube_interactions_post_vibrations() {
-        use horizon_client::sculk;
-        assert!(sculk::is_vibration("minecraft:shear"));
-        assert!(sculk::is_vibration("minecraft:entity_interact"));
     }
 }

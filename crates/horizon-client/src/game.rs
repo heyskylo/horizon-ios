@@ -12387,10 +12387,15 @@ impl Game<'_> {
         };
         self.server_explode(center, radius, interaction, fire)
     }
-    /// `ServerLevel.explode` with `ExplosionInteraction.TNT` and the caller's fire flag.
-    pub(super) fn explode_tnt(&mut self, center: [f64; 3], radius: f32, fire: bool) -> Result<()> {
-        let interaction = self.destroy_type("tnt_explosion_drop_decay");
-        self.server_explode(center, radius, interaction, fire)
+    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
+    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
+    fn explode_sulfur_cube(&mut self, center: [f64; 3], radius: f32) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            explosion::BlockInteraction::Keep
+        } else {
+            self.destroy_type("tnt_explosion_drop_decay")
+        };
+        self.server_explode(center, radius, interaction, false)
     }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
