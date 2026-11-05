@@ -11691,7 +11691,8 @@ def check_shulker_menu(host, guest, out):
         guest.wait(10)
         guest.raw('interact', *box)
         guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
-        guest.wait(10)
+        guest.wait(20)
+        opened = {'guest': lid(guest, box), 'host': lid(host, box)}
         # The cobblestone goes in; the red shulker box stays on the cursor.
         mouse(guest, hotbar_slot(guest, 'minecraft:cobblestone'))
         mouse(guest, 301)
@@ -11700,7 +11701,8 @@ def check_shulker_menu(host, guest, out):
         guest.wait(10)
         guest.shot(out, 'shulker-menu')
         guest.raw('key', 'esc', 'tap')
-        guest.wait(10)
+        guest.wait(20)
+        closed = {'guest': lid(guest, box), 'host': lid(host, box)}
         inside, size = open_container(guest, box, out, 'shulker-menu-after')
         counts = guest('inventory')['counts']
         stored = host('command', command=f'data get block {box[0]} {box[1]} {box[2]} Items')
@@ -11710,7 +11712,9 @@ def check_shulker_menu(host, guest, out):
     assert size == 27 and inside == {1: 'minecraft:cobblestone'}, f'the shulker box holds {inside} ({size})'
     assert 'red_shulker_box' not in json.dumps(stored), f'the server stored {stored}'
     assert counts.get('minecraft:red_shulker_box') == 1, f'inventory after: {counts}'
-    return {'inside': inside, 'inventory': counts}
+    assert opened['guest'] > 0.9 and opened['host'] > 0.9, f'lid while open: {opened}'
+    assert closed['guest'] < 0.1 and closed['host'] < 0.1, f'lid after closing: {closed}'
+    return {'inside': inside, 'inventory': counts, 'open': opened, 'closed': closed}
 
 
 CHECKS += ['shulker_menu']
