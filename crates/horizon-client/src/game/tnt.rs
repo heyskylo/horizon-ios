@@ -328,10 +328,11 @@ impl Game<'_> {
         }
         let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
         if !self.ui.rules.bool("tnt_explodes") {
-            // TntBlock.useItemOn: the rule is off, the overlay says so.
+            // TntBlock.useItemOn: the rule is off, the acting player's overlay
+            // says so, and PASS lets the item's own useOn light a fire there.
             let message = Text::translate("block.minecraft.tnt.disabled", &[]);
-            self.titles.set_overlay(message, false);
-            return Ok(true);
+            self.send_overlay_message(message);
+            return Ok(false);
         }
         if !self.tnt_prime_allowed(pos) {
             return Ok(true);
