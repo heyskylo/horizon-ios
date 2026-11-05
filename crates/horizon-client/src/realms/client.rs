@@ -5,7 +5,7 @@
 //! `x-mojangauth` header vanilla adds for the invite-code service); it is never logged, never
 //! put in an error and never sent anywhere else.
 use horizon_core::version;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
 
 /// `RealmsClient.Environment.PRODUCTION`'s base URL.
@@ -70,6 +70,9 @@ pub struct RealmServer {
     /// The world slots by id: only in the detail answer too (`RealmsServer.slots`).
     #[serde(default = "empty_slots", deserialize_with = "slots")]
     pub slots: std::collections::HashMap<i32, RealmSlot>,
+    /// The settings tab's region preference (`RealmsServer.regionSelectionPreference`).
+    #[serde(default)]
+    pub region_selection_preference: Option<RegionSelectionPreferenceDto>,
 }
 
 /// `PlayerInfo`: a Realm's invited player.
@@ -96,7 +99,7 @@ pub struct Ops {
 }
 
 /// `RealmsSetting`: a slot's named setting (the hardcore marker).
-#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
 pub struct RealmSetting {
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
@@ -172,6 +175,33 @@ impl RealmSlot {
             .iter()
             .any(|s| s.name == "hardcore" && s.value == "true")
     }
+}
+
+/// `RegionSelectionPreferenceDto`: how the Realm picks its region
+/// (`AUTOMATIC_PLAYER`, `AUTOMATIC_OWNER`, `MANUAL`, or `DEFAULT_SELECTION`).
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionSelectionPreferenceDto {
+    #[serde(default, deserialize_with = "nullable")]
+    pub region_selection_preference: String,
+    #[serde(default)]
+    pub preferred_region: Option<String>,
+}
+
+/// `RegionDataDto`: one region's service quality, from `preferredRegions`.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionDataDto {
+    #[serde(default, deserialize_with = "nullable")]
+    pub region: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub service_quality: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct PreferredRegionsResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    region_data: Vec<RegionDataDto>,
 }
 
 /// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
@@ -641,6 +671,55 @@ impl RealmsClient {
         let url = self.url(&format!("worlds/{realm_id}/slot/{slot_id}"));
         let json = Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some(""))?;
         json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.getPreferredRegionSelections`: every region and its quality.
+    pub fn preferred_regions(&self) -> Result<Vec<RegionDataDto>, RealmsError> {
+        let json = Self::execute(
+            self.request("GET", &self.url("regions/preferredRegions"), READ_TIMEOUT),
+            None,
+        )?;
+        serde_json::from_str::<PreferredRegionsResponse>(&json)
+            .map(|r| r.region_data)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.updateConfiguration`: `POST worlds/{id}/configuration` with
+    /// `RealmsConfigurationDto`'s JSON (the slot, its settings, the region preference and
+    /// the description).
+    pub fn update_configuration(
+        &self,
+        realm_id: i64,
+        name: &str,
+        description: &str,
+        preference: &str,
+        region: Option<&str>,
+        slot: &RealmSlot,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "slot": {
+                "slotId": slot.slot_id,
+                "spawnProtection": slot.options.spawn_protection,
+                "forceGameMode": slot.options.force_game_mode,
+                "difficulty": slot.options.difficulty,
+                "gameMode": slot.options.game_mode,
+                "slotName": slot.options.slot_name,
+                "version": slot.options.version,
+                "compatibility": slot.options.compatibility,
+                "templateId": slot.options.template_id,
+                "templateImage": slot.options.template_image,
+                "hardcore": slot.is_hardcore(),
+            },
+            "settings": slot.settings,
+            "regionSelectionPreference": {
+                "regionSelectionPreference": preference,
+                "preferredRegion": region,
+            },
+            "description": { "name": name, "description": description },
+        })
+        .to_string();
+        let url = self.url(&format!("worlds/{realm_id}/configuration"));
+        Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
     }
 
     /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
