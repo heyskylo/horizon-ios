@@ -97,7 +97,7 @@ impl Game<'_> {
         let (cx, cy) = (w / 2.0, h / 2.0);
         let n = names.len();
         // The cursor is in GUI pixels, as the batch.
-        let (mx, my) = (self.cursor.0 as f32, self.cursor.1 as f32);
+        let (mx, my) = self.cursor;
         self.emote_wheel.hovered = slice_at(mx - cx, my - cy, n);
         let hovered = self.emote_wheel.hovered;
         let atlas = &self.gui.atlas;
