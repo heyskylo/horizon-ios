@@ -1607,7 +1607,8 @@ impl Game<'_> {
                 .is_some_and(|f| f.center().1 > batch.height / 2.0)
                 || self.screen == Screen::Chat;
             let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, self.cursor);
-            keyboard.draw(&mut ui, at_top, self.ui.options.pad_style);
+            let options = &self.ui.options;
+            keyboard.draw(&mut ui, at_top, options.pad_style, options.pad_by_letter);
             ui.finish();
             return;
         }
