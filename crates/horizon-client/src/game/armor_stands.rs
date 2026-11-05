@@ -909,7 +909,9 @@ impl Game<'_> {
             }
             self.armor_stand_turtle_eggs(i, landed)?;
             if landed {
-                self.post_landing_event(self.armor_stands[i].position, true);
+                let stand = &self.armor_stands[i];
+                let (position, bounds) = (stand.position, stand.bounds());
+                self.post_landing_event(position, bounds, true);
             }
             let a = &self.armor_stands[i];
             if !a.marker && !a.no_gravity {
