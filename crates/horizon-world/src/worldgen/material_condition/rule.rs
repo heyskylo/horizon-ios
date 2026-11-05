@@ -299,11 +299,13 @@ where
                 raw_ore_chance,
                 densities,
                 random,
+                positive_y,
             } => Self::OreVein {
                 blocks: *blocks,
                 raw_ore_chance: *raw_ore_chance,
                 densities: *densities,
                 random: random.clone(),
+                positive_y: *positive_y,
             },
             Self::Condition { condition, rule } => {
                 let condition = match possible {
