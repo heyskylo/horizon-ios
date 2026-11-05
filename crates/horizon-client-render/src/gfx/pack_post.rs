@@ -38,6 +38,9 @@ mod world_target_tests;
 mod higher_shadowcolor_tests;
 
 #[cfg(test)]
+mod single_side_tests;
+
+#[cfg(test)]
 mod shadow_faces_tests;
 
 #[cfg(test)]
@@ -608,6 +611,8 @@ pub struct PackPost {
     rgb: u16,
     rgb_unset: bool,
     used: u16,
+    /// Buffers some pass draws into the "alt" side of or flips; the others' B is their A.
+    doubled: u16,
     /// `size.buffer.*`.
     sizes: [Option<horizon_shaders::BufferSize>; BUFFERS],
     /// Buffers bound as images, and those also copied for a pass that samples them.
@@ -2039,6 +2044,9 @@ impl PackPost {
         let mask =
             |flips: &[(u32, bool)]| flips.iter().filter(|f| f.1).fold(0u16, |m, f| m | 1 << f.0);
         let mut used = 1u16;
+        // Buffers some pass draws into the "alt" side of, or flips: only these get a B texture.
+        let mut doubled = mask(&post.deferred_pre) | mask(&post.composite_pre);
+        let mut shadow_doubled = 0u16;
         let draws = DrawUniforms::new(device);
         // The shadow buffers' formats when the shadow pass runs; their programs see them as
         // buffers 0 to 7.
@@ -2197,11 +2205,29 @@ impl PackPost {
                 ));
                 return None;
             }
+            // Composite-style programs draw into the "alt" side of what they write; gbuffers,
+            // shadow and `final` programs write in place, compute programs through images.
+            let alt = if geometry.is_none()
+                && group != Group::Final
+                && matches!(pass.pipeline, Pipeline::Render(_))
+            {
+                pass.written
+            } else {
+                0
+            };
+            if in_shadow {
+                shadow_doubled |= alt;
+            } else {
+                doubled |= alt;
+            }
             for p in std::iter::once(&pass).chain(&pass.compute) {
                 let (stage, flipped) = pack.released.get();
                 pack.released.set((stage, flipped | p.flip));
-                if !in_shadow {
+                if in_shadow {
+                    shadow_doubled |= p.flip;
+                } else {
                     used |= p.reads | p.written | p.flip;
+                    doubled |= p.flip;
                 }
                 storage |= image_buffers(&p.images);
                 image_copied |= p.image_copies;
@@ -2581,18 +2607,24 @@ impl PackPost {
                 &shadow_config,
                 f,
                 colors,
+                shadow_doubled & colors,
                 depth1,
                 linear,
             );
             notes.push(format!(
-                "shadow map {0}x{0} over {2} blocks, sunPathRotation {3}, shadowcolor buffers {colors:#b}{1}",
+                "shadow map {0}x{0} over {2} blocks, sunPathRotation {3}, shadowcolor buffers {colors:#b} (two textures: {4:#b}){1}",
                 t.size,
                 if depth1 { ", shadowtex1" } else { "" },
                 shadow_config.distance,
                 shadow_config.sun_path_rotation,
+                shadow_doubled & colors,
             ));
             t
         });
+        log::info!(
+            "shader pack: colortex buffers {used:#b}, with two textures {:#b}",
+            doubled & used
+        );
         // Any program can leave pixels untouched. Composite-style passes also write the
         // alternate image, so their first write does not replace the main image's clear.
         let mut cleared = Vec::new();
@@ -2802,6 +2834,7 @@ impl PackPost {
             rgb,
             rgb_unset: true,
             used,
+            doubled: doubled & used,
             storage,
             copied,
             sizes,
@@ -4097,8 +4130,16 @@ impl PackPost {
                 if i != 0 && self.clears[i].is_none() {
                     attachment |= wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
                 }
-                let sides = [0, 1]
-                    .map(|_| texture_sized(&label, self.formats[i], attachment, levels, sizes[i]));
+                let side = || texture_sized(&label, self.formats[i], attachment, levels, sizes[i]);
+                let a = side();
+                let sides = [
+                    a.clone(),
+                    if self.doubled & 1 << i != 0 {
+                        side()
+                    } else {
+                        a
+                    },
+                ];
                 if mipped && let Some((_, layout)) = self.down.get(&self.formats[i]) {
                     mips[i] = Some(sides.each_ref().map(|t| {
                         Mips {
@@ -4534,7 +4575,10 @@ impl PackPost {
                 store: wgpu::StoreOp::Store,
             };
             for b in (0..BUFFERS).filter(|&b| self.rgb & 1 << b != 0) {
-                for alt in [false, true] {
+                for alt in [false, true]
+                    .into_iter()
+                    .take(1 + usize::from(self.doubled & 1 << b != 0))
+                {
                     if let Some(v) = view(self.main, b, alt) {
                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("Shader pack three-channel start"),
@@ -4567,7 +4611,8 @@ impl PackPost {
         let max_attachments = (limits.max_color_attachments as usize).min(8);
         // The buffers the blit doesn't clear, and the other texture of every cleared buffer.
         let alt_clears = (0..BUFFERS)
-            .filter(|&b| self.clears[b].is_some() && view(self.main, b, true).is_some())
+            .filter(|&b| self.clears[b].is_some() && self.doubled & 1 << b != 0)
+            .filter(|&b| view(self.main, b, true).is_some())
             .map(|b| (b, true));
         let mut by_size: Vec<([u32; 2], Vec<(usize, bool)>)> = Vec::new();
         for (b, alt) in self
