@@ -566,8 +566,8 @@ impl Game<'_> {
 
     /// `tick_server_timed`, handing the tick's wall time, thread CPU time
     /// and spans (milliseconds, summed by name) to `record` while spans are on, with how many
-    /// spans were recorded: a dedicated server's performance report turns them on to record its
-    /// ticks.
+    /// spans the tick itself recorded: a dedicated server's performance report turns them on to
+    /// record its ticks.
     pub(super) fn tick_server_spans(
         &mut self,
         paused: bool,
@@ -576,6 +576,9 @@ impl Game<'_> {
         if self.options.spikes.is_none() && !horizon_client::spans::enabled() {
             return self.tick_server(paused);
         }
+        // Spans recorded since the last tick ran between ticks (the chunk pump of the wait): they
+        // stay in the tick's list, but only the tick's own count as recorded in it.
+        let between = horizon_client::spans::take_raw();
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
         let result = self.tick_server(paused);
         let wall = started.elapsed().as_secs_f32() * 1000.0;
@@ -584,7 +587,12 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let raw = horizon_client::spans::take_raw();
-        let spans = horizon_client::spans::merge(&raw);
+        let in_tick = raw.len();
+        let spans = if between.is_empty() {
+            horizon_client::spans::merge(&raw)
+        } else {
+            horizon_client::spans::merge(&[between, raw].concat())
+        };
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
             && wall > threshold
@@ -597,7 +605,7 @@ impl Game<'_> {
                 slowest_steps(&notes)
             );
         }
-        record(wall, cpu, spans, raw.len());
+        record(wall, cpu, spans, in_tick);
         result
     }
 

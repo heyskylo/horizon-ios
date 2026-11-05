@@ -234,7 +234,7 @@ fn network(start: &BTreeMap<u32, (u64, u64)>, end: &[(u32, (u64, u64))], window_
     }
     let stats = |v: &mut Vec<f32>| {
         v.sort_by(f32::total_cmp);
-        let avg = v.iter().map(|&x| f64::from(x)).sum::<f64>() / v.len().max(1) as f64;
+        let avg = v.iter().fold(0.0, |sum, &x| sum + f64::from(x)) / v.len().max(1) as f64;
         json!({
             "average": round(avg),
             "p50": round(pct(v, 0.5)),
@@ -251,21 +251,29 @@ fn network(start: &BTreeMap<u32, (u64, u64)>, end: &[(u32, (u64, u64))], window_
     })
 }
 
-/// What recording cost the tick: every span read two clocks, every sampled mob one more pair.
-/// Measured on this machine at the end of the recording.
+/// What recording cost the tick, priced on this machine at the end of the recording: every
+/// sampled mob two clock reads, every span inside the tick two clocks and two thread-CPU clocks.
+/// A dedicated server records spans whenever `HORIZON_SPIKES` is on (by default, for its slow-tick
+/// line): then they are not the report's cost, and `ms_per_tick` leaves them out.
 fn overhead(r: &Recording, mob_samples: u64, span_ns: f64, mob_ns: f64) -> Value {
     let n = r.ticks.len().max(1) as f64;
     let mspt = r.ticks.iter().map(|t| f64::from(t.wall_ms)).sum::<f64>() / n;
     let spans_per_tick = r.spans_recorded as f64 / n;
     let mobs_per_tick = mob_samples as f64 / n;
-    let ms = (spans_per_tick * span_ns + mobs_per_tick * mob_ns) / 1e6;
+    let spans_ms = spans_per_tick * span_ns / 1e6;
+    let mobs_ms = mobs_per_tick * mob_ns / 1e6;
+    let ms = mobs_ms + if r.spans_were_on { 0.0 } else { spans_ms };
+    let small = |v: f64| (v * 1e4).round() / 1e4;
     json!({
         "span_ns": round(span_ns),
         "spans_per_tick": round(spans_per_tick),
+        "spans_ms_per_tick": small(spans_ms),
+        "spans_on_without_report": r.spans_were_on,
         "mob_sample_ns": round(mob_ns),
         "mob_samples_per_tick": round(mobs_per_tick),
-        "ms_per_tick": (ms * 1e4).round() / 1e4,
-        "share_of_mspt": (ms / mspt.max(1e-9) * 1e4).round() / 1e4,
+        "mob_samples_ms_per_tick": small(mobs_ms),
+        "ms_per_tick": small(ms),
+        "share_of_mspt": small(ms / mspt.max(1e-9)),
     })
 }
 
@@ -717,10 +725,18 @@ mod tests {
         for _ in 0..4 {
             r.add(50.0, None, Vec::new(), 100, false);
         }
-        // 100 spans at 200 ns + 1,000 mob samples a tick at 50 ns = 0.07 ms of 50.
+        // Spans were off before: 100 spans at 200 ns + 1,000 mob samples a tick at 50 ns = 0.07 ms
+        // of 50.
+        r.spans_were_on = false;
         let v = overhead(&r, 4_000, 200.0, 50.0);
+        assert_eq!(v["spans_ms_per_tick"], 0.02);
         assert_eq!(v["ms_per_tick"], 0.07);
         assert_eq!(v["share_of_mspt"], 0.0014);
+        // Spans on anyway (a dedicated server's slow-tick line): only the mob samples are the report's.
+        r.spans_were_on = true;
+        let v = overhead(&r, 4_000, 200.0, 50.0);
+        assert_eq!(v["ms_per_tick"], 0.05);
+        assert_eq!(v["share_of_mspt"], 0.001);
         // On this machine, both prices are well under a microsecond's order.
         let (span_ns, mob_ns) = (span_cost_nanos(), tick_profile::sample_cost_nanos());
         assert!(span_ns > 0.0 && span_ns < 50_000.0, "{span_ns}");

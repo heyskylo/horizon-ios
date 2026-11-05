@@ -836,7 +836,14 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
                 Job::Mesh(..) => 5,
                 _ => 6,
             };
-            (kind, crate::spans::thread_cpu().unwrap_or_default())
+            // The other jobs (saves, light views, freed meshes) are many and short: counted, not
+            // timed, so the clock reads don't cost more than they do.
+            let cpu = if kind == 6 {
+                std::time::Duration::ZERO
+            } else {
+                crate::spans::thread_cpu().unwrap_or_default()
+            };
+            (kind, cpu)
         });
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
@@ -865,8 +872,13 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             } else {
                 kind
             };
-            let cpu = crate::spans::thread_cpu().unwrap_or_default();
-            job_stats::add(kind, cpu.saturating_sub(started).as_nanos() as u64);
+            let nanos = if kind == 6 {
+                0
+            } else {
+                let cpu = crate::spans::thread_cpu().unwrap_or_default();
+                cpu.saturating_sub(started).as_nanos() as u64
+            };
+            job_stats::add(kind, nanos);
         }
         if let Some(done) = done {
             self.shared.done.send(done);
