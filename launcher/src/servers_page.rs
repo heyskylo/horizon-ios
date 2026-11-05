@@ -392,6 +392,13 @@ pub(super) fn stop_on_quit() {
     }
 }
 
+/// Update closes the window to open the new launcher at once: a server is its own process and the
+/// new window finds it running, so an update doesn't end anyone's game. It stays up when that new
+/// window closes too, until it is stopped on the Servers page.
+pub(super) fn keep_running_through_update() {
+    STARTED_HERE.lock().unwrap().clear();
+}
+
 /// The player's own name, to let them in on a friends-only server: the Microsoft account that plays,
 /// else the name the game made up for them (`horizon-player.txt`).
 fn own_name(accounts: &Accounts) -> Option<String> {
