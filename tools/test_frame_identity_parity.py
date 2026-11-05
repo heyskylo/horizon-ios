@@ -395,6 +395,8 @@ def session_checks(shots, sessions):
         hdr = 'hdr:true' in graphics
         for scene in scenes:
             for prefix, on in ((name, hdr), *(((f'{name}.off', False),) if toggle else ())):
+                if not (shots / f'{prefix}.{scene}.png').is_file():
+                    problems.append(f'{prefix}.{scene}: screenshot missing')
                 if (shots / f'{prefix}.{scene}-hdr.png').exists() != on:
                     problems.append(f'{prefix}.{scene}: HDR output was {"off" if on else "on"}')
         # 🤖 Agent: the pack's pictures against the same scenes without it: vanilla's, or with HDR on hdr_toggle's

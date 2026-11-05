@@ -98,6 +98,13 @@ class SessionCheckTests(unittest.TestCase):
     def shot(self, name, rows=None):
         encode(self.dir / name, 4, 4, 8, rows or self.rows, 0)
 
+    def test_a_missing_scene_cannot_pass_when_other_screenshots_exist(self):
+        scenes = identity.SESSIONS['vanilla'][2]
+        for scene in scenes[1:]:
+            self.shot(f'vanilla.{scene}.png')
+        self.assertEqual(identity.session_checks(self.dir, ['vanilla']),
+                         [f'vanilla.{scenes[0]}: screenshot missing'])
+
     def test_a_pack_that_changes_nothing_and_hdr_that_stays_off_are_reported(self):
         scenes = identity.SESSIONS['golden_hour'][2]
         for scene in scenes:
