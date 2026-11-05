@@ -49,6 +49,13 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'named smoke predicates' in group_names:
+        always = {'type': 'minecraft:all_of', 'terms': []}
+        fixtures['command_smoke:always'] = always
+        fixtures['command_smoke:never'] = {'type': 'minecraft:inverted', 'term': always}
+        for name, smokey in [('smokey', True), ('clear', False)]:
+            fixtures['command_smoke:' + name] = {
+                'type': 'minecraft:location_check', 'predicate': {'smokey': smokey}}
     if 'selector missing predicates' in group_names:
         sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
                  'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
@@ -72,6 +79,66 @@ def predicate_selector_fixtures(group_names):
 
 
 BASE = (0, 200, 0)
+
+
+def named_smoke_predicates():
+    """CampfireBlock.isSmokeyPos through named execute predicates, without ticks.
+
+    The two slabs distinguish a blocked fire from the immediate-below-blocker
+    exception. Unlit, absent and soul fires guard state and tag handling.
+    """
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/execute if dimension minecraft:overworld')
+    out.extend(setup('/forceload remove -16 -16 15 15'))
+    check('/forceload add -16 -16 15 15', 4)
+    out.append({'op': 'settle'})
+    for x in [-16, 0]:
+        for z in [-16, 0]:
+            check(f'/execute if loaded {x} 100 {z}')
+    check('/scoreboard objectives add smoke_cmd dummy')
+    out.extend(setup('/execute store result score #start smoke_cmd run time query gametime'))
+    # Seed the region so clearing it has a positive, deterministic acknowledgement.
+    check('/fill -16 94 -16 15 120 15 barrier', 27648)
+    check('/fill -16 94 -16 15 120 15 air', 27648)
+    check('/fill -16 93 -16 15 93 15 stone', 1024)
+    for x, kind, lit in [(0, 'campfire', 'true'), (3, 'campfire', 'true'),
+                         (6, 'campfire', 'false'), (9, 'campfire', 'true'),
+                         (-3, 'soul_campfire', 'true')]:
+        check(f'/setblock {x} 96 0 {kind}[lit={lit}]')
+        check(f'/execute if block {x} 96 0 {kind}[lit={lit}]')
+    for x, y in [(3, 98), (9, 97)]:
+        check(f'/setblock {x} {y} 0 stone_slab[type=bottom]')
+        check(f'/execute if block {x} {y} 0 stone_slab[type=bottom]')
+    for x, y in [(0, 99), (0, 97), (3, 99), (3, 97), (6, 99),
+                 (9, 99), (9, 98), (-3, 99), (12, 96), (12, 99)]:
+        check(f'/execute if block {x} {y} 0 air')
+    check('/execute if predicate command_smoke:always')
+    check('/execute unless predicate command_smoke:never')
+    # Each sign has its own exact feedback and independent result/success reads.
+    for x, smokey in [(0, True), (3, False), (6, False), (9, True),
+                      (12, False), (-3, True)]:
+        for predicate, passes in [('smokey', smokey), ('clear', not smokey)]:
+            out.extend(setup('/scoreboard players set #r smoke_cmd 31',
+                             '/scoreboard players set #s smoke_cmd 17'))
+            check('/scoreboard players get #r smoke_cmd', 31)
+            check('/scoreboard players get #s smoke_cmd', 17)
+            out.append(cmd('/execute store result score #r smoke_cmd '
+                           'store success score #s smoke_cmd run execute '
+                           f'positioned {x + 0.5} 100 0.5 if predicate command_smoke:{predicate}'))
+            check('/scoreboard players get #r smoke_cmd', int(passes))
+            check('/scoreboard players get #s smoke_cmd', int(passes))
+    out.append(cmd('/execute if predicate command_smoke:missing'))
+    out.extend(setup('/execute store result score #clock smoke_cmd run time query gametime'))
+    check('/scoreboard players operation #clock smoke_cmd -= #start smoke_cmd', 0)
+    out.extend(setup('/fill -16 94 -16 15 120 15 air',
+                     '/scoreboard objectives remove smoke_cmd',
+                     '/forceload remove -16 -16 15 15', '/tick unfreeze'))
+    return out
 
 
 def group_setup():
@@ -4721,6 +4788,7 @@ def groups():
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),
+        ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
