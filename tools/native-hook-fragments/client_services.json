@@ -79,10 +79,6 @@
       "target": "horizon_client::game::native_client_services::Game<'_>::native_client_action_bar"
     },
     {
-      "name": "enable_older_servers",
-      "target": "horizon_client::game::native_client_services::Game<'_>::native_enable_older_servers"
-    },
-    {
       "name": "text_width",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_text_width"
     },
@@ -100,5 +96,5 @@
     }
   ],
   "rust_summary": "client Host services, GUI painting, model-head snapshots and client lifecycle notifications.",
-  "doc_summary": "Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). enable_older_servers is a process-wide opt-in into the existing experimental adapters, to request before connecting. Bundles need \"hooks\": @API:client_services@."
+  "doc_summary": "Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). Bundles need \"hooks\": @API:client_services@."
 }

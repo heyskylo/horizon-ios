@@ -291,11 +291,4 @@ impl Game<'_> {
             self.titles.set_overlay(text, animate);
         }
     }
-    /// Opt this process into Horizon's existing experimental older-server adapters.
-    /// Must be requested before connecting, e.g. in client_start. No environment mutation.
-    pub(super) fn native_enable_older_servers(&self) {
-        if self.native_window() {
-            horizon_client::net::enable_older_servers_for_native_mod();
-        }
-    }
 }
