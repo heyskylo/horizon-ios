@@ -5520,10 +5520,15 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
+ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING
 
 
 def groups():
+    try:
+        from .craft_map_take_corpus import cases as craft_map_takes
+    except ImportError:
+        from craft_map_take_corpus import cases as craft_map_takes
     try:
         from .frame_map_corpus import frame_maps
         from .allay_damage_corpus import allay_player_damage
@@ -5549,6 +5554,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('frame live map detachment', frame_maps(cmd, setup)),
+        ('craft map takes', craft_map_takes(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),
