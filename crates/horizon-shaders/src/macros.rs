@@ -414,7 +414,26 @@ impl Macros {
             }
         }
         joined.retain(|t| !t.text.is_empty());
+        // A paste that makes no single token (`b ## (`, Alpha Piscium's
+        // `colors2_colorspaces_ ## a ## _to_ ## b ##(x)`) stays the tokens it is made of, as
+        // GL drivers' preprocessors leave it: the name before the `(` is then rescanned and can
+        // call a macro.
         joined
+            .into_iter()
+            .flat_map(|token| {
+                let parts = lex(&token.text);
+                if parts.len() < 2 {
+                    return vec![token];
+                }
+                parts
+                    .into_iter()
+                    .map(|text| ExpansionToken {
+                        text: text.into(),
+                        hidden: token.hidden.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
