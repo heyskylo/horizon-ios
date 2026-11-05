@@ -104,8 +104,10 @@ A result's title opens its page inside the launcher, not in a web browser: its i
 last update, licence and source, how well it runs (for a Java mod, what ports and what doesn't, from its check) with
 **Install** or **Import**, the project's links (its page on the source, source code, issues, wiki, Discord,
 donations; `https://` only, opened in the system browser), then three tabs: **Description** (the project's Markdown,
-drawn by the launcher's renderer), **Gallery** and **Versions** (each version's date, loaders, game versions, file
-and size, and the verdict of any version already checked). The data is `browser::details` (`Source::details`; on
+drawn by the launcher's renderer), **Gallery** (one image large, a click shows the next; the arrows and the strip of
+thumbnails under it pick another; Modrinth's gallery, or the screenshots a registry project lists, which the registry
+mirrors beside its icons; no tab when there are none) and **Versions** (each version's date, loaders, game versions,
+file and size, and the verdict of any version already checked). The data is `browser::details` (`Source::details`; on
 Modrinth `GET /project/{id}` and `/project/{id}/members`, then `/project/{id}/version`).
 
 **Filters** sit above the results: the order (best match, relevance, downloads, follows, newest, updated) and, under

@@ -432,6 +432,21 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
         .collect()
 }
 
+/// A project's screenshots as its page's gallery, in the index's order: those the registry
+/// mirrored (`screenshots/<id>/`, served beside its icons), never another host's.
+fn gallery_of(p: &index::Project) -> Vec<super::details::Image> {
+    p.screenshots
+        .iter()
+        .filter(|url| super::images::refuse(url).is_none())
+        .map(|url| super::details::Image {
+            url: url.clone(),
+            title: String::new(),
+            description: String::new(),
+            featured: false,
+        })
+        .collect()
+}
+
 /// The registry as a browser source.
 pub struct Registry;
 
@@ -549,6 +564,7 @@ impl Source for Registry {
                 .unwrap_or_default(),
             updated: newest.map(|v| v.published.clone()).unwrap_or_default(),
             categories: p.categories.clone(),
+            gallery: gallery_of(p),
             ..Details::default()
         })
     }
