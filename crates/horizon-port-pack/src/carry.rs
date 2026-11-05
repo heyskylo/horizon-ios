@@ -42,7 +42,8 @@ pub fn old_layout(names: &[String]) -> bool {
     let (mut old, mut new) = (0usize, 0usize);
     for n in names {
         let p: Vec<&str> = n.split('/').collect();
-        if p.len() < 4 || p[0] != "data" {
+        // Files only: a folder entry (`data/m/recipes/`) is no vote.
+        if p.len() < 4 || p[0] != "data" || n.ends_with('/') {
             continue;
         }
         let folder = if p[2] == "tags" && p.len() > 4 {
@@ -1650,6 +1651,12 @@ mod tests {
             "data/m/recipes/b.json",
             "data/m/tags/items/a.json",
             "data/m/tags/entity_type/a.json",
+        ])));
+        // Folder entries are no files: a 1.21 jar listing its stale plural folders.
+        assert!(!old_layout(&names(&[
+            "data/m/recipes/",
+            "data/m/tags/blocks/",
+            "data/m/recipe/a.json",
         ])));
         // Folders 1.21 kept as they were say nothing either way.
         assert!(!old_layout(&names(&["data/m/worldgen/structure/a.json"])));

@@ -353,7 +353,9 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
             } else if r.tier == "none" || matches!(r.class.as_str(), "library" | "performance") {
                 (Status::NotNeeded, not_needed(&r.class).to_owned())
             } else if old {
-                let why = "made for Minecraft 1.20 or older: its data folders (recipes/,                            loot_tables/) are named as before 1.21, which 26.3 does not read;                            not carried";
+                let why = "made for Minecraft 1.20 or older: its data folders (recipes/, \
+                           loot_tables/, tags/blocks/...) are named as before 1.21, which 26.3 \
+                           does not read; not carried";
                 (Status::NotYet, why.to_owned())
             } else if let Some(c) = carried(work, &r.key) {
                 c
