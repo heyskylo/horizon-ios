@@ -120,6 +120,7 @@ mod enchant_effects;
 mod end;
 mod entity;
 mod entity_culling;
+mod entity_sounds;
 mod event_loop;
 mod events;
 mod execution_role;
@@ -226,6 +227,7 @@ mod native_level_refs;
 mod native_lifecycle;
 mod native_living_refs;
 mod native_machines;
+mod native_menu_stacks;
 mod native_menus;
 mod native_mob_draw;
 mod native_mobs;
@@ -305,6 +307,7 @@ mod server_links;
 mod server_packs;
 mod server_travel;
 mod shader_packs;
+mod sheep_dye;
 mod shelf;
 mod shield;
 mod shoulders;
@@ -356,6 +359,7 @@ mod win;
 mod wind;
 mod wither;
 mod world_loading;
+mod world_primitives;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
@@ -2893,6 +2897,9 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// Vehicles that gained a rider this tick whose `START_RIDING_TRIGGER` was
+    /// not fired yet (`game/boarding.rs`), for a guest's turn.
+    started_riding: Vec<u32>,
     /// `Entity.boardingCooldown` of the acting player, and its vehicle at the
     /// last tick (`game/boarding.rs`).
     boarding_cooldown: i32,
@@ -7076,12 +7083,7 @@ impl Game<'_> {
             return;
         };
         self.start_using_item();
-        let at = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio
-            .play(&instrument.sound, at, instrument.range / 16.0, 1.0);
+        self.play_player_bound_sound(&instrument.sound, 2, instrument.range / 16.0, 1.0, true);
         self.post_entity_event(
             "minecraft:instrument_play",
             horizon_client::mobs::Who::Player,
@@ -8598,7 +8600,6 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_cursor(&mut batch);
-        self.resolve_inline_profiles(&batch.inline_profiles);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -11702,6 +11703,25 @@ impl Game<'_> {
             "block/destroy_stage_8",
             "block/destroy_stage_9",
         ];
+        // `ModelBakery.DESTROY_STAGES_OIT`: with improved transparency the cracks are
+        // ordinary translucent quads (`OIT_CRUMBLING`) and use their own sprites.
+        const DESTROY_STAGES_OIT: [&str; 10] = [
+            "block/destroy_oit_stage_0",
+            "block/destroy_oit_stage_1",
+            "block/destroy_oit_stage_2",
+            "block/destroy_oit_stage_3",
+            "block/destroy_oit_stage_4",
+            "block/destroy_oit_stage_5",
+            "block/destroy_oit_stage_6",
+            "block/destroy_oit_stage_7",
+            "block/destroy_oit_stage_8",
+            "block/destroy_oit_stage_9",
+        ];
+        let names = if self.settings.improved_transparency {
+            &DESTROY_STAGES_OIT
+        } else {
+            &DESTROY_STAGES
+        };
         let mut stages: Vec<([i32; 3], u32)> = Vec::new();
         let mut add = |pos: [i32; 3], stage: u32| match stages.iter_mut().find(|c| c.0 == pos) {
             Some(c) => c.1 = c.1.max(stage),
@@ -11727,7 +11747,7 @@ impl Game<'_> {
                 d.length_squared() <= 1024.0
             })
             .filter_map(|(pos, stage)| {
-                let name = DESTROY_STAGES.get(stage as usize)?;
+                let name = names.get(stage as usize)?;
                 let r = self.gui.atlas.sprites.get(*name)?;
                 Some((pos, [r.u0, r.v0]))
             })
@@ -13625,9 +13645,14 @@ impl Game<'_> {
                 let want = sound.trim_start_matches("minecraft:");
                 let mut keep = Vec::with_capacity(capture.len());
                 for entry in capture.drain(..) {
-                    let name = entry.0.trim_start_matches("minecraft:");
+                    let name = entry.event.trim_start_matches("minecraft:");
                     if name == want || name == "block.fire.extinguish" {
-                        self.guest_player_sounds.push(entry);
+                        self.guest_player_sounds.push((
+                            entry.event,
+                            entry.position,
+                            entry.volume,
+                            entry.pitch,
+                        ));
                     } else {
                         keep.push(entry);
                     }
@@ -16011,6 +16036,11 @@ impl Game<'_> {
             Vec::new()
         };
         let view = horizon_client::camera::view_matrix(view_yaw, view_pitch);
+        let world_primitives = if self.title.is_none() {
+            self.world_primitive_geometry(camera, alpha, view)
+        } else {
+            Default::default()
+        };
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
         let mut crosshair = horizon_client::gizmos::Gizmos::default();
@@ -16090,8 +16120,6 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
-        self.flush_ime(&mut hud);
         let title = self.shows_panorama();
         let (yaw, pitch) = if title {
             // PanoramaRenderer: the title cube spins at 0.1 degrees per tick, pitched 10 degrees.
@@ -16110,8 +16138,6 @@ impl Game<'_> {
         } else {
             self.fov_degrees(camera_alpha as f32, camera.to_array())
         };
-        self.locator_camera =
-            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
         let bob = if title {
             glam::Mat4::IDENTITY
         } else {
@@ -16122,7 +16148,6 @@ impl Game<'_> {
         } else {
             self.spinning_matrix(camera_alpha as f32)
         };
-        let requested_post_effects = self.requested_post_effects();
         let terrain_distance = self.terrain_distance();
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
@@ -16153,6 +16178,14 @@ impl Game<'_> {
                 dimension: self.dim.id().to_string(),
             }
         });
+        // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
+        self.flush_ime(&mut hud);
+        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
+        self.resolve_inline_profiles(&hud.inline_profiles);
+        self.locator_camera =
+            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
+        let requested_post_effects = self.requested_post_effects();
         self.view_frustum = self
             .renderer
             .as_ref()
@@ -16361,6 +16394,7 @@ impl Game<'_> {
             },
             additive: &additive,
             see_through: &see_through,
+            world_primitives: world_primitives.batch(),
             shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
@@ -19404,6 +19438,7 @@ impl<'a> Game<'a> {
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
+            started_riding: Vec::new(),
             boarding_cooldown: 0,
             riding_at_tick: None,
             rotation_forced: false,
@@ -21070,6 +21105,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         shadow_only: &[],
         celestial: &[],
         stars: None,

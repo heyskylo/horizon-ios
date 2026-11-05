@@ -202,6 +202,17 @@ const DETAIL_LEVEL: u8 = 2;
 /// The most chunks one detail request asks for, one request each 250 ms:
 /// generated ones arrive at the decoration threads' pace, cached ones at once.
 const DETAIL_REQUEST: usize = 512;
+/// How long one frame spends applying far detail and visited summaries
+/// (`Lod::receive`).
+///
+/// Cached chunks answer a `DETAIL_REQUEST` all at once, and applying one
+/// copies the columns of every tile over it (`Arc::make_mut` on a snapshot a
+/// mesh job shares) and reduces the chunk to that tile's cell width. A whole
+/// burst in one frame cost 273 ms of it on the render thread, flying over far
+/// terrain at `lodDistance` 256: 18 FPS average, 482 ms at the 99th
+/// percentile, where the median frame was 6 ms. What the budget leaves waits
+/// in `Lod::detail_backlog` for the frames after it.
+const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
 /// Top solid face and optional fluid face, in absolute block coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Surface {
@@ -1036,21 +1047,40 @@ impl ReducedColumns {
             levels: std::array::from_fn(|_| std::sync::OnceLock::new()),
         }
     }
+    /// Builds the reduction levels whose bit is set in `levels`
+    /// (`Shared::detail_widths`), off the render thread.
+    fn warm(self, levels: u8) -> Self {
+        for level in 0..self.levels.len() {
+            if levels & (1 << level) != 0 {
+                self.level(level);
+            }
+        }
+        self
+    }
+    /// The chunk reduced to cells `2 << level` blocks wide, built once.
+    fn level(&self, level: usize) -> &[Column] {
+        let width = 2 << level;
+        self.levels[level].get_or_init(|| {
+            // Timed on whichever thread first asks for this width, so the
+            // frame profile tells a reduction apart from the column copying
+            // around it (`Lod::apply_detail` does both).
+            crate::spans::time("lod_reduce", || {
+                let columns = &self.columns;
+                (0..16 / width)
+                    .flat_map(|z| {
+                        (0..16 / width)
+                            .map(move |x| Column::reduced(columns, x * width, z * width, width))
+                    })
+                    .collect()
+            })
+        })
+    }
     fn get(&self, x: usize, z: usize, width: usize) -> &Column {
         if width == 1 {
             return &self.columns[z * 16 + x];
         }
         let level = width.trailing_zeros() as usize - 1;
-        let reduced = self.levels[level].get_or_init(|| {
-            let columns = &self.columns;
-            (0..16 / width)
-                .flat_map(|z| {
-                    (0..16 / width)
-                        .map(move |x| Column::reduced(columns, x * width, z * width, width))
-                })
-                .collect()
-        });
-        &reduced[(z / width) * (16 / width) + x / width]
+        &self.level(level)[(z / width) * (16 / width) + x / width]
     }
 }
 enum Job {
@@ -1064,6 +1094,14 @@ enum Job {
         /// `refresh` may be older than what it announced.
         refreshes: u64,
     },
+}
+/// A chunk's columns on their way to the tiles over it: what `Lod::receive`
+/// defers when a frame's [`DETAIL_BUDGET`] is spent.
+enum Summary {
+    /// A chunk's detail, and the `refreshes` of the request it answers.
+    Detail((i32, i32), ReducedColumns, u64),
+    /// A visited chunk's summary.
+    Observed((i32, i32), ReducedColumns),
 }
 enum Done {
     /// A chunk's detail, and the `refreshes` of the request it answers.
@@ -1149,6 +1187,19 @@ struct Shared {
     stop: AtomicBool,
     /// Reduced far detail: samplers approximate wide cells.
     approximate: AtomicBool,
+    /// The reduction levels `Lod::apply_detail` reads, one bit each (level
+    /// `i` is a cell `2 << i` blocks wide), so the far terrain thread builds
+    /// them before it sends a chunk's columns on.
+    ///
+    /// Learned rather than derived from the plan: a chunk's ancestors are
+    /// read only where they were sampled, which the plan alone does not say.
+    /// `apply_detail` sets a bit the first time it reads that width, so the
+    /// first chunk of a width still reduces on the render thread and every
+    /// chunk after it finds the work done. Bits are never cleared: a width
+    /// the view has stopped using costs the worker a reduction nothing
+    /// reads, and holding all four is exactly the eager behaviour this
+    /// replaces.
+    detail_widths: std::sync::atomic::AtomicU8,
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
     /// The near terrain is loading: the far threads step behind it
@@ -1183,6 +1234,11 @@ pub struct Lod {
     pending: FxHashSet<TileKey>,
     detail_masks: FxHashMap<TileKey, [u64; 4]>,
     detail_request_pending: bool,
+    /// Detail and visited summaries past a frame's [`DETAIL_BUDGET`], applied
+    /// on the frames after it. Bounded by what the worker sends: a detail
+    /// request is one per 250 ms and only for chunks whose detail is missing,
+    /// so this drains between bursts rather than growing with the view.
+    detail_backlog: std::collections::VecDeque<Summary>,
     /// `refresh`es so far (`Job::RequestDetail`), and the areas of the last
     /// ones, each with its number.
     refreshes: u64,
@@ -1290,6 +1346,7 @@ impl Lod {
             mesh_wake: Condvar::new(),
             stop: AtomicBool::new(false),
             approximate: AtomicBool::new(false),
+            detail_widths: std::sync::atomic::AtomicU8::new(0),
             mesh_held: AtomicBool::new(false),
             near_loading: AtomicBool::new(false),
         });
@@ -1468,7 +1525,12 @@ impl Lod {
                         'work: loop {
                             for (key, columns) in sampler.drain_details() {
                                 if tx
-                                    .send(Done::Detail(key, ReducedColumns::new(columns), asked))
+                                    .send(Done::Detail(
+                                        key,
+                                        ReducedColumns::new(columns)
+                                            .warm(worker.detail_widths.load(Ordering::Relaxed)),
+                                        asked,
+                                    ))
                                     .is_err()
                                 {
                                     break 'work;
@@ -1514,7 +1576,11 @@ impl Lod {
                                     };
                                     let columns = summarize(&chunk, kinds);
                                     sampler.observed(key, &columns);
-                                    Done::Observed(key, ReducedColumns::new(columns))
+                                    Done::Observed(
+                                        key,
+                                        ReducedColumns::new(columns)
+                                            .warm(worker.detail_widths.load(Ordering::Relaxed)),
+                                    )
                                 }
                                 Job::RequestDetail {
                                     chunks,
@@ -1570,6 +1636,7 @@ impl Lod {
             pending: FxHashSet::default(),
             detail_masks: FxHashMap::default(),
             detail_request_pending: false,
+            detail_backlog: std::collections::VecDeque::new(),
             refreshes: 0,
             refreshed: VecDeque::new(),
             detail_request_at: std::time::Instant::now(),
@@ -2098,6 +2165,12 @@ impl Lod {
             };
             let [ox, _, oz] = key.origin();
             let stride = key.size() / 16;
+            // What the far terrain thread should have ready next time.
+            if stride > 1 {
+                self.shared
+                    .detail_widths
+                    .fetch_or(1 << (stride.trailing_zeros() - 1), Ordering::Relaxed);
+            }
             let x0 = ((cx * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let x1 = (((cx + 1) * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let z0 = ((cz * 16 - oz + stride - 1).div_euclid(stride)).clamp(0, 16);
@@ -2269,6 +2342,12 @@ impl Lod {
     fn request_detail(&mut self, camera: [i32; 2]) {
         if self.held()
             || self.detail_request_pending
+            // Nothing new while summaries wait: a chunk whose detail is still
+            // in the backlog has its mask clear, so it would be asked for
+            // again, and answered from the cache at once. Without this the
+            // backlog grew by a request every 250 ms and never drained --
+            // 0.5 FPS, with `update` averaging 9.7 s a frame.
+            || !self.detail_backlog.is_empty()
             || self.detail_request_at.elapsed() < std::time::Duration::from_millis(250)
         {
             return;
@@ -2495,17 +2574,25 @@ impl Lod {
         self.wanted_stale = true;
     }
     fn receive(&mut self, meshes: &mut Vec<(TileKey, SectionMesh)>) {
+        let started = std::time::Instant::now();
+        // What an earlier frame left, before anything new: a chunk's detail
+        // must not overtake the detail of a chunk that arrived before it.
+        while started.elapsed() < DETAIL_BUDGET {
+            let Some(summary) = self.detail_backlog.pop_front() else {
+                break;
+            };
+            self.apply_summary(summary);
+        }
         while let Ok(done) = self.results.try_recv() {
             match done {
-                // Read before a `refresh` over it since: asked again (its
-                // bits stay clear), never kept over the newer data.
-                Done::Detail(key, _, asked) if self.refreshed_since(key, asked) => {}
-                Done::Detail(key, columns, _) => {
-                    crate::spans::time("lod_detail", || self.finish_detail(key, columns))
-                }
-                Done::Observed(key, columns) => {
-                    crate::spans::time("lod_detail", || self.finish_observed(key, columns))
-                }
+                Done::Detail(key, columns, asked) => self.take_summary(
+                    Summary::Detail(key, columns, asked),
+                    started.elapsed() < DETAIL_BUDGET,
+                ),
+                Done::Observed(key, columns) => self.take_summary(
+                    Summary::Observed(key, columns),
+                    started.elapsed() < DETAIL_BUDGET,
+                ),
                 Done::DetailRequested => self.detail_request_pending = false,
                 Done::Sample {
                     key,
@@ -2529,6 +2616,28 @@ impl Lod {
                 }
             }
         }
+    }
+    /// Applies a summary while the frame has budget and nothing is already
+    /// waiting, else leaves it for a later frame.
+    fn take_summary(&mut self, summary: Summary, within_budget: bool) {
+        if within_budget && self.detail_backlog.is_empty() {
+            self.apply_summary(summary);
+        } else {
+            self.detail_backlog.push_back(summary);
+        }
+    }
+    /// A chunk's columns applied to the tiles over it.
+    ///
+    /// `refreshed_since` is tested here and not when the result arrives, so a
+    /// refresh over the chunk while the summary waited still drops it: it was
+    /// read before that refresh, and the tiles ask again with their bits
+    /// clear.
+    fn apply_summary(&mut self, summary: Summary) {
+        crate::spans::time("lod_detail", || match summary {
+            Summary::Detail(key, _, asked) if self.refreshed_since(key, asked) => {}
+            Summary::Detail(key, columns, _) => self.finish_detail(key, columns),
+            Summary::Observed(key, columns) => self.finish_observed(key, columns),
+        });
     }
     /// A finished mesh: shown when it is newer than what the tile shows now.
     /// A result newer than the frame's current one is still useful while a
@@ -3639,6 +3748,144 @@ mod tests {
         assert_eq!(built(&reduced), [4]);
         reduced.get(0, 0, 16);
         assert_eq!(built(&reduced), [4, 16]);
+    }
+    /// A summary past a frame's budget waits for a later frame rather than
+    /// being dropped, and no new detail is asked for while any waits.
+    ///
+    /// Without the second part the backlog grew by a `DETAIL_REQUEST` every
+    /// 250 ms and never drained: a chunk whose summary is still waiting has
+    /// its detail mask clear, so it was asked for again and the cache
+    /// answered at once. That measured 0.5 FPS, `update` averaging 9.7 s.
+    #[test]
+    fn a_summary_past_the_budget_waits_and_holds_back_the_next_request() {
+        let mut lod = Lod::scheduler_for_test();
+        let chunk = (3, 5);
+        let columns = || ReducedColumns::new(Arc::new(std::array::from_fn(|_| Column::default())));
+
+        // Within budget and with nothing waiting, a summary applies at once.
+        lod.take_summary(Summary::Observed(chunk, columns()), true);
+        assert!(lod.detail_backlog.is_empty(), "applied, not deferred");
+        assert!(lod.saved.contains_key(&chunk), "and it reached `saved`");
+
+        // Past the budget it waits, and anything after it waits behind it so
+        // a chunk's detail cannot overtake a chunk that arrived earlier.
+        lod.take_summary(Summary::Observed((9, 9), columns()), false);
+        lod.take_summary(Summary::Observed((10, 9), columns()), true);
+        assert_eq!(
+            lod.detail_backlog.len(),
+            2,
+            "the second waits behind the first"
+        );
+        assert!(!lod.saved.contains_key(&(9, 9)));
+
+        // Nothing new is asked for while summaries wait, whatever the
+        // request interval allows. Asserted on `detail_request_at`, which
+        // `request_detail` records once it is past its guards: a test
+        // scheduler has no active tile wanting detail, so `pending` would
+        // stay false either way and prove nothing.
+        let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        lod.detail_request_at = long_ago;
+        lod.detail_request_pending = false;
+        lod.request_detail([0, 0]);
+        assert_eq!(lod.detail_request_at, long_ago, "held back by the backlog");
+
+        // A later frame applies what waited, in the order it arrived.
+        while let Some(summary) = lod.detail_backlog.pop_front() {
+            lod.apply_summary(summary);
+        }
+        assert!(lod.saved.contains_key(&(9, 9)), "nothing was dropped");
+        assert!(lod.saved.contains_key(&(10, 9)));
+
+        // Drained, requests resume.
+        lod.detail_request_at = long_ago;
+        lod.request_detail([0, 0]);
+        assert!(
+            lod.detail_request_at > long_ago,
+            "asked once the backlog drained"
+        );
+    }
+    /// `warm` builds exactly the levels asked for, off the render thread, and
+    /// `get` then finds them built.
+    #[test]
+    fn warming_builds_the_levels_asked_for_and_no_others() {
+        let built = |reduced: &ReducedColumns| {
+            reduced
+                .levels
+                .iter()
+                .enumerate()
+                .filter(|(_, level)| level.get().is_some())
+                .map(|(level, _)| 2usize << level)
+                .collect::<Vec<_>>()
+        };
+        let chunk = || {
+            Arc::new(std::array::from_fn::<Column, 256, _>(|i| Column {
+                surface: None,
+                spans: vec![Span {
+                    min: 0,
+                    max: 4 + (i % 3) as i16,
+                    state: BlockStateId(1),
+                    biome: 0,
+                    light: 240,
+                }]
+                .into(),
+            }))
+        };
+        // No bits: nothing is built, as before.
+        assert!(built(&ReducedColumns::new(chunk()).warm(0)).is_empty());
+        // Widths 2 and 8 are levels 0 and 2.
+        let warmed = ReducedColumns::new(chunk()).warm(0b101);
+        assert_eq!(built(&warmed), [2, 8]);
+        // Reading a warmed width builds nothing more; an unwarmed one does.
+        warmed.get(0, 0, 2);
+        warmed.get(6, 6, 8);
+        assert_eq!(built(&warmed), [2, 8], "already built");
+        warmed.get(0, 0, 4);
+        assert_eq!(built(&warmed), [2, 4, 8]);
+        // Warming is the same reduction as reading would have made.
+        let lazy = ReducedColumns::new(chunk());
+        for (x, z, width) in [(0, 0, 2), (6, 6, 8), (4, 8, 4), (0, 0, 16)] {
+            assert_eq!(
+                warmed.get(x, z, width),
+                lazy.get(x, z, width),
+                "width {width} at {x},{z}"
+            );
+        }
+    }
+    /// Applying a chunk's detail records the cell widths it read, so the far
+    /// terrain thread reduces them before it sends the next chunk.
+    #[test]
+    fn applying_detail_records_the_widths_it_read() {
+        let mut lod = Lod::scheduler_for_test();
+        assert_eq!(lod.shared.detail_widths.load(Ordering::Relaxed), 0);
+        let chunk = (0, 0);
+        let columns = || ReducedColumns::new(Arc::new(std::array::from_fn(|_| Column::default())));
+        // Only tiles in `ready` are read. A level-0 tile has cells one block
+        // wide, which is the chunk's own columns: no reduction, no bit.
+        lod.ready.insert(
+            TileKey {
+                x: 0,
+                z: 0,
+                level: 0,
+            },
+            Arc::new(vec![Column::default(); CELLS * CELLS]),
+        );
+        lod.apply_detail(chunk, &columns());
+        assert_eq!(
+            lod.shared.detail_widths.load(Ordering::Relaxed),
+            0,
+            "full-detail cells read the chunk itself"
+        );
+        // A level-2 tile has cells 4 blocks wide: reduction level 1.
+        lod.ready.insert(
+            TileKey {
+                x: 0,
+                z: 0,
+                level: 2,
+            },
+            Arc::new(vec![Column::default(); CELLS * CELLS]),
+        );
+        lod.apply_detail(chunk, &columns());
+        assert_eq!(lod.shared.detail_widths.load(Ordering::Relaxed), 0b10);
     }
     /// Detail read before a refresh over its chunk is dropped (asked
     /// again); elsewhere, or read after, it is kept.

@@ -1348,10 +1348,10 @@ impl Game<'_> {
         if !self.native_may_board(self.boats[i].id) {
             return true;
         }
-        self.riding = Some(self.boats[i].id);
+        let id = self.boats[i].id;
         self.yaw = self.boats[i].yaw;
-        // ServerPlayer.startRiding.
-        self.trigger_player("minecraft:started_riding");
+        // Entity.startRiding (ServerPlayer.startRiding fires the trigger).
+        self.start_riding(id);
         true
     }
     /// `ContainerEntity.interactWithContainerVehicle` (`AbstractChestBoat`):

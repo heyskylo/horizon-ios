@@ -208,6 +208,18 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
+/// A level sound retained for the network broadcaster, in playback order.
+#[derive(Clone, Debug)]
+pub struct CapturedSound {
+    pub event: String,
+    pub position: [f64; 3],
+    pub volume: f32,
+    pub pitch: f32,
+    pub source: usize,
+    pub entity: Option<u32>,
+    pub except_entity: Option<u32>,
+}
+
 pub struct Audio {
     _stream: Option<Stream>,
     device_name: String,
@@ -224,7 +236,7 @@ pub struct Audio {
     source_override: Option<usize>,
     /// Positional sounds played since the last drain, kept while the world
     /// is open to the network so guests hear them too.
-    pub capture: Option<Vec<(String, [f64; 3], f32, f32)>>,
+    pub capture: Option<Vec<CapturedSound>>,
     /// How many times each positional sound played (the control socket's `status`),
     /// with or without an audio device.
     pub heard: std::collections::BTreeMap<String, u32>,
@@ -1297,7 +1309,17 @@ impl Audio {
     pub fn play_after(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32, ticks: i32) {
         let seed = self.random.next_long();
         if let Some(capture) = self.capture.as_mut() {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: at,
+                volume,
+                pitch,
+                source: self.source_override.unwrap_or_else(|| {
+                    crate::settings::sound_source(&crate::sound_events::normalize(event))
+                }),
+                entity: None,
+                except_entity: None,
+            });
         }
         *self.heard.entry(event.to_owned()).or_default() += 1;
         self.sync_volumes();
@@ -1358,6 +1380,31 @@ impl Audio {
         );
         self.play_instance(instance, false);
     }
+    /// A level's entity overload: preserve the emitter and excluded player for
+    /// the server broadcaster while the local sound follows the same object.
+    pub fn play_bound(
+        &mut self,
+        event: &str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+        entity: crate::sound_engine::SoundEntity,
+        except_entity: Option<u32>,
+    ) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: entity.state().position,
+                volume,
+                pitch,
+                source,
+                entity: Some(entity.id),
+                except_entity,
+            });
+        }
+        let seed = self.random.next_long();
+        self.play_entity_seeded(event, source, volume, pitch, seed, entity);
+    }
     /// Removal belongs to the old object even if its numeric id is immediately reused.
     pub fn remove_sound_entity(&mut self, id: u32) {
         for entity in self
@@ -1381,7 +1428,17 @@ impl Audio {
         seed: i64,
     ) {
         if let (Some(capture), Some(at)) = (self.capture.as_mut(), at) {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: at,
+                volume,
+                pitch,
+                source: self.source_override.unwrap_or_else(|| {
+                    crate::settings::sound_source(&crate::sound_events::normalize(event))
+                }),
+                entity: None,
+                except_entity: None,
+            });
         }
         if at.is_some() {
             *self.heard.entry(event.to_owned()).or_default() += 1;
@@ -1520,6 +1577,45 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_capture_keeps_order_category_entity_and_actor_exclusion() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        audio.capture = Some(Vec::new());
+        let mut expected = audio.random.clone();
+        audio.play_on(
+            7,
+            "minecraft:block.amethyst_block.chime",
+            Some([1.0; 3]),
+            0.5,
+            1.0,
+        );
+        let entity = crate::sound_engine::SoundEntity::new(37, [2.123456789, 64.0, -3.0], false);
+        audio.play_bound(
+            "minecraft:block.amethyst_block.chime",
+            6,
+            2.0,
+            1.2,
+            entity,
+            Some(17),
+        );
+        let sounds = audio.capture.as_ref().unwrap();
+        assert_eq!(sounds.len(), 2);
+        assert_eq!(
+            (sounds[0].source, sounds[0].entity, sounds[0].except_entity),
+            (7, None, None)
+        );
+        let bound = &sounds[1];
+        assert_eq!(
+            (bound.source, bound.entity, bound.except_entity),
+            (6, Some(37), Some(17))
+        );
+        assert_eq!(bound.position, [2.123456789, 64.0, -3.0]);
+        assert_eq!((bound.volume, bound.pitch), (2.0, 1.2));
+        expected.next_long();
+        expected.next_long();
+        assert_eq!(audio.random.next_long(), expected.next_long());
+    }
 
     #[test]
     fn entity_sound_packets_neither_rebroadcast_nor_advance_the_local_seed_generator() {

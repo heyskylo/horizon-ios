@@ -549,6 +549,7 @@ impl Scene {
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
+            world_primitives: Default::default(),
             shadow_only: &[],
             celestial: &self.celestial,
             stars: f

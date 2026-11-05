@@ -1458,7 +1458,6 @@ impl Game<'_> {
                     if !self.native_may_board(id) {
                         return Err(generic());
                     }
-                    self.riding = Some(id);
                     self.yaw = self.boats[i].yaw;
                     // ServerPlayer.startRiding seats the player immediately.
                     let at = self.player_boat_seat(i);
@@ -1469,7 +1468,7 @@ impl Game<'_> {
                     }
                     self.previous_position = at;
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
-                    self.trigger_player("minecraft:started_riding");
+                    self.start_riding(id);
                 }
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
@@ -1484,8 +1483,7 @@ impl Game<'_> {
                 {
                     return Err(generic());
                 }
-                self.riding = Some(id);
-                self.trigger_player("minecraft:started_riding");
+                self.start_riding(id);
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
                     &[name, vehicle_name],
@@ -1520,9 +1518,9 @@ impl Game<'_> {
             m.extra.counter = 0;
             self.yaw = m.yaw;
         }
-        self.riding = Some(mob_id);
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
+        self.start_riding(mob_id);
         self.feedback(Text::translate(
             "commands.ride.mount.success",
             &[name, vehicle_name],

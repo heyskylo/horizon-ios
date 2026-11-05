@@ -704,6 +704,14 @@ pub fn mob_to_nbt(
                 Tag::Byte(i8::from(m.extra.flag2)),
             );
             map.insert("TimeInOverworld".into(), Tag::Int(m.extra.counter2));
+            if id == "minecraft:hoglin" {
+                // Hoglin.addAdditionalSaveData writes it only when set.
+                if m.extra.cannot_be_hunted {
+                    map.insert("CannotBeHunted".into(), Tag::Byte(1));
+                } else {
+                    map.remove(&"CannotBeHunted".into());
+                }
+            }
             if id == "minecraft:piglin" {
                 // InventoryCarrier.writeInventoryToTag.
                 map.insert(
@@ -1738,6 +1746,9 @@ pub fn mob_from_nbt(
     ) {
         m.extra.flag2 = flag(tag, "IsImmuneToZombification");
         m.extra.counter2 = number(tag.get("TimeInOverworld")).unwrap_or(0) as i32;
+        if m.species() == crate::mobs::Species::Hoglin {
+            m.extra.cannot_be_hunted = flag(tag, "CannotBeHunted");
+        }
         if m.species() == crate::mobs::Species::Piglin
             && let Some(Tag::List(items)) = tag.get("Inventory")
         {
@@ -5139,6 +5150,42 @@ mod sheep_nbt_tests {
             .collect();
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
+    }
+
+    /// `Hoglin.readAdditionalSaveData` and `addAdditionalSaveData`:
+    /// `CannotBeHunted` (a bastion's hoglins) stays with the hoglin, and such a
+    /// hoglin is no piglin's prey (`Hoglin.canBeHunted`).
+    #[test]
+    fn a_hoglin_keeps_cannot_be_hunted_and_is_no_prey() {
+        use crate::mobs::Species;
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.species = Species::Hoglin;
+        ty.id = "minecraft:hoglin".into();
+        let types = HashMap::from([("minecraft:hoglin".to_owned(), kind)]);
+        let hoglin = |cannot: Option<i8>| {
+            let mut tag = Tag::compound([
+                ("id", string("minecraft:hoglin")),
+                ("Pos", doubles(&[0.0, 64.0, 0.0])),
+            ]);
+            if let (Some(b), Tag::Compound(map)) = (cannot, &mut tag) {
+                map.insert("CannotBeHunted".into(), Tag::Byte(b));
+            }
+            tag
+        };
+        let raw = hoglin(Some(1));
+        let protected = mob_from_nbt(&raw, &types, 1, None).unwrap();
+        assert!(protected.extra.cannot_be_hunted);
+        assert!(!protected.seen(None).huntable);
+        let saved = mob_to_nbt(&protected, [0; 4], Some(&raw), None);
+        assert_eq!(saved.get("CannotBeHunted"), Some(&Tag::Byte(1)));
+        for raw in [hoglin(None), hoglin(Some(0))] {
+            let prey = mob_from_nbt(&raw, &types, 2, None).unwrap();
+            assert!(!prey.extra.cannot_be_hunted);
+            assert!(prey.seen(None).huntable);
+            let saved = mob_to_nbt(&prey, [0; 4], Some(&raw), None);
+            assert_eq!(saved.get("CannotBeHunted"), None);
+        }
     }
 
     /// `Mob.addAdditionalSaveData` and `readAdditionalSaveData`:

@@ -55,6 +55,8 @@ impl Game<'_> {
             return false;
         }
         riders::link(&mut self.mobs, rider, vehicle);
+        // sendEventAndTriggers: the server players already on the vehicle.
+        self.note_started_riding(vehicle);
         true
     }
     /// Riders sit on their vehicles (`Entity.positionRider`), mobs or boats,
