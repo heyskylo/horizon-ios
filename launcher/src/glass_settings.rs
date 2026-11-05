@@ -385,6 +385,7 @@ impl Launcher {
             .child(self.glass_accent_row(cx))
             .child(self.look_slider_row(themes_page::LookKnob::Glass, cx))
             .child(self.look_slider_row(themes_page::LookKnob::Blur, cx))
+            .child(self.performance_row(cx))
             .child(self.home_background_row(cx))
             .child(self.language_row(cx))
             .child(self.while_playing_row(n, cx))
@@ -398,7 +399,8 @@ impl Launcher {
             .child(self.reset_look_row(cx));
         let network = card().child(self.proxy_row(n, cx));
         let game = card()
-            .child(self.game_args_row(n, cx))
+            .child(self.game_architecture_row(n, cx))
+            .child(self.game_args_row(n + 1, cx))
             .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))

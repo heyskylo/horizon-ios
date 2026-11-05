@@ -678,6 +678,43 @@ fn texture_format(f: Format, features: wgpu::Features) -> wgpu::TextureFormat {
     }
 }
 
+/// `format` where `renders` says it can be a colour target, else the nearest float format that can:
+/// the same channels at 16 bits, then `Rgba8Unorm`. On OpenGL the 32-bit and 16-bit float formats
+/// render only with `GL_EXT_color_buffer_float`/`half_float`, and wgpu aborts on creating a target
+/// without. Other formats pass through. Float colour buffers are only sampled (never blended), so
+/// RENDER_ATTACHMENT is the only usage that decides.
+fn renderable_float(
+    format: wgpu::TextureFormat,
+    renders: impl Fn(wgpu::TextureFormat) -> bool,
+) -> wgpu::TextureFormat {
+    use wgpu::TextureFormat as T;
+    let half = match format {
+        T::R32Float | T::R16Float => T::R16Float,
+        T::Rg32Float | T::Rg16Float => T::Rg16Float,
+        T::Rgba32Float | T::Rgba16Float => T::Rgba16Float,
+        _ => return format,
+    };
+    if renders(format) {
+        format
+    } else if renders(half) {
+        half
+    } else {
+        T::Rgba8Unorm
+    }
+}
+
+/// [`texture_format`] made renderable on this adapter (see [`renderable_float`]).
+fn target_format(
+    f: Format,
+    features: wgpu::Features,
+    adapter: &wgpu::Adapter,
+) -> wgpu::TextureFormat {
+    renderable_float(texture_format(f, features), |format| {
+        (adapter.get_texture_format_features(format).allowed_usages)
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    })
+}
+
 /// The SNORM wgpu format of SNORM pack format `f`, where this adapter can render to it. Iris
 /// stores such a buffer clamped to [-1, 1] and quantised to its bits; elsewhere the half floats of
 /// [`texture_format`] stand in.
@@ -1891,7 +1928,8 @@ impl PackPost {
         let features = device.features();
         let formats: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
             let f = post.config.buffers[i].format;
-            snorm_format(f, features, adapter).unwrap_or_else(|| texture_format(f, features))
+            snorm_format(f, features, adapter)
+                .unwrap_or_else(|| target_format(f, features, adapter))
         });
         let sky_clear = Some(&post.config.buffers[0])
             .filter(|b| b.clear)
@@ -1944,7 +1982,9 @@ impl PackPost {
         // buffers 0 to 7.
         let shadow_formats: Option<[wgpu::TextureFormat; SHADOW_COLORS]> =
             post.shadow_pass.then(|| {
-                std::array::from_fn(|n| texture_format(shadow_config.colors[n].format, features))
+                std::array::from_fn(|n| {
+                    target_format(shadow_config.colors[n].format, features, adapter)
+                })
             });
         let shadow_space: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
             shadow_formats
@@ -5282,6 +5322,27 @@ mod tests {
         let g = |name| texture_format(Format::parse(name).unwrap(), all);
         assert_eq!(g("RGBA16"), T::Rgba16Unorm);
         assert_eq!(g("R11F_G11F_B10F"), T::Rg11b10Ufloat);
+    }
+
+    #[test]
+    fn float_targets_fall_back_when_not_renderable() {
+        let all = |_| true;
+        assert_eq!(renderable_float(T::Rgba32Float, all), T::Rgba32Float);
+        // OpenGL without GL_EXT_color_buffer_float: only half floats render.
+        let half_only = |f: T| matches!(f, T::R16Float | T::Rg16Float | T::Rgba16Float);
+        assert_eq!(renderable_float(T::Rgba32Float, half_only), T::Rgba16Float);
+        assert_eq!(renderable_float(T::Rg32Float, half_only), T::Rg16Float);
+        assert_eq!(renderable_float(T::R32Float, half_only), T::R16Float);
+        assert_eq!(renderable_float(T::Rgba16Float, half_only), T::Rgba16Float);
+        // Neither renders: the 8-bit last resort.
+        assert_eq!(renderable_float(T::Rgba32Float, |_| false), T::Rgba8Unorm);
+        assert_eq!(renderable_float(T::Rg16Float, |_| false), T::Rgba8Unorm);
+        // Other formats are never replaced.
+        assert_eq!(renderable_float(T::Rgba8Uint, |_| false), T::Rgba8Uint);
+        assert_eq!(
+            renderable_float(T::Rgb10a2Unorm, |_| false),
+            T::Rgb10a2Unorm
+        );
     }
 
     #[test]

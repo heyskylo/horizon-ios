@@ -26,6 +26,12 @@ def setup(*commands):
     return [cmd(c, False) for c in commands]
 
 
+def weather_predicate_cases():
+    return [('any', None, None), ('rain', True, None), ('dry', False, None),
+            ('thunder', None, True), ('quiet', None, False),
+            ('rain_thunder', True, True), ('rain_quiet', True, False),
+            ('dry_thunder', False, True), ('dry_quiet', False, False)]
+
 def inline_predicate_constants():
     always = {'type': 'minecraft:all_of', 'terms': []}
     never = {'type': 'minecraft:inverted', 'term': always}
@@ -43,10 +49,29 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'named smoke predicates' in group_names:
+        always = {'type': 'minecraft:all_of', 'terms': []}
+        fixtures['command_smoke:always'] = always
+        fixtures['command_smoke:never'] = {'type': 'minecraft:inverted', 'term': always}
+        for name, smokey in [('smokey', True), ('clear', False)]:
+            fixtures['command_smoke:' + name] = {
+                'type': 'minecraft:location_check', 'predicate': {'smokey': smokey}}
     if 'selector missing predicates' in group_names:
         sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
                  'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
         fixtures.update({'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep})
+    if 'named weather predicates' in group_names:
+        for name, rain, thunder in weather_predicate_cases():
+            condition = {'type': 'minecraft:weather_check'}
+            if rain is not None:
+                condition['raining'] = rain
+            if thunder is not None:
+                condition['thundering'] = thunder
+            fixtures['command_weather:' + name] = condition
+        always = {'type': 'minecraft:all_of', 'terms': []}
+        fixtures['command_weather:always'] = always
+        fixtures['command_weather:never'] = {'type': 'minecraft:inverted', 'term': always}
+
     if 'inline execute predicates' in group_names:
         fixtures.update({f'h286_inline:{name}': value
                          for name, value, _ in inline_predicate_constants()})
@@ -54,6 +79,66 @@ def predicate_selector_fixtures(group_names):
 
 
 BASE = (0, 200, 0)
+
+
+def named_smoke_predicates():
+    """CampfireBlock.isSmokeyPos through named execute predicates, without ticks.
+
+    The two slabs distinguish a blocked fire from the immediate-below-blocker
+    exception. Unlit, absent and soul fires guard state and tag handling.
+    """
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/execute if dimension minecraft:overworld')
+    out.extend(setup('/forceload remove -16 -16 15 15'))
+    check('/forceload add -16 -16 15 15', 4)
+    out.append({'op': 'settle'})
+    for x in [-16, 0]:
+        for z in [-16, 0]:
+            check(f'/execute if loaded {x} 100 {z}')
+    check('/scoreboard objectives add smoke_cmd dummy')
+    out.extend(setup('/execute store result score #start smoke_cmd run time query gametime'))
+    # Seed the region so clearing it has a positive, deterministic acknowledgement.
+    check('/fill -16 94 -16 15 120 15 barrier', 27648)
+    check('/fill -16 94 -16 15 120 15 air', 27648)
+    check('/fill -16 93 -16 15 93 15 stone', 1024)
+    for x, kind, lit in [(0, 'campfire', 'true'), (3, 'campfire', 'true'),
+                         (6, 'campfire', 'false'), (9, 'campfire', 'true'),
+                         (-3, 'soul_campfire', 'true')]:
+        check(f'/setblock {x} 96 0 {kind}[lit={lit}]')
+        check(f'/execute if block {x} 96 0 {kind}[lit={lit}]')
+    for x, y in [(3, 98), (9, 97)]:
+        check(f'/setblock {x} {y} 0 stone_slab[type=bottom]')
+        check(f'/execute if block {x} {y} 0 stone_slab[type=bottom]')
+    for x, y in [(0, 99), (0, 97), (3, 99), (3, 97), (6, 99),
+                 (9, 99), (9, 98), (-3, 99), (12, 96), (12, 99)]:
+        check(f'/execute if block {x} {y} 0 air')
+    check('/execute if predicate command_smoke:always')
+    check('/execute unless predicate command_smoke:never')
+    # Each sign has its own exact feedback and independent result/success reads.
+    for x, smokey in [(0, True), (3, False), (6, False), (9, True),
+                      (12, False), (-3, True)]:
+        for predicate, passes in [('smokey', smokey), ('clear', not smokey)]:
+            out.extend(setup('/scoreboard players set #r smoke_cmd 31',
+                             '/scoreboard players set #s smoke_cmd 17'))
+            check('/scoreboard players get #r smoke_cmd', 31)
+            check('/scoreboard players get #s smoke_cmd', 17)
+            out.append(cmd('/execute store result score #r smoke_cmd '
+                           'store success score #s smoke_cmd run execute '
+                           f'positioned {x + 0.5} 100 0.5 if predicate command_smoke:{predicate}'))
+            check('/scoreboard players get #r smoke_cmd', int(passes))
+            check('/scoreboard players get #s smoke_cmd', int(passes))
+    out.append(cmd('/execute if predicate command_smoke:missing'))
+    out.extend(setup('/execute store result score #clock smoke_cmd run time query gametime'))
+    check('/scoreboard players operation #clock smoke_cmd -= #start smoke_cmd', 0)
+    out.extend(setup('/fill -16 94 -16 15 120 15 air',
+                     '/scoreboard objectives remove smoke_cmd',
+                     '/forceload remove -16 -16 15 15', '/tick unfreeze'))
+    return out
 
 
 def group_setup():
@@ -126,6 +211,76 @@ def allay_pocket_inventory():
             else:
                 ops.append(cmd(f'/execute unless data entity {target} equipment.mainhand', expect_result=1))
     return ops
+
+
+def named_weather_predicates():
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/gamerule minecraft:advance_weather', 0)
+    check('/execute if dimension minecraft:overworld')
+    out.extend(setup('/forceload remove 0 0'))
+    check('/forceload add 0 0')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 8 200 8')
+    check('/weather clear 100t', 100)
+    check('/scoreboard objectives add weather_cmd dummy')
+    out.extend(setup('/execute store result score #start weather_cmd run time query gametime'))
+
+    def clock(ticks):
+        out.extend(setup('/execute store result score #clock weather_cmd run time query gametime'))
+        check('/scoreboard players operation #clock weather_cmd -= #start weather_cmd', ticks)
+
+    def snapshot(name, ticks, rain, thunder, saved):
+        out.append({'op': 'weather_state', 'label': name, 'expect_state': saved})
+        clock(ticks)
+        expected = [(name, (r is None or r == rain) and (t is None or t == thunder))
+                    for name, r, t in weather_predicate_cases()]
+        for predicate, passes in expected + [('always', True), ('never', False)]:
+            out.extend(setup('/scoreboard players set #r weather_cmd 31',
+                             '/scoreboard players set #s weather_cmd 17'))
+            check('/scoreboard players get #r weather_cmd', 31)
+            check('/scoreboard players get #s weather_cmd', 17)
+            out.append(cmd('/execute store result score #r weather_cmd store success score #s weather_cmd '
+                           'run execute if predicate command_weather:' + predicate))
+            check('/scoreboard players get #r weather_cmd', int(passes))
+            check('/scoreboard players get #s weather_cmd', int(passes))
+
+    dry = [0, 0, 100, 0, 0]
+    storm = [1, 1, 0, 100, 100]
+    snapshot('clear_initial', 0, False, False, dry)
+    out.append(cmd('/execute if predicate command_weather:missing'))
+    check('/weather thunder 100t', 100)
+    snapshot('storm_0', 0, False, False, storm)
+    # Fresh Java 26.3 measurements: both levels rise from zero. Thunder
+    # uses their product, rather than the saved flags or raw thunder level.
+    elapsed = 0
+    for at, rain, thunder in [(19, False, False), (20, True, False), (21, True, False),
+                              (90, True, False), (91, True, False), (94, True, False),
+                              (95, True, True), (100, True, True)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'storm_{at}', at, rain, thunder, storm)
+        elapsed = at
+    check('/weather clear 100t', 100)
+    snapshot('fade_0', 100, True, True, dry)
+    elapsed = 0
+    for at, rain, thunder in [(1, True, True), (5, True, True), (6, True, False),
+                              (79, True, False), (80, True, False), (81, False, False),
+                              (100, False, False)]:
+        n = at - elapsed
+        check(f'/tick step {n}')
+        out.append({'op': 'tick', 'n': n})
+        snapshot(f'fade_{at}', 100 + at, rain, thunder, dry)
+        elapsed = at
+    clock(200)
+    out.extend(setup('/scoreboard objectives remove weather_cmd', '/forceload remove 0 0',
+                     '/tick unfreeze'))
+    return out
 
 
 def client_commands():
@@ -1638,12 +1793,35 @@ def progression():
     ]
 
 
-def function_return_fixtures(group_names):
-    if 'function return feedback' not in group_names:
+def advancement_reward_fixtures(group_names):
+    if 'advancement reward functions' not in group_names:
         return {}
-    return {'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
-            'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
-            'parity:add': 'scoreboard players add #count audit 1\n'}
+    def advancement(function=None):
+        value = {'criteria': {'never': {'trigger': 'minecraft:impossible'}}}
+        if function is not None:
+            value['rewards'] = {'function': function}
+        return value
+    return {'h291:reward': advancement('h291:reward'),
+            'h291:no_function': advancement(),
+            'h291:missing_function': advancement('h291:missing'),
+            'h291:alias': advancement('h291_alias')}
+
+
+def function_return_fixtures(group_names):
+    functions = {}
+    if 'function return feedback' in group_names:
+        functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
+                          'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
+                          'parity:add': 'scoreboard players add #count audit 1\n'})
+    if 'advancement reward functions' in group_names:
+        # Explicit return must not replace the enclosing advancement callback.
+        functions.update({'h291:reward': 'scoreboard players add @s reward_hits 1\n'
+                          'tag @s add h291_rewarded\n'
+                          'execute if block ~ ~-1 ~ stone run scoreboard players add @s reward_origin 1\n'
+                          'function h291:nested\nreturn 9\n',
+                          'h291:nested': 'scoreboard players add @s reward_nested 1\n',
+                          'minecraft:h291_alias': 'scoreboard players add @s reward_alias 1\n'})
+    return functions
 
 
 def function_return_feedback():
@@ -4087,6 +4265,8 @@ def nautilus_saved_sitting():
     out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
     out.append({'op': 'settle'})
     check('/execute if loaded 0 200 0')
+    # /fill counts changed blocks; prior groups may already have stone here.
+    out += setup('/fill 0 199 0 15 199 15 air')
     check('/fill 0 199 0 15 199 15 stone', 256)
     out += setup('/execute store result score #before saved_sit run time query gametime')
     serial = 0
@@ -4155,6 +4335,8 @@ def zombie_nautilus_ignored_age():
     out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
     out.append({'op': 'settle'})
     check('/execute if loaded 0 200 0')
+    # /fill counts changed blocks; prior groups may already have stone here.
+    out += setup('/fill 0 199 0 15 199 15 air')
     check('/fill 0 199 0 15 199 15 stone', 256)
     out += setup('/execute store result score #before ignored_age run time query gametime')
     for serial, age in enumerate((None, -24000, 0, 37), 1):
@@ -4537,14 +4719,164 @@ def bell_server_glow():
     return ops + setup('/scoreboard objectives remove bell_clock')
 
 
+def advancement_reward_functions():
+    """Function-only impossible advancements isolate reward dispatch from triggers and XP/loot."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/scoreboard objectives add reward_hits dummy',
+                '/scoreboard objectives add reward_origin dummy',
+                '/scoreboard objectives add reward_nested dummy',
+                '/scoreboard objectives add reward_alias dummy',
+                '/scoreboard objectives add reward_audit dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+    # Snapshot the entire actual UUID; the final no-change write checks identity without
+    # assuming the two harnesses choose the same offline player UUID.
+    ops += setup('/data modify storage h291:identity value set from entity @s UUID',
+                 '/execute store result score clock reward_audit run time query gametime')
+    for objective in ('reward_hits', 'reward_origin', 'reward_nested', 'reward_alias'):
+        ops += setup(f'/scoreboard players set @s {objective} 0')
+    ops += [cmd('/function h291:reward')]
+    ops += [cmd('/scoreboard players get @s reward_hits', expect_result=1),
+            cmd('/scoreboard players get @s reward_origin', expect_result=1),
+            cmd('/scoreboard players get @s reward_nested', expect_result=1),
+            cmd('/execute if entity @s[tag=h291_rewarded]', expect_result=1)]
+    ops += setup('/scoreboard players set @s reward_hits 0',
+                 '/scoreboard players set @s reward_origin 0',
+                 '/scoreboard players set @s reward_nested 0', '/tag @s remove h291_rewarded')
+    # Reward uses the player's own position, not the granting execute source's position.
+    cases = [('execute positioned 40 240 40 run advancement grant @s only h291:reward', 1, 1, 1, True),
+             ('advancement grant @s only h291:reward', 0, 1, 1, True),
+             ('advancement revoke @s only h291:reward', 1, 1, 1, False),
+             ('advancement grant @s only h291:reward', 1, 2, 2, True),
+             ('advancement grant @s only h291:no_function', 1, 2, 2, True),
+             ('advancement grant @s only h291:no_function', 0, 2, 2, True),
+             ('advancement grant @s only h291:missing_function', 1, 2, 2, True),
+             ('advancement grant @s only h291:alias', 1, 2, 2, True)]
+    for operation, changed, hits, nested, completed in cases:
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+        ops += setup('/scoreboard players set result reward_audit -99',
+                     '/scoreboard players set success reward_audit -99')
+        ops += [cmd('/scoreboard players get result reward_audit', expect_result=-99),
+                cmd('/scoreboard players get success reward_audit', expect_result=-99),
+                cmd('/execute store result score result reward_audit store success score success reward_audit run ' + operation),
+                cmd('/scoreboard players get result reward_audit', expect_result=changed),
+                cmd('/scoreboard players get success reward_audit', expect_result=changed),
+                cmd('/scoreboard players get @s reward_hits', expect_result=hits),
+                cmd('/scoreboard players get @s reward_origin', expect_result=hits),
+                cmd('/scoreboard players get @s reward_nested', expect_result=nested),
+                cmd('/execute if entity @s[tag=h291_rewarded]', expect_result=1)]
+        advancement = operation.split(' only ')[1]
+        sign = 'if' if completed else 'unless'
+        ops += [cmd(f'/execute {sign} entity @s[advancements={{{advancement}=true}}]', expect_result=1)]
+    ops += [cmd('/scoreboard players get @s reward_alias', expect_result=1),
+            cmd('/function h291:reward'),
+            cmd('/scoreboard players get @s reward_hits', expect_result=3),
+            cmd('/scoreboard players get @s reward_nested', expect_result=3)]
+    ops += setup('/execute store success score identity_changed reward_audit run data modify storage h291:identity value set from entity @s UUID',
+                 '/execute store result score elapsed reward_audit run time query gametime',
+                 '/scoreboard players operation elapsed reward_audit -= clock reward_audit')
+    ops += [cmd('/scoreboard players get identity_changed reward_audit', expect_result=0),
+            cmd('/scoreboard players get elapsed reward_audit', expect_result=0)]
+    for objective in ('reward_hits', 'reward_origin', 'reward_nested', 'reward_alias', 'reward_audit'):
+        ops += setup(f'/scoreboard objectives remove {objective}')
+    return ops
+
+
+def moving_piston_presentation_diagnostic():
+    try:
+        from .moving_piston_data_corpus import moving_piston_presentation
+    except ImportError:
+        from moving_piston_data_corpus import moving_piston_presentation
+    return moving_piston_presentation(cmd, setup)
+
+
+def piston_entity_tick_order():
+    """#9337: entities travel before moving pistons push them, not afterward."""
+    ops = []
+    for block in ('stone', 'slime_block'):
+        ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                     '/setblock 1 200 1 piston[facing=up]',
+                     f'/setblock 1 201 1 {block}',
+                     '/summon wither_skeleton 1.5 202 1.5 '
+                     '{PersistenceRequired:1b,Tags:["piston_rider"]}',
+                     '/attribute @e[tag=piston_rider,limit=1] movement_speed base set 0',
+                     '/setblock 2 200 1 redstone_block')
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd('/data get entity @e[tag=piston_rider,limit=1] Pos'))
+            ops.append(cmd('/data get entity @e[tag=piston_rider,limit=1] Motion'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
+def loaded_ticket_removal(blocks=False):
+    """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
+    targets = [(d, x, z) for d in range(2, 7)
+               for x, z in [(0, d * 16 + 3), (d * 16 + 3, d * 16 + 3), (-d * 16 + 3, 0)]]
+    ops = setup('/scoreboard objectives add loaded_audit dummy', '/forceload remove all',
+                '/tp @s 0.5 -63 0.5 0 0')
+    ops += [cmd('/forceload add -128 -128 127 127', expect_result=256),
+            {'op': 'settle'},
+            {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4] for _, x, z in targets]}]
+    for _, x, z in targets:
+        ops += [{'op': 'chunk_ready', 'chunk': [x >> 4, z >> 4], 'expect_values': [1, 1, 1]}]
+        ops += setup(f'/setblock {x} -63 {z} air')
+    ops += setup('/setblock 0 -64 0 stone', '/setblock 0 -63 0 air', '/setblock 0 -62 0 air',
+                 '/data modify storage h010:identity uuid set from entity @s UUID')
+    ops += [cmd('/data get entity @s UUID', expect_result=4),
+            cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,0.5d]}]', expect_result=1),
+            cmd('/forceload query', expect_result=256), {'op': 'server_distances', 'expect_values': [2, 2]}]
+    for phase, ticks in [('before', 40), ('after', 120)]:
+        if phase == 'after':
+            ops += [cmd('/forceload remove all', expect_result=0), cmd('/forceload query', expect_result=0)]
+        ops += setup('/execute store result score start loaded_audit run time query gametime')
+        ops += [{'op': 'tick', 'n': ticks, 'pace_ms': 50}]
+        ops += setup('/execute store result score elapsed loaded_audit run time query gametime',
+                     '/scoreboard players operation elapsed loaded_audit -= start loaded_audit')
+        ops += [cmd('/scoreboard players get elapsed loaded_audit', expect_result=ticks),
+                {'op': 'server_distances', 'expect_values': [2, 2]},
+                cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,0.5d]}]', expect_result=1)]
+        for distance, x, z in targets:
+            present = phase == 'before' or distance == 2
+            for sign in ['if', 'unless']:
+                accepted = present if sign == 'if' else not present
+                op = cmd(f'/execute {sign} loaded {x} -63 {z}')
+                op['label'] = f'h010 {phase}/{distance}/{x},{z}/{sign}'
+                op['expect_callback'] = [accepted, int(accepted)]
+                ops.append(op)
+            if blocks:
+                op = cmd(f'/execute if block {x} -63 {z} air')
+                op['label'] = f'h010 FULL diagnostic/{phase}/{distance}/{x},{z}'
+                ops.append(op)
+    ops += setup('/execute store success score changed loaded_audit run data modify storage h010:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get changed loaded_audit', expect_result=0),
+            cmd('/data get entity @s UUID', expect_result=4)]
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
+        from .moving_piston_data_corpus import moving_piston_data
+        from .carpet_farm_corpus import carpet_farms
+        from .passenger_teleport_corpus import passenger_teleports
+        from .gateway_passenger_corpus import gateway_passengers
+        from .item_merge_corpus import stack_limit_merges
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
+        from moving_piston_data_corpus import moving_piston_data
+        from carpet_farm_corpus import carpet_farms
+        from passenger_teleport_corpus import passenger_teleports
+        from gateway_passenger_corpus import gateway_passengers
+        from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('item stack-size override merges', stack_limit_merges(cmd, setup)),
+        ('moving piston command data', moving_piston_data(cmd, setup)),
         ('bell server glow', bell_server_glow()),
+        ('advancement reward functions', advancement_reward_functions()),
+        ('named weather predicates', named_weather_predicates()),
+        ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
@@ -4588,8 +4920,12 @@ def groups():
         ('sulfur cube fuse ticks', sulfur_cube_fuse_ticks()),
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
+        ('piston entity tick order', piston_entity_tick_order()),
+        ('carpet farms', carpet_farms(cmd, setup)),
+        ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
+        ('gateway passengers', gateway_passengers(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),

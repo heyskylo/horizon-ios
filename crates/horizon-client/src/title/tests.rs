@@ -627,9 +627,11 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         f.title.click(0.0, 0.0, (480.0, 262.0)),
         (Action::None, false)
     );
+    assert_eq!(f.click_with_sound("Minecraft Realms"), (Action::None, true));
+    // The Realms screen's Back, as the loaded language names it.
     assert_eq!(
-        f.click_with_sound("Minecraft Realms"),
-        (Action::None, false)
+        f.click_with_sound(&crate::lang::get("gui.back")),
+        (Action::None, true)
     );
     assert_eq!(f.click_with_sound("Singleplayer"), (Action::None, true));
     assert_eq!(
@@ -1924,6 +1926,13 @@ fn optimizing_without_a_backup_upgrades_chunks_and_returns_to_the_list() {
     ));
     f.click("I Know What I'm Doing!");
     assert!(matches!(f.title.mode, Mode::Optimize { .. }));
+    // Nothing but a press stops it: no pad button either.
+    assert!(
+        f.title
+            .buttons(427.0, 240.0)
+            .iter()
+            .all(|b| b.action.is_none())
+    );
     // OptimizeWorldScreen ignores Escape.
     f.title.escape();
     wait_while_optimizing(&mut f);
@@ -2027,6 +2036,7 @@ fn a_button_label_wider_than_its_button_stays_inside_it() {
         id: 40,
         icon: None,
         trailing: None,
+        action: None,
     };
     assert!(HudBatch::text_width(&atlas, &b.label) > b.w - 4.0);
     let mut batch = HudBatch::new([640, 480]);
@@ -2237,6 +2247,7 @@ mod text_and_icon {
             id: 0,
             icon: None,
             trailing: icon,
+            action: None,
         }
     }
     /// The x of every vertex of the label's text.

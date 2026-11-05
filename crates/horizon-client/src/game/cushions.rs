@@ -347,7 +347,7 @@ impl Game<'_> {
         if self.riding.is_some() {
             return true;
         }
-        self.riding = Some(id);
+        self.start_riding(id);
         let p = self.cushions[i].position;
         self.audio.play(
             "minecraft:entity.cushion.sit",

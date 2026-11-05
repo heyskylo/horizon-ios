@@ -48,10 +48,10 @@ pub struct Release {
     pub nightly: Option<String>,
 }
 
-/// The release assets of each system Horizon ships for: (`std::env::consts::OS`, `ARCH`, the game,
-/// the launcher). game-build.yml builds the game's, nightly-build.yml signs and publishes them, and
-/// launcher.yml builds the launcher's (`platform_assets_are_published`).
-pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
+/// The release assets of each system Horizon ships for: (OS, architecture, the game, the launcher).
+/// game-build.yml builds the game's, nightly-build.yml signs and publishes them, and launcher.yml
+/// builds the launcher's (`platform_assets_are_published`).
+pub const PLATFORMS: [(&str, &str, &str, &str); 5] = [
     (
         "linux",
         "x86_64",
@@ -76,6 +76,12 @@ pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
         "x86_64",
         "horizon-windows-x64.zip",
         "horizon-launcher-windows-x64.zip",
+    ),
+    (
+        "windows",
+        "aarch64",
+        "horizon-windows-arm64.zip",
+        "horizon-launcher-windows-arm64.zip",
     ),
 ];
 
@@ -108,6 +114,10 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
     None
 }
 
+/// Both follow this launcher's own architecture. An x64 launcher on a Windows ARM64 PC (under
+/// emulation) keeps updating itself, installing games and building native mods as x64, so a player
+/// whose emulated setup works is never moved to an ARM64 build by an update. The ARM64 launcher is
+/// what `horizon-launcher-setup-arm64.exe` installs.
 const OWN_ASSETS: Option<(&str, &str)> =
     platform_assets(std::env::consts::OS, std::env::consts::ARCH);
 /// The game build this launcher installs, None where Horizon has none.
@@ -120,6 +130,346 @@ pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
     Some((_, launcher)) => Some(launcher),
     None => None,
 };
+/// The game build the ARM64 Windows launcher installs from a release that has no ARM64 one (every
+/// release before it, or a Nightly whose ARM64 job failed): the x64 build, which Windows runs under
+/// emulation.
+const GAME_FALLBACK: Option<&str> = game_fallback_for(std::env::consts::OS, std::env::consts::ARCH);
+
+/// The game architecture selected in Settings. Auto preserves the launcher's existing behavior:
+/// it follows the process architecture, even when an x64 launcher runs on Windows ARM.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GameArchitecture {
+    #[default]
+    Auto,
+    X64,
+    Arm64,
+}
+
+impl GameArchitecture {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::X64 => "x64",
+            Self::Arm64 => "arm64",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => Some(Self::Auto),
+            "x64" | "x86_64" | "amd64" => Some(Self::X64),
+            "arm64" | "aarch64" => Some(Self::Arm64),
+            _ => None,
+        }
+    }
+}
+
+const GAME_BUILD_ARCHITECTURE: &str = ".horizon-game-architecture.json";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct InstalledGameArchitecture {
+    /// The architecture requested when this version was installed.
+    requested: GameArchitecture,
+    /// The archive's actual architecture (x64 may be the safe ARM64 fallback).
+    binary: GameArchitecture,
+}
+
+fn architecture_for_platform(architecture: &str) -> Option<GameArchitecture> {
+    match architecture {
+        "x86_64" => Some(GameArchitecture::X64),
+        "aarch64" => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+fn architecture_for_asset(asset: &str) -> Option<GameArchitecture> {
+    match asset.rsplit('/').next()? {
+        "horizon-windows-x64.zip" => Some(GameArchitecture::X64),
+        "horizon-windows-arm64.zip" => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+/// Detect the native Windows machine even if this launcher process is running under emulation.
+#[cfg(windows)]
+fn native_windows_architecture() -> Option<&'static str> {
+    #[repr(C)]
+    struct SystemInfo {
+        processor_architecture: u16,
+        _reserved: u16,
+        _page_size: u32,
+        _minimum_application_address: *mut std::ffi::c_void,
+        _maximum_application_address: *mut std::ffi::c_void,
+        _active_processor_mask: usize,
+        _number_of_processors: u32,
+        _processor_type: u32,
+        _allocation_granularity: u32,
+        _processor_level: u16,
+        _processor_revision: u16,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn GetModuleHandleA(module_name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut std::ffi::c_void,
+            name: *const std::ffi::c_char,
+        ) -> Option<unsafe extern "system" fn()>;
+        fn GetNativeSystemInfo(info: *mut SystemInfo);
+    }
+
+    type IsWow64Process2 =
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, *mut u16) -> i32;
+
+    // IsWow64Process2 reports the ARM64 host for x64 emulation; GetNativeSystemInfo reports the
+    // emulated processor for compatibility. Resolve it dynamically for older Windows versions.
+    let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr()) };
+    let is_wow64_process2 = if kernel32.is_null() {
+        None
+    } else {
+        unsafe { GetProcAddress(kernel32, c"IsWow64Process2".as_ptr()) }
+    };
+    if let Some(function) = is_wow64_process2 {
+        // SAFETY: GetProcAddress resolved this exact Kernel32 API, whose signature is declared
+        // above with the documented system calling convention.
+        let is_wow64_process2: IsWow64Process2 = unsafe { std::mem::transmute(function) };
+        let (mut process_machine, mut native_machine) = (0u16, 0u16);
+        // SAFETY: GetCurrentProcess returns a pseudo-handle accepted by IsWow64Process2, and both
+        // output pointers refer to live USHORTs.
+        if unsafe {
+            is_wow64_process2(
+                GetCurrentProcess(),
+                &mut process_machine,
+                &mut native_machine,
+            )
+        } != 0
+        {
+            return match native_machine {
+                0x8664 => Some("x86_64"),  // IMAGE_FILE_MACHINE_AMD64
+                0xaa64 => Some("aarch64"), // IMAGE_FILE_MACHINE_ARM64
+                _ => None,
+            };
+        }
+    }
+
+    // SAFETY: GetNativeSystemInfo writes the documented SYSTEM_INFO layout into this repr(C)
+    // buffer and has no failure return value. This fallback preserves existing behavior on older
+    // Windows versions without IsWow64Process2.
+    let mut info: SystemInfo = unsafe { std::mem::zeroed() };
+    unsafe { GetNativeSystemInfo(&mut info) };
+    match info.processor_architecture {
+        9 => Some("x86_64"),   // PROCESSOR_ARCHITECTURE_AMD64
+        12 => Some("aarch64"), // PROCESSOR_ARCHITECTURE_ARM64
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn native_windows_architecture() -> Option<&'static str> {
+    None
+}
+
+fn supports_game_architecture_choice(os: &str, native: Option<&str>) -> bool {
+    os == "windows" && native == Some("aarch64")
+}
+
+/// Resolves the game's asset and fallback. Auto follows the process architecture, preserving
+/// existing x64, Linux and macOS behavior. Manual choices are honored on native Windows ARM.
+fn game_assets_for(
+    os: &str,
+    native: Option<&str>,
+    process: &str,
+    choice: GameArchitecture,
+) -> Option<(&'static str, Option<&'static str>)> {
+    let arch = if supports_game_architecture_choice(os, native) {
+        match choice {
+            GameArchitecture::Auto => process,
+            GameArchitecture::X64 => "x86_64",
+            GameArchitecture::Arm64 => "aarch64",
+        }
+    } else {
+        process
+    };
+    let (asset, _) = platform_assets(os, arch)?;
+    Some((asset, game_fallback_for(os, arch)))
+}
+
+fn selected_game_architecture(settings: &Settings) -> Option<GameArchitecture> {
+    if std::env::consts::OS != "windows" {
+        return None;
+    }
+    let arch = if supports_game_architecture_choice("windows", native_windows_architecture()) {
+        match settings.game_architecture {
+            GameArchitecture::Auto => std::env::consts::ARCH,
+            GameArchitecture::X64 => "x86_64",
+            GameArchitecture::Arm64 => "aarch64",
+        }
+    } else {
+        std::env::consts::ARCH
+    };
+    architecture_for_platform(arch)
+}
+
+/// True for both native ARM64 launchers and x64 launchers under ARM64 emulation.
+pub fn can_choose_game_architecture() -> bool {
+    supports_game_architecture_choice("windows", native_windows_architecture())
+}
+
+/// A downloaded version records its requested and actual architectures. Old installs and imports
+/// have no marker; their PE machine type is used for both.
+fn installed_game_architecture(tag: &str) -> Option<InstalledGameArchitecture> {
+    let dir = version_dir(tag);
+    serde_json::from_slice(&fs::read(dir.join(GAME_BUILD_ARCHITECTURE)).ok()?)
+        .ok()
+        .or_else(|| {
+            let binary = pe_architecture_file(&dir.join(CLIENT))?;
+            Some(InstalledGameArchitecture {
+                requested: binary,
+                binary,
+            })
+        })
+}
+
+fn pe_architecture_file(path: &Path) -> Option<GameArchitecture> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).ok()?;
+    let mut dos = [0u8; 0x40];
+    file.read_exact(&mut dos).ok()?;
+    if &dos[..2] != b"MZ" {
+        return None;
+    }
+    let pe = u32::from_le_bytes(dos[0x3c..0x40].try_into().ok()?);
+    file.seek(SeekFrom::Start(u64::from(pe))).ok()?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header).ok()?;
+    (&header[..4] == b"PE\x00\x00")
+        .then(|| architecture_for_pe_machine(u16::from_le_bytes([header[4], header[5]])))
+        .flatten()
+}
+
+fn architecture_for_pe_machine(machine: u16) -> Option<GameArchitecture> {
+    match machine {
+        0x8664 => Some(GameArchitecture::X64),
+        0xaa64 => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+fn installation_matches_game_architecture(tag: &str, settings: &Settings) -> bool {
+    if !can_choose_game_architecture() {
+        return true;
+    }
+    let Some(target) = selected_game_architecture(settings) else {
+        return true;
+    };
+    installed_game_architecture(tag)
+        .is_some_and(|installed| installed_architecture_matches(target, installed))
+}
+
+fn installed_architecture_matches(
+    target: GameArchitecture,
+    installed: InstalledGameArchitecture,
+) -> bool {
+    installed.requested == target || installed.binary == target
+}
+
+fn game_architecture_install_needed(
+    target: GameArchitecture,
+    expected: GameArchitecture,
+    installed: Option<InstalledGameArchitecture>,
+) -> bool {
+    installed.is_none_or(|installed| {
+        (installed.requested != target && installed.binary != target)
+            || installed.binary != expected
+    })
+}
+
+/// Whether an installed version needs the selected architecture downloaded. This also refreshes
+/// old installs with a same-version install when needed to record an ARM64 fallback choice.
+pub fn needs_game_architecture_install(tag: &str, release: &Release) -> bool {
+    if !can_choose_game_architecture() {
+        return false;
+    }
+    let Some(expected) = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| architecture_for_asset(url))
+    else {
+        return false;
+    };
+    let settings = Settings::load();
+    let Some(target) = selected_game_architecture(&settings) else {
+        return false;
+    };
+    game_architecture_install_needed(target, expected, installed_game_architecture(tag))
+}
+
+fn native_mod_architecture_message(
+    process: GameArchitecture,
+    selected: GameArchitecture,
+) -> Option<&'static str> {
+    (process != selected).then_some(if process == GameArchitecture::X64 {
+        "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only."
+    } else {
+        "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler."
+    })
+}
+
+pub(crate) fn native_mod_architecture_error() -> Option<String> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let process = architecture_for_platform(std::env::consts::ARCH)?;
+    let selected = selected_game_architecture(&Settings::load())?;
+    native_mod_architecture_message(process, selected)
+        .map(|message| crate::i18n::tr(message).to_string())
+}
+
+/// Refuse to launch an explicit game architecture until this version has been installed for it.
+pub fn game_architecture_launch_error(tag: &str) -> Option<String> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let settings = Settings::load();
+    if settings.game_architecture == GameArchitecture::Auto
+        || installation_matches_game_architecture(tag, &settings)
+    {
+        return None;
+    }
+    let target = selected_game_architecture(&settings)?;
+    let installed = installed_game_architecture(tag).map(|a| a.binary);
+    let label = |arch| match arch {
+        GameArchitecture::X64 => "x64".to_owned(),
+        GameArchitecture::Arm64 => "ARM64".to_owned(),
+        GameArchitecture::Auto => crate::i18n::tr("Automatic").to_string(),
+    };
+    let installed = installed
+        .map(label)
+        .unwrap_or_else(|| crate::i18n::tr("Unknown").to_string());
+    let selected = label(target);
+    Some(crate::i18n::trf(
+        "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
+        &[
+            ("installed", &installed),
+            ("selected", &selected),
+        ],
+    ))
+}
+
+/// The asset a platform's launcher falls back to when a release has no build of its own.
+const fn game_fallback_for(os: &str, arch: &str) -> Option<&'static str> {
+    if same(os, "windows") && same(arch, "aarch64") {
+        match platform_assets("windows", "x86_64") {
+            Some((game, _)) => Some(game),
+            None => None,
+        }
+    } else {
+        None
+    }
+}
 
 /// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
 /// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
@@ -382,9 +732,36 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
-    let mut out = parse_releases(list, ASSET, |tag| {
-        is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
+    let settings = Settings::load();
+    let assets = game_assets_for(
+        std::env::consts::OS,
+        native_windows_architecture(),
+        std::env::consts::ARCH,
+        settings.game_architecture,
+    );
+    let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
+        (Some(asset), fallback)
     });
+    game_releases_with(list, asset, fallback)
+}
+
+/// [`game_releases`] for one platform's asset, and the one it installs from a release that has
+/// none of its own ([`GAME_FALLBACK`]).
+fn game_releases_with(
+    list: &serde_json::Value,
+    asset: Option<&str>,
+    fallback: Option<&str>,
+) -> Vec<Release> {
+    let keep = |tag: &str| is_game_tag(tag) || horizon_release_sign::is_nightly(tag);
+    let mut out = parse_releases(list, asset, keep);
+    if fallback.is_some() {
+        // The same releases in the same order: only the asset looked for differs.
+        for (r, other) in out.iter_mut().zip(parse_releases(list, fallback, keep)) {
+            if r.asset.is_none() && r.tag == other.tag {
+                r.asset = other.asset;
+            }
+        }
+    }
     for r in &mut out {
         if horizon_release_sign::is_nightly(&r.tag) {
             let version = crate::nightly::version_of(r);
@@ -791,18 +1168,61 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
+    let settings = Settings::load();
+    let assets = game_assets_for(
+        std::env::consts::OS,
+        native_windows_architecture(),
+        std::env::consts::ARCH,
+        settings.game_architecture,
+    );
+    let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
+        (Some(asset), fallback)
+    });
+    let asset = asset_installed(release, asset, fallback).ok_or_else(|| {
+        crate::i18n::trf(
+            "{tag} has no build for the selected game architecture.",
+            &[("tag", tag)],
+        )
+        .to_string()
+    })?;
     let sha256 = match &release.nightly {
         // Signed for the Nightly channel, served under its own GitHub tag.
         Some(published) => crate::signed::nightly_digest(
             published,
-            ASSET.unwrap_or_default(),
+            asset,
             &horizon_release_sign::trusted_keys(),
             fetch_small,
         )?,
-        None if is_game_tag(tag) => signed_digest(tag, ASSET.unwrap_or_default())?,
+        None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
-    install_as(release, tag, &sha256, progress)
+    install_as(
+        release,
+        tag,
+        &sha256,
+        selected_game_architecture(&settings),
+        progress,
+    )
+}
+
+/// The asset `release` installs from: the fallback when [`game_releases_with`] took it (its file
+/// name ends the download address), so the signed checksum checked is that file's.
+fn asset_installed<'a>(
+    release: &Release,
+    asset: Option<&'a str>,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    let file = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| url.rsplit('/').next());
+    if fallback.is_some_and(|name| file == Some(name)) {
+        fallback
+    } else if asset.is_some_and(|name| file == Some(name)) {
+        asset
+    } else {
+        None
+    }
 }
 
 /// Downloads `release`'s archive for this platform, checks it against `sha256` (its signed
@@ -811,6 +1231,7 @@ pub(crate) fn install_as(
     release: &Release,
     tag: &str,
     sha256: &str,
+    requested_architecture: Option<GameArchitecture>,
     progress: impl Fn(f32),
 ) -> Result<(), String> {
     let (url, size) = release
@@ -842,6 +1263,15 @@ pub(crate) fn install_as(
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(top.join(CLIENT), fs::Permissions::from_mode(0o755));
+    }
+    if let (Some(requested), Some(binary)) = (requested_architecture, architecture_for_asset(&url))
+    {
+        fs::write(
+            top.join(GAME_BUILD_ARCHITECTURE),
+            serde_json::to_vec(&InstalledGameArchitecture { requested, binary })
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
     }
     let target = version_dir(tag);
     let _ = fs::remove_dir_all(&target);
@@ -2499,6 +2929,9 @@ pub fn client(tag: &str) -> Result<Command, String> {
 
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
+    if let Some(error) = game_architecture_launch_error(tag) {
+        return Err(error);
+    }
     let session = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
@@ -2536,6 +2969,9 @@ pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
 
 /// The dedicated server's command in `folder`, once prepared and the EULA is agreed to.
 pub fn server(tag: &str, folder: &Path, accept_eula: bool) -> Result<Command, String> {
+    if let Some(error) = game_architecture_launch_error(tag) {
+        return Err(error);
+    }
     need_prepared(tag)?;
     if accept_eula {
         agree_eula(folder)?;
@@ -2688,12 +3124,32 @@ fn releases_and_updates_with(
         }
     };
     let releases = game_releases(&list);
-    let horizon = horizon_update(&installable_updates(&releases), &installed());
+    let installed_versions = installed();
+    let horizon = horizon_update(&installable_updates(&releases), &installed_versions)
+        .or_else(|| architecture_update(&releases, &installed_versions));
     on_releases(Ok(releases));
     Ok(Updates {
         horizon,
         launcher: launcher_update(&launchers(&list)),
     })
+}
+
+/// If the selected installed game has the wrong architecture, offer the same release again so
+/// the preference also applies when there is no newer game version.
+fn architecture_update(releases: &[Release], installed: &[String]) -> Option<Release> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let settings = Settings::load();
+    let tag = settings
+        .selected
+        .filter(|tag| installed.contains(tag))
+        .or_else(|| installed.iter().find(|tag| is_game_tag(tag)).cloned())?;
+    if !is_game_tag(&tag) {
+        return None;
+    }
+    let release = releases.iter().find(|release| release.tag == tag)?;
+    needs_game_architecture_install(&tag, release).then(|| release.clone())
 }
 
 /// A fresh release-list request for both kinds of update (plus older-launcher fallback if needed).
@@ -2975,10 +3431,35 @@ fn replace_bundle(_new: &Path, _app: &Path) -> Result<(), String> {
     Err("App bundles are a macOS thing.".into())
 }
 
+/// A launcher release downloaded and checked against its signed SHA256SUMS, waiting to take this
+/// launcher's place: the new AppImage, `.app` bundle or binary, inside [`update_work_dir`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Staged {
+    pub tag: String,
+    pub payload: PathBuf,
+}
+
+/// Where a launcher update is downloaded and unpacked before it takes this one's place.
+pub fn update_work_dir() -> PathBuf {
+    data_dir().join(".launcher-update")
+}
+
 /// Downloads a launcher release and puts it in place of this one. The running process keeps
 /// working; `restart` starts the new one. When the file there already is that release or
 /// a newer one (updated from the command line or another window), there is nothing to do.
 pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
+    if let Some(staged) = stage_update(release, &progress)? {
+        place_staged(&staged)?;
+        let _ = fs::remove_dir_all(update_work_dir());
+    }
+    progress(1.0);
+    Ok(())
+}
+
+/// Downloads and unpacks a launcher release next to this one without putting it in place yet
+/// ([`place_staged`] does, in this process or in the installer `update_handoff` starts). None
+/// when the file there already is that release or a newer one.
+pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<Staged>, String> {
     let (url, size) = release
         .asset
         .clone()
@@ -2987,62 +3468,114 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
     if installed_launcher_version(&update_target())
         .is_some_and(|v| v != VERSION && compare_versions(&v, target).is_ge())
     {
-        progress(1.0);
-        return Ok(());
+        return Ok(None);
     }
     let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
-    let work = data_dir().join(".launcher-update");
+    let work = update_work_dir();
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let archive = work.join("download");
     download(&url, size, &sha256, &archive, &progress)?;
+    let staged = |payload| {
+        Ok(Some(Staged {
+            tag: release.tag.clone(),
+            payload,
+        }))
+    };
     // An AppImage is the whole program: the new one takes the place of the file `$APPIMAGE` names
     // (the running mount keeps its copy until `restart` starts it). Its archive is not a `.tar.gz`
     // to unpack, so this comes before the unpacking below.
-    if let Some(appimage) = appimage_path() {
+    if appimage_path().is_some() {
         if !url.ends_with(".AppImage") {
             return Err(format!(
                 "{} is not an AppImage, and this launcher runs from one. Install it from its release page instead.",
                 release.tag
             ));
         }
-        replace_binary(&archive, &appimage).map_err(|e| {
-            format!(
-                "Could not replace the AppImage at {}: {e}",
-                appimage.display()
-            )
-        })?;
-        let _ = fs::remove_dir_all(&work);
-        progress(1.0);
-        return Ok(());
+        return staged(archive);
     }
     let unpacked = work.join("unpacked");
     unpack(&archive, &url, &unpacked)?;
     // A launcher inside Horizon.app replaces the whole bundle (its Info.plist, icon and
     // signature belong with the binary); a bare binary, as older launchers are, only the binary,
     // which the macOS archive also holds (Horizon.app/Contents/MacOS/horizon-launcher).
-    if let Some(app) = app_bundle(exe_path()) {
+    if app_bundle(exe_path()).is_some() {
         if let Some(new) = find_app(&unpacked) {
-            replace_bundle(&new, app)?;
-            let _ = fs::remove_dir_all(&work);
-            progress(1.0);
-            return Ok(());
+            return staged(new);
         }
     }
     let binary =
         find_file(&unpacked, LAUNCHER_BINARY).ok_or("The download has no launcher binary.")?;
-    replace_binary(&binary, exe_path()).map_err(|e| {
-        format!(
-            "Could not replace the launcher at {}: {e}",
-            exe_path().display()
-        )
-    })?;
+    staged(binary)
+}
+
+/// Puts a [`stage_update`]d launcher where this one runs from: the AppImage, the `.app` bundle
+/// or the binary.
+pub fn place_staged(staged: &Staged) -> Result<(), String> {
+    let new = &staged.payload;
+    if let Some(appimage) = appimage_path() {
+        replace_binary(new, &appimage).map_err(|e| {
+            format!(
+                "Could not replace the AppImage at {}: {e}",
+                appimage.display()
+            )
+        })?;
+        return Ok(());
+    }
+    match app_bundle(exe_path()) {
+        Some(app) if new.extension().is_some_and(|e| e == "app") => replace_bundle(new, app)?,
+        _ => replace_binary(new, exe_path()).map_err(|e| {
+            format!(
+                "Could not replace the launcher at {}: {e}",
+                exe_path().display()
+            )
+        })?,
+    }
     // An installed launcher's Uninstall entry names the new version (installer.rs).
     #[cfg(windows)]
-    crate::installer::after_update(launcher_version(&release.tag).unwrap_or(VERSION));
-    let _ = fs::remove_dir_all(&work);
-    progress(1.0);
+    crate::installer::after_update(launcher_version(&staged.tag).unwrap_or(VERSION));
     Ok(())
+}
+
+/// The website's install page, where a launcher that can't update itself sends the player.
+pub fn download_page(website: &str) -> String {
+    format!("{}/docs/install", website.trim_end_matches('/'))
+}
+
+/// Whether this copy of the launcher can't put a new one in its place: its folder is read-only (a
+/// disk image, or the read-only copy macOS runs a downloaded app from until it is moved, its "App
+/// Translocation"), or it is the temporary copy Windows' Explorer runs from a `.zip` it was opened
+/// in (and deletes later). Such a copy is told to download the launcher again (#9287).
+pub fn cannot_replace_itself() -> bool {
+    let target = update_target();
+    let place = app_bundle(&target).unwrap_or(&target);
+    place
+        .parent()
+        .is_none_or(|dir| !writable(dir) || zip_preview(dir, &std::env::temp_dir()))
+}
+
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
+    let made = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok();
+    let _ = fs::remove_file(&probe);
+    made
+}
+
+/// `dir` is under the temporary folder, in one named like Explorer's `Temp1_<archive>.zip`.
+fn zip_preview(dir: &Path, temp: &Path) -> bool {
+    dir.strip_prefix(temp).is_ok_and(|inside| {
+        inside.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+            name.strip_prefix("temp").is_some_and(|rest| {
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with('_') && name.ends_with(".zip")
+            })
+        })
+    })
 }
 
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -3172,7 +3705,7 @@ pub enum Msg {
     /// Boxed: two releases, the largest message by far.
     Updates(Result<Box<Updates>, String>),
     LauncherProgress(f32),
-    LauncherUpdated(Result<(), String>),
+    LauncherUpdated(Result<Option<Staged>, String>),
     /// `reuse_prepared_everywhere` prepared these versions.
     Reused(Vec<(String, String)>),
     /// None when secrets are kept in the OS keychain, else what to say: they last only until
@@ -3338,6 +3871,9 @@ impl WhilePlaying {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub selected: Option<String>,
+    /// Game asset architecture. Auto preserves the launcher's process-architecture behavior.
+    #[serde(default)]
+    pub game_architecture: GameArchitecture,
     /// The instance Play starts (`instances`), by id. Unset means Horizon, the game's home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
@@ -3405,6 +3941,10 @@ pub struct Settings {
     /// Horizon's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The cheaper scene for older computers (a lower-resolution sky, a box blur, the scene
+    /// following the mouse less often and resizes baked in the background). Unset is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance: Option<bool>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3457,6 +3997,12 @@ impl Settings {
             {
                 fields.remove("while_playing");
             }
+            if fields
+                .get("game_architecture")
+                .is_some_and(|a| serde_json::from_value::<GameArchitecture>(a.clone()).is_err())
+            {
+                fields.remove("game_architecture");
+            }
             if fields.get("accent").is_some_and(|a| {
                 serde_json::from_value::<crate::themes::Accent>(a.clone()).is_err()
             }) {
@@ -3505,6 +4051,10 @@ impl Settings {
             .filter(|v| v.is_finite())
             .map_or(horizon_theme::glass::BLUR, |v| v.clamp(0., 48.))
     }
+    /// Whether the cheaper scene is on ([`performance`](Self::performance)).
+    pub fn performance(&self) -> bool {
+        self.performance.unwrap_or(false)
+    }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
@@ -3544,6 +4094,22 @@ mod tests {
     use super::*;
     use std::cmp::Ordering::*;
     use std::ffi::OsStr;
+
+    fn pe_architecture(bytes: &[u8]) -> Option<GameArchitecture> {
+        if bytes.get(..2)? != b"MZ" {
+            return None;
+        }
+        let pe = u32::from_le_bytes(bytes.get(0x3c..0x40)?.try_into().ok()?) as usize;
+        if bytes.get(pe..pe.checked_add(4)?)? != b"PE\x00\x00" {
+            return None;
+        }
+        architecture_for_pe_machine(u16::from_le_bytes(
+            bytes
+                .get(pe.checked_add(4)?..pe.checked_add(6)?)?
+                .try_into()
+                .ok()?,
+        ))
+    }
 
     #[test]
     #[cfg(windows)]
@@ -3890,8 +4456,18 @@ pub fn {f}("
             Some(("horizon-macos-x64.zip", "horizon-launcher-macos-x64.zip"))
         );
         assert_eq!(
-            platform_assets("windows", "x86_64").map(|(game, _)| game),
-            Some("horizon-windows-x64.zip")
+            platform_assets("windows", "x86_64"),
+            Some((
+                "horizon-windows-x64.zip",
+                "horizon-launcher-windows-x64.zip"
+            ))
+        );
+        assert_eq!(
+            platform_assets("windows", "aarch64"),
+            Some((
+                "horizon-windows-arm64.zip",
+                "horizon-launcher-windows-arm64.zip"
+            ))
         );
         assert_eq!(platform_assets("linux", "aarch64"), None);
         assert_eq!(platform_assets("macos", "x86"), None);
@@ -3899,6 +4475,291 @@ pub fn {f}("
             ASSET,
             platform_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| game)
         );
+        assert_eq!(
+            game_fallback_for("windows", "aarch64"),
+            Some("horizon-windows-x64.zip")
+        );
+        assert_eq!(game_fallback_for("windows", "x86_64"), None);
+        assert_eq!(game_fallback_for("macos", "aarch64"), None);
+    }
+
+    /// The ARM64 Windows launcher installs the ARM64 build where a release has one, and the x64
+    /// build (under emulation) from the releases that have only that, checked against that file's
+    /// signed checksum.
+    #[test]
+    fn an_arm64_windows_launcher_falls_back_to_the_x64_game() {
+        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        let asset = |name: &str, url: &str| serde_json::json!({"name": name, "browser_download_url": url, "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "v2026.11.05", "assets": [
+                asset(x64, "https://example.test/v2026.11.05/horizon-windows-x64.zip"),
+                asset(arm, "https://example.test/v2026.11.05/horizon-windows-arm64.zip")]},
+            {"tag_name": "v2026.11.04", "assets": [
+                asset(x64, "https://example.test/v2026.11.04/horizon-windows-x64.zip")]},
+            {"tag_name": "v2026.11.03", "assets": []},
+        ]);
+        let releases = game_releases_with(&list, Some(arm), Some(x64));
+        let urls: Vec<_> = releases
+            .iter()
+            .map(|r| {
+                r.asset
+                    .as_ref()
+                    .map(|(url, _)| url.rsplit('/').next().unwrap())
+            })
+            .collect();
+        assert_eq!(urls, [Some(arm), Some(x64), None]);
+        let installs: Vec<_> = releases
+            .iter()
+            .map(|r| asset_installed(r, Some(arm), Some(x64)))
+            .collect();
+        assert_eq!(installs, [Some(arm), Some(x64), None]);
+
+        // An x64 launcher, on any Windows, never looks at the ARM64 build.
+        let x64_only = game_releases_with(&list, Some(x64), None);
+        assert!(x64_only[..2]
+            .iter()
+            .all(|r| r.asset.as_ref().unwrap().0.ends_with(x64)));
+    }
+
+    #[test]
+    fn a_game_architecture_choice_is_independent_of_the_launcher_process() {
+        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        // GetNativeSystemInfo reports ARM64 even when std::env::consts::ARCH is x86_64.
+        assert!(supports_game_architecture_choice(
+            "windows",
+            Some("aarch64")
+        ));
+        assert!(!supports_game_architecture_choice(
+            "windows",
+            Some("x86_64")
+        ));
+        assert!(!supports_game_architecture_choice("linux", Some("aarch64")));
+
+        // An x64 launcher keeps the legacy x64 default, but can opt into ARM64.
+        assert_eq!(
+            game_assets_for("windows", Some("aarch64"), "x86_64", GameArchitecture::Auto),
+            Some((x64, None))
+        );
+        assert_eq!(
+            game_assets_for(
+                "windows",
+                Some("aarch64"),
+                "x86_64",
+                GameArchitecture::Arm64
+            ),
+            Some((arm, Some(x64)))
+        );
+
+        // The ARM64 launcher defaults to ARM64 and can choose x64 for compatibility.
+        assert_eq!(
+            game_assets_for(
+                "windows",
+                Some("aarch64"),
+                "aarch64",
+                GameArchitecture::Auto
+            ),
+            Some((arm, Some(x64)))
+        );
+        assert_eq!(
+            game_assets_for("windows", Some("aarch64"), "aarch64", GameArchitecture::X64),
+            Some((x64, None))
+        );
+
+        // Native x64 Windows and the other platforms keep their old process-based selection.
+        assert_eq!(
+            game_assets_for("windows", Some("x86_64"), "x86_64", GameArchitecture::Arm64),
+            Some((x64, None))
+        );
+        assert_eq!(
+            game_assets_for("linux", None, "x86_64", GameArchitecture::Arm64),
+            Some(("horizon-linux-x86_64.tar.gz", None))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_architecture_detection_sees_the_host_under_emulation() {
+        let native = native_windows_architecture().expect("supported Windows machine");
+        assert!(matches!(native, "x86_64" | "aarch64"));
+        if std::env::var_os("HORIZON_TEST_EXPECT_NATIVE_ARM64").is_some() {
+            assert_eq!(std::env::consts::ARCH, "x86_64");
+            assert_eq!(native, "aarch64");
+        }
+        if native == "aarch64" {
+            assert!(supports_game_architecture_choice("windows", Some(native)));
+            let (asset, fallback) = game_assets_for(
+                "windows",
+                Some(native),
+                std::env::consts::ARCH,
+                GameArchitecture::Auto,
+            )
+            .unwrap();
+            if std::env::consts::ARCH == "x86_64" {
+                assert_eq!((asset, fallback), ("horizon-windows-x64.zip", None));
+            } else {
+                assert_eq!(
+                    (asset, fallback),
+                    ("horizon-windows-arm64.zip", Some("horizon-windows-x64.zip"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_architecture_uses_available_assets_and_only_the_safe_fallback() {
+        let arm = "horizon-windows-arm64.zip";
+        let x64 = "horizon-windows-x64.zip";
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "v2026.11.05", "assets": [asset(x64), asset(arm)]},
+            {"tag_name": "v2026.11.04", "assets": [asset(x64)]},
+            {"tag_name": "v2026.11.03", "assets": []}
+        ]);
+
+        let arm_choice = game_releases_with(&list, Some(arm), Some(x64));
+        assert_eq!(
+            arm_choice
+                .iter()
+                .map(|release| release
+                    .asset
+                    .as_ref()
+                    .and_then(|(url, _)| url.rsplit('/').next()))
+                .collect::<Vec<_>>(),
+            [Some(arm), Some(x64), None]
+        );
+        assert_eq!(
+            asset_installed(&arm_choice[0], Some(arm), Some(x64)),
+            Some(arm)
+        );
+        assert_eq!(
+            asset_installed(&arm_choice[1], Some(arm), Some(x64)),
+            Some(x64)
+        );
+        assert_eq!(asset_installed(&arm_choice[2], Some(arm), Some(x64)), None);
+
+        let x64_choice = game_releases_with(&list, Some(x64), None);
+        assert!(x64_choice.iter().take(2).all(|release| release
+            .asset
+            .as_ref()
+            .unwrap()
+            .0
+            .ends_with(x64)));
+        assert_eq!(
+            asset_installed(&arm_choice[0], Some(x64), None),
+            None,
+            "a stale ARM64 release selection must not install under an x64 choice"
+        );
+    }
+
+    #[test]
+    fn selected_game_build_and_safe_fallback_satisfy_the_saved_choice() {
+        let fallback = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::X64,
+        };
+        assert!(installed_architecture_matches(
+            GameArchitecture::Arm64,
+            fallback
+        ));
+        assert!(installed_architecture_matches(
+            GameArchitecture::X64,
+            fallback
+        ));
+        assert!(!installed_architecture_matches(
+            GameArchitecture::Arm64,
+            InstalledGameArchitecture {
+                requested: GameArchitecture::X64,
+                binary: GameArchitecture::X64,
+            }
+        ));
+    }
+
+    #[test]
+    fn updates_reinstall_only_when_the_selected_game_architecture_needs_a_new_build() {
+        let arm_fallback = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::X64,
+        };
+        let old_x64 = InstalledGameArchitecture {
+            requested: GameArchitecture::X64,
+            binary: GameArchitecture::X64,
+        };
+        let arm = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::Arm64,
+        };
+
+        assert!(!game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::X64,
+            Some(arm_fallback),
+        ));
+        assert!(game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::X64,
+            Some(old_x64),
+        ));
+        assert!(game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::Arm64,
+            Some(arm_fallback),
+        ));
+        assert!(!game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::Arm64,
+            Some(arm),
+        ));
+    }
+
+    #[test]
+    fn native_mod_builds_report_when_the_selected_game_has_no_matching_compiler() {
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::X64, GameArchitecture::Arm64),
+            Some("Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.")
+        );
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::Arm64, GameArchitecture::X64),
+            Some("Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.")
+        );
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::Arm64, GameArchitecture::Arm64),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_pe_machine_types_identify_the_installed_game_architecture() {
+        let pe = |machine: u16| {
+            let mut bytes = vec![0; 0x86];
+            bytes[..2].copy_from_slice(b"MZ");
+            bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+            bytes[0x80..0x84].copy_from_slice(b"PE\x00\x00");
+            bytes[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
+            bytes
+        };
+        assert_eq!(pe_architecture(&pe(0x8664)), Some(GameArchitecture::X64));
+        assert_eq!(pe_architecture(&pe(0xaa64)), Some(GameArchitecture::Arm64));
+        assert_eq!(pe_architecture(b"not a PE executable"), None);
+    }
+
+    /// launcher.yml publishes a release even when its ARM64 build failed. An ARM64 launcher then
+    /// stays on its version until a release has its own zip: it never takes the x64 one.
+    #[test]
+    fn an_arm64_launcher_skips_a_release_without_its_zip() {
+        let (arm, x64) = (
+            "horizon-launcher-windows-arm64.zip",
+            "horizon-launcher-windows-x64.zip",
+        );
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "launcher@0.30.0", "assets": [asset(x64)]},
+            {"tag_name": "launcher@0.29.0", "assets": [asset(x64), asset(arm)]},
+        ]);
+        let releases = parse_releases(&list, Some(arm), is_launcher_tag);
+        assert!(launcher_update_from(&releases, "launcher@0.29.0").is_none());
+        let update = launcher_update_from(&releases, "launcher@0.28.0").unwrap();
+        assert_eq!(update.tag, "launcher@0.29.0");
+        assert!(update.asset.unwrap().0.ends_with(arm));
     }
 
     /// Every asset a launcher looks for is one the release workflows build, sign and publish.
@@ -3914,10 +4775,12 @@ pub fn {f}("
                 build.contains(&format!("asset: {game}")),
                 "game-build.yml builds no {game}"
             );
-            // Signed (SHA256SUMS), then published.
-            assert_eq!(
-                nightly.matches(&format!("dist/{game}")).count(),
-                2,
+            // Signed (SHA256SUMS), then published. Windows ARM64's build may fail without holding the
+            // Nightly, so both steps name it again where they check that it was built.
+            let named = nightly.matches(&format!("dist/{game}")).count();
+            let optional = (os, arch) == ("windows", "aarch64");
+            assert!(
+                named == 2 || (optional && named > 2),
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
             );
             assert!(
@@ -4143,6 +5006,29 @@ pub fn {f}("
     }
 
     #[test]
+    fn the_game_architecture_defaults_to_auto_and_persists_manual_choices() {
+        assert_eq!(
+            Settings::parse("{}").game_architecture,
+            GameArchitecture::Auto
+        );
+        let arm = Settings::parse(r#"{"game_architecture":"arm64","game_args":"--x"}"#);
+        assert_eq!(
+            (arm.game_architecture, arm.game_args.as_str()),
+            (GameArchitecture::Arm64, "--x")
+        );
+        let saved = serde_json::to_value(&arm).unwrap();
+        assert_eq!(saved["game_architecture"], "arm64");
+
+        let unknown = Settings::parse(r#"{"game_architecture":"future","game_args":"--x"}"#);
+        assert_eq!(
+            (unknown.game_architecture, unknown.game_args.as_str()),
+            (GameArchitecture::Auto, "--x")
+        );
+        assert_eq!(GameArchitecture::parse("X64"), Some(GameArchitecture::X64));
+        assert_eq!(GameArchitecture::parse("other"), None);
+    }
+
+    #[test]
     fn the_language_follows_the_system_unless_picked() {
         use crate::i18n::Language;
         assert_eq!(Settings::parse("{}").language, None);
@@ -4336,6 +5222,47 @@ pub fn {f}("
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
         );
+    }
+
+    /// Explorer runs a program opened inside a `.zip` from `%TEMP%\Temp<n>_<archive>.zip\` and
+    /// deletes that copy later: an update written there is lost, so such a copy is told to
+    /// download the launcher again (#9287). A folder of the same look elsewhere is a real install.
+    #[test]
+    fn a_launcher_run_from_inside_a_zip_is_a_temporary_copy() {
+        let temp = Path::new("/tmp/t");
+        let preview = |dir: &str| zip_preview(Path::new(dir), temp);
+        assert!(preview("/tmp/t/Temp1_horizon-launcher-windows-x64.zip"));
+        assert!(preview(
+            "/tmp/t/Temp12_horizon-launcher-windows-x64.zip/inner"
+        ));
+        assert!(preview("/tmp/t/TEMP3_HORIZON.ZIP"));
+        assert!(!preview("/tmp/t/horizon-launcher"));
+        assert!(!preview("/tmp/t/Templates.zip"));
+        assert!(!preview("/tmp/t/Temp_horizon.zip"));
+        assert!(!zip_preview(Path::new("/home/me/Temp1_horizon.zip"), temp));
+    }
+
+    /// A launcher whose folder takes no new file (a disk image, macOS's translocated copy of an
+    /// app it was not moved from) can't put the new one in place.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_folder_takes_no_update() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horizon-read-only-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(writable(&dir));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // root writes anywhere.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!writable(&dir));
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the probe is removed"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted

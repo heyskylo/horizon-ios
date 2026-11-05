@@ -161,6 +161,7 @@ Settings, all optional:
 | `PORT` | 7000 | the TCP port (also answers `GET /health` and `GET /whoami`) |
 | `RELAY_BIND` | all addresses | listen on one address only (e.g. a tailnet address) |
 | `RELAY_MAX_HOSTS` | 1000 | short codes at once |
+| `RELAY_MAX_HOSTS_PER_ADDRESS` | 4 | short codes one client address holds at once (IPv6 by /64; a /48 holds 4 times as many); with `RELAY_PER_ADDRESS_LIMITS` |
 | `RELAY_MAX_BRIDGES` | 200 | relayed streams at once |
 | `RELAY_MAX_PENDING_PER_HOST` | 8 | guests joining one host at the same time |
 | `RELAY_MAX_CONNECTIONS` | 4096 | connections open at once, of every kind (more are closed unanswered) |

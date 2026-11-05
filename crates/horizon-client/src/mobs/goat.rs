@@ -179,10 +179,9 @@ fn block_of(p: Vec3) -> [i32; 3] {
     [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
 }
 fn play(m: &Mob, events: &mut Vec<MobEvent>, sound: &'static str, pitch: f32) {
-    if !m.silent {
-        let at = [m.position.x, m.position.y, m.position.z];
-        events.push(MobEvent::Sound(sound, at, 1.0, pitch));
-    }
+    // PrepareRamNearestTarget / RamTarget use the level overload even when
+    // Silent is set; the receiving client's bound instance checks silence.
+    events.push(MobEvent::entity_sound(m, sound, 6, 1.0, pitch));
 }
 
 /// `PrepareRamNearestTarget.isWalkableBlock`.
@@ -541,4 +540,39 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
     set_ram_cooldown(m, cooldown);
     m.extra.goat.ram_target = None;
     m.extra.goat.phase = Phase::Done;
+}
+
+#[cfg(test)]
+mod sound_tests {
+    use super::*;
+
+    #[test]
+    fn ram_sound_keeps_a_silent_emitters_identity_and_does_not_draw_its_random() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:goat".into();
+        k.species = super::super::Species::Goat;
+        let mut goat = Mob::new(37, kind, Vec3::new(0.123456789, 64.0, -3.25), 0.0);
+        goat.silent = true;
+        let mut expected = goat.random.clone();
+        let mut events = Vec::new();
+        play(&goat, &mut events, "entity.goat.ram_impact", 1.0);
+        let [
+            MobEvent::EntitySound {
+                mob,
+                name,
+                at,
+                source,
+                volume,
+                pitch,
+            },
+        ] = &events[..]
+        else {
+            panic!("the level sound must survive Silent and retain its emitter");
+        };
+        assert_eq!((*mob, *name, *source), (37, "entity.goat.ram_impact", 6));
+        assert_eq!(*at, [0.123456789, 64.0, -3.25]);
+        assert_eq!((*volume, *pitch), (1.0, 1.0));
+        assert_eq!(goat.random.next_long(), expected.next_long());
+    }
 }
