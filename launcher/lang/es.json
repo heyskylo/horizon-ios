@@ -1178,5 +1178,6 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Necesita los puntos de enganche nativos v{needs}, el Horizon que juegas tiene la v{has}: actualiza Horizon primero",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Hecho para Horizon {pin}, pero {mods} fijan otro commit: la compilación te pedirá «Compilar de todos modos» y puede fallar",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Hecho para Horizon {pin}, juegas {yours}: el launcher compila tu juego en {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Etiquetas"
 }

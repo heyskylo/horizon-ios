@@ -239,6 +239,44 @@ fn categories_of(kind: Kind) -> &'static [&'static str] {
     })
 }
 
+/// The most tags the Filters panel offers for a kind.
+const MAX_TAGS_SHOWN: usize = 30;
+
+/// The tags the registry's projects of `kind` carry, plain ones only (as the site keeps them):
+/// the most used first, then by name.
+fn tags_of(index: &Index, kind: Kind) -> Vec<String> {
+    let plain = |t: &str| {
+        t.len() <= index::page::MAX_TAG
+            && t.bytes().next().is_some_and(|b| b != b'-')
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    for p in index
+        .projects
+        .iter()
+        .filter(|p| kind_of(&p.kind) == Some(kind))
+    {
+        let mut own: Vec<&str> = p
+            .tags
+            .iter()
+            .map(String::as_str)
+            .filter(|t| plain(t))
+            .collect();
+        own.sort_unstable();
+        own.dedup();
+        for t in own {
+            *uses.entry(t).or_default() += 1;
+        }
+    }
+    let mut tags: Vec<(&str, usize)> = uses.into_iter().collect();
+    tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    tags.into_iter()
+        .take(MAX_TAGS_SHOWN)
+        .map(|(t, _)| t.to_owned())
+        .collect()
+}
+
 /// Where the registry's mod policy is: who owns and answers for a project, takedowns.
 pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
 
@@ -391,8 +429,8 @@ pub const SORTS: [super::details::Sort; 3] = [
     super::details::Sort::Updated,
 ];
 
-/// The projects of the query's kind whose words match and that have every category the filters
-/// ask for, for this game unless `everything`: the
+/// The projects of the query's kind whose words match and that have every category and tag the
+/// filters ask for, for this game unless `everything`: the
 /// most downloaded first, or the newest (first published) or most recently updated (latest
 /// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
@@ -407,6 +445,7 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
                 .categories
                 .iter()
                 .all(|c| p.categories.contains(c))
+                && query.filters.tags.iter().all(|t| p.tags.contains(t))
         })
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
         // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
@@ -496,9 +535,11 @@ impl Source for Registry {
             .collect())
     }
 
-    /// Only categories: every registry file is for Horizon on the version it plays.
+    /// Only categories and tags: every registry file is for Horizon on the version it plays. The
+    /// tags come from the index the search already read (never the network).
     fn tags(&self, kind: Kind) -> Result<super::details::Tags, String> {
         Ok(super::details::Tags {
+            tags: known_index().map(|i| tags_of(&i, kind)).unwrap_or_default(),
             categories: categories_of(kind)
                 .iter()
                 .map(|name| super::details::Tag {
