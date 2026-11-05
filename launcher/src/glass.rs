@@ -52,7 +52,6 @@ struct Pieces {
     full_glass: Option<Arc<RenderImage>>,
     full_float: Option<Arc<RenderImage>>,
     full_size: (f32, f32),
-    full_scale: f32,
     full_generation: u32,
 }
 
@@ -73,7 +72,6 @@ thread_local! {
         full_glass: None,
         full_float: None,
         full_size: (0., 0.),
-        full_scale: 0.,
         full_generation: 0,
     });
 }
@@ -254,22 +252,18 @@ fn build_dark_full_image(
     kind: Kind,
     vw: f32,
     vh: f32,
-    scale: f32,
 ) -> Arc<RenderImage> {
-    let scale = scale.max(0.1);
-    let img_w = (vw * scale).round().max(1.) as usize;
-    let img_h = (vh * scale).round().max(1.) as usize;
-
+    let (cols, rows) = texels(vw, vh);
     let tint = [16, 8, 0].map(|s| ((look.plate >> s) & 255) as f32 / 255.);
     let a = look.plate_alpha;
     let float = kind == Kind::Float;
 
-    let mut buf = image::RgbaImage::new(img_w as u32, img_h as u32);
+    let mut buf = image::RgbaImage::new(cols + 2, rows + 2);
     for (row, line) in buf.rows_mut().enumerate() {
-        let ly = (row as f64 + 0.5) / (img_h as f64) * vh as f64;
+        let y = (row as f32 - 0.5) * vh / rows as f32;
         for (col, p) in line.enumerate() {
-            let lx = (col as f64 + 0.5) / (img_w as f64) * vw as f64;
-            let c = backdrop.at(float, lx, ly);
+            let x = (col as f32 - 0.5) * vw / cols as f32;
+            let c = backdrop.at(float, x as f64, y as f64);
             let mixed = [0, 1, 2].map(|i| ((tint[i] * a + c[i] * (1. - a)) * 255.).round() as u8);
             // BGRA, opaque.
             *p = image::Rgba([mixed[2], mixed[1], mixed[0], 255]);
@@ -280,12 +274,18 @@ fn build_dark_full_image(
 }
 
 fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &mut Window) {
-    let scale = window.scale_factor();
     let viewport = window.viewport_size();
     let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
     if vw <= 0. || vh <= 0. {
         return;
     }
+
+    let (cols, rows) = texels(vw, vh);
+    let (tx, ty) = (vw / cols as f32, vh / rows as f32);
+    let outer = Bounds::new(
+        gpui::point(-px(tx), -px(ty)),
+        viewport + gpui::size(px(tx * 2.), px(ty * 2.)),
+    );
 
     let (image, image_bounds) = PIECES.with_borrow_mut(|p| {
         let light = p.light;
@@ -293,10 +293,7 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
             return (None, bounds);
         }
 
-        if p.full_generation != p.generation
-            || p.full_size != (vw, vh)
-            || (p.full_scale - scale).abs() > 0.001
-        {
+        if p.full_generation != p.generation || p.full_size != (vw, vh) {
             if let Some(old) = p.full_glass.take() {
                 p.retired.push(old);
             }
@@ -305,7 +302,6 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
             }
             p.full_generation = p.generation;
             p.full_size = (vw, vh);
-            p.full_scale = scale;
         }
 
         let image = match kind {
@@ -315,7 +311,7 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
                         let buf = image::RgbaImage::from_pixel(2, 2, light_texel(Kind::Glass, 1.));
                         Arc::new(RenderImage::new([image::Frame::new(buf)]))
                     } else if let Some(backdrop) = p.backdrop.as_ref() {
-                        build_dark_full_image(backdrop, &p.look, Kind::Glass, vw, vh, scale)
+                        build_dark_full_image(backdrop, &p.look, Kind::Glass, vw, vh)
                     } else {
                         return (None, bounds);
                     };
@@ -329,7 +325,7 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
                         let buf = image::RgbaImage::from_pixel(2, 2, light_texel(Kind::Float, 1.));
                         Arc::new(RenderImage::new([image::Frame::new(buf)]))
                     } else if let Some(backdrop) = p.backdrop.as_ref() {
-                        build_dark_full_image(backdrop, &p.look, Kind::Float, vw, vh, scale)
+                        build_dark_full_image(backdrop, &p.look, Kind::Float, vw, vh)
                     } else {
                         return (None, bounds);
                     };
@@ -339,12 +335,7 @@ fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &
             }
         };
 
-        let img_bounds = if light {
-            bounds
-        } else {
-            Bounds::new(gpui::point(px(0.), px(0.)), viewport)
-        };
-
+        let img_bounds = if light { bounds } else { outer };
         (image, img_bounds)
     });
 
