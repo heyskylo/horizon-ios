@@ -32,6 +32,7 @@ owners = ["ludovic111"]
 license = "MIT"
 source = "https://github.com/horizon-rust/horizon/tree/main/crates/horizon-mod-sdk/examples/coords-hud"
 icon = "icons/coords_hud.png"
+categories = ["utility"]
 key = "RWTVtuGb/GRXcBf3Re5hzM07EzoStr2sLTJjghJia0xX15ULoZRFFZDb"
 
 [[versions]]
@@ -49,6 +50,9 @@ const COZY: &str = r#"id = "cozy"
 kind = "modpack"
 name = "Cozy"
 summary = "Coordinates and a calm render distance."
+description = "Coordinates HUD with a calm render distance, played together as one profile."
+categories = ["lightweight"]
+icon = "icons/cozy.png"
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
@@ -66,6 +70,9 @@ const GLOW: &str = r#"id = "glow"
 kind = "shader"
 name = "Soft Glow"
 summary = "A post-processing pass over the world."
+description = "A soft bloom drawn over the world after it renders, in Horizon's own shader format."
+categories = ["bloom"]
+icon = "icons/glow.png"
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
@@ -111,7 +118,9 @@ impl Scratch {
         s.write("mods/cozy.toml", COZY);
         s.write("mods/glow.toml", GLOW);
         s.write("revoked.toml", REVOKED_TOML);
-        s.write_bytes("icons/coords_hud.png", &png(128, 128));
+        for icon in ["coords_hud", "cozy", "glow"] {
+            s.write_bytes(&format!("icons/{icon}.png"), &png(128, 128));
+        }
         for (name, hash) in [
             ("coords_hud-0.1.0.hmod", HMOD),
             ("cozy-1.0.0.hpack", HPACK),
@@ -201,7 +210,12 @@ fn lists_every_problem_of_a_registry() {
         has("other 0.1.0: the file's id is \"coords_hud\""),
         "{errors:?}"
     );
-    assert_eq!(errors.len(), 4, "{errors:?}");
+    // The modpack's category, on what is now a shader.
+    assert!(
+        has("\"lightweight\" is not a category of a shader"),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 5, "{errors:?}");
 }
 
 #[test]
@@ -381,8 +395,8 @@ fn a_mod_may_turn_native_once() {
 #[test]
 fn page_fields_and_screenshots_reach_the_index() {
     let s = Scratch::new("page");
-    let page = "categories = [\"utility\"]\ntags = [\"hud\", \"coordinates\"]\n\
-                screenshots = [\"screenshots/coords_hud/1.png\", \"https://x.test/2.jpg\"]\n";
+    let page = "tags = [\"hud\", \"coordinates\"]\n\
+                screenshots = [\"screenshots/coords_hud/1.png\"]\n";
     s.write("mods/coords_hud.toml", &format!("{page}{}", hud_entry()));
     s.write_bytes("screenshots/coords_hud/1.png", &png(1280, 720));
     let built = s.build().unwrap();
@@ -391,18 +405,16 @@ fn page_fields_and_screenshots_reach_the_index() {
     assert_eq!(p.tags, ["hud", "coordinates"]);
     assert_eq!(
         p.screenshots,
-        [
-            "https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud/1.png",
-            "https://x.test/2.jpg"
-        ]
+        ["https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud/1.png"]
     );
     Index::parse(&serde_json::to_string(&built).unwrap()).unwrap();
 
-    // A category of another kind, a screenshot too small, one in another project's folder, and an
-    // icon that isn't square.
-    let bad = "categories = [\"bloom\"]\n\
-               screenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/other/2.png\"]\n";
-    s.write("mods/coords_hud.toml", &format!("{bad}{}", hud_entry()));
+    // A category of another kind, a screenshot too small, one in another project's folder, one on
+    // another host, and an icon that isn't square.
+    let bad = "screenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/other/2.png\", \
+               \"https://x.test/3.jpg\"]\n";
+    let entry = hud_entry().replace("[\"utility\"]", "[\"bloom\"]");
+    s.write("mods/coords_hud.toml", &format!("{bad}{entry}"));
     s.write_bytes("screenshots/coords_hud/1.png", &png(100, 100));
     s.write_bytes("icons/coords_hud.png", &png(128, 64));
     let errors = s.build().unwrap_err();
@@ -414,7 +426,11 @@ fn page_fields_and_screenshots_reach_the_index() {
         "{errors:?}"
     );
     assert!(has("the icon is 128×64"), "{errors:?}");
-    assert_eq!(errors.len(), 4, "{errors:?}");
+    assert!(
+        has("\"https://x.test/3.jpg\" must be kept in the registry"),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 5, "{errors:?}");
 }
 
 #[test]
@@ -442,6 +458,9 @@ const COZY_REPO: &str = r#"id = "cozy"
 kind = "modpack"
 repo = "acme/cozy-pack"
 owners = ["acme"]
+description = "Coordinates HUD with a calm render distance, played together as one profile."
+categories = ["lightweight"]
+icon = "icons/cozy.png"
 "#;
 
 #[test]
