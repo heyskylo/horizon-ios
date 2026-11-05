@@ -1,3 +1,26 @@
+// `joml::Mat4::rotation` and `invert_orthonormal` in this file are adapted from JOML 1.10.9's
+// `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+//
+// Copyright (c) 2015-2026 Richard Greenlees
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 //! The camera (`Camera.tick`, `tickFov`, `calculateFov`, `alignWithEntity`,
 //! `getMaxZoom`, `setRotation`, `move`), view and hurt bobbing
 //! (`GameRenderer.bobView`, `bobHurt`), the walk and bob history they read
@@ -142,8 +165,10 @@ pub mod joml {
     }
 
     const PERSPECTIVE: u8 = 1;
+    const AFFINE: u8 = 2;
     const IDENTITY: u8 = 4;
     const TRANSLATION: u8 = 8;
+    const ORTHONORMAL: u8 = 16;
 
     /// A JOML `Matrix4f` with its property flags, which select the code
     /// paths (and so the rounding) of later operations. `m[column * 4 + row]`.
@@ -284,9 +309,97 @@ pub mod joml {
             // already taken that branch.
             self.rotate_axis(2, ang);
         }
+        /// `Matrix4f.rotation(Quaternionfc)`.
+        pub fn rotation(&mut self, q: Quat) {
+            let (w2, x2, y2, z2) = (q.w * q.w, q.x * q.x, q.y * q.y, q.z * q.z);
+            let zw = q.z * q.w;
+            let dzw = zw + zw;
+            let xy = q.x * q.y;
+            let dxy = xy + xy;
+            let xz = q.x * q.z;
+            let dxz = xz + xz;
+            let yw = q.y * q.w;
+            let dyw = yw + yw;
+            let yz = q.y * q.z;
+            let dyz = yz + yz;
+            let xw = q.x * q.w;
+            let dxw = xw + xw;
+            self.reset_unless_identity();
+            self.set(0, 0, w2 + x2 - z2 - y2);
+            self.set(0, 1, dxy + dzw);
+            self.set(0, 2, dxz - dyw);
+            self.set(1, 0, -dzw + dxy);
+            self.set(1, 1, y2 - z2 + w2 - x2);
+            self.set(1, 2, dyz + dxw);
+            self.set(2, 0, dyw + dxz);
+            self.set(2, 1, dyz - dxw);
+            self.set(2, 2, z2 - y2 - x2 + w2);
+            self.properties = AFFINE | ORTHONORMAL;
+        }
+        /// `Matrix4f.invert()` of a rotation and translation (`invertOrthonormal`; with the
+        /// identity and pure-translation shortcuts). `None` for any other matrix, which JOML
+        /// inverts by other code paths.
+        pub fn invert_orthonormal(&self) -> Option<Self> {
+            if self.properties & IDENTITY != 0 {
+                return Some(Self::IDENTITY);
+            }
+            let mut out = *self;
+            if self.properties & TRANSLATION != 0 {
+                for row in 0..3 {
+                    out.set(3, row, -self.get(3, row));
+                }
+                out.properties = AFFINE | TRANSLATION | ORTHONORMAL;
+                return Some(out);
+            }
+            if self.properties & ORTHONORMAL == 0 {
+                return None;
+            }
+            let g = |c, r| self.get(c, r);
+            let t = |c| -(g(c, 0) * g(3, 0) + g(c, 1) * g(3, 1) + g(c, 2) * g(3, 2));
+            out.m = [
+                g(0, 0),
+                g(1, 0),
+                g(2, 0),
+                0.0,
+                g(0, 1),
+                g(1, 1),
+                g(2, 1),
+                0.0,
+                g(0, 2),
+                g(1, 2),
+                g(2, 2),
+                0.0,
+                t(0),
+                t(1),
+                t(2),
+                1.0,
+            ];
+            out.properties = AFFINE | ORTHONORMAL;
+            Some(out)
+        }
+        pub fn to_glam(self) -> glam::Mat4 {
+            glam::Mat4::from_cols_array(&self.m)
+        }
     }
 }
 use joml::{Mat4, Quat};
+
+/// `Camera.getViewRotationMatrix` to the last bit: `Matrix4f.rotation` of the conjugate of
+/// `setRotation`'s quaternion, and its JOML `invert()`. `view_matrix` turns the same quaternion
+/// into a matrix by glam's formula, which differs in the last bits (1.0 for 0.99999994, 6e-8 for
+/// 0).
+pub fn view_rotation_matrix(yaw: f32, pitch: f32) -> (glam::Mat4, glam::Mat4) {
+    let q = Quat::rotation_yxz(PI - yaw * DEG_TO_RAD, -pitch * DEG_TO_RAD, 0.0);
+    let mut m = Mat4::IDENTITY;
+    m.rotation(Quat {
+        x: -q.x,
+        y: -q.y,
+        z: -q.z,
+        w: q.w,
+    });
+    let inverse = m.invert_orthonormal().expect("a rotation is orthonormal");
+    (m.to_glam(), inverse.to_glam())
+}
 
 /// Camera-relative world view used by terrain, sky and the first-person hand.
 pub fn view_matrix(yaw: f32, pitch: f32) -> glam::Mat4 {
