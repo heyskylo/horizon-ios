@@ -500,10 +500,15 @@ impl Stage<'_> {
                 "shadow2DLod" if called => Some("vec4(textureLod".into()),
                 "shadow2DProj" if called => Some("vec4(textureProj".into()),
                 "ftransform" if called => {
-                    // `ftransform()` → the product it stands for; its `()` stays as a no-op call... so skip it.
+                    // `ftransform()` → the transform it stands for; its `()` stays as a no-op call... so skip it.
+                    // The vertex goes through the model-view matrix first, then the projection:
+                    // read back with a probe pack of ours, Iris 1.11.7's `ftransform()` has the
+                    // bits of `gl_ProjectionMatrix * (gl_ModelViewMatrix * gl_Vertex)` at every
+                    // vertex our probes read, where the product matrix
+                    // `hz_ModelViewProjectionMatrix` rounds differently in the last bits (#8464).
                     let close = next(i).and_then(next);
                     skip_until = close.map_or(i + 1, |c| c + 1);
-                    Some("(hz_ModelViewProjectionMatrix * hz_Vertex)".into())
+                    Some("(hz_ProjectionMatrix * (hz_ModelViewMatrix * hz_Vertex))".into())
                 }
                 "gl_FragColor" => Some("hz_out0".into()),
                 "gl_FragData" | "gl_TexCoord" => match self.index_after(i) {
