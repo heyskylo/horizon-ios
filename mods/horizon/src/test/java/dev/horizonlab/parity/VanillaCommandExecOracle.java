@@ -221,11 +221,13 @@ public final class VanillaCommandExecOracle {
                     case "player_loop" -> {
                         int n=op.get("n").getAsInt();
                         int before=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME));
+                        messages.clear();
                         for (int i=0;i<n;i++) { tick(); player.connection.tick(); }
                         int delta=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME))-before;
                         if (delta!=n) throw new IllegalStateException("player loop did not advance play_time: "+delta+"/"+n);
                         JsonObject record=new JsonObject();record.addProperty("cmd","#player_loop "+op.get("label").getAsString());
-                        record.add("messages",new JsonArray());record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
+                        JsonArray captured=new JsonArray();messages.forEach(captured::add);
+                        record.add("messages",captured);record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
                         out.append(gson.toJson(record)).append('\n');
                     }
                     case "player_state" -> {

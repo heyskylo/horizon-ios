@@ -263,9 +263,11 @@ impl Game<'_> {
                             .unwrap_or(0))
                     };
                     let before = self.harness_owner(count)?;
+                    self.chat_capture = Some(Vec::new());
                     for _ in 0..ticks {
                         self.tick_server(false)?;
                     }
+                    let messages = self.chat_capture.take().unwrap_or_default();
                     let delta = self.harness_owner(count)? - before;
                     if delta != ticks as i32 {
                         return Err(format!(
@@ -273,7 +275,7 @@ impl Game<'_> {
                         )
                         .into());
                     }
-                    let record = json!({"cmd": format!("#player_loop {}",op["label"].as_str().unwrap_or("")), "messages": [], "results": [[true,delta]]});
+                    let record = json!({"cmd": format!("#player_loop {}",op["label"].as_str().unwrap_or("")), "messages": messages.iter().map(spans).collect::<Vec<_>>(), "results": [[true,delta]]});
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }

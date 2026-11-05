@@ -4585,6 +4585,13 @@ impl Game<'_> {
                 resources: game.motion,
             }
             .server_travel();
+            // Player.aiStep's entity contacts run with the player's body,
+            // even when the level and its mobs are frozen. Flush their damage
+            // events and marked velocity through the existing guest path.
+            game.touch_pufferfish();
+            let Some(player) = game.player.as_mut() else {
+                return (events, None);
+            };
             // Landing damage from this travel reaches the tracker too.
             events.append(&mut player.events);
             // A hurt since the last tick marked the velocity (Entity.markHurt):
