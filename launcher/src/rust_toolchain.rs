@@ -164,6 +164,13 @@ fn host_for(os: &str, arch: &str) -> Option<&'static Host> {
     HOSTS.iter().find(|h| h.target == target)
 }
 
+/// Every host the launcher ships a toolchain for, so tests check each host's commands on
+/// whichever machine runs them (a macOS x64 or Windows ARM64 runner included).
+#[cfg(test)]
+pub(crate) fn hosts() -> &'static [Host] {
+    HOSTS
+}
+
 pub fn host() -> Option<&'static Host> {
     host_for(std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -1008,10 +1015,16 @@ mod tests {
 
     #[test]
     fn the_command_uses_only_the_launchers_toolchain() {
-        let toolchain = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: host().unwrap(),
-        };
+        for host in HOSTS {
+            let toolchain = Toolchain {
+                dir: PathBuf::from("/rust/1.99.1-x"),
+                host,
+            };
+            the_command_uses_only(&toolchain);
+        }
+    }
+
+    fn the_command_uses_only(toolchain: &Toolchain) {
         let cmd = toolchain.command(&toolchain.cargo());
         let env: Vec<(String, Option<String>)> = cmd
             .get_envs()
@@ -1040,19 +1053,26 @@ mod tests {
     /// open a non-ASCII %TEMP%, like the one under a Cyrillic user name.
     #[test]
     fn the_command_uses_the_builds_own_temp_dir() {
-        let toolchain = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-            host: host().unwrap(),
-        };
-        let cmd = toolchain.command(&toolchain.cargo());
         let tmp = backend::build_dir().join("tmp");
-        for name in ["TMPDIR", "TMP", "TEMP"] {
-            let value = cmd
-                .get_envs()
-                .find(|(k, _)| *k == name)
-                .and_then(|(_, v)| v)
-                .map(PathBuf::from);
-            assert_eq!(value.as_deref(), Some(tmp.as_path()), "{name}");
+        for host in HOSTS {
+            let toolchain = Toolchain {
+                dir: PathBuf::from("/rust/1.99.1-x"),
+                host,
+            };
+            let cmd = toolchain.command(&toolchain.cargo());
+            for name in ["TMPDIR", "TMP", "TEMP"] {
+                let value = cmd
+                    .get_envs()
+                    .find(|(k, _)| *k == name)
+                    .and_then(|(_, v)| v)
+                    .map(PathBuf::from);
+                assert_eq!(
+                    value.as_deref(),
+                    Some(tmp.as_path()),
+                    "{}: {name}",
+                    host.target
+                );
+            }
         }
     }
 
