@@ -920,7 +920,10 @@ impl Launcher {
     /// When another launcher already put it there, this one only restarts.
     fn apply_launcher_update(&mut self, cx: &mut App) {
         match horizon_launcher::update_handoff::start_now() {
-            Ok(true) => shut_down(cx),
+            Ok(true) => {
+                servers_page::keep_running_through_update();
+                shut_down(cx)
+            }
             Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart()),
             Err(e) => self.self_update = SelfUpdate::Failed(e),
         }
