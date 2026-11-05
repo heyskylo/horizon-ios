@@ -209,6 +209,9 @@ impl adv::World for View<'_, '_> {
     fn smokey(&self, p: [i32; 3]) -> bool {
         horizon_client::beehive::smokey(&self.0.mob_world_base(&[]), p)
     }
+    fn block_entity_nbt(&self, p: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        self.0.block_entity_nbt(p)
+    }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
         // The world's packs' tags over the game's own, as the server's
         // registries bind them (`TagLoader.loadTagsForExistingRegistries`).
