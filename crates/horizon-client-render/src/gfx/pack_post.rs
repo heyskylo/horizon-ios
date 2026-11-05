@@ -1088,6 +1088,11 @@ pub(super) struct ShadowView {
     /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
     /// a cave's ceiling, which faces away, is often all that shadows the cave.
     pub every_face: bool,
+    /// Only the sections whose shadow can fall into the camera's view: those the camera's
+    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
+    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
+    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
+    pub view_casters: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -3905,6 +3910,7 @@ impl PackPost {
                 horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
             },
             every_face: true,
+            view_casters: true,
         })
     }
 
