@@ -15930,8 +15930,11 @@ impl Game<'_> {
             }
         });
         // What faces the camera (particles, item sprites, block entity text) faces a mod's.
+        // A spectated entity's view is not the local player's yaw and pitch
+        // (`Camera.setup` reads the camera entity), so it is kept too.
+        let spectating = self.camera_mob().is_some();
         self.posed_rotation = view
-            .filter(|posed| Some(*posed) != vanilla)
+            .filter(|posed| spectating || Some(*posed) != vanilla)
             .map(|(_, yaw, pitch)| (yaw, pitch));
         let eye = view.map(|_| {
             (
