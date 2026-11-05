@@ -3452,6 +3452,13 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
     }
     (t0 <= t1).then_some(t0)
 }
+/// `Entity.calculateViewVector`, which `GameRenderer.pick` aims with: float radians through `Mth.sin` and
+/// `Mth.cos`, vanilla's 65536-entry table. A placement's cursor and an interaction's point come from this ray, and
+/// the exact trigonometry below moved them by up to ~1e-4 of a block.
+fn pick_view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
+    let v = horizon_world::view_direction::view_vector(pitch, yaw);
+    [v.x, v.y, v.z]
+}
 fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
     [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
@@ -3527,10 +3534,10 @@ impl Game<'_> {
         if let Some(m) = self.camera_mob() {
             return Some((
                 [m.position.x, m.eye_y(), m.position.z],
-                view_vector(m.head_yaw, m.head_pitch),
+                pick_view_vector(m.head_yaw, m.head_pitch),
             ));
         }
-        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
+        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
