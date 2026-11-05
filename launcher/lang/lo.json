@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "ພາສີການຂາຍຂອງສະຫະລັດຖືກເພີ່ມບ່ອນທີ່ລັດເກັບ.",
   "VAT included where it applies.": "ລວມ VAT ບ່ອນທີ່ໃຊ້ໄດ້.",
   "In a set in your basket": "ຢູ່ໃນຊຸດໃນກະຕ່າຂອງທ່ານ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ຈ່າຍເງິນໃຫ້ແລ້ວໃນບຣາວເຊີ. ສິ່ງຂອງຂອງທ່ານຈະມາຮອດຕູ້ເສື້ອຜ້າໃນອີກບໍ່ດົນ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ຈ່າຍເງິນໃຫ້ແລ້ວໃນບຣາວເຊີ. ສິ່ງຂອງຂອງທ່ານຈະມາຮອດຕູ້ເສື້ອຜ້າໃນອີກບໍ່ດົນ.",
+  "{name} was left out: made for another Horizon version": "{name} ຖືກປະໄວ້: ສ້າງມາສຳລັບ Horizon ລຸ້ນອື່ນ",
+  "{name} was left out: clashes with {other}": "{name} ຖືກປະໄວ້: ຂັດກັບ {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} ຖືກປະໄວ້: ມັນຕ້ອງການ {other} ເຊິ່ງຖືກປະໄວ້"
 }

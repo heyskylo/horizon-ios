@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "A na-agbakwunye ụtụ ahịa US ebe steeti na-ana ya.",
   "VAT included where it applies.": "VAT gụnyere ebe ọ dị.",
   "In a set in your basket": "N'otu set dị na nkata gị",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Mechaa ịkwụ ụgwọ na ihe nchọgharị gị. Ihe gị ga-abata na Wardrobe n'oge na-adịghị anya."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Mechaa ịkwụ ụgwọ na ihe nchọgharị gị. Ihe gị ga-abata na Wardrobe n'oge na-adịghị anya.",
+  "{name} was left out: made for another Horizon version": "A hapụrụ {name}: e mere ya maka ụdị Horizon ọzọ",
+  "{name} was left out: clashes with {other}": "A hapụrụ {name}: ọ na-emegide {other}",
+  "{name} was left out: it needs {other}, which was left out": "A hapụrụ {name}: ọ chọrọ {other}, nke a hapụrụ"
 }

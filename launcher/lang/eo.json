@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Usona vendimposto aldoniĝas kie ŝtato postulas ĝin.",
   "VAT included where it applies.": "AVI inkluzivita kie ĝi validas.",
   "In a set in your basket": "En aro en via korbo",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finu la pagon en via retumilo. Viaj aĵoj alvenos en la Vestoŝrankon post momento."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finu la pagon en via retumilo. Viaj aĵoj alvenos en la Vestoŝrankon post momento.",
+  "{name} was left out: made for another Horizon version": "{name} estis preterlasita: farita por alia versio de Horizon",
+  "{name} was left out: clashes with {other}": "{name} estis preterlasita: konfliktas kun {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} estis preterlasita: ĝi bezonas {other}, kiu estis preterlasita"
 }

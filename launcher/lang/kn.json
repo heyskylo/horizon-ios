@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "ರಾಜ್ಯ ವಿಧಿಸುವಲ್ಲಿ ಅಮೆರಿಕದ ಮಾರಾಟ ತೆರಿಗೆ ಸೇರುತ್ತದೆ.",
   "VAT included where it applies.": "ಅನ್ವಯಿಸುವಲ್ಲಿ VAT ಸೇರಿದೆ.",
   "In a set in your basket": "ನಿಮ್ಮ ಬುಟ್ಟಿಯ ಸೆಟ್‌ನಲ್ಲಿ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಪಾವತಿ ಮುಗಿಸಿ. ನಿಮ್ಮ ವಸ್ತುಗಳು ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ವಾರ್ಡ್‌ರೋಬ್‌ಗೆ ಬರುತ್ತವೆ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಪಾವತಿ ಮುಗಿಸಿ. ನಿಮ್ಮ ವಸ್ತುಗಳು ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ವಾರ್ಡ್‌ರೋಬ್‌ಗೆ ಬರುತ್ತವೆ.",
+  "{name} was left out: made for another Horizon version": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: Horizon ನ ಬೇರೆ ಆವೃತ್ತಿಗಾಗಿ ಮಾಡಲಾಗಿದೆ",
+  "{name} was left out: clashes with {other}": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: {other} ಜೊತೆ ಘರ್ಷಿಸುತ್ತದೆ",
+  "{name} was left out: it needs {other}, which was left out": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: ಇದಕ್ಕೆ {other} ಬೇಕು, ಅದನ್ನು ಬಿಡಲಾಗಿದೆ"
 }

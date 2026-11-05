@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Thuế bán hàng Hoa Kỳ được cộng thêm ở nơi tiểu bang thu.",
   "VAT included where it applies.": "Đã gồm VAT ở nơi áp dụng.",
   "In a set in your basket": "Nằm trong một bộ trong giỏ của bạn",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Hoàn tất thanh toán trong trình duyệt. Vật phẩm sẽ vào Tủ đồ sau giây lát."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Hoàn tất thanh toán trong trình duyệt. Vật phẩm sẽ vào Tủ đồ sau giây lát.",
+  "{name} was left out: made for another Horizon version": "Đã bỏ qua {name}: được làm cho phiên bản Horizon khác",
+  "{name} was left out: clashes with {other}": "Đã bỏ qua {name}: xung đột với {other}",
+  "{name} was left out: it needs {other}, which was left out": "Đã bỏ qua {name}: cần {other}, mà {other} đã bị bỏ qua"
 }

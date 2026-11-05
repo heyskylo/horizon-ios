@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Yhdysvaltain myyntivero lisätään, jos osavaltio perii sen.",
   "VAT included where it applies.": "ALV sisältyy, missä sitä sovelletaan.",
   "In a set in your basket": "Korisi setissä",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua.",
+  "{name} was left out: made for another Horizon version": "{name} jätettiin pois: tehty toiselle Horizon-versiolle",
+  "{name} was left out: clashes with {other}": "{name} jätettiin pois: törmää modin {other} kanssa",
+  "{name} was left out: it needs {other}, which was left out": "{name} jätettiin pois: se tarvitsee modin {other}, joka jätettiin pois"
 }

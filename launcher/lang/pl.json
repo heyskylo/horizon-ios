@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Amerykański podatek od sprzedaży jest doliczany tam, gdzie pobiera go stan.",
   "VAT included where it applies.": "VAT wliczony tam, gdzie obowiązuje.",
   "In a set in your basket": "W zestawie w twoim koszyku",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokończ płatność w przeglądarce. Przedmioty trafią do Garderoby za chwilę."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokończ płatność w przeglądarce. Przedmioty trafią do Garderoby za chwilę.",
+  "{name} was left out: made for another Horizon version": "Pominięto {name}: stworzony dla innej wersji Horizon",
+  "{name} was left out: clashes with {other}": "Pominięto {name}: koliduje z {other}",
+  "{name} was left out: it needs {other}, which was left out": "Pominięto {name}: potrzebuje {other}, który został pominięty"
 }

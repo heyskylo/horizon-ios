@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Intela yokuthengisa yase-US yengezwa lapho isifundazwe siyiqoqa khona.",
   "VAT included where it applies.": "I-VAT ifakiwe lapho isebenza khona.",
   "In a set in your basket": "Kusethi esebhasikidini lakho",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Qedela ukukhokha kusiphequluli sakho. Izinto zakho zizofika eKhabetheni maduze."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Qedela ukukhokha kusiphequluli sakho. Izinto zakho zizofika eKhabetheni maduze.",
+  "{name} was left out: made for another Horizon version": "I-{name} ishiywe ngaphandle: yenzelwe enye inguqulo ye-Horizon",
+  "{name} was left out: clashes with {other}": "I-{name} ishiywe ngaphandle: ingqubuzana ne-{other}",
+  "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle"
 }

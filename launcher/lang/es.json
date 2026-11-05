@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Se añade el impuesto sobre las ventas de EE. UU. donde un estado lo cobra.",
   "VAT included where it applies.": "IVA incluido donde corresponde.",
   "In a set in your basket": "En un conjunto de tu cesta",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termina el pago en tu navegador. Tus objetos llegan al Armario un momento después."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termina el pago en tu navegador. Tus objetos llegan al Armario un momento después.",
+  "{name} was left out: made for another Horizon version": "Se dejó fuera {name}: hecho para otra versión de Horizon",
+  "{name} was left out: clashes with {other}": "Se dejó fuera {name}: choca con {other}",
+  "{name} was left out: it needs {other}, which was left out": "Se dejó fuera {name}: necesita {other}, que se dejó fuera"
 }

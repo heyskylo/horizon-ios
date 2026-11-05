@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Амерички порез на промет додаје се где га држава наплаћује.",
   "VAT included where it applies.": "ПДВ укључен где се примењује.",
   "In a set in your basket": "У комплету у вашој корпи",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завршите плаћање у прегледачу. Предмети стижу у Гардеробу за тренутак."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завршите плаћање у прегледачу. Предмети стижу у Гардеробу за тренутак.",
+  "{name} was left out: made for another Horizon version": "{name} је изостављен: направљен за другу верзију Horizon-а",
+  "{name} was left out: clashes with {other}": "{name} је изостављен: сукобљава се са {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} је изостављен: потребан му је {other}, који је изостављен"
 }

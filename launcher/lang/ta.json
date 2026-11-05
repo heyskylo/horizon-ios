@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "மாநிலம் வசூலிக்கும் இடத்தில் அமெரிக்க விற்பனை வரி சேர்க்கப்படும்.",
   "VAT included where it applies.": "பொருந்தும் இடத்தில் VAT சேர்க்கப்பட்டுள்ளது.",
   "In a set in your basket": "உங்கள் கூடையில் உள்ள தொகுப்பில்",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "உலாவியில் கட்டணத்தை முடியுங்கள். உங்கள் பொருட்கள் சிறிது நேரத்தில் அலமாரிக்கு வரும்."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "உலாவியில் கட்டணத்தை முடியுங்கள். உங்கள் பொருட்கள் சிறிது நேரத்தில் அலமாரிக்கு வரும்.",
+  "{name} was left out: made for another Horizon version": "{name} விடப்பட்டது: Horizon இன் வேறு பதிப்புக்காக உருவாக்கப்பட்டது",
+  "{name} was left out: clashes with {other}": "{name} விடப்பட்டது: {other} உடன் முரண்படுகிறது",
+  "{name} was left out: it needs {other}, which was left out": "{name} விடப்பட்டது: இதற்கு {other} தேவை, அது விடப்பட்டது"
 }

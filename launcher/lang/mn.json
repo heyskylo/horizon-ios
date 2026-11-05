@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Муж авдаг газарт АНУ-ын борлуулалтын татвар нэмэгдэнэ.",
   "VAT included where it applies.": "НӨАТ хамаарах газарт багтсан.",
   "In a set in your basket": "Таны сагсан дахь багцад",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлбөрөө хөтөч дээр дуусгаарай. Таны зүйлс хувцасны шүүгээнд удахгүй ирнэ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлбөрөө хөтөч дээр дуусгаарай. Таны зүйлс хувцасны шүүгээнд удахгүй ирнэ.",
+  "{name} was left out: made for another Horizon version": "{name}-г хассан: Horizon-ын өөр хувилбарт зориулагдсан",
+  "{name} was left out: clashes with {other}": "{name}-г хассан: {other}-тэй зөрчилддөг",
+  "{name} was left out: it needs {other}, which was left out": "{name}-г хассан: түүнд {other} хэрэгтэй, тэр нь хасагдсан"
 }

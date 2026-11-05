@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Hoʻohui ʻia ka ʻauhau kūʻai US ma kahi e ʻohi ai ka mokuʻāina.",
   "VAT included where it applies.": "Komo pū ka VAT ma kahi e pili ai.",
   "In a set in your basket": "I loko o kahi pūʻulu ma kāu hīnaʻi",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "E hoʻopau i ka uku ma kāu polokalamu pūnaewele. E hiki kāu mau mea i ka Lole ma hope iki."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "E hoʻopau i ka uku ma kāu polokalamu pūnaewele. E hiki kāu mau mea i ka Lole ma hope iki.",
+  "{name} was left out: made for another Horizon version": "Ua waiho ʻia ʻo {name}: hana ʻia no kekahi mana ʻē aʻe o Horizon",
+  "{name} was left out: clashes with {other}": "Ua waiho ʻia ʻo {name}: kūʻē ia me {other}",
+  "{name} was left out: it needs {other}, which was left out": "Ua waiho ʻia ʻo {name}: pono iā ia ʻo {other}, i waiho ʻia"
 }

@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Canshuurta iibka Maraykanka waa lagu daraa meesha gobol ka qaado.",
   "VAT included where it applies.": "VAT waa ku jirtaa meesha ay khuseyso.",
   "In a set in your basket": "Qayb ka mid ah set dambiishaada ku jira",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ku dhammee lacag bixinta biraawsarka. Alaabtaadu waxay gaari doontaa Armaajada wax yar kadib."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ku dhammee lacag bixinta biraawsarka. Alaabtaadu waxay gaari doontaa Armaajada wax yar kadib.",
+  "{name} was left out: made for another Horizon version": "{name} waa laga reebay: waxaa loo sameeyay nooc kale oo Horizon ah",
+  "{name} was left out: clashes with {other}": "{name} waa laga reebay: wuxuu ku dhacaa {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} waa laga reebay: wuxuu u baahan yahay {other}, oo laga reebay"
 }

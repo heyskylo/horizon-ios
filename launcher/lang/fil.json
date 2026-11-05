@@ -1216,5 +1216,8 @@
   "US sales tax is added where a state charges it.": "Idinadagdag ang US sales tax kung saan sinisingil ito ng estado.",
   "VAT included where it applies.": "Kasama ang VAT kung saan ito ipinapataw.",
   "In a set in your basket": "Nasa isang set sa basket mo",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Tapusin ang pagbabayad sa browser mo. Darating ang mga item mo sa Wardrobe pagkaraan ng ilang sandali."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Tapusin ang pagbabayad sa browser mo. Darating ang mga item mo sa Wardrobe pagkaraan ng ilang sandali.",
+  "{name} was left out: made for another Horizon version": "Hindi isinama ang {name}: ginawa para sa ibang bersyon ng Horizon",
+  "{name} was left out: clashes with {other}": "Hindi isinama ang {name}: sumasalungat sa {other}",
+  "{name} was left out: it needs {other}, which was left out": "Hindi isinama ang {name}: kailangan nito ang {other}, na hindi isinama"
 }
