@@ -6,6 +6,7 @@
 
 use super::Game;
 use super::perspective::CameraType;
+use horizon_cosmetics::account::OwnedEmote;
 use horizon_cosmetics::{Item, Playing, Slot};
 use std::sync::Arc;
 
@@ -16,8 +17,11 @@ const DRIFT: f64 = 0.01;
 pub(super) struct Emotes {
     /// The emotes the wheel offers, in order.
     pub(super) owned: Vec<Arc<Item>>,
-    /// Their names in the player's language, by id (the catalogue's), when known.
-    pub(super) names: std::collections::HashMap<String, String>,
+    /// Their names by locale, by id (the service's), when known.
+    pub(super) names: std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
+    /// The account's emotes on their way from the service, and when they last came.
+    pub(super) loading: Option<std::sync::mpsc::Receiver<Result<Vec<OwnedEmote>, String>>>,
+    pub(super) loaded: Option<std::time::Instant>,
     /// `owned` was read from `HORIZON_COSMETICS_LOCAL`'s folder.
     local_read: bool,
     playing: Option<Playing>,
@@ -26,6 +30,15 @@ pub(super) struct Emotes {
     camera_from: Option<CameraType>,
     /// Where the player stood when it started.
     from: Option<horizon_core::geometry::Vec3>,
+}
+
+impl Emotes {
+    /// The emote to tell the service about, while it plays: its id and whether it loops.
+    pub(super) fn sending(&self) -> Option<(String, bool)> {
+        let p = self.playing.as_ref().filter(|p| p.stop.is_none())?;
+        let looping = p.item.emote.as_ref().is_some_and(|e| e.looping);
+        Some((p.item.id.clone(), looping))
+    }
 }
 
 /// The emotes among a folder's item files, by id.
@@ -57,7 +70,9 @@ impl Game<'_> {
 
     /// An emote's name: the catalogue's, else its id in words (`wave_hello`: "Wave hello").
     pub(super) fn emote_name(&self, id: &str) -> String {
-        if let Some(name) = self.emotes.names.get(id) {
+        let names = self.emotes.names.get(id);
+        let lang = horizon_client::lang::code();
+        if let Some(name) = names.and_then(|n| n.get(&lang).or_else(|| n.get("en_us"))) {
             return name.clone();
         }
         let words = id.replace('_', " ");
@@ -177,6 +192,23 @@ impl Game<'_> {
 
     /// Once a tick: my emote, then the other players'.
     pub(super) fn tick_emotes(&mut self) {
+        if let Some(done) = self
+            .emotes
+            .loading
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.emotes.loading = None;
+            if let Ok(owned) = done {
+                self.emotes.loaded = Some(std::time::Instant::now());
+                self.emotes.names.clear();
+                self.emotes.owned.clear();
+                for (item, names) in owned {
+                    self.emotes.names.insert(item.id.clone(), names);
+                    self.emotes.owned.push(Arc::new(item));
+                }
+            }
+        }
         self.tick_emote();
         self.tick_others_emotes();
     }
