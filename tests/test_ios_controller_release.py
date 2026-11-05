@@ -34,9 +34,10 @@ mod horizon_gamecontroller{
 }
 type Rect=[f32;4];
 #[derive(Clone,Copy)]struct Target{rect:Rect}impl Target{fn center(&self)->(f32,f32){(self.rect[0]+self.rect[2]/2.,self.rect[1]+self.rect[3]/2.)}}
-#[derive(Default)]struct Devices{connected:usize,active:Option<u64>}
+#[derive(Default)]struct Devices{connected:usize,active:Option<u64>,known:Vec<u64>,started:bool}
 #[derive(Default)]struct Menu{armed:Option<Rect>,focus:Option<Target>,held:[bool;2],repeat:Option<(Button,usize,bool)>}
-#[derive(Default)]struct Pads{devices:Devices,menu:Menu,style:GlyphStyle}
+#[derive(Default)]struct Pads{devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>}
+#[derive(Debug,PartialEq)]enum Connection{Connected(GlyphStyle),Disconnected{active:bool}}
 #[derive(Default)]struct Game{pad:Pads,clicks:usize}
 impl Game{fn pad_click_at(&mut self,_:&(),_:(f32,f32),_:bool){self.clicks+=1;}fn pad_pointer_button(&mut self,_:&(),_:bool,_:bool){}}
 '''
@@ -44,12 +45,12 @@ CASES=r'''
 fn choose(id:Option<u64>,pressed:bool){horizon_gamecontroller::ACTIVE.with_borrow_mut(|p|*p=id.map(|id|snapshot(id,pressed,false,[0.,0.],0.)));}
 fn arm(g:&mut Game){let rect=[0.,0.,100.,20.];g.pad.menu.armed=Some(rect);g.pad.menu.focus=Some(Target{rect});}
 fn device_handoff_does_not_click(){
- let mut g=Game::default();choose(Some(1),true);g.pad.read();arm(&mut g);
+ let mut g=Game::default();choose(Some(1),true);g.pad.read();assert_eq!(g.pad.device.as_ref().map(|d|d.name.as_str()),Some("pad1"));assert!(g.pad.connections.is_empty(),"initial connected pad is not a new connection");arm(&mut g);
  choose(Some(1),false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"same-pad release activates");
  choose(Some(1),true);g.pad.read();arm(&mut g);
- choose(None,false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"disconnect is not a release-click");
+ choose(None,false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"disconnect is not a release-click");assert!(g.pad.device.is_none());assert_eq!(g.pad.connections,vec![Connection::Disconnected{active:true}]);
  choose(Some(2),true);g.pad.read();arm(&mut g);
- choose(Some(3),false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"same-model controller switch is not a release-click");
+ choose(Some(3),false);g.pad.read();g.release(Button::South).unwrap();assert_eq!(g.clicks,1,"same-model controller switch is not a release-click");assert_eq!(g.pad.device.as_ref().map(|d|d.name.as_str()),Some("pad3"));
 }
 '''
 

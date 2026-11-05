@@ -17,7 +17,7 @@ dir=$(dirname "$1")
 openssl=${OPENSSL:-openssl}
 if command -v sha256sum > /dev/null; then sha=(sha256sum); else sha=(shasum -a 256); fi
 umask 077
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/horizon-release.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 names=()

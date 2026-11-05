@@ -1,7 +1,8 @@
 //! Controllers on iPhone and iPad, read through `horizon-gamecontroller` (Apple's GameController framework,
 //! behind a safe API because the game forbids `unsafe`). Read only: no rumble, lights or adaptive triggers yet,
 //! so the output half is the same no-op as a build without controllers.
-use super::{super::Game, PadEvent, Pads};
+use super::{super::Game, Connection, PadEvent, Pads};
+use horizon_client::controller_ui::Device;
 use horizon_client::gamepad::{Button, Edges, GlyphStyle, PadState, Pulse, Rumble};
 use serde_json::{Value, json};
 
@@ -10,6 +11,8 @@ use serde_json::{Value, json};
 pub(super) struct Devices {
     connected: usize,
     active: Option<PadId>,
+    known: Vec<PadId>,
+    started: bool,
 }
 
 /// The glyphs to draw, from the product category iOS reports, through the vendor ids gilrs' pads are
@@ -25,18 +28,62 @@ fn style(category: &str) -> GlyphStyle {
     GlyphStyle::of_vendor(vendor)
 }
 
+fn device_of(controller: &horizon_gamecontroller::Controller) -> Device {
+    let vendor = match style(&controller.category) {
+        GlyphStyle::PlayStation => Some(0x054c),
+        GlyphStyle::Nintendo => Some(0x057e),
+        _ => None,
+    };
+    Device {
+        name: controller
+            .name
+            .clone()
+            .unwrap_or_else(|| controller.category.clone()),
+        vendor,
+        // GameController exposes a product category, not a USB product ID.
+        product: None,
+    }
+}
+
 impl Pads {
     /// Read the active pad.
     pub(super) fn read(&mut self) -> PadState {
-        let controllers = horizon_gamecontroller::controllers();
+        let controllers = horizon_gamecontroller::snapshots();
+        let known: Vec<_> = controllers.iter().map(|controller| controller.id).collect();
+        if self.devices.started {
+            for &id in &self.devices.known {
+                if !known.contains(&id) {
+                    self.connections.push(Connection::Disconnected {
+                        active: self.devices.active == Some(id),
+                    });
+                }
+            }
+            for controller in &controllers {
+                if !self.devices.known.contains(&controller.id) {
+                    self.connections.push(Connection::Connected(style(
+                        &controller.controller.category,
+                    )));
+                }
+            }
+        }
+        self.devices.started = true;
+        self.devices.known = known;
         if controllers.len() != self.devices.connected {
             for controller in &controllers {
-                let name = controller.name.as_deref().unwrap_or(&controller.category);
+                let name = controller
+                    .controller
+                    .name
+                    .as_deref()
+                    .unwrap_or(&controller.controller.category);
                 log::info!("Controller connected: {name}");
             }
             self.devices.connected = controllers.len();
         }
         let selected = horizon_gamecontroller::active_controller();
+        self.device = selected
+            .as_ref()
+            .or_else(|| controllers.first())
+            .map(|pad| device_of(&pad.controller));
         let active = selected.as_ref().map(|pad| pad.id);
         if self.devices.active != active {
             // Changing/disconnecting a controller is not its A release.
@@ -138,6 +185,11 @@ impl PadRouter {
     // owner to lend/reclaim or an exclusive native input handle to release.
     pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
     pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
+    pub(in crate::game) fn device(&self, id: PadId) -> Option<Device> {
+        self.pads
+            .get(&id)
+            .map(|pad| device_of(&pad.snapshot.controller))
+    }
     pub(in crate::game) fn connected(&self, id: PadId) -> bool {
         self.pads.contains_key(&id)
     }
@@ -173,6 +225,7 @@ impl PadRouter {
 impl Pads {
     pub(in crate::game) fn release_hardware(&mut self) {
         self.devices = Devices::default();
+        self.device = None;
     }
 }
 

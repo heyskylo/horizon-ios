@@ -91,6 +91,28 @@ pub fn check_new(form: &Form, images: &Uploads) -> Result<(), String> {
     }
 }
 
+/// A submitted page must meet the same completeness rules as the registry's
+/// index build. Call after placing checked uploads, before writing any changes.
+pub(crate) fn check_entry(entry: &Entry) -> Result<(), String> {
+    let mut errors = entry.check_fields();
+    errors.extend(
+        rules::check_required(
+            &entry.id,
+            &entry.description,
+            &entry.categories,
+            entry.icon.as_deref(),
+            &entry.screenshots,
+        )
+        .into_iter()
+        .map(|problem| format!("{}: {problem}", entry.id)),
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 /// Puts the uploaded images in `entry` and returns the files to write. The form's `screenshots`
 /// keeps those of the entry it lists, in its order (absent: all of them); uploads come after.
 pub fn place(
@@ -185,10 +207,7 @@ pub fn edit(
     entry.categories = form.categories.clone();
     entry.tags = form.tags.clone();
     let writes = place(&mut entry, form, images).map_err(bad)?;
-    let problems = entry.check_fields();
-    if !problems.is_empty() {
-        return Err(bad(problems.join("; ")));
-    }
+    check_entry(&entry).map_err(bad)?;
     if entry == before && writes.is_empty() {
         return Err(bad("nothing changed"));
     }

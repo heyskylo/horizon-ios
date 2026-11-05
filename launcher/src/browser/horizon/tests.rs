@@ -7,7 +7,7 @@ fn fixtures() -> PathBuf {
 }
 
 /// The sample index with its files on disk, as a local test registry lists them.
-fn sample() -> Index {
+pub(super) fn sample() -> Index {
     let text = fs::read_to_string(fixtures().join("index-v1.json")).unwrap();
     let mut index = Index::parse(&text).unwrap();
     for p in &mut index.projects {
@@ -19,7 +19,7 @@ fn sample() -> Index {
     index
 }
 
-fn scratch(name: &str) -> PathBuf {
+pub(super) fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "horizon-launcher-registry-{name}-{}",
         std::process::id()

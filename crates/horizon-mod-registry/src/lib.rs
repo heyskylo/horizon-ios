@@ -1026,6 +1026,7 @@ pub fn publish(
     };
     let mut entry = entry;
     let writes = page::place(&mut entry, form, images).map_err(bad)?;
+    page::check_entry(&entry).map_err(bad)?;
     // Every check CI runs but the trial run: the file as its kind, its id and
     // version, its signature, the entry's fields. CI runs it all again.
     let files = file.parent().unwrap_or(Path::new("."));

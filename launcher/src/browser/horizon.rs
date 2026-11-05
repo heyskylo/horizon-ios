@@ -738,6 +738,20 @@ fn install_version(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
+    install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)
+}
+
+/// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
+/// checks and before it replaces anything: its error leaves everything as it was.
+fn install_version_guarded(
+    index: &Index,
+    local: bool,
+    p: &index::Project,
+    v: &index::Version,
+    home: &Path,
+    guard: &dyn Fn(&Path) -> Result<(), String>,
+    progress: &dyn Fn(&str, f32),
+) -> Result<installed::Entry, String> {
     let project = project_of(p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
@@ -787,9 +801,11 @@ fn install_version(
             false => Ok(trust),
         }
     });
-    let trust = checked.inspect_err(|_| {
-        let _ = fs::remove_file(&path);
-    })?;
+    let trust = checked
+        .and_then(|t| guard(&path).map(|()| t))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&path);
+        })?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
@@ -904,6 +920,7 @@ pub fn before_play(home: &Path) {
     });
 }
 
+pub mod auto;
 pub mod pack;
 #[cfg(test)]
 mod tests;

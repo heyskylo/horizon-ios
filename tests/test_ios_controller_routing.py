@@ -26,9 +26,9 @@ def program():
     begin = gamepad.index('/// How a bindable action reaches the game:')
     end = gamepad.index("/// An action's name in the binds list:", begin)
     code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[end:] + '\n}\n'
-    code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\nstruct Pads;\n'
+    code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\n#[derive(Clone,Debug,Default,PartialEq)]struct Device{name:String,vendor:Option<u16>,product:Option<u16>}\nstruct Pads;\n'
     code += '#[derive(Debug,PartialEq)]enum PadEvent{Press(PadId,Button),Gone(PadId),Back(PadId)}\n'
-    return code + method(source, 'style') + '\n' + router + '\n' + CASES
+    return code + method(source, 'style') + '\n' + method(source, 'device_of') + '\n' + router + '\n' + CASES
 
 
 CASES = r'''
@@ -45,7 +45,7 @@ fn main(){
  // Reordering the OS list or changing its active controller cannot switch seats.
  assert!(router.update(vec![two.clone(),one.clone()]).is_empty());
  assert!(router.state(1).held(Button::South));assert!(!router.state(1).held(Button::East));
- assert_eq!(router.state(2).left,[-0.1,0.7]);assert_eq!(router.name(2),"pad2");assert_eq!(router.style(1),GlyphStyle::PlayStation);
+ assert_eq!(router.state(2).left,[-0.1,0.7]);assert_eq!(router.name(2),"pad2");assert_eq!(router.device(2),Some(Device{name:"pad2".into(),vendor:Some(0x054c),product:None}));assert_eq!(router.style(1),GlyphStyle::PlayStation);
  assert_eq!(router.update(vec![two.clone()]),vec![PadEvent::Gone(1)]);assert!(!router.connected(1));assert_eq!(router.state(1),PadState::default());
  // A reconnected native controller has a new ID; another identical model
  // must not inherit the vanished controller's held state or ownership.

@@ -64,6 +64,32 @@ pub struct RealmServer {
     pub minigame_id: Option<i32>,
     #[serde(default)]
     pub minigame_image: Option<String>,
+    /// The invited players: only in the detail answer (`RealmsClient.getOwnRealm`).
+    #[serde(default, deserialize_with = "nullable")]
+    pub players: Vec<PlayerInfo>,
+}
+
+/// `PlayerInfo`: a Realm's invited player.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerInfo {
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub operator: bool,
+    #[serde(default, deserialize_with = "nullable")]
+    pub accepted: bool,
+    #[serde(default, deserialize_with = "nullable")]
+    pub online: bool,
+}
+
+/// `Ops`: the Realm's operators, by name (`RealmsClient.op`/`deop`).
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+pub struct Ops {
+    #[serde(default, deserialize_with = "nullable")]
+    pub ops: Vec<String>,
 }
 
 impl RealmServer {
@@ -416,7 +442,7 @@ impl RealmsClient {
 
     /// `RealmsClient.subscriptionFor`: the configuration screen's subscription tab.
     pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/subscription"));
+        let url = self.url(&format!("subscriptions/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
@@ -424,6 +450,43 @@ impl RealmsClient {
     /// `RealmsClient.deleteRealm` (`Request.delete`).
     pub fn delete_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}"));
+        Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
+    }
+
+    /// `RealmsClient.getOwnRealm`: the detail answer with the slots and the players.
+    pub fn get_own_realm(&self, realm_id: i64) -> Result<RealmServer, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.op`: `POST ops/{id}/{uuid}` with an empty body, then the ops.
+    pub fn op_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+        let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
+        let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.deop`: `DELETE ops/{id}/{uuid}`, then the ops.
+    pub fn deop_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+        let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
+        let json = Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.invite`: `POST invites/{id}` with the player's name, then the players.
+    pub fn invite_player(&self, realm_id: i64, name: &str) -> Result<Vec<PlayerInfo>, RealmsError> {
+        let body = serde_json::json!({"name": name}).to_string();
+        let url = self.url(&format!("invites/{realm_id}"));
+        let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body))?;
+        serde_json::from_str::<RealmServer>(&json)
+            .map(|realm| realm.players)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.uninvite`: `DELETE invites/{id}/invite/{uuid}`.
+    pub fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
+        let url = self.url(&format!("invites/{realm_id}/invite/{}", undashed(uuid)?));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
@@ -458,6 +521,17 @@ fn path_segment(s: &str) -> Result<&str, RealmsError> {
     }
 }
 
+/// `UndashedUuid.toString`: a player's UUID as 32 hex digits, the op/deop/uninvite path
+/// segment. Anything else (a name with a `/`, a shortened id) would reach another path.
+fn undashed(uuid: &str) -> Result<String, RealmsError> {
+    let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+    if hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(hex.to_ascii_lowercase())
+    } else {
+        Err(RealmsError::Parse)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +550,20 @@ mod tests {
             let mut seen = Vec::new();
             let mut buf = [0u8; 4096];
             while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
+            let body_start = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let length = header(
+                &String::from_utf8_lossy(&seen[..body_start]),
+                "Content-Length",
+            )
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0);
+            while seen.len() < body_start + length {
                 let n = stream.read(&mut buf).unwrap();
                 if n == 0 {
                     break;
@@ -604,6 +692,91 @@ mod tests {
         assert!(server.is_open());
         assert!(server.owned_by(UUID));
         assert!(!server.owned_by(UUID + 1));
+    }
+
+    /// Paths and payload shape from the pinned RealmsClient op/deop/invite/
+    /// uninvite/subscriptionFor bytecode, exercised against local dummy HTTP.
+    #[test]
+    fn owner_actions_use_the_native_realms_endpoints_and_response_objects() {
+        for (method, op) in [("POST", true), ("DELETE", false)] {
+            let (base, server) =
+                serve_once("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ops\":[\"Alex\"]}");
+            let c = client(&base);
+            let ops = if op {
+                c.op_player(42, "01234567-89AB-CDEF-0123-456789ABCDEF")
+            } else {
+                c.deop_player(42, "01234567-89AB-CDEF-0123-456789ABCDEF")
+            }
+            .unwrap();
+            assert_eq!(ops.ops, ["Alex"]);
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with(&format!(
+                    "{method} /ops/42/0123456789abcdef0123456789abcdef HTTP/1.1"
+                )),
+                "{request}"
+            );
+            assert_eq!(header(&request, "Authorization"), None);
+            assert_eq!(request.matches(TOKEN).count(), 1);
+        }
+        let (base, server) = serve_once(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"id\":42,\"players\":[{\"name\":\"Alex\",\"uuid\":\"0123456789abcdef0123456789abcdef\",\"accepted\":false}]}",
+        );
+        let players = client(&base).invite_player(42, "Alex").unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /invites/42 HTTP/1.1"),
+            "{request}"
+        );
+        let body = request.split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({"name":"Alex"})
+        );
+        assert_eq!(players.len(), 1);
+        assert_eq!(players[0].name, "Alex");
+        assert!(!players[0].accepted);
+
+        let (base, server) =
+            serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        client(&base)
+            .uninvite_player(42, "01234567-89ab-cdef-0123-456789abcdef")
+            .unwrap();
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("DELETE /invites/42/invite/0123456789abcdef0123456789abcdef HTTP/1.1")
+        );
+
+        let (base, server) = serve_once(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"startDate\":1700000000000,\"daysLeft\":12,\"type\":\"NORMAL\"}",
+        );
+        let subscription = client(&base).subscription_for(42).unwrap();
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("GET /subscriptions/42 HTTP/1.1")
+        );
+        assert_eq!(subscription.days_left, 12);
+        assert_eq!(subscription.start_date, 1_700_000_000_000);
+        assert_eq!(subscription.kind, "NORMAL");
+    }
+
+    #[test]
+    fn malformed_member_ids_are_refused_without_a_service_request() {
+        let c = client("http://127.0.0.1:9");
+        for id in [
+            "",
+            "../invites/1",
+            "0123",
+            "0123456789abcdef0123456789abcdef/other",
+        ] {
+            assert_eq!(c.op_player(42, id), Err(RealmsError::Parse));
+            assert_eq!(c.deop_player(42, id), Err(RealmsError::Parse));
+            assert_eq!(c.uninvite_player(42, id), Err(RealmsError::Parse));
+        }
     }
 
     #[test]

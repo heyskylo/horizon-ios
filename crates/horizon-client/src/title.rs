@@ -1203,6 +1203,10 @@ impl Title {
             rules.wheel(delta, size.1.ceil());
             return false;
         }
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.scroll(delta, cursor, size);
+            return false;
+        }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.wheel(delta, cursor, size);
             return false;
@@ -1250,7 +1254,13 @@ impl Title {
     /// The right stick's scroll: the open list moves wherever the hidden pointer
     /// is, and Create World's buttons don't take the step.
     pub fn stick_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
-        self.step_scroll(delta, crate::widgets::over_scroll_area(cursor), size);
+        let mut cursor = crate::widgets::over_scroll_area(cursor);
+        // Realms' centered list checks both axes. The stick scrolls it wherever
+        // its hidden pointer is, including outside the list's horizontal span.
+        if matches!(self.mode, Mode::Realms(_)) {
+            cursor.0 = (size.0 / 2.0).floor();
+        }
+        self.step_scroll(delta, cursor, size);
     }
     /// A focus step past a list's edge: what the pointer is over scrolls, and
     /// Create World's buttons don't take the step.

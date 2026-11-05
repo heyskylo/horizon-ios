@@ -10,7 +10,7 @@
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 openssl version | grep -Eq '^OpenSSL [3-9]\.' || { echo "skip: OpenSSL 3 needed"; exit 77; }
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+W=$(mktemp -d "${TMPDIR:-/tmp}/horizon-signature-test.XXXXXXXX") || exit 1; trap 'rm -rf "$W"' EXIT
 fails=0
 check() {  # name, expected exit (0 or 1), output grep (may be empty), then the case's exit and output files
   local name=$1 want=$2 pat=$3 rc=$4 out=$5

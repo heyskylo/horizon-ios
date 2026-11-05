@@ -2641,3 +2641,57 @@ fn the_multiplayer_screens_have_their_own_ids() {
         "disconnected"
     );
 }
+
+#[test]
+fn realms_roster_scroll_routes_mouse_touch_and_controller_wheels_to_the_same_list() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Realms(crate::realms::players_fixture(100));
+    let size = (800.0, 240.0);
+    let at = (400.0, 61.0);
+    // Pointer wheels and touch's synthetic line wheel both use scroll_worlds;
+    // controller step/stick wheels delegate to it too.
+    f.title.scroll_worlds(-1.0, at, size);
+    f.title.step_scroll(-1.0, at, size);
+    crate::widgets::scroll_area([250.0, 60.0, 300.0, 112.0], 0.0, 97.0);
+    crate::widgets::end_frame(u64::MAX);
+    f.title.stick_scroll(-1.0, (0.0, 0.0), size);
+    let buttons = f.title.buttons(size.0, size.1);
+    let remove = buttons.iter().find(|b| b.id == 101).unwrap();
+    f.title
+        .click(remove.x + remove.w / 2.0, remove.y + 10.0, size);
+    assert!(
+        matches!(&f.title.mode, Mode::Realms(screen) if matches!(&screen.subscreen, crate::realms::SubScreen::Popup(crate::realms::Popup::Uninvite { player, .. }) if player.name == "Player003")),
+        "the mouse, step and hidden-pointer stick must all reach the same list: {:?}",
+        f.title.mode,
+    );
+}
+
+#[test]
+fn a_realms_click_targets_the_painted_uuid_when_title_rechecks_hitboxes() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Realms(crate::realms::players_fixture(100));
+    let size = (800.0, 240.0);
+    f.title.scroll_worlds(-50.0, (400.0, 61.0), size);
+    let buttons = f.title.buttons(size.0, size.1);
+    let remove = buttons.iter().find(|b| b.id == 101).unwrap();
+    let Mode::Realms(screen) = &mut f.title.mode else {
+        unreachable!()
+    };
+    let crate::realms::SubScreen::Configure {
+        detail: Some(Ok(detail)),
+        ..
+    } = &mut screen.subscreen
+    else {
+        unreachable!()
+    };
+    detail.players.swap(50, 51);
+    // Title.click recomputes button rectangles as part of ordinary hit testing.
+    // That query must not change which UUID was drawn under this rectangle.
+    f.title
+        .click(remove.x + remove.w / 2.0, remove.y + 10.0, size);
+    assert!(
+        matches!(&f.title.mode, Mode::Realms(screen) if matches!(&screen.subscreen, crate::realms::SubScreen::Popup(crate::realms::Popup::Uninvite { player, .. }) if player.name == "Player050")),
+        "a hit query retargeted an action after the roster refreshed: {:?}",
+        f.title.mode,
+    );
+}

@@ -49,7 +49,7 @@ case "$(uname -s)-$MACHINE" in
   *) die "no Horizon release for $(uname -s) $(uname -m) yet: build it from source (docs/server.md)" ;;
 esac
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/horizon-install.XXXXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 if [ -n "$ARCHIVE" ]; then
   # An archive already here (a build of your own, or one fetched by hand): checking it is up to you.

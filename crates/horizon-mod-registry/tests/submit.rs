@@ -474,7 +474,7 @@ fn published_with_ids(owner: &str, key: bool, ids: &[u64]) -> String {
         ),
     };
     let text = format!(
-        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\ndescription = \"{DESCRIPTION}\"\ncategories = [\"utility\"]\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\n{ids}license = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
+        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\ndescription = \"{DESCRIPTION}\"\ncategories = [\"utility\"]\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\nicon = \"icons/coords_hud.png\"\n{ids}license = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
         if key {
             format!("key = {}\n", f["key"])
         } else {
@@ -1233,7 +1233,7 @@ async fn a_new_project_has_a_page_and_its_images_go_in_the_registry() {
 fn with_screenshots() -> String {
     published("alice", false).replacen(
         "license = ",
-        "icon = \"icons/coords_hud.png\"\nscreenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/coords_hud/2.png\"]\nlicense = ",
+        "screenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/coords_hud/2.png\"]\nlicense = ",
         1,
     )
 }
@@ -1324,4 +1324,98 @@ async fn an_owner_edits_the_page_without_a_version() {
     let csrf = client.sign_in().await;
     let (status, json) = edit(&mut client, &csrf, |f| f["tags"] = json!(["x"])).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_edits_refuse_incomplete_pages_before_any_write() {
+    for field in ["description", "categories"] {
+        let (mut client, mock) = setup().await;
+        mock.lock()
+            .unwrap()
+            .main
+            .insert("mods/coords_hud.toml".into(), published("alice", true));
+        let csrf = client.sign_in().await;
+        client.images.clear();
+        let (status, answer) = edit(&mut client, &csrf, |form| {
+            form[field] = if field == "description" {
+                json!("Short.")
+            } else {
+                json!([])
+            };
+        })
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {answer}");
+        let message = answer["error"].as_str().unwrap();
+        assert!(
+            message.contains(if field == "description" {
+                "at least 50"
+            } else {
+                "pick 1"
+            }),
+            "{message}"
+        );
+        let m = mock.lock().unwrap();
+        assert!(
+            m.branches.is_empty()
+                && m.commits.is_empty()
+                && m.assets.is_empty()
+                && m.pulls.is_empty()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_updates_require_a_registry_icon_but_accept_a_valid_replacement() {
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    for icon in [None, Some("https://elsewhere.test/icon.png")] {
+        let (mut client, mock) = setup().await;
+        let before = published("alice", true);
+        let before = match icon {
+            None => before.replace("icon = \"icons/coords_hud.png\"\n", ""),
+            Some(url) => before.replace("icons/coords_hud.png", url),
+        };
+        mock.lock()
+            .unwrap()
+            .main
+            .insert("mods/coords_hud.toml".into(), before);
+        let csrf = client.sign_in().await;
+        client.images.clear();
+        let (status, answer) = client.submit(&csrf, &form(), &file).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains(if icon.is_none() {
+                    "has no icon"
+                } else {
+                    "must be kept in the registry"
+                }),
+            "{answer}"
+        );
+        let m = mock.lock().unwrap();
+        assert!(
+            m.branches.is_empty()
+                && m.commits.is_empty()
+                && m.assets.is_empty()
+                && m.pulls.is_empty()
+        );
+    }
+    // This upload is checked in memory and then placed at the canonical path.
+    // The later file preflight must not try to read it from the mod scratch root.
+    let (mut client, mock) = setup().await;
+    let before = published("alice", true).replace("icon = \"icons/coords_hud.png\"\n", "");
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), before);
+    let csrf = client.sign_in().await;
+    let (status, answer) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let m = mock.lock().unwrap();
+    assert_eq!(m.pulls.len(), 1);
+    assert!(m.commits.contains_key(&(
+        "submit/coords_hud-0.1.0".into(),
+        "icons/coords_hud.png".into()
+    )));
 }

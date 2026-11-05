@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -41,14 +42,37 @@ class OptionalReleaseAssetsTests(unittest.TestCase):
                 script_dir = root / "tools/ci"
                 script_dir.mkdir(parents=True)
                 shutil.copy(ROOT / "tools/ci/sign_release.sh", script_dir)
+                # Exercise actual shell temp creation too: macOS mktemp with no
+                # template can ignore TMPDIR and fail on a full internal drive.
+                temp_parent = root / "temporary files"
+                temp_parent.mkdir()
+                tools = root / "test-bin"
+                tools.mkdir()
+                allocations = root / "temp-allocations"
+                real_mktemp = shutil.which("mktemp")
+                self.assertIsNotNone(real_mktemp)
+                wrapper = tools / "mktemp"
+                wrapper.write_text(
+                    "#!/bin/sh\nset -eu\n"
+                    f"created=$({shlex.quote(real_mktemp)} \"$@\")\n"
+                    'printf \'%s\\n\' "$created" >> "$TEMP_ALLOCATIONS"\n'
+                    'printf \'%s\\n\' "$created"\n'
+                )
+                wrapper.chmod(0o755)
                 # The steps' own env from nightly-build.yml: SHORT is the commit the title and
                 # SHA256SUMS.v2.sig name (ALSO_FOR, nightly-<date>-<short>).
                 env = dict(os.environ, EPHEMERAL="yes", SHA="0123456789abcdef", SHORT="0123456", DATE="2026-11-04",
                            ALSO_FOR="nightly-2026-11-04-0123456", SOURCE_TAG="nightly-test",
-                           RELEASE_SIGNING_KEY="", RELEASE_SIGNING_KEY_NEXT="")
+                           RELEASE_SIGNING_KEY="", RELEASE_SIGNING_KEY_NEXT="",
+                           PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                           TMPDIR=str(temp_parent), TEMP_ALLOCATIONS=str(allocations))
                 signed = subprocess.run(["bash", "-e", "-c", run_step("sign_release.sh nightly")],
                                         cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(signed.returncode, 0, signed.stderr)
+                created = [Path(line) for line in allocations.read_text().splitlines()]
+                self.assertTrue(created)
+                self.assertTrue(all(path.parent == temp_parent for path in created), created)
+                self.assertTrue(all(not path.exists() for path in created), created)
                 sums = {name: digest for digest, name in
                         (line.split() for line in (dist / "SHA256SUMS").read_text().splitlines())}
                 self.assertEqual(sums, {name: hashlib.sha256(name.encode()).hexdigest() for name in present})

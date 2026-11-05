@@ -42,7 +42,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
 | `owners` | GitHub logins allowed to publish updates. |
 | `license`, `source` | An SPDX expression and an `https://` address of the source code: both required. |
 | `icon` | `https://`, optional. |
-| `categories` | 1 to 3 of the kind's list (`horizon_mods::index::page::categories`, [the lists](../design/registry-v2.md#categories)). Optional until every listed project has them. |
+| `categories` | 1 to 3 of the kind's list (`horizon_mods::index::page::categories`, [the lists](../design/registry-v2.md#categories)). |
 | `tags` | Free-form: at most 10, each `[a-z0-9][a-z0-9-]{0,23}`, nothing about gambling. Optional. |
 | `screenshots` | `https://` addresses of PNG or JPEG images, in order, at most 8. Optional. |
 | `key` | The author's [minisign](https://jedisct1.github.io/minisign/) public key. When set, every version must be signed with it; an update signed with another key is refused. Absent: the project is unsigned and the launcher says so. |
@@ -115,10 +115,10 @@ repo = "horizon-rust/coords-hud" # GitHub owner/name: its releases are its versi
 owners = ["ludovic111"]          # GitHub logins responsible for the project
 owner_ids = [12345678]           # their numeric GitHub IDs: these decide who an owner is (a login can change hands)
 key = "RWT..."                   # optional: the minisign public key every version is signed with
-icon = "icons/coords_hud.png"    # optional: a square PNG, 64 to 1024 px, at most 256 KiB in the repository, or https://
-categories = ["utility"]         # 1 to 3 of the kind's list
+icon = "icons/coords_hud.png"    # required: a square PNG, 64 to 1024 px, at most 256 KiB, in the repository
+categories = ["utility"]         # required: 1 to 3 of the kind's list
 tags = ["hud", "coordinates"]    # optional, at most 10, lowercase
-screenshots = ["screenshots/coords_hud/1.png"]  # optional, at most 8: PNG or JPEG, 320x180 to 3840x2160, at most 1 MiB, or https://
+screenshots = ["screenshots/coords_hud/1.png"]  # optional, at most 8: PNG or JPEG, 320x180 to 3840x2160, at most 1 MiB, in the repository
 # The page. Each field may instead come from horizon-registry.toml in the repo (below); these win.
 name = "Coordinates HUD"
 summary = "One line, at most 160 characters."
@@ -223,6 +223,7 @@ API line are its facts. A new kind gets its own check before it opens.
 
 ## Changelog
 
+- 2026-11-05: every listed project needs a description of 50 characters or more, 1 to 3 categories and an icon kept in the registry (`icons/<id>.png`); screenshots are kept in the registry too (`registry build` refuses https:// images in entries).
 - 2026-11-05: the registry follows no repository any more: `registry review` refuses a new entry with `repo` (and an entry turning into one); entries from before keep theirs until they are pinned. The form uploads the icon and up to 8 screenshots into the registry and takes "Edit project" (an owner's page change, no version: pull request `edit/<id>-<time>`, label `owner-edit`).
 - 2026-11-05: kinds `shaderpack` and `datapack`; optional `categories`, `tags` and `screenshots` (entries and index). The index's schema is unchanged: readers from before keep the new kinds as unknown and ignore the new fields.
 - 2026-10-30: an entry names its GitHub repository (`repo`) and its versions are the repository's releases, read by the registry's CI; `file.url` may be a release asset of that repository. The index's schema is unchanged.

@@ -4305,6 +4305,10 @@ pub struct Settings {
     /// The window's language. Unset follows the system's (`i18n::Language::system`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::i18n::Language>,
+    /// Whether what the browser installed from Horizon's registry updates by itself, at start
+    /// and before Play (`browser::horizon::auto`). Unset is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods_auto_update: Option<bool>,
     /// The player has read the notice before the first native mod (`native_status::NOTICE`).
     /// Native mods are always on: an older file's `native_mods` switch is ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -4407,6 +4411,10 @@ impl Settings {
     /// Whether the cheaper scene is on ([`performance`](Self::performance)).
     pub fn performance(&self) -> bool {
         self.performance.unwrap_or(false)
+    }
+    /// Registry mods update by themselves ([`Settings::mods_auto_update`]): on unless turned off.
+    pub fn auto_updates_mods(&self) -> bool {
+        self.mods_auto_update.unwrap_or(true)
     }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {

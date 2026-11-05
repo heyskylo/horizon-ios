@@ -3,8 +3,9 @@
 //! server build) has the stub in pad.rs instead, and only `horizon-ctl pad`'s virtual pad.
 use super::{
     super::{Game, Screen},
-    PadEvent, Pads,
+    Connection, PadEvent, Pads,
 };
+use horizon_client::controller_ui::Device;
 use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, TriggerFeel};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ use std::time::{Duration, Instant};
 pub(super) struct Devices {
     gilrs: Option<gilrs::Gilrs>,
     started: bool,
+    /// The pads seen so far, so one already there when gilrs opens isn't news.
+    known: Vec<gilrs::GamepadId>,
     /// The pad last touched; only its input counts.
     active: Option<gilrs::GamepadId>,
     /// Vibrations playing (an effect stops when dropped) and when they end.
@@ -80,8 +83,9 @@ impl Pads {
             .build()
         {
             Ok(g) => {
-                for (_, pad) in g.gamepads() {
+                for (id, pad) in g.gamepads() {
                     log::info!("Controller connected: {}", pad.name());
+                    self.devices.known.push(id);
                 }
                 Some(g)
             }
@@ -102,6 +106,8 @@ impl Pads {
             self.devices.gilrs = None;
             self.devices.started = false;
             self.devices.active = None;
+            self.devices.known.clear();
+            self.device = None;
             self.devices.rumbles.clear();
             self.devices.dualsense = false;
             self.devices.output = None;
@@ -120,12 +126,23 @@ impl Pads {
             match event {
                 E::Connected => {
                     log::info!("Controller connected: {}", gilrs.gamepad(id).name());
+                    // Some backends report the controllers already there as they open.
+                    if !self.devices.known.contains(&id) {
+                        self.devices.known.push(id);
+                        let vendor = gilrs.gamepad(id).vendor_id();
+                        self.connections
+                            .push(Connection::Connected(GlyphStyle::of_vendor(vendor)));
+                    }
                     if let Some(output) = &self.devices.output {
                         output.scan();
                     }
                 }
                 E::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
+                    self.devices.known.retain(|known| *known != id);
+                    self.connections.push(Connection::Disconnected {
+                        active: self.devices.active == Some(id),
+                    });
                     if self.devices.active == Some(id) {
                         self.devices.active = None;
                     }
@@ -153,11 +170,22 @@ impl Pads {
         else {
             // Before any pad is touched (the virtual pad playing), a DualSense still shows it.
             self.devices.dualsense = gilrs.gamepads().any(|(_, pad)| is_dualsense(&pad));
+            self.device = gilrs.gamepads().next().map(|(_, pad)| device_of(&pad));
             return PadState::default();
         };
+        self.device = Some(device_of(&pad));
         self.style = GlyphStyle::of_vendor(pad.vendor_id());
         self.devices.dualsense = is_dualsense(&pad);
         state_of(&pad)
+    }
+}
+
+/// What the controller settings say about a pad.
+fn device_of(pad: &gilrs::Gamepad) -> Device {
+    Device {
+        name: pad.name().to_owned(),
+        vendor: pad.vendor_id(),
+        product: pad.product_id(),
     }
 }
 
@@ -297,6 +325,13 @@ impl PadRouter {
             .map_or(GlyphStyle::Auto, |pad| {
                 GlyphStyle::of_vendor(pad.vendor_id())
             })
+    }
+
+    pub(in crate::game) fn device(&self, id: PadId) -> Option<Device> {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map(|pad| device_of(&pad))
     }
 
     pub(in crate::game) fn name(&self, id: PadId) -> String {

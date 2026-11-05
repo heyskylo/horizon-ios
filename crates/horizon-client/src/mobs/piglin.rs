@@ -55,9 +55,16 @@ pub struct RideTarget {
     pub aimed: Option<[i32; 3]>,
 }
 /// What a piglin's or hoglin's brain remembers of its surroundings and of
-/// what it retreats from. None of it is saved: these memories have no codec.
+/// what it retreats from. Most have no codec; live guarded anger below is saved.
 #[derive(Clone, Debug, Default)]
 pub struct Memories {
+    /// The guarded-block event owns the saved ANGRY_AT entry once set.
+    /// Outer None leaves unmodeled loaded memory alone; Some(None) has no
+    /// authoritative actor identity and clears stale raw data instead of inventing one.
+    pub guarded_angry_at: Option<Option<[i32; 4]>>,
+    /// MemorySlot's remaining TTL, independent of the combat anger counter:
+    /// zero is still saved until the following brain tick clears the value.
+    pub guarded_anger_ttl: i32,
     /// `AVOID_TARGET`.
     pub avoid: Option<AvoidTarget>,
     /// `RIDE_TARGET`.
@@ -105,7 +112,33 @@ pub struct Memories {
     /// `ADMIRING_DISABLED`: the ticks left.
     pub admire_disabled: i32,
 }
+/// Existing guarded-block anger, with the causal player's authoritative UUID.
+/// This adds identity only; targeting and countdown keep their existing policy.
+pub fn set_guarded_anger_target(m: &mut Mob, player: Option<[i32; 4]>) {
+    m.extra.anger = 600;
+    m.ai.target = Some(Who::Player);
+    m.extra.piglin.guarded_angry_at = Some(player);
+    m.extra.piglin.guarded_anger_ttl = 600;
+}
+
 impl Memories {
+    /// MemorySlot.tick tests expiry before decrementing its remaining TTL.
+    fn tick_guarded_anger(&mut self) {
+        if self.guarded_angry_at.is_some() {
+            if self.guarded_anger_ttl > 0 {
+                self.guarded_anger_ttl -= 1;
+            } else {
+                self.forget_guarded_anger();
+            }
+        }
+    }
+    fn forget_guarded_anger(&mut self) {
+        if self.guarded_angry_at.is_some() {
+            self.guarded_angry_at = Some(None);
+            self.guarded_anger_ttl = 0;
+        }
+    }
+
     /// `StartAdmiringItemIfSeen.create(119)` (core activity) and the admire
     /// activity's `StopAdmiringIfItemTooFarAway(9)` and
     /// `StopAdmiringIfTiredOfTryingToReachItem(200, 200)`, from the distance
@@ -672,6 +705,7 @@ pub fn set_avoid_target(m: &mut Mob, lr: &mut LegacyRandom, who: Who, at: Vec3) 
 /// `HUNTED_RECENTLY` wait (`dontKillAnyMoreHoglinsForAWhile`).
 pub fn set_avoid_target_and_dont_hunt(m: &mut Mob, lr: &mut LegacyRandom, who: Who, at: Vec3) {
     m.extra.anger = 0;
+    m.extra.piglin.forget_guarded_anger();
     set_avoid_target(m, lr, who, at);
     m.extra.ints[0] = hunt_wait(lr);
 }
@@ -1732,6 +1766,7 @@ pub fn ai_step(
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) {
+    m.extra.piglin.tick_guarded_anger();
     if m.extra.anim_ticks > 0 {
         m.extra.anim_ticks -= 1;
     }
@@ -2473,5 +2508,81 @@ mod brute_home_tests {
             piglin_hurt(&mut piglin, w, &mut lr, &mut events, Who::Mob(999));
             assert_eq!(piglin.extra.home, None, "the piglin drops its celebration");
         });
+    }
+}
+
+#[cfg(test)]
+mod guarded_memory_tick_tests {
+    use super::*;
+    use horizon_world::nbt::Tag;
+
+    /// Pinned Java 26.3 MemorySlot keeps TTL zero until the following tick.
+    /// Exercise actual species ticking and NBT export, including a stale base.
+    #[test]
+    #[ignore = "needs prepared vanilla mob resources"]
+    fn guarded_memory_keeps_zero_ttl_until_the_following_brain_tick() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:piglin"].clone()),
+                Vec3::ZERO,
+                0.0,
+            );
+            m.extra.flag2 = true;
+            set_guarded_anger_target(&mut m, Some([1, 2, 3, 4]));
+            let raw = Tag::compound([(
+                "Brain",
+                Tag::compound([(
+                    "memories",
+                    Tag::compound([(
+                        "minecraft:angry_at",
+                        Tag::compound([
+                            ("value", Tag::IntArray(vec![90, 91, 92, 93])),
+                            ("ttl", Tag::Long(99)),
+                        ]),
+                    )]),
+                )]),
+            )]);
+            let mut random = LegacyRandom::new(7);
+            let mut events = Vec::new();
+            let mut ticked = 0;
+            for (tick, expected_ttl) in [
+                (0, Some(600)),
+                (80, Some(520)),
+                (599, Some(1)),
+                (600, Some(0)),
+                (601, None),
+            ] {
+                while ticked < tick {
+                    ai_step(&mut m, w, &mut random, &mut events);
+                    ticked += 1;
+                }
+                assert_eq!(
+                    m.extra.anger,
+                    (600 - tick).max(0),
+                    "combat countdown at {tick}"
+                );
+                for base in [None, Some(&raw)] {
+                    let saved = crate::entity_nbt::mob_to_nbt(&m, [42, 43, 44, 45], base, None);
+                    let memory = saved
+                        .get("Brain")
+                        .and_then(|b| b.get("memories"))
+                        .and_then(|m| m.get("minecraft:angry_at"));
+                    let observed = memory.and_then(|v| v.get("ttl"));
+                    assert_eq!(
+                        observed,
+                        expected_ttl.map(Tag::Long).as_ref(),
+                        "native memory at tick {tick}",
+                    );
+                    if let Some(value) = memory {
+                        assert_eq!(value.get("value"), Some(&Tag::IntArray(vec![1, 2, 3, 4])));
+                    }
+                }
+            }
+        });
+        assert!(
+            ran,
+            "prepared resources are required for this explicit regression"
+        );
     }
 }
