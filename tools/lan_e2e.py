@@ -378,7 +378,7 @@ from integration_env import game_environment, require_server_reports  # noqa: E4
 
 ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
-CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
+CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'placement', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
@@ -3485,6 +3485,55 @@ def sneaking_on_host(host, want, ticks=40):
             return sneaking
         host.wait(5)
     return sneaking
+
+
+def check_placement(host, guest, out):
+    """EntityGetter.isUnobstructed includes other players during a guest turn (#9642)."""
+    old_modes = {g.name: g('state')['gamemode'] for g in (host, guest)}
+    for game in (host, guest):
+        back_to_game(game)
+        game.raw('release')
+        if dead(game):
+            game.raw('respawn')
+            game.wait(40)
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    host('command', command=f'fill {x - 2} {y - 1} {z - 4} {x + 8} {y - 1} {z + 4} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 4} {x + 8} {y + 4} {z + 4} minecraft:air')
+    cell = (x, y, z)
+    seen = {}
+    try:
+        for actor, other in ((host, guest), (guest, host)):
+            for mode in ('survival', 'creative', 'spectator', 'away'):
+                key = f'{actor.name}/{mode}'
+                actor('command', command='gamemode creative')
+                other('command', command='gamemode ' + ('survival' if mode == 'away' else mode))
+                host('command', command=f'setblock {x} {y} {z} minecraft:air')
+                actor('command', command=f'tp @s {x + .95} {y} {z - 2.5}')
+                other('command', command=f'tp @s {x + (5.5 if mode == "away" else .5)} {y} {z + .5}')
+                actor('command', command='item replace entity @s hotbar.0 with minecraft:stone 64')
+                actor.raw('select', 1)
+                actor.wait(20)
+                other.wait(10)
+                # A centre ray hits the player, hiding the placement bug. This
+                # corner is outside the player's 0.6-wide body, on the same
+                # supporting block, so it sends an ordinary UseItemOn packet.
+                actor.raw('look-at', x + .95, y - .01, z + .05)
+                view = actor('state')['looking_at']
+                assert view['kind'] == 'block' and view['entity'] is None, view
+                assert view['block']['pos'] == [x, y - 1, z], view
+                actor.raw('mouse', 'right', 'click')
+                actor.wait(30)
+                other.wait(10)
+                blocks = [g.raw('block', *cell)['block'] for g in (host, guest)]
+                expected = 'minecraft:stone' if mode in ('spectator', 'away') else 'minecraft:air'
+                seen[key] = blocks
+                assert blocks == [expected, expected], (key, blocks, expected)
+        host.shot(out, 'placement')
+        return seen
+    finally:
+        for game in (host, guest):
+            game.raw('release')
+            game('command', command='gamemode ' + old_modes[game.name])
 
 
 def check_walls(host, guest, out):
@@ -7002,6 +7051,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'beacon': check_beacon, 'crafter': check_crafter, 'lectern': check_lectern,
              'cartography': check_cartography, 'hurt': check_hurt, 'commands': check_commands,
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
+             'placement': check_placement,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance,
              'clicks': check_clicks, 'shift-double-click': check_shift_double_click, 'recipe-shift': check_recipe_shift,
              'shift-drag': check_shift_drag, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,

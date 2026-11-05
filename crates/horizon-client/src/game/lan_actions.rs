@@ -6,7 +6,9 @@
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
 use super::{
-    Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
+    Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen,
+    building_players::{BuildingPlayer, BuildingPlayers},
+    lan::LanHost,
     respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
@@ -217,6 +219,8 @@ pub(super) struct GuestSwap {
         Option<u8>,
         Option<u32>,
     ),
+    /// That turn's other-player building boxes.
+    building_boxes: BuildingPlayers,
     /// That turn's `known_movement`.
     known_movement: Vec3,
     /// The packets queued for that guest.
@@ -302,6 +306,21 @@ fn direction(face: i32) -> [i32; 3] {
     }
 }
 
+/// The hub's current bodies, across dimensions. A borrowed ancestor's
+/// live body takes precedence over this saved state until its turn returns.
+fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
+    host.hub
+        .guests
+        .iter()
+        .map(|g| BuildingPlayer {
+            conn: Some(g.conn),
+            dimension: Dim::from_id(&g.dimension),
+            bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
+            borrowed: false,
+        })
+        .collect()
+}
+
 impl Game<'_> {
     /// Run `f` as the guest `conn`: the host's player state is swapped for theirs.
     pub(super) fn as_guest<R>(
@@ -320,7 +339,7 @@ impl Game<'_> {
         conn: u32,
         f: impl FnOnce(&mut Self, &LanHost) -> R,
     ) -> Option<R> {
-        let swap = self.enter_guest(host, conn)?;
+        let swap = self.enter_guest(host, conn, self.dim)?;
         super::dedicated::crash_fixture("guest", || {
             host.hub.guests.iter().any(|g| g.conn == conn && g.placed)
         });
@@ -362,14 +381,37 @@ impl Game<'_> {
     /// two the host may go back into `self.lan`, so that what the guest does
     /// can reach the other players (their commands, `for_player`), and a
     /// guest's turn can nest in another's: the acting guest and the packets
-    /// queued for them are kept and restored too.
-    pub(super) fn enter_guest(&mut self, host: &mut LanHost, conn: u32) -> Option<GuestSwap> {
+    /// queued for them are kept and restored too. `outer_dimension` belongs
+    /// to the body still in self.player: callers that enter another level
+    /// first must pass the dimension they left, not the new self.dim.
+    pub(super) fn enter_guest(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        outer_dimension: Dim,
+    ) -> Option<GuestSwap> {
         // The guest whose turn it is is in place already (their record holds
         // the game's state until their turn ends).
         if self.lan_acting == Some(conn) {
             return None;
         }
         let i = host.hub.guests.iter().position(|g| g.conn == conn)?;
+        // EntityGetter.isUnobstructed must still see other players while
+        // the hub is taken out of self.lan. The outer body is live here;
+        // its saved hub position (if any) belongs to a different turn.
+        let outer = BuildingPlayer {
+            conn: self.lan_acting,
+            dimension: outer_dimension,
+            bounds: self
+                .player
+                .as_ref()
+                .filter(|p| !self.spectator() && !p.health.dead_or_dying())
+                .map(PlayerMotion::bounds),
+            borrowed: true,
+        };
+        let other_boxes =
+            self.lan_building_boxes
+                .for_turn(conn, Some(outer), building_players(host));
         // `ServerPlayer.permissions()`: the guest's own command level for its
         // turn, so game-master checks see it (not the host's).
         let permission = std::mem::replace(
@@ -602,6 +644,7 @@ impl Game<'_> {
         self.update_totem_ready();
         self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
         self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
+        let building_boxes = std::mem::replace(&mut self.lan_building_boxes, other_boxes);
         Some(GuestSwap {
             conn,
             i,
@@ -663,6 +706,7 @@ impl Game<'_> {
             projectiles,
             modifiers,
             combat: host_combat,
+            building_boxes,
         })
     }
 
@@ -755,6 +799,7 @@ impl Game<'_> {
             marks,
             death_cause,
             combat,
+            building_boxes,
             acting,
             known_movement,
             packets,
@@ -853,6 +898,7 @@ impl Game<'_> {
             self.lan_acting_entity,
         ) = acting;
         self.known_movement = known_movement;
+        self.lan_building_boxes = building_boxes;
         play.death_cause = std::mem::replace(&mut self.ui.death_cause, death_cause);
         // An ender chest the guest opened: the menu shows their inventory
         // itself (lan_open_container), not a stand-in block entity.
@@ -1108,6 +1154,14 @@ impl Game<'_> {
         }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
+        // An inner turn may move, kill or change a player's mode. Once its
+        // body is back in the hub, refresh the restored outer snapshot while
+        // keeping ancestor bodies that are still held by their GuestSwaps.
+        if let Some(actor) = self.lan_acting {
+            self.lan_building_boxes =
+                self.lan_building_boxes
+                    .for_turn(actor, None, building_players(host));
+        }
     }
 
     /// `ServerLevel.broadcastDamageEvent` for a guest that took an unblocked hit.
@@ -3317,7 +3371,7 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return false;
         };
-        let Some(swap) = self.enter_guest(&mut host, c.conn) else {
+        let Some(swap) = self.enter_guest(&mut host, c.conn, self.dim) else {
             self.lan = Some(host);
             return false;
         };
