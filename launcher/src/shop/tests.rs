@@ -5,12 +5,13 @@ use crate::wardrobe::ClaimState;
 fn claim(state: ClaimState, open: bool, starts_at: Option<i64>, ends_at: Option<i64>) -> Claim {
     Claim {
         state,
-        items: vec!["founder_visor".into()],
+        items: vec!["visor".into(), "sunlet".into()],
         starts_at,
         ends_at,
         claimed: None,
         open,
         preview: false,
+        one_click: false,
     }
 }
 

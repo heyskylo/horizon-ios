@@ -39,6 +39,7 @@ fn gameplay_has_keyboard(screen: bool, title: bool, dialog: bool) -> bool { scre
 BUTTON
 fn container_key_clones(_: i32, _: KeyAction) -> bool { false }
 mod keybinds { pub fn key_name(key: i32) -> Option<&'static str> { (key == 1).then_some("key.keyboard.a") } }
+enum Source { Keyboard }
 struct Bindings;
 impl Bindings { fn translate_all(&self, _: i32) -> Vec<std::result::Result<i32, i32>> { vec![Ok(10), Ok(11), Err(2)] } }
 struct Settings { keys: Bindings }
@@ -51,7 +52,7 @@ impl Game {
         assert_eq!((*screen, name, modifiers), ("options", "key.keyboard.a", 5));
         self.calls.set(self.calls.get() + 1); *canceled = self.cancel;
     }
-    fn mapped_key(&mut self, key: i32, pressed: bool, repeat: bool, raw: i32) -> Result<()> {
+    fn mapped_key(&mut self, key: i32, pressed: bool, repeat: bool, raw: i32, _: Source) -> Result<()> {
         assert!(!pressed && !repeat && raw == 1); self.released.push((false, key)); Ok(())
     }
     fn play_mouse(&mut self, button: i32, pressed: bool) -> Result<()> {

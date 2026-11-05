@@ -242,6 +242,7 @@ fn stab_attack(
         kind: DamageKind::Spear,
         attacker: Some(Who::Mob(m.id)),
         from: Some(from),
+        attacker_species: Some(m.species()),
     };
     let mut affected = deals_knockback;
     if deals_damage {

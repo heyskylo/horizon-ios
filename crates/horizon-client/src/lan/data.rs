@@ -293,12 +293,13 @@ impl SyncData {
             registries.push(((*key).to_owned(), e));
         }
         // The world's packs' dialogs joined the registry above
-        // (`pack_entries`); their `minecraft:dialog` tags join the root's here,
-        // for the Quick Actions key and `show_dialog`.
+        // (`pack_entries`); their tags join the root's here, the dialogs'
+        // (the Quick Actions key and `show_dialog`) and every other
+        // registry's a pack has tag files for (a block made climbable).
         drop(registries_step);
         let tags_step = startup::step("sync.tags");
         let mut tags = Self::load_tags(&root, &builtin, &dynamic);
-        Self::merge_dialog_tags(&mut tags, &root, overlay, &builtin, &dynamic);
+        Self::merge_pack_tags(&mut tags, &root, overlay, &builtin, &dynamic);
         drop(tags_step);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists()
             || horizon_protocol::item::custom::entries().next().is_some()
@@ -343,15 +344,19 @@ impl SyncData {
     /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
     /// registries the server started with (`kept`'s, its
     /// LayeredRegistryAccess) and reads the tags against them
-    /// (TagLoader.loadTagsForExistingRegistries); the rest stays reloaded.
-    pub fn keep_registries(&mut self, resources: &Path, kept: &SyncData) {
+    /// (TagLoader.loadTagsForExistingRegistries), the world's packs' as well
+    /// (`overlay`); the rest stays reloaded.
+    pub fn keep_registries(
+        &mut self,
+        resources: &Path,
+        kept: &SyncData,
+        overlay: &horizon_world::loot::PackOverlay,
+    ) {
         self.dynamic = kept.dynamic.clone();
         self.registries = kept.registries.clone();
-        self.tags = Self::load_tags(
-            &resources.join("data/minecraft"),
-            &self.builtin,
-            &self.dynamic,
-        );
+        let root = resources.join("data/minecraft");
+        self.tags = Self::load_tags(&root, &self.builtin, &self.dynamic);
+        Self::merge_pack_tags(&mut self.tags, &root, overlay, &self.builtin, &self.dynamic);
     }
 
     /// Whether a synchronized registry holds an entry from a world's pack.
@@ -414,27 +419,63 @@ impl SyncData {
             })
             .collect()
     }
-    /// The `minecraft:dialog` tags of the pack stack: the resource root's
-    /// files, then each world pack's in order (`TagLoader`: a file adds its
-    /// values, or replaces the earlier ones with `"replace": true`), nested
-    /// tags expanded to the registry's ids.
-    fn merge_dialog_tags(
+    /// The tags the server sends (`TagNetworkSerialization.serializeTagsToNetwork`
+    /// reads the registries' tags as `TagLoader` loaded them from the whole
+    /// pack stack): every synchronized registry the world's packs have tag
+    /// files for is merged again over the resource root's, and
+    /// `minecraft:dialog` always (its tags name the packs' dialogs too).
+    /// Without packs, the root's tags stand.
+    fn merge_pack_tags(
         tags: &mut UpdateTags,
         root: &Path,
         overlay: &horizon_world::loot::PackOverlay,
         builtin: &Builtin,
         dynamic: &Dynamic,
     ) {
-        let Some(names) = Self::registry_names(builtin, dynamic, "minecraft:dialog") else {
+        let mut keys: Vec<&String> = builtin
+            .registries
+            .keys()
+            .chain(dynamic.registries.keys())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        for key in keys {
+            // Registries.tagsDirPath: `tags/<path>`, a mod's registry under
+            // `tags/<namespace>/<path>`.
+            let kind = match key.split_once(':') {
+                Some(("minecraft", path)) => path.to_owned(),
+                Some((ns, path)) => format!("{ns}/{path}"),
+                None => key.clone(),
+            };
+            if key != "minecraft:dialog" && overlay.tag_kind(&kind).next().is_none() {
+                continue;
+            }
+            Self::merge_registry_tags(tags, root, overlay, builtin, dynamic, key, &kind);
+        }
+    }
+    /// One registry's tags of the pack stack: the resource root's files, then
+    /// each world pack's in order (`TagLoader`: a file adds its values, or
+    /// replaces the earlier ones with `"replace": true`), nested tags expanded
+    /// to the registry's ids.
+    fn merge_registry_tags(
+        tags: &mut UpdateTags,
+        root: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        builtin: &Builtin,
+        dynamic: &Dynamic,
+        key: &str,
+        kind: &str,
+    ) {
+        let Some(names) = Self::registry_names(builtin, dynamic, key) else {
             return;
         };
         let mut files: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut own = BTreeMap::new();
-        walk(&root.join("tags/dialog"), &mut own);
+        walk(&root.join("tags").join(kind), &mut own);
         for (name, value) in own {
             Self::add_tag_values(files.entry(qualified(&name)).or_default(), &value);
         }
-        for (id, packs) in overlay.tag_kind("dialog") {
+        for (id, packs) in overlay.tag_kind(kind) {
             for bytes in packs {
                 if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
                     Self::add_tag_values(files.entry(id.clone()).or_default(), &value);
@@ -445,16 +486,16 @@ impl SyncData {
         for name in files.keys() {
             let mut ids = Vec::new();
             let mut seen = HashSet::new();
-            Self::expand_dialog_tag(&files, name, &names, &mut ids, &mut seen);
+            Self::expand_pack_tag(&files, name, &names, &mut ids, &mut seen);
             entries.push(TagEntry {
                 name: name.clone(),
                 ids,
             });
         }
-        tags.registries.retain(|r| r.registry != "minecraft:dialog");
+        tags.registries.retain(|r| r.registry != key);
         if !entries.is_empty() {
             tags.registries.push(RegistryTags {
-                registry: "minecraft:dialog".into(),
+                registry: key.into(),
                 tags: entries,
             });
         }
@@ -470,8 +511,8 @@ impl SyncData {
         }
     }
 
-    /// A dialog tag's entries as registry ids, nested tags expanded once.
-    fn expand_dialog_tag(
+    /// A tag's entries as registry ids, nested tags expanded once.
+    fn expand_pack_tag(
         files: &BTreeMap<String, Vec<Value>>,
         tag: &str,
         names: &HashMap<&str, i32>,
@@ -490,7 +531,7 @@ impl SyncData {
                 .or_else(|| value["id"].as_str())
                 .unwrap_or_default();
             if let Some(reference) = id.strip_prefix('#') {
-                Self::expand_dialog_tag(files, &qualified(reference), names, out, seen);
+                Self::expand_pack_tag(files, &qualified(reference), names, out, seen);
             } else if let Some(&n) = names.get(qualified(id).as_str())
                 && !out.contains(&n)
             {
@@ -675,7 +716,7 @@ mod tests {
         let mut tags = UpdateTags {
             registries: Vec::new(),
         };
-        SyncData::merge_dialog_tags(
+        SyncData::merge_pack_tags(
             &mut tags,
             Path::new("a-resource-root-without-tags"),
             &overlay,
@@ -696,6 +737,98 @@ mod tests {
             quick.ids,
             [0, 2],
             "the pack's dialog, then the nested tag's"
+        );
+    }
+
+    /// #7843: the server sends its tags as `TagLoader` merged them from the
+    /// whole pack stack. A world pack that adds dirt to `climbable` and
+    /// replaces `mineable/pickaxe` reaches the block tags sent, over the
+    /// resource root's; a nested tag expands; a registry no pack has tag files
+    /// for keeps what `load_tags` read.
+    #[test]
+    fn world_packs_tags_reach_every_synchronized_registry() {
+        let root = std::env::temp_dir().join(format!("horizon-pack-tags-{}", std::process::id()));
+        let block_tags = root.join("tags/block");
+        std::fs::create_dir_all(block_tags.join("mineable")).unwrap();
+        std::fs::write(
+            block_tags.join("climbable.json"),
+            r#"{"values":["minecraft:ladder"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            block_tags.join("mineable/pickaxe.json"),
+            r#"{"values":["minecraft:stone"]}"#,
+        )
+        .unwrap();
+        let names = |list: &[&str]| {
+            horizon_protocol::registry::Ids::from_names(
+                list.iter().map(|s| (*s).to_owned()).collect(),
+            )
+        };
+        let builtin = Builtin {
+            registries: HashMap::from([
+                (
+                    "minecraft:block".to_owned(),
+                    names(&["minecraft:stone", "minecraft:dirt", "minecraft:ladder"]),
+                ),
+                ("minecraft:item".to_owned(), names(&["minecraft:stick"])),
+            ]),
+        };
+        let dynamic = Dynamic::default();
+        let mut tags = SyncData::load_tags(&root, &builtin, &dynamic);
+        let item_tags = RegistryTags {
+            registry: "minecraft:item".into(),
+            tags: vec![TagEntry {
+                name: "minecraft:sticks".into(),
+                ids: vec![0],
+            }],
+        };
+        tags.registries.push(item_tags.clone());
+        let files = vec![
+            (
+                "tags/minecraft:block/climbable".to_owned(),
+                vec![br##"{"values":["minecraft:dirt","#test:more"]}"##.to_vec()],
+            ),
+            (
+                "tags/test:block/more".to_owned(),
+                vec![br#"{"values":["minecraft:stone"]}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:block/mineable/pickaxe".to_owned(),
+                vec![br#"{"replace":true,"values":["minecraft:dirt"]}"#.to_vec()],
+            ),
+        ];
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        SyncData::merge_pack_tags(&mut tags, &root, &overlay, &builtin, &dynamic);
+        let _ = std::fs::remove_dir_all(&root);
+        let sent = |registry: &str, tag: &str| -> Vec<i32> {
+            tags.registries
+                .iter()
+                .find(|r| r.registry == registry)
+                .and_then(|r| r.tags.iter().find(|t| t.name == tag))
+                .map(|t| t.ids.clone())
+                .unwrap_or_else(|| panic!("{registry} {tag} is sent"))
+        };
+        // The root's ladder, then the pack's dirt and its nested tag's stone.
+        assert_eq!(sent("minecraft:block", "minecraft:climbable"), [2, 1, 0]);
+        // `"replace": true` drops the root's stone.
+        assert_eq!(sent("minecraft:block", "minecraft:mineable/pickaxe"), [1]);
+        assert_eq!(sent("minecraft:block", "test:more"), [0]);
+        // No pack tags for items: the registry stays as it was read.
+        let items = tags
+            .registries
+            .iter()
+            .find(|r| r.registry == "minecraft:item")
+            .unwrap();
+        assert_eq!(items.tags.len(), 1);
+        assert_eq!(items.tags[0].ids, item_tags.tags[0].ids);
+        assert_eq!(
+            tags.registries
+                .iter()
+                .filter(|r| r.registry == "minecraft:block")
+                .count(),
+            1,
+            "one entry per registry"
         );
     }
 

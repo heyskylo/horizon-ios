@@ -56,6 +56,22 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
 
 const NONE: &dyn Fn(&str, f32) = &|_, _| {};
 
+/// Bytes `build_import::is_game` accepts as a game build: this platform's
+/// executable magic followed by the mod API mark every Horizon program
+/// carries. Not a real program -- `what` only has to recognise one.
+fn fake_program() -> Vec<u8> {
+    let magic: &[u8] = if cfg!(windows) {
+        b"MZ"
+    } else if cfg!(target_os = "macos") {
+        &[0xcf, 0xfa, 0xed, 0xfe]
+    } else {
+        b"ELF"
+    };
+    let mut bytes = magic.to_vec();
+    bytes.extend_from_slice(&horizon_mods::api_level::MARK);
+    bytes
+}
+
 #[test]
 fn says_what_a_dropped_file_is() {
     let dir = scratch("what");
@@ -118,6 +134,48 @@ fn says_what_a_dropped_file_is() {
                 &[("options.txt", b"lang:fr_ch\n"), ("saves/W/level.dat", b"")],
             );
             (p, Ok(Dropped::Instance))
+        },
+        // A game build: the Windows program, taken on its extension without
+        // being read, so `build_import` is the one to say why a file is not a
+        // game for this computer.
+        {
+            let p = dir.join("horizon-client.exe");
+            put(&p, b"not read");
+            (p, Ok(Dropped::Build))
+        },
+        // A browser's second copy keeps the extension, so it is a build too.
+        {
+            let p = dir.join("horizon-client (1).exe");
+            put(&p, b"not read");
+            (p, Ok(Dropped::Build))
+        },
+        // A build for Linux or macOS has no extension: read, and recognised
+        // by its magic and the mod API mark.
+        {
+            let p = dir.join("horizon-client");
+            put(&p, &fake_program());
+            (p, Ok(Dropped::Build))
+        },
+        // An Actions artifact is a zip around the program: nothing a pack or
+        // an instance holds matches, so the build check is the one that does.
+        {
+            let p = dir.join("artifact.zip");
+            // Named as the game is on this platform: from_zip looks for that
+            // entry, which is horizon-client.exe on Windows.
+            zip_file(&p, &[(crate::backend::CLIENT, fake_program().as_slice())]);
+            (p, Ok(Dropped::Build))
+        },
+        // Named as the game but holding nothing like it: not a build.
+        {
+            let p = dir.join("horizon-client-notes");
+            put(&p, b"just notes");
+            (p, Err(()))
+        },
+        // An extensionless file that is not the game is still nothing.
+        {
+            let p = dir.join("README");
+            put(&p, b"hello");
+            (p, Err(()))
         },
         {
             let p = dir.join("random.zip");

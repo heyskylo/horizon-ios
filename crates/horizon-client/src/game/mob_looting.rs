@@ -25,6 +25,7 @@ impl Game<'_> {
         if self.dropped.is_empty() || !self.ui.rules.bool("mob_griefing") {
             return;
         }
+        let mut near = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if !m.can_pick_up_loot() || !m.alive() || m.removed {
@@ -32,6 +33,9 @@ impl Game<'_> {
             }
             // `Mob.ITEM_PICKUP_REACH`.
             let reach = m.bounds().inflate(Vec3::new(1.0, 0.0, 1.0));
+            if !near.may_meet(&self.dropped, self.next_entity, reach) {
+                continue;
+            }
             let (species, baby, passenger) = (m.species(), m.is_baby(), m.extra.passenger);
             let mut j = 0;
             while j < self.dropped.len() {

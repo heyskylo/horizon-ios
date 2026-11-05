@@ -1,7 +1,9 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
-//! the catalogue, the account's own items, claiming the founder set while it is open, what each
-//! slot wears and whether others see it, and whether there is a founder set to show at all
-//! (`Service::shop`).
+//! the catalogue, the account's own items and purchase history, what each slot wears and whether
+//! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
+//! claiming happen on the website ([`SHOP_URL`]), except the founder set's free claim for players
+//! in countries Paddle, the shop's payment provider, doesn't serve (`Claim::here`,
+//! `Service::claim`): the service decides who that is, by country.
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -17,6 +19,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Where cosmetics are bought and the founder set is claimed: the website's shop.
+pub const SHOP_URL: &str = "https://playhorizon.dev/shop";
+
 /// Why a request to the service failed, in words for the player.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -26,8 +31,6 @@ pub enum Error {
     Account(String),
     /// The service's session ended: sign in to it again.
     SignedOut,
-    /// The free set can't be claimed now (not open yet, or over).
-    ClaimClosed,
     /// An item the account doesn't own, or one for another slot.
     NotYours,
     /// Anything else the service answered.
@@ -43,7 +46,6 @@ impl Error {
             }
             Self::Account(e) => tr(e).into(),
             Self::SignedOut => tr("Your Wardrobe session ended. Open the Wardrobe again.").into(),
-            Self::ClaimClosed => tr("The founder set can't be claimed right now.").into(),
             Self::NotYours => tr("That item isn't in your Wardrobe.").into(),
             Self::Service(_) => {
                 tr("Horizon's cosmetics service had a problem. Try again later.").into()
@@ -64,6 +66,10 @@ pub enum ClaimState {
     NotYet,
     Open,
     Closed,
+    /// A state this launcher doesn't know, from a newer service: the answer still reads, and the
+    /// rest of it (`open`, the dates) decides.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The founder set: free to claim between `starts_at` and `ends_at` (Unix seconds, `[start,
@@ -84,6 +90,18 @@ pub struct Claim {
     /// Open only because the account is on the service's preview list.
     #[serde(default)]
     pub preview: bool,
+    /// The service grants the set to this player from the Wardrobe (`POST /v1/claim`): Paddle
+    /// doesn't sell where they are, so the site's checkout can't (in `me` only).
+    #[serde(default)]
+    pub one_click: bool,
+}
+
+impl Claim {
+    /// Whether the Wardrobe offers "Claim for free": open for this account, not claimed yet, and
+    /// the service says the checkout isn't for this player.
+    pub fn here(&self) -> bool {
+        self.open && self.one_click && self.claimed == Some(false)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -126,6 +144,16 @@ impl Entry {
             .or_else(|| self.names.get("en_us"))
             .map_or(&self.id, String::as_str)
     }
+
+    /// Whether the id and hash are plain parts of a file name, by the game's rule
+    /// (`horizon_cosmetics::fetch`): the cache's paths are made of them.
+    fn plain(&self) -> bool {
+        [&self.id, &self.hash].into_iter().all(|t| {
+            !t.is_empty()
+                && t.len() <= 64
+                && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -145,6 +173,36 @@ pub struct Me {
     #[serde(default = "shown")]
     pub visible: bool,
     pub claim: Claim,
+    /// What the account claimed or bought through Paddle, newest first (the purchase history
+    /// Mojang's guidelines ask for).
+    #[serde(default)]
+    pub purchases: Vec<Purchase>,
+}
+
+/// One order, as the cosmetics service keeps it; Paddle is the merchant of record.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Purchase {
+    /// Paddle's transaction id (`txn_…`): the order number on Paddle's receipt.
+    pub transaction_id: String,
+    /// An item id, or `founder_set`.
+    pub item: String,
+    /// Paid, tax included, in the lowest unit of `currency`.
+    pub amount: i64,
+    pub currency: String,
+    /// `paid`, `partly_refunded`, `refunded` or `charged_back`.
+    pub status: String,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+impl Purchase {
+    /// The amount as people write it: `2.99 USD`; `None` for nothing paid.
+    pub fn price(&self) -> Option<String> {
+        (self.amount > 0).then(|| {
+            let (whole, cents) = (self.amount / 100, self.amount % 100);
+            format!("{whole}.{cents:02} {}", self.currency)
+        })
+    }
 }
 
 fn shown() -> bool {
@@ -210,19 +268,6 @@ impl Saved {
             serde_json::to_vec(self).map_err(std::io::Error::other)?,
         )?;
         std::fs::rename(tmp, path)
-    }
-
-    /// The launcher theme worn: its sky (`0xrrggbb`, top to bottom) and accent hue.
-    pub fn theme(&self) -> Option<([u32; 6], f32)> {
-        let id = self.me.as_ref()?.equipped.get("theme")?;
-        let entry = self
-            .catalogue
-            .as_ref()?
-            .items
-            .iter()
-            .find(|e| &e.id == id)?;
-        let theme = entry.theme.as_ref()?;
-        Some((theme.sky()?, theme.accent_hue))
     }
 
     /// Make `change` here: the outfit shows it at once and it waits to be sent. A newer change of
@@ -297,7 +342,7 @@ impl Service {
     }
 
     /// Where the founder set's claim stands for everyone (`GET /v1/shop`, no session): whether
-    /// there is a Shop to show. An account on the service's preview list learns it from its own
+    /// the Wardrobe has anything to show yet. An account on the service's preview list learns it from its own
     /// answer (`Me::claim`), with its session.
     pub fn shop(&self) -> Result<Claim, Error> {
         parse(self.call("GET", "/v1/shop", None, None)?)
@@ -370,9 +415,13 @@ impl Service {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
     }
 
-    /// Claim the founder set: the account owns its items from then on.
+    /// Claim the founder set here (only where `Claim::here`): the account's answer after it. One
+    /// the service already recorded is no failure.
     pub fn claim(&self, session: &Session) -> Result<Me, Error> {
-        parse(self.call("POST", "/v1/claim", Some(session), Some(json!({})))?)
+        match self.call("POST", "/v1/claim", Some(session), Some(json!({}))) {
+            Err(Error::Service(409)) => self.me(session),
+            other => parse(other?),
+        }
     }
 
     /// Wear `item` in `slot`, or nothing there (`None`).
@@ -408,12 +457,16 @@ impl Service {
     }
 
     /// An item's file, from `cache` (`<id>-<hash>.json`, kept by hash: it never changes for one)
-    /// or the service, then kept there.
+    /// or the service, then kept there. An entry whose id or hash isn't `Entry::plain` is refused
+    /// before the disk or the service is touched.
     pub fn item_cached(
         &self,
         entry: &Entry,
         cache: &Path,
     ) -> Result<horizon_cosmetics::Item, Error> {
+        if !entry.plain() {
+            return Err(Error::Service(200));
+        }
         let path = cache.join(format!("{}-{}.json", entry.id, entry.hash));
         if let Some(item) = std::fs::read(&path)
             .ok()
@@ -456,7 +509,6 @@ impl Service {
                 let code: Value = r.into_json().unwrap_or(Value::Null);
                 return Err(match (status, code["error"].as_str().unwrap_or("")) {
                     (401, _) => Error::SignedOut,
-                    (403, "claim_not_open" | "claim_closed") => Error::ClaimClosed,
                     (403, "not_owned") | (400, "wrong_slot") | (404, "item") => Error::NotYours,
                     (status, _) => Error::Service(status),
                 });

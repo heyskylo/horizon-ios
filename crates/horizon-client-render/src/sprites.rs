@@ -8,6 +8,7 @@ pub struct SpriteAnimation {
     pub layer: u32,
     frames: Arc<Vec<Vec<u8>>>,
     clip: Arc<AnimationClip>,
+    materials: [Option<Arc<Vec<Vec<u8>>>>; 2],
 }
 /// What an animated sprite shows: `frame`, mixed `millis` thousandths of the
 /// way towards `next` (0 for a single frame).
@@ -18,6 +19,14 @@ pub struct FrameBlend {
     pub millis: u32,
 }
 impl SpriteAnimation {
+    pub(crate) fn has_materials(&self) -> bool {
+        self.materials.iter().any(Option::is_some)
+    }
+    /// Material categories follow the selected colour frame, without colour interpolation.
+    pub(crate) fn material_pixels(&self, kind: usize, tick: u64) -> Option<&[u8]> {
+        let frames = self.materials[kind].as_ref()?;
+        Some(&frames[self.frame(tick) % frames.len()])
+    }
     pub fn frame(&self, tick: u64) -> usize {
         self.clip.sample(tick).frame as usize
     }
@@ -62,6 +71,15 @@ impl SpriteAnimation {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct StillKey {
+    frame: u64,
+    pbr: u64,
+    side: u32,
+    settings: [u32; 2],
+    flags: [bool; 4],
+}
+
 #[derive(Default)]
 pub struct Sprites {
     /// Edge length of every array layer and the layers' current frames, set
@@ -79,9 +97,9 @@ pub struct Sprites {
     /// Each layer's frames at the texture's own resolution (square), and the
     /// frame shown first.
     native: Vec<(u32, Arc<Vec<Vec<u8>>>, usize)>,
-    /// Each layer's LabPBR maps (`_n` normals, `_s` specular) beside its texture: their first
-    /// frame at their own resolution (square).
-    pbr: Vec<[Option<(u32, Vec<u8>)>; 2]>,
+    /// Each layer's LabPBR maps (`_n` normals, `_s` specular) beside its texture: their
+    /// frames at their own resolution (square).
+    pbr: Vec<[Option<(u32, Vec<Vec<u8>>)>; 2]>,
     /// The layers' normal and specular maps at `pbr_size`, layer after layer, set by
     /// [`Sprites::finish`]: empty when no texture has either.
     pub normals: Vec<u8>,
@@ -90,7 +108,7 @@ pub struct Sprites {
     /// Still textures by their pixels, their LabPBR maps and mip settings: mods copy vanilla's
     /// textures under their own names, and one layer serves them all (the GPU's array may
     /// hold as few as 2048).
-    still: std::collections::HashMap<(Vec<u8>, u64, u32, [u32; 2], [bool; 4]), u32>,
+    still: std::collections::HashMap<StillKey, u32>,
     /// Decoded textures kept on disk between launches ([`Sprites::with_disk_cache`]).
     disk: Option<crate::sprite_cache::SpriteCache>,
     /// Textures [`Sprites::prefetch`] decoded ahead of their insert, by sprite name or
@@ -117,7 +135,7 @@ pub fn set_texture_budget(mib: u32) {
 /// Whether resource loads read the resource packs' LabPBR maps (`set_labpbr_maps`).
 static LABPBR_MAPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether resource loads from now on read the resource packs' LabPBR maps beside their block
-/// textures. Only a native shader pack's material stage reads them, so without one they cost
+/// textures. Native material stages and terrain shader packs read them; without a pack they cost
 /// neither loading time nor video memory.
 pub fn set_labpbr_maps(on: bool) {
     LABPBR_MAPS.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -126,7 +144,7 @@ pub fn set_labpbr_maps(on: bool) {
 pub fn labpbr_maps() -> bool {
     LABPBR_MAPS.load(std::sync::atomic::Ordering::Relaxed)
 }
-/// Largest array of each LabPBR map, which only a native shader pack reads.
+/// Budget for either complete normal or specular image set.
 const MAX_MAP_BYTES: u64 = DEFAULT_TEXTURE_BUDGET / 4;
 /// Fewer layers than any game has (vanilla's are about 1300): what a map is kept at while
 /// loading assumes at least these many share the array.
@@ -144,30 +162,12 @@ fn side_within(start: u32, layers: u64, bytes: u64) -> u32 {
     }
     size
 }
-/// A LabPBR map's square `frame` of `side` averaged down by whole powers of two to at most
-/// `max`, channel by channel: they are data, not colour.
+/// Reduce data maps by selecting whole texels: material IDs and sentinel bytes cannot be averaged.
 fn shrink_map(frame: Vec<u8>, side: u32, max: u32) -> (u32, Vec<u8>) {
     if side <= max || !side.is_power_of_two() || !max.is_power_of_two() {
         return (side, frame);
     }
-    let (out_side, f, side) = (max as usize, (side / max) as usize, side as usize);
-    let mut out = Vec::with_capacity(out_side * out_side * 4);
-    for y in 0..out_side {
-        for x in 0..out_side {
-            let mut sum = [0u32; 4];
-            for dy in 0..f {
-                let row = ((y * f + dy) * side + x * f) * 4;
-                for texel in frame[row..row + f * 4].as_chunks::<4>().0 {
-                    for (s, &v) in sum.iter_mut().zip(texel) {
-                        *s += u32::from(v);
-                    }
-                }
-            }
-            let n = (f * f) as u32;
-            out.extend(sum.map(|s| ((s + n / 2) / n) as u8));
-        }
-    }
-    (max, out)
+    (max, resample(&frame, side, max))
 }
 /// Nearest-resample a square RGBA frame to another square size.
 pub(crate) fn resample(frame: &[u8], from: u32, to: u32) -> Vec<u8> {
@@ -280,14 +280,28 @@ impl Sprites {
         if largest_map.is_some() {
             let pbr_size = self.pbr_size;
             log::info!("Horizon: LabPBR maps at {pbr_size} px, {layers} layers");
-            for maps in std::mem::take(&mut self.pbr) {
+            for animation in &mut self.animations {
+                animation.materials = self.pbr[animation.layer as usize].each_ref().map(|map| {
+                    map.as_ref().map(|(from, frames)| {
+                        Arc::new(
+                            frames
+                                .iter()
+                                .map(|frame| resample(frame, *from, pbr_size))
+                                .collect(),
+                        )
+                    })
+                });
+            }
+            for (layer, maps) in std::mem::take(&mut self.pbr).into_iter().enumerate() {
                 for (map, (out, none)) in maps.into_iter().zip([
                     (&mut self.normals, FLAT_NORMAL),
                     (&mut self.specular, NO_SPECULAR),
                 ]) {
                     match map {
-                        Some((from, pixels)) => {
-                            let (from, pixels) = shrink_map(pixels, from, pbr_size);
+                        Some((from, frames)) => {
+                            let initial = self.native[layer].2 % frames.len();
+                            let (from, pixels) =
+                                shrink_map(frames[initial].clone(), from, pbr_size);
                             out.extend(resample(&pixels, from, pbr_size));
                         }
                         None => out.extend(none.repeat((pbr_size * pbr_size) as usize)),
@@ -629,8 +643,10 @@ impl Sprites {
         let pbr = match name.split_once(':') {
             Some(_) if labpbr_maps() => {
                 let path = crate::atlas_sources::texture_path(root, name, "textures");
-                ["_n", "_s"].map(|suffix| pbr_map(&path, suffix, count))
+                ["_n", "_s"].map(|suffix| pbr_map(&path, suffix, count, animation.as_ref()))
             }
+            None if labpbr_maps() && !name.starts_with("fusion/") => ["_n", "_s"]
+                .map(|suffix| pbr_map(&root.join(name), suffix, count, animation.as_ref())),
             _ => [None, None],
         };
         let settings = crate::mipmap::Settings {
@@ -647,18 +663,20 @@ impl Sprites {
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
             use std::hash::{Hash, Hasher};
+            let mut frame = std::collections::hash_map::DefaultHasher::new();
+            frames[0].hash(&mut frame);
             let mut maps = std::collections::hash_map::DefaultHasher::new();
             pbr.hash(&mut maps);
-            (
-                frames[0].clone(),
-                maps.finish(),
+            StillKey {
+                frame: frame.finish(),
+                pbr: maps.finish(),
                 side,
-                [
+                settings: [
                     settings.strategy as u32,
                     settings.alpha_cutoff_bias.to_bits(),
                 ],
-                [settings.has_transparent, settings.item, opaque, translucent],
-            )
+                flags: [settings.has_transparent, settings.item, opaque, translucent],
+            }
         });
         if let Some(&same) = still.as_ref().and_then(|k| self.still.get(k)) {
             self.layers.insert(name.to_owned(), same);
@@ -680,6 +698,7 @@ impl Sprites {
                 layer,
                 frames: frames.clone(),
                 clip: Arc::new(clip),
+                materials: [None, None],
             });
         }
         self.mips.push(settings);
@@ -723,32 +742,64 @@ fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     Ok((info.width, info.height, pixels))
 }
 
-/// The LabPBR map with `suffix` beside the texture at `path`, whose frames lie in a column of
-/// `count`: its first frame, square, no larger than the maps' array allows any game's
-/// textures (a 512x pack's maps would otherwise fill the memory while loading).
-fn pbr_map(path: &Path, suffix: &str, count: u32) -> Option<(u32, Vec<u8>)> {
+/// Companion frames use the colour image's grid; a single-frame map stays static.
+fn pbr_map(
+    path: &Path,
+    suffix: &str,
+    count: u32,
+    animation: Option<&AnimationMetadata>,
+) -> Option<(u32, Vec<Vec<u8>>)> {
     let stem = path.file_stem()?.to_str()?;
     let map = path.with_file_name(format!("{stem}{suffix}.png"));
     let (map_width, map_height, pixels) = read_rgba(&map).ok()?;
-    let (w, h) = (map_width, map_height / count.max(1));
+    let (width, height, _) = read_rgba(path).ok()?;
+    let [frame_width, frame_height] = animation.map_or([width as i32, height as i32], |a| {
+        a.frame_size(width as i32, height as i32)
+    });
+    let (frame_width, frame_height) = (
+        u32::try_from(frame_width).ok()?,
+        u32::try_from(frame_height).ok()?,
+    );
+    if frame_width == 0 || frame_height == 0 {
+        return None;
+    }
+    let (columns, rows) = if count <= 1 || (map_width == frame_width && map_height == frame_height)
+    {
+        (1, 1)
+    } else if u64::from(map_width) * u64::from(height) == u64::from(map_height) * u64::from(width) {
+        (width / frame_width, height / frame_height)
+    } else if u64::from(map_width) * u64::from(frame_height)
+        == u64::from(map_height) * u64::from(frame_width)
+    {
+        (1, 1)
+    } else {
+        return None;
+    };
+    if columns == 0 || rows == 0 || map_width % columns != 0 || map_height % rows != 0 {
+        return None;
+    }
+    let (w, h) = (map_width / columns, map_height / rows);
     if w == 0 || h == 0 {
         return None;
     }
     let side = w.max(h);
-    let mut frame = Vec::with_capacity((side * side * 4) as usize);
-    for row in 0..side {
-        for column in 0..side {
-            let offset = (((row * h / side) * map_width + column * w / side) * 4) as usize;
-            frame.extend_from_slice(&pixels[offset..offset + 4]);
-        }
-    }
-    Some(shrink_map(
-        frame,
-        side,
-        side_within(side, LAYERS_AT_LEAST, MAX_MAP_BYTES),
-    ))
+    let output_side = side_within(side, LAYERS_AT_LEAST, MAX_MAP_BYTES).min(side);
+    let frames = (0..columns * rows)
+        .map(|index| {
+            let (x, y) = (index % columns * w, index / columns * h);
+            let mut frame = Vec::with_capacity((side * side * 4) as usize);
+            for row in 0..side {
+                for column in 0..side {
+                    let offset =
+                        (((y + row * h / side) * map_width + x + column * w / side) * 4) as usize;
+                    frame.extend_from_slice(&pixels[offset..offset + 4]);
+                }
+            }
+            resample(&frame, side, output_side)
+        })
+        .collect();
+    Some((output_side, frames))
 }
-
 /// SpriteContents: the `.mcmeta` `texture` section (TextureMetadataSection's
 /// mipmap strategy and alpha cutoff bias).
 fn texture_section(
@@ -779,6 +830,7 @@ pub(crate) fn test_frames(layer: u32, frames: Vec<Vec<u8>>, metadata: &str) -> S
         layer,
         clip: Arc::new(metadata.clip(frames.len() as u32).unwrap().unwrap()),
         frames: Arc::new(frames),
+        materials: [None, None],
     }
 }
 
@@ -804,8 +856,8 @@ mod tests {
         assert_eq!(side_within(512, 1300, 1), SPRITE_SIZE);
     }
     #[test]
-    fn a_labpbr_map_shrinks_by_plain_means_and_a_layer_without_one_gets_the_default() {
-        // Alpha is data here: it does not weigh the other channels.
+    fn a_labpbr_map_selects_whole_texels_and_missing_layers_get_defaults() {
+        // Selecting a texel preserves encoded channels, including categorical values.
         let frame = [
             [200, 100, 0, 255],
             [0, 0, 0, 0],
@@ -813,14 +865,14 @@ mod tests {
             [0, 0, 0, 0],
         ]
         .concat();
-        assert_eq!(shrink_map(frame, 2, 1), (1, vec![100, 50, 0, 128]));
+        assert_eq!(shrink_map(frame, 2, 1), (1, vec![200, 100, 0, 255]));
         let mut sprites = Sprites {
             native: vec![
                 (SPRITE_SIZE, Arc::new(vec![vec![0; 16 * 16 * 4]]), 0),
                 (SPRITE_SIZE, Arc::new(vec![vec![0; 16 * 16 * 4]]), 0),
             ],
             pbr: vec![
-                [Some((16, [9, 8, 7, 6].repeat(16 * 16))), None],
+                [Some((16, vec![[9, 8, 7, 6].repeat(16 * 16)])), None],
                 [None, None],
             ],
             ..Default::default()
@@ -831,6 +883,50 @@ mod tests {
         assert_eq!(sprites.normals[16 * 16 * 4..][..4], FLAT_NORMAL);
         assert_eq!(sprites.specular[..4], NO_SPECULAR);
         assert_eq!(sprites.specular.len(), 2 * 16 * 16 * 4);
+    }
+    #[test]
+    fn companion_grid_and_static_map_follow_colour_frame_selection() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-companion-grid-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let write = |name: &str, width, height, pixels: &[u8]| {
+            let mut encoder =
+                png::Encoder::new(File::create(root.join(name)).unwrap(), width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(pixels)
+                .unwrap();
+        };
+        write("grid.png", 4, 4, &[200, 200, 200, 255].repeat(16));
+        let maps: Vec<u8> = (0..16)
+            .flat_map(|i| {
+                let cell = (i / 8) * 2 + (i % 4) / 2;
+                [10 + cell as u8, 230, 65, 255]
+            })
+            .collect();
+        write("grid_s.png", 4, 4, &maps);
+        write("grid_n.png", 2, 2, &[128, 128, 255, 255].repeat(4));
+        let metadata =
+            r#"{"width":2,"height":2,"frametime":2,"interpolate":true,"frames":[3,1,2,0]}"#;
+        let animation = AnimationMetadata::from_json(metadata).unwrap();
+        let (side, frames) = pbr_map(&root.join("grid.png"), "_s", 4, Some(&animation)).unwrap();
+        assert_eq!(side, 2);
+        assert_eq!(
+            frames.iter().map(|f| f[0]).collect::<Vec<_>>(),
+            [10, 11, 12, 13]
+        );
+        let (_, normals) = pbr_map(&root.join("grid.png"), "_n", 4, Some(&animation)).unwrap();
+        assert_eq!(normals.len(), 1);
+        let mut sprite = test_frames(0, vec![vec![0; 16]; 4], metadata);
+        sprite.materials = [Some(Arc::new(normals)), Some(Arc::new(frames))];
+        for (tick, expected) in [(0, 13), (1, 13), (2, 11), (4, 12), (6, 10)] {
+            assert_eq!(sprite.material_pixels(1, tick).unwrap()[0], expected);
+            assert_eq!(&sprite.material_pixels(0, tick).unwrap()[..4], &FLAT_NORMAL);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn textures_without_labpbr_maps_keep_none() {
@@ -1273,6 +1369,7 @@ mod tests {
     fn animation_boundaries_and_repeated_frames_do_not_depend_on_render_rate() {
         let animation = SpriteAnimation {
             layer: 0,
+            materials: [None, None],
             frames: Arc::new(vec![vec![], vec![], vec![]]),
             clip: Arc::new(AnimationMetadata::from_json(r#"{"frames":[{"index":2,"time":8},{"index":1,"time":3},{"index":1,"time":2},0]}"#).unwrap().clip(3).unwrap().unwrap()),
         };

@@ -379,14 +379,17 @@ pub fn generate(
             let (_, _, key) = load(palette_key, "textures/palettes")?;
             let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
-            apply_palette(&mut mapped, &argb(&key), &argb(&target))?;
-            let out = mapped
+            let key = argb(&key);
+            let target = argb(&target);
+            apply_palette(&mut mapped, &key, &target)?;
+            let out: Vec<u8> = mapped
                 .iter()
                 .flat_map(|p| {
                     let [a, r, g, b] = p.to_be_bytes();
                     [r, g, b, a]
                 })
                 .collect();
+            drop(mapped);
             Some((w, h, out))
         }
     }

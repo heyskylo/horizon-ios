@@ -31,6 +31,7 @@ EntityRenderers.createAvatarRenderers	skip:data		renderer registration table
 EntityRenderers.validateRegistrations	skip:debug		startup check that every type has a renderer
 EvokerFangsRenderer.submit	port	crates/horizon-client/src/game/fangs.rs::Game::fangs_geometry	bite progress and facing
 EvokerFangsRenderer.extractRenderState	inline	crates/horizon-client/src/game/fangs.rs::Game::fangs_geometry	yaw and bite progress read there
+ExperienceOrbRenderer.getBlockLightLevel	port	crates/horizon-client/src/game.rs::Game::entity_geometry	the level's block light plus seven, clamped, the sky light left alone, at the orb's eye (`ExperienceOrb::render_light`, `light_probe_y`)
 ExperienceOrbRenderer.submit	inline	crates/horizon-client/src/game.rs::Game::entity_geometry	orb billboards with the pulsing colour, in the entity pass
 ExperienceOrbRenderer.vertex	inline	crates/horizon-client/src/game.rs::Game::entity_geometry	vertex built inline
 FallingBlockRenderer.shouldRender	port	crates/horizon-client/src/game.rs::falling_block_visible	a falling block whose own state is the state of the cell its feet are in is not drawn, so a NoGravity block or one that has just landed shows no model; the entity draw skips it and a unit test covers both cases

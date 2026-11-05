@@ -796,10 +796,10 @@ impl HudAtlas {
         let g = self.font.glyph(ch);
         g.rect.map(|rect| (rect, g.advance))
     }
-    /// A font glyph's atlas cell (none for blank glyphs such as the space) and advance.
-    pub fn glyph_cell(&self, ch: char) -> (Option<Rect>, f32) {
-        let g = self.font.glyph(ch);
-        (g.rect, g.advance)
+    /// A font glyph in the default font: its atlas cell (none for blank
+    /// glyphs such as the space), its box and advance.
+    pub fn glyph_cell(&self, ch: char) -> crate::font::Glyph {
+        self.font.glyph(ch)
     }
     pub fn build(root: &Path) -> Result<Self> {
         Self::build_over(root, root)
@@ -887,13 +887,39 @@ impl HudAtlas {
         ));
     }
     /// Only the font's metrics, for a game that draws nothing (the
-    /// integrated server): text measures as with the full atlas, without
-    /// holding its textures. The pixels are dropped once the glyph widths are
-    /// read, since nothing uploads them.
+    /// integrated or dedicated server): text measures as with the full atlas,
+    /// without packing textures or rasterizing glyphs.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false, false)?;
-        atlas.pixels = Vec::new();
-        Ok(atlas)
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        Ok(Self {
+            revision: Self::next_revision(),
+            pixels: Vec::new(),
+            packed: None,
+            galactic_widths: [0; 128],
+            width: 1,
+            height: 1,
+            sprites: HashMap::new(),
+            object_skins: HashMap::new(),
+            translucent: HashSet::new(),
+            flags: HashMap::new(),
+            sprite_animations: Vec::new(),
+            font: crate::font::Font::metrics(root),
+            glint: (Vec::new(), 1, 1),
+            glint_armor: (Vec::new(), 1, 1),
+            text_shader: None,
+            lines_shader: None,
+            random_textures: Default::default(),
+            emissive: Arc::default(),
+            blinks: Default::default(),
+            white,
+        })
     }
     /// The boot screen's atlas, before any pack loads: the theme's run-time
     /// glyphs (`horizon/ui-text`), a white sprite and the glyph rows over
@@ -1089,7 +1115,7 @@ impl HudAtlas {
         }
         files.retain(|p| {
             let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
+            !s.contains("title/background") && !s.contains("presets")
         });
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
@@ -1274,6 +1300,12 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
+        images.push((
+            crate::pad_cursor::SPRITE.into(),
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::pixels(),
+        ));
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
@@ -1483,6 +1515,8 @@ pub struct HudBatch {
     pub end_portal: EndPortalFill,
     /// `options.glintStrength` for the glint pass (`GlintAlpha`).
     pub glint_alpha: f32,
+    /// PvP & HUD's glint colour (`pvp::Tweaks::glint_texel`), 0 for vanilla's.
+    pub glint_colour: u32,
     /// A resource pack text shader's `GameTime`: the day's fraction
     /// (`gameTime % 24000` and the partial tick, over 24000).
     pub game_time: f32,
@@ -1543,6 +1577,7 @@ impl HudBatch {
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),
             glint_alpha: 0.75,
+            glint_colour: 0,
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
@@ -2223,13 +2258,19 @@ struct HudUniform {
     end_portal: [[f32; 4]; 3],
 }
 impl HudUniform {
-    fn new(size: [f32; 4], fill: EndPortalFill) -> Self {
+    fn new(size: [f32; 4], fill: EndPortalFill, glint_colour: u32) -> Self {
+        let [r, g, b, _] = glint_colour.to_le_bytes().map(|c| f32::from(c) / 255.0);
+        let tint = if glint_colour == 0 {
+            [-1.0, 0.0, 0.0]
+        } else {
+            [r, g, b]
+        };
         Self {
             size,
             end_portal: [
                 fill.sprites[0],
                 fill.sprites[1],
-                [fill.game_time, 0.0, 0.0, 0.0],
+                [fill.game_time, tint[0], tint[1], tint[2]],
             ],
         }
     }
@@ -2286,7 +2327,7 @@ impl HudRenderer {
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("HUD size"),
-            contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default())),
+            contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default(), 0)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2659,6 +2700,7 @@ impl HudRenderer {
                     batch.glint_alpha,
                 ],
                 batch.end_portal,
+                batch.glint_colour,
             )),
         );
         if let Some(pack_text) = &self.pack_text {
@@ -4099,6 +4141,7 @@ texture=wide",
                 blends: Vec::new(),
                 end_portal: EndPortalFill::default(),
                 glint_alpha: 0.75,
+                glint_colour: 0,
                 game_time: 0.0,
                 blur_at: 0,
                 inline_profiles: Vec::new(),

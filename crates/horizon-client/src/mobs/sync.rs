@@ -16,8 +16,9 @@
 //! - run its client side animation in `client_tick`, sharing the function
 //!   with the server's `ai_step` where the server computes the same.
 use super::{
-    Mob, Species, allay, armadillo, axolotl, breeze, camel, copper_golem, creaking, equine, frog,
-    goat, golem, guardian, piglin, ravager, shulker, sniffer, tame, undead, villager, warden,
+    Mob, MobEvent, Species, allay, armadillo, axolotl, breeze, camel, copper_golem, creaking,
+    equine, frog, goat, golem, guardian, piglin, ravager, shulker, sniffer, tame, undead, villager,
+    warden,
 };
 
 // `Pose.id` of the poses mobs take.
@@ -64,9 +65,11 @@ pub fn set_pose(m: &mut Mob, id: u8) {
 /// The per tick animation steps of a client's mobs (after `m.age` moved on),
 /// for the species whose server runs them in `ai_step`. `game_time` is the
 /// client level's.
-pub fn client_tick(m: &mut Mob, game_time: i64) {
+pub fn client_tick(m: &mut Mob, game_time: i64, events: &mut Vec<MobEvent>) {
     match m.species() {
-        Species::Warden => warden::client_tick(m),
+        // The warden's digging particles are the client's own
+        // (`Warden.clientDiggingParticles`), so the events have to leave here.
+        Species::Warden => warden::client_tick(m, events),
         Species::Sniffer => sniffer::animate(m),
         Species::Breeze => breeze::ai_step(m),
         Species::Camel | Species::CamelHusk => camel::client_tick(m, game_time),

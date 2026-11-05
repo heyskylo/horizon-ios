@@ -387,8 +387,13 @@ impl Game<'_> {
                 let high = index & 1 == 1;
                 1.0 / (self.world.random.next_float() * 0.5 + 1.8) + if high { 0.63 } else { 0.43 }
             };
+            // CrossbowItem.performShooting: at the shooter's getX/Y/Z (feet).
+            let feet = self
+                .player
+                .as_ref()
+                .map_or(eye, |pl| [pl.position.x, pl.position.y, pl.position.z]);
             self.audio
-                .play("minecraft:item.crossbow.shoot", Some(eye), 1.0, pitch);
+                .play("minecraft:item.crossbow.shoot", Some(feet), 1.0, pitch);
             self.damage_held(if rocket { 3 } else { 1 });
         }
         // CrossbowItem.performShooting: SHOT_CROSSBOW with the crossbow, which
@@ -402,6 +407,85 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A game on the prepared resources with a creative player.
+    fn game_with_player(root: &std::path::Path) -> (Game<'static>, [f64; 3]) {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.to_path_buf(),
+            None,
+            root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.to_path_buf();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(root),
+            None,
+        )
+        .unwrap();
+        game.creative = true;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        let p = game.player.as_ref().expect("a player").position;
+        game.audio.capture = Some(Vec::new());
+        (game, [p.x, p.y, p.z])
+    }
+
+    /// `BowItem.releaseUsing` and `CrossbowItem.performShooting` play the shot
+    /// with no player at the shooter's `getX/Y/Z`, the feet. At the eye, a
+    /// source a few cm from the listener pans hard to one ear while strafing
+    /// (#8448).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn bow_and_crossbow_shots_sound_at_the_feet_not_the_eye() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let (mut game, feet) = game_with_player(&root);
+        let eye = game.eye_position().unwrap();
+        assert_ne!(eye, feet);
+
+        let bow = ItemStack::new("minecraft:bow", 1);
+        game.release_bow(&bow, 20);
+        let shot = game.audio.capture.take().unwrap_or_default();
+        let at: Vec<_> = shot
+            .iter()
+            .filter(|s| s.0 == "minecraft:entity.arrow.shoot")
+            .map(|s| s.1)
+            .collect();
+        assert_eq!(at, vec![feet]);
+
+        game.audio.capture = Some(Vec::new());
+        let mut crossbow = ItemStack::new("minecraft:crossbow", 1);
+        crossbow.data_mut().charged = vec![ItemStack::new(ARROW, 1)];
+        *game.held_mut() = Some(crossbow);
+        game.shoot_crossbow();
+        let shot = game.audio.capture.take().unwrap_or_default();
+        let at: Vec<_> = shot
+            .iter()
+            .filter(|s| s.0 == "minecraft:item.crossbow.shoot")
+            .map(|s| s.1)
+            .collect();
+        assert_eq!(at, vec![feet]);
+    }
 
     /// A charge that crosses a point between two ticks plays that point's
     /// sound, and one a mod's tick jumps over (`native_living_entity_use_item_tick`
