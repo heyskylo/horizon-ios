@@ -2196,6 +2196,9 @@ pub fn build(
     profile: Profile,
     progress: impl Fn(Step),
 ) -> Result<String, String> {
+    if let Some(error) = backend::native_mod_architecture_error() {
+        return Err(error);
+    }
     logged(|| {
         let built = pipeline(
             base,
