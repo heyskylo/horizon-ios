@@ -16,9 +16,8 @@ use std::{
 
 /// The most `metaData.json` may inflate to: real files are a few hundred bytes.
 const MAX_METADATA_BYTES: u64 = 1 << 20;
-/// The most `recording.tmcpr` may inflate to. The reader keeps the stream in
-/// memory, so a hostile archive (deflate reaches about 1000:1) must not be able
-/// to ask for more than this.
+/// The most `recording.tmcpr` may inflate to. The reader streams to disk, but
+/// still caps archive expansion to protect disk space from hostile archives.
 const MAX_STREAM_BYTES: u64 = 1 << 30;
 /// How much recording time a stream and its metadata may hold in memory before
 /// both reach disk. A crash costs at most this many milliseconds of packets.
@@ -146,6 +145,9 @@ pub struct McprWriter {
     temp_meta_path: PathBuf,
     writer: Option<BufWriter<File>>,
     metadata: Metadata,
+    markers: Vec<Marker>,
+    mods_json: Option<Vec<u8>>,
+    resource_pack: Option<PathBuf>,
     packet_count: usize,
     /// Bytes of whole frames in the stream: what `finish` packages.
     bytes_written: u64,
@@ -196,6 +198,9 @@ impl McprWriter {
             temp_meta_path,
             writer,
             metadata,
+            markers: Vec::new(),
+            mods_json: None,
+            resource_pack: None,
             packet_count: 0,
             bytes_written: 0,
             last_timestamp_ms: 0,
@@ -259,6 +264,71 @@ impl McprWriter {
 
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+
+    /// Add an editor bookmark to the recording. Markers are written only when
+    /// present and do not carry player identity data.
+    pub fn add_marker(&mut self, time_ms: u32, label: String) {
+        self.markers.push(Marker { time_ms, label });
+    }
+
+    /// Include an optional `mods.json` compatibility manifest.
+    pub fn set_mods_json(&mut self, json: Option<Vec<u8>>) {
+        self.mods_json = json;
+    }
+
+    /// Include one locally stored resource pack in the archive. Callers must
+    /// gate this on the explicit Studio preference; the path is read at finish.
+    pub fn set_resource_pack(&mut self, path: Option<PathBuf>) {
+        self.resource_pack = path;
+    }
+
+    /// Replace an existing archive's editor markers without changing its packet
+    /// stream or other entries. The replacement is staged beside the archive.
+    pub fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<()> {
+        let part = sibling(path, "markers.part");
+        let result = (|| {
+            let file = File::open(path)?;
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let mut output = zip::ZipWriter::new(File::create_new(&part)?);
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).map_err(io::Error::other)?;
+                let name = entry.name().map_err(io::Error::other)?.into_owned();
+                if name == "markers.json" {
+                    continue;
+                }
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .large_file(entry.size() >= u32::MAX as u64);
+                if entry.is_dir() {
+                    output
+                        .add_directory(name, options)
+                        .map_err(io::Error::other)?;
+                } else {
+                    output.start_file(name, options).map_err(io::Error::other)?;
+                    io::copy(&mut entry, &mut output)?;
+                }
+            }
+            if !markers.is_empty() {
+                output
+                    .start_file(
+                        "markers.json",
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated),
+                    )
+                    .map_err(io::Error::other)?;
+                serde_json::to_writer_pretty(&mut output, markers).map_err(io::Error::other)?;
+            }
+            let file = output.finish().map_err(io::Error::other)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&part, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&part);
+        }
+        result
     }
 
     /// The stream file holding the packets until `finish` succeeds.
@@ -420,15 +490,18 @@ fn frame_at(data: &[u8], offset: usize) -> Option<(u32, i32, std::ops::Range<usi
 /// Reader for opening and streaming `.mcpr` replay files.
 pub struct McprReader {
     pub metadata: Metadata,
-    tmcpr_data: Vec<u8>,
+    stream: TemporaryStream,
     /// Where `next_packet` reads next.
-    position: usize,
+    position: u64,
     /// The end of the last whole frame: the stream stops here.
-    end: usize,
-    /// `(timestamp_ms, byte_offset)` of each whole frame. Timestamps never go
-    /// backwards here: one earlier than the frame before it is indexed at that
-    /// frame's time, so seeking stays defined on a damaged file.
-    packet_index: Vec<(u32, usize)>,
+    end: u64,
+    /// Sparse frame index; timestamps are normalized to never go backwards.
+    packet_index: Vec<SparseIndexEntry>,
+    total_packets: usize,
+    /// Optional editor and compatibility entries.
+    pub markers: Vec<Marker>,
+    pub mods_json: Option<Vec<u8>>,
+    pub resource_pack_present: bool,
 }
 
 fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -466,31 +539,107 @@ impl McprReader {
             ));
         }
 
-        let tmcpr_data = read_entry(&mut archive, "recording.tmcpr", MAX_STREAM_BYTES)?;
+        let mut stream_entry = archive
+            .by_name("recording.tmcpr")
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+        if stream_entry.size() > MAX_STREAM_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("recording.tmcpr is larger than {MAX_STREAM_BYTES} bytes"),
+            ));
+        }
+        let mut stream = TemporaryStream::create()?;
+        let mut stream_size = 0u64;
+        let mut stream_crc = crc32fast::Hasher::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let count = stream_entry.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            stream_size = stream_size.checked_add(count as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "recording.tmcpr is too large")
+            })?;
+            if stream_size > MAX_STREAM_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("recording.tmcpr is larger than {MAX_STREAM_BYTES} bytes"),
+                ));
+            }
+            stream_crc.update(&buffer[..count]);
+            stream.reader.get_mut().write_all(&buffer[..count])?;
+        }
+        let actual_crc = stream_crc.finalize();
+        drop(stream_entry);
+        if let Ok(crc_entry) = archive.by_name("recording.tmcpr.crc32") {
+            let mut expected = String::new();
+            crc_entry.take(64).read_to_string(&mut expected)?;
+            let expected = expected.trim();
+            let actual = format!("{actual_crc:08x}");
+            if expected.len() != 8 || !expected.eq_ignore_ascii_case(&actual) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "recording.tmcpr CRC32 mismatch",
+                ));
+            }
+        }
+        let markers =
+            read_optional_json::<Vec<Marker>>(&mut archive, "markers.json", MAX_METADATA_BYTES)?
+                .unwrap_or_default();
+        let mods_json = read_optional_entry(&mut archive, "mods.json", MAX_METADATA_BYTES)?;
+        // Bound embedded resource packs to avoid unbounded archive expansion.
+        let resource_pack_present = match archive.by_name("resourcepack/resources.zip") {
+            Ok(entry) if entry.size() <= 512 * 1024 * 1024 => true,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "embedded resource pack exceeds 512 MiB",
+                ));
+            }
+            Err(zip::result::ZipError::FileNotFound) => false,
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+        };
 
         // A recording that stopped mid-write ends in a frame that isn't whole:
         // indexing and playback both stop before it.
         let mut packet_index = Vec::new();
-        let mut offset = 0;
+        let mut offset = 0u64;
         let mut latest = 0;
-        while let Some((timestamp_ms, _, _, next)) = frame_at(&tmcpr_data, offset) {
-            latest = latest.max(timestamp_ms);
-            packet_index.push((latest, offset));
-            offset = next;
+        let mut group_start = 0u64;
+        let mut total_packets = 0usize;
+        while let Some(frame) = frame_at(&mut stream.reader, offset, stream_size)? {
+            if total_packets == 0 || frame.timestamp_ms > latest {
+                latest = frame.timestamp_ms;
+                group_start = offset;
+            }
+            if total_packets % STREAM_INDEX_STRIDE == 0 {
+                packet_index.push(SparseIndexEntry {
+                    timestamp_ms: latest,
+                    frame_offset: offset,
+                    group_start,
+                });
+            }
+            total_packets += 1;
+            offset = frame.next;
         }
+        stream.reader.seek(SeekFrom::Start(0))?;
 
         Ok(Self {
             metadata,
-            tmcpr_data,
+            stream,
             position: 0,
             end: offset,
             packet_index,
+            total_packets,
+            markers,
+            mods_json,
+            resource_pack_present,
         })
     }
 
     /// Total number of packets indexed in the recording.
     pub fn total_packets(&self) -> usize {
-        self.packet_index.len()
+        self.total_packets
     }
 
     /// Read the next timestamped packet from the current position, or `None`
@@ -499,15 +648,23 @@ impl McprReader {
         if self.position >= self.end {
             return Ok(None);
         }
-        let Some((timestamp_ms, id, payload, next)) = frame_at(&self.tmcpr_data, self.position)
-        else {
+        let Some(frame) = frame_at(&mut self.stream.reader, self.position, self.end)? else {
             return Ok(None);
         };
-        self.position = next;
+        let payload_len =
+            usize::try_from(frame.payload_end - frame.payload_start).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "packet payload is too large")
+            })?;
+        let mut payload = vec![0; payload_len];
+        self.stream
+            .reader
+            .seek(SeekFrom::Start(frame.payload_start))?;
+        self.stream.reader.read_exact(&mut payload)?;
+        self.position = frame.next;
         Ok(Some(TimestampedPacket {
-            timestamp_ms,
-            id,
-            payload: self.tmcpr_data[payload].to_vec(),
+            timestamp_ms: frame.timestamp_ms,
+            id: frame.id,
+            payload,
         }))
     }
 
@@ -518,24 +675,40 @@ impl McprReader {
     /// Starting at the first packet of a millisecond keeps the packets that
     /// arrived together, such as a chunk and the entities in it, together.
     pub fn seek_to_timestamp(&mut self, target_timestamp_ms: u32) -> io::Result<Option<u32>> {
+        let Some(first) = self.packet_index.first() else {
+            return Ok(None);
+        };
         let after = self
             .packet_index
-            .partition_point(|&(ts, _)| ts <= target_timestamp_ms);
-        let chosen = match after.checked_sub(1) {
-            Some(last) => self.packet_index[last].0,
-            None => match self.packet_index.first() {
-                Some(&(ts, _)) => ts,
-                None => return Ok(None),
-            },
-        };
-        let idx = self.packet_index.partition_point(|&(ts, _)| ts < chosen);
-        self.position = self.packet_index[idx].1;
-        Ok(Some(chosen))
+            .partition_point(|entry| entry.timestamp_ms <= target_timestamp_ms);
+        let anchor = &self.packet_index[after.saturating_sub(1)];
+        let mut chosen_timestamp = anchor.timestamp_ms;
+        let mut chosen_position = anchor.group_start;
+        let mut latest = anchor.timestamp_ms;
+        let mut offset = anchor.frame_offset;
+        while let Some(frame) = frame_at(&mut self.stream.reader, offset, self.end)? {
+            latest = latest.max(frame.timestamp_ms);
+            if latest > target_timestamp_ms {
+                break;
+            }
+            if latest > chosen_timestamp {
+                chosen_timestamp = latest;
+                chosen_position = offset;
+            }
+            offset = frame.next;
+        }
+        if after == 0 {
+            chosen_timestamp = first.timestamp_ms;
+            chosen_position = first.group_start;
+        }
+        self.position = chosen_position;
+        Ok(Some(chosen_timestamp))
     }
 
     /// Reset stream reading to the beginning.
     pub fn rewind(&mut self) -> io::Result<()> {
         self.position = 0;
+        self.stream.reader.seek(SeekFrom::Start(0))?;
         Ok(())
     }
 }
@@ -781,6 +954,11 @@ mod tests {
         };
 
         let mut writer = McprWriter::new(mcpr_path.clone(), meta).unwrap();
+        let resource_pack_path = temp_dir.join("resources.zip");
+        fs::write(&resource_pack_path, b"pack contents").unwrap();
+        writer.add_marker(250, "Bookmark".into());
+        writer.set_mods_json(Some(br#"{"requiredMods":[]}"#.to_vec()));
+        writer.set_resource_pack(Some(resource_pack_path));
         writer.write_packet(0, 0x01, &[10, 20, 30]).unwrap();
         writer.write_packet(50, 0x24, &[40, 50]).unwrap();
         writer
@@ -797,6 +975,18 @@ mod tests {
         assert_eq!(reader.metadata.duration, 550);
         assert_eq!(reader.metadata.players, vec!["Player1", "Player2"]);
         assert_eq!(reader.total_packets(), 4);
+        assert_eq!(
+            reader.markers,
+            vec![Marker {
+                time_ms: 250,
+                label: "Bookmark".into()
+            }]
+        );
+        assert_eq!(
+            reader.mods_json.as_deref(),
+            Some(br#"{"requiredMods":[]}"#.as_slice())
+        );
+        assert!(reader.resource_pack_present);
 
         let p0 = reader.next_packet().unwrap().unwrap();
         assert_eq!(p0.timestamp_ms, 0);
@@ -815,6 +1005,14 @@ mod tests {
         assert_eq!(p3.id, 0x05);
         assert!(p3.payload.is_empty());
         assert!(reader.next_packet().unwrap().is_none());
+
+        let replacement = vec![Marker {
+            time_ms: 400,
+            label: "Edited marker".into(),
+        }];
+        McprWriter::replace_markers(&mcpr_path, &replacement).unwrap();
+        let reopened = McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(reopened.markers, replacement);
 
         let found_ts = reader.seek_to_timestamp(75).unwrap().unwrap();
         assert_eq!(found_ts, 50);
@@ -931,6 +1129,51 @@ mod tests {
             );
             assert_eq!(reader.next_packet().unwrap().unwrap().id, id, "{target}");
         }
+    }
+
+    /// Large timestamp groups remain seekable even when sparse anchors land
+    /// inside them, while index memory grows with stream size rather than every
+    /// packet.
+    #[test]
+    fn sparse_index_seeks_to_timestamp_group_starts() {
+        let scratch = Scratch::new("sparse-index");
+        let mut tmcpr = Vec::new();
+        for packet in 0..3072u32 {
+            let timestamp = u32::from(packet >= 1500) * 10;
+            frame(&mut tmcpr, timestamp, 2, &[0x01, packet as u8]);
+        }
+        let mut reader = open_stream(&scratch, &tmcpr);
+        let temp_path = reader.stream.path.clone();
+        assert_eq!(reader.total_packets(), 3072);
+        assert_eq!(reader.packet_index.len(), 3);
+
+        assert_eq!(reader.seek_to_timestamp(0).unwrap(), Some(0));
+        assert_eq!(reader.next_packet().unwrap().unwrap().payload, vec![0x00]);
+        assert_eq!(reader.seek_to_timestamp(10).unwrap(), Some(10));
+        assert_eq!(reader.next_packet().unwrap().unwrap().payload, vec![220]);
+
+        drop(reader);
+        assert!(!temp_path.exists(), "temporary stream is removed on close");
+    }
+
+    #[test]
+    fn streaming_reader_checks_the_mcpr_stream_crc() {
+        let scratch = Scratch::new("crc");
+        let path = scratch.0.join("bad-crc.mcpr");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("metaData.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(&Metadata::default()).unwrap())
+            .unwrap();
+        zip.start_file("recording.tmcpr", options).unwrap();
+        zip.write_all(&[1, 2, 3]).unwrap();
+        zip.start_file("recording.tmcpr.crc32", options).unwrap();
+        zip.write_all(b"00000000").unwrap();
+        zip.finish().unwrap();
+
+        let error = McprReader::open(&path).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("CRC32 mismatch"));
     }
 
     /// A timestamp that goes backwards is played as stored but indexed at the
