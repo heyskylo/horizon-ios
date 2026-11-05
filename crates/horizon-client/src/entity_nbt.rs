@@ -78,6 +78,10 @@ impl Base<'_> {
             put(&mut tag, key, value);
         }
         if let Tag::Compound(map) = &mut tag {
+            // Entity.saveWithoutId writes Tags only for a nonempty live set.
+            if matches!(map.get(&"Tags".into()), Some(Tag::List(tags)) if tags.is_empty()) {
+                map.remove(&"Tags".into());
+            }
             for (key, value) in [
                 // Entity.remainingFireTicks starts at 0 (-1 was the old default).
                 ("Fire", Tag::Short(0)),
@@ -3670,6 +3674,45 @@ mod tnt_power_tests {
 mod tests {
     use super::*;
     use crate::items::ItemStack;
+
+    #[test]
+    fn empty_saved_tags_are_omitted_without_changing_raw_or_nonempty_tags() {
+        let base = Base {
+            id: "minecraft:pig",
+            uuid: [328, 0, 0, 1],
+            position: Vec3::new(4.5, 200.0, 4.5),
+            motion: Vec3::ZERO,
+            rotation: [0.0; 2],
+            on_ground: false,
+            fall_distance: 0.0,
+        };
+        let raw = |tags| {
+            Tag::compound([
+                ("Tags", Tag::List(tags)),
+                ("PortalCooldown", Tag::Int(17)),
+                ("Invulnerable", Tag::Byte(1)),
+            ])
+        };
+        let fresh = base.tag(None);
+        assert!(fresh.get("Tags").is_none());
+        assert_eq!(fresh.get("PortalCooldown"), Some(&Tag::Int(0)));
+        for tags in [vec![string("keep")], vec![]] {
+            let raw = raw(tags.clone());
+            let saved = base.tag(Some(&raw));
+            assert_eq!(saved.get("PortalCooldown"), Some(&Tag::Int(17)));
+            assert_eq!(saved.get("Invulnerable"), Some(&Tag::Byte(1)));
+            assert_eq!(raw.get("Tags"), Some(&Tag::List(tags.clone())));
+            assert_eq!(
+                saved.get("Tags"),
+                if tags.is_empty() {
+                    None
+                } else {
+                    Some(Tag::List(tags))
+                }
+                .as_ref()
+            );
+        }
+    }
 
     #[test]
     fn cubes_omit_supplied_age_and_pigs_keep_modeled_age() {

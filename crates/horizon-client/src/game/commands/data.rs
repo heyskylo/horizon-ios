@@ -1439,3 +1439,6 @@ mod loot_table_tests {
         assert!(saved.get("Items").is_none());
     }
 }
+
+#[cfg(test)]
+mod saved_tag_tests;
