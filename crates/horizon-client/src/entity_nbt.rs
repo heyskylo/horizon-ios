@@ -3668,11 +3668,16 @@ mod tests {
     use crate::items::ItemStack;
 
     #[test]
-    fn cubes_omit_supplied_age_and_pigs_keep_modeled_age() {
+    fn an_ageable_mob_that_cannot_be_a_baby_saves_no_age() {
         use crate::mobs::Species;
+        // AgeableMob.addAdditionalSaveData writes Age only when canBeABaby is
+        // true, so every ageable class that overrides it to false writes none
+        // of it: a frog and a camel husk keep no raw `Age` either.
         for (species, id) in [
             (Species::Slime, "minecraft:slime"),
             (Species::MagmaCube, "minecraft:magma_cube"),
+            (Species::Frog, "minecraft:frog"),
+            (Species::CamelHusk, "minecraft:camel_husk"),
             (Species::Pig, "minecraft:pig"),
         ] {
             let mut kind = crate::mobs::sensor_scan_tests::kind();
