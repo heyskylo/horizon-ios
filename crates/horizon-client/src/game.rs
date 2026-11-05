@@ -1991,6 +1991,15 @@ struct WorldTables {
     /// The values of the data map types native mods registered
     /// (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
+    /// The entity type, biome and damage type tags with the packs' over the
+    /// game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
+    /// what the predicates' `#tag`s of those registries read.
+    pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+}
+
+impl WorldTables {
+    /// The registries [`WorldTables::pack_tags`] holds.
+    const PACK_TAG_REGISTRIES: [&'static str; 3] = ["entity_type", "worldgen/biome", "damage_type"];
 }
 
 impl Resources {
@@ -20027,6 +20036,20 @@ impl Game<'_> {
             self.res.core.collision.clone(),
             &causes_suffocation,
         )?;
+        // A registry whose pack tags don't load keeps the game's own tags
+        // (`in_tag` falls back to them), rather than matching no tag at all.
+        let pack_tags = WorldTables::PACK_TAG_REGISTRIES
+            .into_iter()
+            .filter_map(|registry| {
+                match horizon_client::items::load_tags(root, registry, &overlay) {
+                    Ok(tags) => Some((registry, tags)),
+                    Err(e) => {
+                        log::warn!("Horizon: the world's {registry} tags are not applied: {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
         Ok((
             Some(WorldTables {
                 suffocation,
@@ -20035,6 +20058,7 @@ impl Game<'_> {
                 recipes,
                 stations,
                 data_maps,
+                pack_tags,
             }),
             health,
         ))
