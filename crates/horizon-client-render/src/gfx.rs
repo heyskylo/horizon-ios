@@ -1846,8 +1846,8 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// Windows systems try Vulkan, then DirectX 12, then OpenGL; Linux tries Vulkan then
 /// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
 /// crash in the driver can't be
-/// caught in the game; the launcher switches Auto to DirectX 12 (Windows, #746) or OpenGL
-/// (Linux, #4293) after one at the renderer's start. macOS has Metal only.
+/// caught in the game; the launcher switches the setting to DirectX 12 after one at
+/// the renderer's start (#746). macOS has Metal only.
 fn backend_order(
     api: GraphicsApi,
     os: &str,
