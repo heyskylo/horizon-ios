@@ -367,6 +367,7 @@ impl NativeFrame {
             distance: None,
             unculled: None,
             every_face: false,
+            view_casters: false,
         })
     }
 
