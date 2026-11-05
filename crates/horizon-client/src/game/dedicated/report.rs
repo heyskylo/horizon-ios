@@ -68,7 +68,7 @@ impl Recording {
     }
     /// Whether the next tick's mobs are timed one by one.
     pub(super) fn sample_next(&self) -> bool {
-        self.ticks.len() % tick_profile::SAMPLE_EVERY == 0
+        self.ticks.len().is_multiple_of(tick_profile::SAMPLE_EVERY)
     }
     pub(super) fn add(
         &mut self,
