@@ -201,6 +201,16 @@ pub fn elastic_pull(
     } else {
         (&OWN, &THEIRS)
     };
+    // Vec3.yRot takes a float angle and widens Mth's float lookup results.
+    // Bound the repair to quad attachment physics; retain the single spring.
+    let rotate = |v: [f64; 3], angle: f64| {
+        if quad {
+            let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
+            [v.x, v.y, v.z]
+        } else {
+            rot_y(v, angle)
+        }
+    };
     let (w, h) = size;
     let own_yaw = f64::from(yaw.to_radians());
     let holder_yaw = f64::from(holder.yaw.to_radians());
@@ -208,13 +218,13 @@ pub fn elastic_pull(
     let mut torque = 0.0;
     let mut any = false;
     for (mine, other) in own.iter().zip(theirs) {
-        let lever = rot_y([mine[0] * w, mine[1] * h, mine[2] * w], -own_yaw);
+        let lever = rotate([mine[0] * w, mine[1] * h, mine[2] * w], -own_yaw);
         let object = [
             position.x + lever[0],
             position.y + lever[1],
             position.z + lever[2],
         ];
-        let arm = rot_y(
+        let arm = rotate(
             [
                 other[0] * holder.width,
                 other[1] * holder.height,
@@ -375,13 +385,20 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         return;
     }
     let stretched = distance > ELASTIC - state.width - f64::from(m.width());
+    // Leashable.checkElasticInteractions: both ends must support the shared
+    // quad attachment points. The live holder was resolved and checked above;
+    // these physics points are independent of the rendered rope offsets.
+    let quad = supports_quad_leash(m.species())
+        && matches!(holder, Holder::Mob(id) if w.seen(id).is_some_and(|s|
+            matches!(s.species, Species::Ghast | Species::HappyGhast)));
     let pulled = stretched
-        && spring(
+        && elastic_pull(
             m.position,
             m.yaw,
             (f64::from(m.width()), f64::from(m.height())),
             &state,
             m.velocity,
+            quad,
         )
         .is_some_and(|(force, torque)| {
             m.extra.leash_spin += 10.0 * torque;
@@ -402,7 +419,12 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !pulled {
         close_range(m, w, &state);
     }
-    m.yaw -= m.extra.leash_spin as f32;
+    // tickLeash widens the float yaw before subtracting double momentum.
+    if quad {
+        m.yaw = (f64::from(m.yaw) - m.extra.leash_spin) as f32;
+    } else {
+        m.yaw -= m.extra.leash_spin as f32;
+    }
     let friction = if m.on_ground {
         0.6 * 0.91
     } else if m.is_in_liquid() {
@@ -410,13 +432,26 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     } else {
         0.91
     };
-    m.extra.leash_spin *= friction;
+    if quad {
+        // angularFriction returns a float, including the ground product.
+        let friction = if m.on_ground {
+            let [x, y, z] = m.on_pos(0.500_001);
+            w.facts.get(w.world.block(x, y, z)).friction * 0.91_f32
+        } else if m.is_in_liquid() {
+            0.8_f32
+        } else {
+            0.91_f32
+        };
+        m.extra.leash_spin *= f64::from(friction);
+    } else {
+        m.extra.leash_spin *= friction;
+    }
 }
 /// The lead comes off (`Mob.onLeashRemoved`): no more home.
 pub fn remove(m: &mut Mob) -> Option<Holder> {
     let was = m.extra.leash.take();
     if was.is_some() {
-        m.ai.home = None;
+        m.ai.clear_home();
     }
     was
 }
@@ -618,6 +653,64 @@ pub fn quad_holder_offsets(m: &Mob) -> Option<[[f64; 3]; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mob_tick_selects_quad_only_when_both_live_ends_support_it() {
+        let ran = crate::mobs::world::with_test_world(&[], |world, types| {
+            for (kind, holder_kind, quad) in [
+                ("horse", "happy_ghast", true),
+                ("horse", "ghast", true),
+                ("horse", "cow", false),
+                ("llama", "happy_ghast", false),
+            ] {
+                let new = |id, kind: &str, position, yaw| {
+                    Mob::new(
+                        id,
+                        std::sync::Arc::new(types.types[&format!("minecraft:{kind}")].clone()),
+                        position,
+                        yaw,
+                    )
+                };
+                let mut mob = new(1, kind, Vec3::new(-7.5, 100.0, -4.5), 90.0);
+                let holder = new(2, holder_kind, Vec3::new(0.5, 104.0, 0.5), 30.0);
+                let others = [holder.seen(None)];
+                let mut w = world.clone();
+                w.others = &others;
+                mob.extra.leash = Some(Holder::Mob(holder.id));
+                let state = holder_state(&w, Holder::Mob(holder.id)).unwrap();
+                let (force, torque) = elastic_pull(
+                    mob.position,
+                    mob.yaw,
+                    (f64::from(mob.width()), f64::from(mob.height())),
+                    &state,
+                    Vec3::ZERO,
+                    quad,
+                )
+                .unwrap();
+                let mut events = Vec::new();
+                tick(&mut mob, &w, &mut events);
+                assert_eq!(
+                    mob.velocity,
+                    Vec3::new(force[0] * 0.8, force[1] * 0.2, force[2] * 0.8),
+                    "{kind} held by {holder_kind}"
+                );
+                let yaw = if quad {
+                    (90.0 - 10.0 * torque) as f32
+                } else {
+                    90.0 - (10.0 * torque) as f32
+                };
+                assert_eq!(mob.yaw, yaw);
+                assert!(
+                    !events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::LeashBreak { .. }))
+                );
+            }
+        });
+        if !ran {
+            eprintln!("quad-leash mob fixture skipped: prepare vanilla entity/movement test data");
+        }
+    }
 
     #[test]
     fn a_players_leash_does_not_pull_toward_a_different_player() {

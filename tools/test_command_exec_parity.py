@@ -83,15 +83,35 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
-    parser.add_argument("--pufferfish-contact-fixture",action="store_true")
-    parser.add_argument("--reference-only",action="store_true")
-    parser.add_argument("--work-dir",type=Path)
-    parser.add_argument("--pufferfish-body-diagnostic",action="store_true")
+    parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
+    parser.add_argument('--loaded-fixture', action='store_true', help='pin actual view/simulation2 and use real player tickets')
+    parser.add_argument('--loaded-block-diagnostic', action='store_true', help='retain separate FULL block-access observations')
+    parser.add_argument('--mob-quad-fixture', action='store_true', help='guarded live mob quad-leash scene')
+    parser.add_argument('--mob-quad-raw-diagnostic', action='store_true', help='retain full-precision leash diagnostic')
+    parser.add_argument('--item-merge-diagnostic', action='store_true',
+                        help='retain the original two-tag and spectator-selector item-merge diagnostic')
+    parser.add_argument('--orb-water-fixture', action='store_true', help='guarded orb water/air scene')
+    parser.add_argument('--orb-water-raw-diagnostic', action='store_true', help='add whole Pos/Motion records')
+    parser.add_argument('--orb-lava-fixture', action='store_true', help='guarded server orb lava contact scene')
+    parser.add_argument('--orb-lava-raw-diagnostic', action='store_true', help='retain random Pos/Motion as exact raw diagnostics')
+    parser.add_argument('--mob-home-fixture', action='store_true')
+    parser.add_argument('--mob-home-holder-removal-diagnostic', action='store_true')
+    parser.add_argument('--mob-home-late-detach-control', action='store_true')
+    parser.add_argument('--item-contents-fixture', action='store_true')
+    parser.add_argument('--item-contents-provider-empty-control', action='store_true')
+    parser.add_argument("--boat-item-hit-fixture", action="store_true")
+    parser.add_argument("--reference-only", action="store_true")
+    parser.add_argument("--boat-motion-diagnostic", action="store_true")
+    parser.add_argument("--pufferfish-contact-fixture", action="store_true")
+    parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
+    if args.loaded_fixture:
+        for name in ['client_config.json', 'rust-client-config.json']:
+            (build / name).unlink(missing_ok=True)
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
@@ -109,6 +129,9 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.loaded_fixture:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]
@@ -119,9 +142,51 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.mob_quad_fixture:
+        try:
+            from .mob_quad_leash_corpus import mob_quad_leash
+        except ImportError:
+            from mob_quad_leash_corpus import mob_quad_leash
+        groups = [('setup', corpus_module.group_setup()), ('mob quad leash dispatch', mob_quad_leash(args.mob_quad_raw_diagnostic))]
+    if args.item_merge_diagnostic:
+        try:
+            from .item_merge_corpus import stack_limit_merges
+        except ImportError:
+            from item_merge_corpus import stack_limit_merges
+        groups = [('setup', corpus_module.group_setup()),
+                  ('item stack-size override merges',
+                   stack_limit_merges(corpus_module.cmd, corpus_module.setup, diagnostic=True))]
+    if args.orb_water_fixture:
+        try:
+            from .orb_water_corpus import orb_water, arithmetic_inputs
+        except ImportError:
+            from orb_water_corpus import orb_water, arithmetic_inputs
+        groups = [('setup', corpus_module.group_setup()), ('orb underwater arithmetic', orb_water(args.orb_water_raw_diagnostic))]
+    if args.orb_lava_fixture:
+        try:
+            from .orb_lava_corpus import orb_lava
+        except ImportError:
+            from orb_lava_corpus import orb_lava
+        groups = [('setup', corpus_module.group_setup()),
+                  ('orb lava contact', orb_lava(args.orb_lava_raw_diagnostic))]
+    if args.mob_home_fixture:
+        try:
+            from .mob_home_corpus import mob_home
+        except ImportError:
+            from mob_home_corpus import mob_home
+        groups = [('setup', corpus_module.group_setup()), ('mob home NBT', mob_home(args.mob_home_holder_removal_diagnostic, args.mob_home_late_detach_control))]
+    if args.item_contents_fixture:
+        try:
+            from .item_contents_corpus import item_contents
+        except ImportError:
+            from item_contents_corpus import item_contents
+        groups = [('setup', corpus_module.group_setup()), ('item component contents', item_contents(args.item_contents_provider_empty_control))]
+    if args.boat_item_hit_fixture:
+        from boat_item_hit_corpus import boat_item_hits
+        groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
-        groups=[('pufferfish player contact',contact_fixture(args.pufferfish_body_diagnostic))]
+        groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -136,6 +201,7 @@ def main():
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
+
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import advancements as contact_advancements
         advancements.update(contact_advancements())
@@ -145,19 +211,32 @@ def main():
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
-    run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
+    java_options = []
+    if args.orb_water_fixture:
+        (build / 'orb-water-reference.json').unlink(missing_ok=True)
+        direct_input = build / 'orb-water-inputs.json'
+        direct_input.write_text(json.dumps(arithmetic_inputs()), encoding='utf-8')
+        java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
+    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
+    if args.orb_water_fixture:
+        direct = json.loads((build / 'orb-water-reference.json').read_text())
+        if ([r.get('input') for r in direct] != arithmetic_inputs() or
+                any(len(r.get('bits', [])) != 3 or
+                    any(re.fullmatch(r'[0-9a-f]{1,16}', b) is None for b in r['bits']) for r in direct)):
+            sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
-        rows=[json.loads(line) for line in (build/'vanilla.jsonl').read_text().splitlines()]
-        recorded=[op for op in script if op['op'] in ('player_state','player_loop') or (op['op']=='cmd' and op.get('record',True))]
-        assert len(rows)==len(recorded),(len(rows),len(recorded))
-        for op,row in zip(recorded,rows):
-            if 'expect_result' in op and row['results'] != [[True,op['expect_result']]]:
-                sys.exit(f'Java prerequisite failed: {op}: {row}')
-            if 'expect_observation' in op and row['state']!=op['expect_observation']:
-                sys.exit(f'Java observation prerequisite failed: {op}: {row}')
-        print(f'Java prerequisites pass: {len(rows)} records')
+        reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True))]
+        if len(recorded) != len(reference):
+            sys.exit('reference-only record count differs')
+        for op, row in zip(recorded, reference):
+            if "expect_observation" in op and row.get("state") != op["expect_observation"]:
+                sys.exit(f"Java observation prerequisite failed: {op}: {row}")
+            if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
+                sys.exit(f'Java fixture guard failed: {op}: {row.get("results")}')
+        print(f'Java reference: {len(reference)} records, fixture guards passed')
         return
 
     if args.binary:
@@ -174,28 +253,53 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
-    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 4], 'rust', game=True, cwd=rust_dir, env=env)
+    if args.loaded_fixture:
+        env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
+        env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
+    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
 
+    if args.loaded_fixture:
+        for name in ['client_config.json', 'rust-client-config.json']:
+            config = json.loads((build / name).read_text())
+            if config.get('view_distance') != 2 or config.get('simulation_distance') != 2:
+                sys.exit(f'actual login distance prerequisite failed: {name}: {config}')
+        java = json.loads((build / 'client_config.json').read_text())
+        if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
+            sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
+        for name in ['java.log', 'rust.log']:
+            waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
+            if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
+                    for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
+                sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
+        native = json.loads((build / 'rust-client-config.json').read_text())
+        if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
+            sys.exit(f'native settings/join prerequisite failed: {native}')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').open(encoding='utf-8')]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'player_state', 'player_loop') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
-        if 'expect_observation' in op and reference.get('state') != op['expect_observation']:
-            sys.exit(f'Java observation prerequisite failed: {op}: {reference}')
+        if "expect_observation" in op and reference.get("state") != op["expect_observation"]:
+            sys.exit(f"Java observation prerequisite failed: {op}: {reference}")
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
+        if 'expect_values' in op and reference.get('results') != [[True, n] for n in op['expect_values']]:
+            sys.exit(f'Java readiness/distance prerequisite failed: {op}: {reference}')
+        if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
+            sys.exit(f'Java loaded contract failed: {op}: {reference}')
+        if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
+            sys.exit(f'Java callback guard failed: {op}: {reference.get("results")}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
@@ -278,8 +382,8 @@ def compare(v, r, comparison=None):
         return None if left is not None and right is not None and left == right else 'positive_result'
     if comparison is not None:
         raise ValueError(f'unknown command comparison: {comparison}')
-    if v.get('state') != r.get('state'):
-        return 'state'
+    if v.get("state") != r.get("state"):
+        return "state"
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:

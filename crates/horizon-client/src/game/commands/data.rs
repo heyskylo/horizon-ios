@@ -355,6 +355,9 @@ impl Game<'_> {
                         slot.extra.owner = old.extra.owner;
                     }
                     slot.ai = old.ai;
+                    // Mob.readAdditionalSaveData updates persistent home fields,
+                    // while retaining the rest of the live AI/runtime state.
+                    entity_nbt::read_mob_home(slot, &tag);
                     slot.extra.armor_attributes = old.extra.armor_attributes;
                     slot.age = old.age;
                     slot.previous = slot.position;

@@ -1584,13 +1584,35 @@ fn failure(what: &str, status: &str, errors: &[String], tail: &[String]) -> Stri
     )
 }
 
+/// Extracts the mod id from a mixin manifest or mod file path (e.g. `.../mixins.incoming/<mod_id>/...`
+/// or `.../mods.incoming/<mod_id>/...`).
+fn mod_id_from_file(file: &str) -> Option<&str> {
+    for prefix in ["mixins.incoming", "mods.incoming"] {
+        if let Some(pos) = file.find(prefix) {
+            let rest = &file[pos + prefix.len()..];
+            let sub = rest.trim_start_matches(['/', '\\']);
+            if let Some(end) = sub.find(['/', '\\']) {
+                let id = &sub[..end];
+                if !id.is_empty() {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line, led by the mod it
-/// names (`mod_id`, and its `injection_id`), so a player with several mods sees which one
-/// doesn't apply to the build's Horizon: their files' paths are deep in the launcher's folder.
+/// names (`mod_id`, its `injection_id`, or extracted from its `file` path for `E_MODULE_CONFLICT`),
+/// so a player with several mods sees which one doesn't apply to the build's Horizon: their files'
+/// paths are deep in the launcher's folder.
 fn diagnostic(text: &str) -> Option<String> {
     let start = text.find('{')?;
     let value: serde_json::Value = serde_json::from_str(&text[start..]).ok()?;
-    let culprit = match (value["mod_id"].as_str(), value["injection_id"].as_str()) {
+    let mod_id = value["mod_id"]
+        .as_str()
+        .or_else(|| value["file"].as_str().and_then(mod_id_from_file));
+    let culprit = match (mod_id, value["injection_id"].as_str()) {
         (Some(m), Some(i)) => format!("{m} ({i}): "),
         (Some(m), None) => format!("{m}: "),
         _ => String::new(),
@@ -2005,6 +2027,12 @@ fn pipeline(
     if let (Some(list), false) = (&other, anyway || on_base) {
         return Err(format!("{MISMATCH}{list}."));
     }
+    if let Some(list) = &other {
+        log_warning(&format!(
+            "Some mods were made for other Horizon versions ({list}). Building anyway on {}.",
+            &revision[..revision.len().min(7)]
+        ));
+    }
     for b in mods
         .iter()
         .filter(|b| b.hooks.is_some() || b.horizon.as_ref().is_some_and(|r| *r != revision))
@@ -2012,13 +2040,18 @@ fn pipeline(
         repin(b, &revision)?;
     }
     // Said with a failure: a mod made for another revision may not apply or compile on this one.
-    let blame = |e: String| {
-        match &other {
-        Some(list) => format!(
-            "{e}\n\nSome mods were made for other Horizon versions ({list}), which may be why. Install versions made for the same Nightly."
-        ),
+    let blame = |e: String| match &other {
+        Some(list) => {
+            let by = match pinned_by.as_slice() {
+                [] => String::new(),
+                [single] => format!(" (pinned by {single})"),
+                many => format!(" (pinned by {})", many.join(", ")),
+            };
+            format!(
+                "{e}\n\nSome mods were made for other Horizon versions ({list}{by}), which may be why. Install versions made for the same Nightly."
+            )
+        }
         None => e,
-    }
     };
     let mixins = newest(
         &mods,
@@ -4166,6 +4199,48 @@ mod tests {
         assert_eq!(
             diagnostic(err).as_deref(),
             Some("chop: E_REVISION: pinned to a")
+        );
+    }
+
+    #[test]
+    fn a_tool_error_without_mod_id_extracts_culprit_from_file_path() {
+        // horizon-mixins e8cd0aa emits E_MODULE_CONFLICT without mod_id (issue #9391).
+        let err = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module horizon_physics",
+  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/horizon_physics/horizon-mixin.toml"
+}"#;
+        let line = diagnostic(err).unwrap();
+        assert!(
+            line.starts_with(
+                "horizon_physics: E_MODULE_CONFLICT: conflict in module horizon_physics"
+            ),
+            "{line}"
+        );
+
+        // Windows path with backslashes
+        let err_win = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module biomecompass",
+  "file": "C:\\Users\\p\\AppData\\Local\\horizon-launcher\\native\\mixins.incoming\\biomecompass\\horizon-mixin.toml"
+}"#;
+        let line_win = diagnostic(err_win).unwrap();
+        assert!(
+            line_win
+                .starts_with("biomecompass: E_MODULE_CONFLICT: conflict in module biomecompass"),
+            "{line_win}"
+        );
+
+        // mods.incoming path
+        let err_mods = r#"{
+  "code": "E_MODULE_CONFLICT",
+  "message": "conflict in module worldedit",
+  "file": "/home/p/.local/share/horizon-launcher/native/mods.incoming/worldedit/horizon-mod.toml"
+}"#;
+        let line_mods = diagnostic(err_mods).unwrap();
+        assert!(
+            line_mods.starts_with("worldedit: E_MODULE_CONFLICT: conflict in module worldedit"),
+            "{line_mods}"
         );
     }
 
