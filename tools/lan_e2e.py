@@ -13185,5 +13185,85 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_command_block_chat(host, guest, out):
+    """#9377: SayCommand broadcasts to real clients, independently of TrackOutput.
+
+    Java 26.3 SayCommand returns 1 and PlayerList.broadcastChatMessage sends
+    the line to every player. Conditional chain execution is a separate control.
+    """
+    objective = 'say_9377'
+    positions = [(g, pos_of(g)) for g in (host, guest)]
+    rows = []
+
+    def command(line):
+        return '\n'.join(host('command', command=line)['chat'])
+
+    def gametime():
+        line = command('time query gametime')
+        found = re.search(r'is (-?\d+)', line)
+        assert found, f'prerequisite: no gametime reply: {line}'
+        return int(found.group(1))
+
+    try:
+        for line in ('tick freeze', 'gamerule command_blocks_work true',
+                     'gamerule spawn_mobs false', 'forceload add 0 0',
+                     'fill 0 110 4 1 110 6 stone',
+                     f'scoreboard objectives add {objective} dummy'):
+            command(line)
+        for actor, _ in positions:
+            x = 0.5 if actor is host else 1.5
+            command(f"tp {getattr(actor, 'player', GUEST_NAME)} {x} 112 5.5")
+        host.wait(5)
+        for sender in (host, guest):
+            marker = f'SAY_CONTROL_{sender.name}_{time.time_ns()}'
+            sender.raw('chat', f'/say {marker}')
+            for actor, _ in positions:
+                actor.until(lambda: actor.raw('messages', 30)['chat'],
+                            lambda lines: any(marker in line for line in lines), ticks=30)
+        for track in (True, False):
+            marker = f'SAY_BLOCK_{time.time_ns()}'
+            source_name = 'Announcer9377' if track else '@'
+            custom_name = ',CustomName:{text:"Announcer9377"}' if track else ''
+            for line in ('setblock 0 110 2 air', 'setblock 1 110 2 air', 'setblock 2 110 2 air',
+                         f'scoreboard players set chain {objective} 0',
+                         'setblock 2 110 2 chain_command_block[facing=east,conditional=true]'
+                         f'{{Command:"scoreboard players set chain {objective} 1",auto:1b}}',
+                         'setblock 1 110 2 command_block[facing=east]'
+                         f'{{Command:"say {marker}",auto:0b,TrackOutput:{int(track)}b{custom_name}}}',
+                         'setblock 0 110 2 redstone_block'):
+                command(line)
+            start = gametime()
+            command('tick step 2')
+            host.until(gametime, lambda tick: tick >= start + 2, ticks=60)
+            assert gametime() == start + 2, 'prerequisite: extra world ticks'
+            host.wait(5)
+            for actor, _ in positions:
+                actor.raw('look-at', 1.5, 110.5, 2.5)
+                actor.shot(out, f'command-block-chat-{int(track)}')
+            count = command('data get block 1 110 2 SuccessCount')
+            chain = command(f'scoreboard players get chain {objective}')
+            messages = {g.name: g.raw('messages', 30)['chat'] for g, _ in positions}
+            row = dict(track_output=track, marker=marker, success=count, chain=chain,
+                       block=command('data get block 1 110 2'), messages=messages)
+            rows.append(row)
+            (out / 'command-block-chat.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')
+            assert re.search(r'following block data: 1\b', count), count
+            assert f'chain has 1 [{objective}]' in chain, chain
+            for actor, _ in positions:
+                assert messages[actor.name].count(f'[{source_name}] {marker}') == 1, row
+        return rows
+    finally:
+        for line in ('setblock 0 110 2 air', 'setblock 1 110 2 air', 'setblock 2 110 2 air',
+                     f'scoreboard objectives remove {objective}', 'forceload remove 0 0',
+                     'fill 0 110 4 1 110 6 air', 'tick unfreeze'):
+            command(line)
+        for actor, position in positions:
+            command(f"tp {getattr(actor, 'player', GUEST_NAME)} " + ' '.join(map(str, position)))
+
+
+CHECKS += ['command-block-chat']
+CHECK_FNS['command-block-chat'] = check_command_block_chat
+
+
 if __name__ == '__main__':
     main()
