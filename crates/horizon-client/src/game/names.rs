@@ -631,11 +631,6 @@ impl Game<'_> {
     }
 }
 
-/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
-/// current pose, which the submitter lifts 0.5 more, between the last two tick
-/// positions. The player box is `Pose::dimensions(1.0)`.
-/// shortcut: the scale attribute is not in the tag height, add `model_scale`
-/// when tags on scaled players matter.
 /// Collect entity IDs of all vehicles: entities that have passengers
 /// (mobs, players, text displays, armor stands, or interactions riding them).
 ///
@@ -692,6 +687,11 @@ fn collect_vehicle_ids(
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
+/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
+/// current pose, which the submitter lifts 0.5 more, between the last two tick
+/// positions. The player box is `Pose::dimensions(1.0)`.
+/// shortcut: the scale attribute is not in the tag height, add `model_scale`
+/// when tags on scaled players matter.
 pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
