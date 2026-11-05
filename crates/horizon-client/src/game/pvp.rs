@@ -249,6 +249,8 @@ impl Game<'_> {
     pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let hud = self.settings.extras.pvp.hud;
         if self.player.is_none() || !hud.any() {
+            // The editor frames only what was drawn.
+            self.pvp.boxes.clear();
             return;
         }
         // What each widget shows, read before its cache is borrowed.
