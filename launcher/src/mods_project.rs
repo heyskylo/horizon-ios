@@ -858,19 +858,14 @@ impl Launcher {
                 )
                 .on_click(pick(to))
         };
-        let mut out = div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .max_w(px(760.))
-            .child(
-                plate(&t)
-                    .id("mods-shot")
-                    .overflow_hidden()
-                    .cursor_pointer()
-                    .child(large)
-                    .on_click(pick((shot + 1) % count)),
-            );
+        let mut out = div().flex().flex_col().gap(px(10.)).max_w(px(760.)).child(
+            plate(&t)
+                .id("mods-shot")
+                .overflow_hidden()
+                .cursor_pointer()
+                .child(large)
+                .on_click(pick((shot + 1) % count)),
+        );
         if !current.title.is_empty() {
             out = out.child(
                 text(theme::CAPTION)
@@ -881,11 +876,12 @@ impl Launcher {
         if count < 2 {
             return out;
         }
-        let mut strip = div().flex().flex_wrap().items_center().gap(px(8.)).child(step(
-            "mods-shot-back",
-            true,
-            (shot + count - 1) % count,
-        ));
+        let mut strip = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .child(step("mods-shot-back", true, (shot + count - 1) % count));
         for (i, g) in gallery.iter().enumerate() {
             let thumb = image(self, &g.url, 120., 68.);
             strip = strip.child(
