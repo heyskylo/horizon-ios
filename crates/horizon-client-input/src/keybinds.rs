@@ -23,6 +23,8 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.pickItem", "key.mouse.middle", "gameplay"),
     ("key.command", "key.keyboard.slash", "multiplayer"),
     ("key.friends", "key.keyboard.o", "multiplayer"),
+    // Horizon's emote wheel (docs/cosmetics.md), on a key vanilla leaves free.
+    ("key.emote", "key.keyboard.b", "multiplayer"),
     ("key.socialInteractions", "key.keyboard.p", "multiplayer"),
     ("key.toggleGui", "key.keyboard.f1", "misc"),
     (

@@ -117,6 +117,8 @@ mod dispense_fixture;
 mod dispenser;
 mod dragon;
 mod dynamic_lights;
+mod emote_wheel;
+mod emotes;
 mod enchant_effects;
 mod end;
 mod entity;
@@ -829,6 +831,8 @@ impl Options {
 enum Screen {
     Playing,
     GameModeSwitcher,
+    /// Horizon's emote wheel (`game/emote_wheel.rs`): over the world, not pausing.
+    EmoteWheel,
     Paused,
     Options,
     Chat,
@@ -872,6 +876,7 @@ impl Screen {
         match self {
             Screen::Playing => "playing",
             Screen::GameModeSwitcher => "game_mode_switcher",
+            Screen::EmoteWheel => "emote_wheel",
             Screen::Paused => "paused",
             Screen::Options => "options",
             Screen::Chat => "chat",
@@ -2937,6 +2942,9 @@ struct Game<'a> {
     skin_slots: horizon_client::skins::SkinSlots,
     /// Cosmetics on players (game/cosmetics.rs), off by default.
     cosmetics: cosmetics::Cosmetics,
+    /// Emotes: those the wheel offers and the one playing (`game/emotes.rs`).
+    emotes: emotes::Emotes,
+    emote_wheel: emote_wheel::Wheel,
     /// 3D skin layers: each player's outer layer as one slab per painted
     /// texel, built once per (skin, slim) (`mobs::skin_layers`).
     skin_3d: RefCell<skin_models::SkinModels>,
@@ -9097,6 +9105,7 @@ impl Game<'_> {
                 );
             }
             Screen::GameModeSwitcher => self.draw_gamemode_switcher(&mut batch),
+            Screen::EmoteWheel => self.draw_emote_wheel(&mut batch),
             Screen::Dead => self.draw_death_screen(&mut batch),
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
@@ -12387,6 +12396,7 @@ impl Game<'_> {
         self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
+        self.tick_emotes();
         Ok(())
     }
     /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle.
@@ -16836,6 +16846,7 @@ impl Game<'_> {
                     self.capture(true);
                 }
                 Screen::GameModeSwitcher => self.close_gamemode_switcher(false),
+                Screen::EmoteWheel => self.close_emote_wheel(None),
                 Screen::Dead => {
                     if self.ui.death_confirm.is_some() {
                         self.death_confirm_answer(false)?;
@@ -16905,6 +16916,24 @@ impl Game<'_> {
                 self.release_use_for_keybind_screen();
             }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
+            // key.emote (Horizon's): the emote wheel, a tap again closes it.
+            KeyCode::KeyB if self.screen == Screen::Playing && horizon_cosmetics::enabled() => {
+                self.open_emote_wheel();
+            }
+            KeyCode::KeyB if self.screen == Screen::EmoteWheel => self.close_emote_wheel(None),
+            KeyCode::Digit1
+            | KeyCode::Digit2
+            | KeyCode::Digit3
+            | KeyCode::Digit4
+            | KeyCode::Digit5
+            | KeyCode::Digit6
+            | KeyCode::Digit7
+            | KeyCode::Digit8
+                if self.screen == Screen::EmoteWheel =>
+            {
+                let slot = (key as u32).wrapping_sub(KeyCode::Digit1 as u32) as usize;
+                self.close_emote_wheel(Some(slot));
+            }
             // key.quickActions: only open if a datapack provides dialog actions.
             KeyCode::KeyG if self.screen == Screen::Playing => {
                 if self.has_quick_actions() {
@@ -18007,6 +18036,26 @@ impl Game<'_> {
                 && !self.pad_synthetic_input()
             {
                 self.track_drag_button(*button, *state == ElementState::Pressed);
+            }
+            // The emote key let go over the wheel, a click on it.
+            if self.screen == Screen::EmoteWheel {
+                if let WindowEvent::KeyboardInput { event, .. } = &event
+                    && event.state == ElementState::Released
+                    && let PhysicalKey::Code(key) = event.physical_key
+                    && self.settings.keys.translate(key) == Some(Ok(KeyCode::KeyB))
+                {
+                    self.emote_wheel_released();
+                    return Ok(());
+                }
+                if let WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } = &event
+                {
+                    self.emote_wheel_click();
+                    return Ok(());
+                }
             }
             if let WindowEvent::KeyboardInput { event, .. } = &event
                 && event.state == ElementState::Released
@@ -19642,6 +19691,8 @@ impl<'a> Game<'a> {
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             cosmetics: Default::default(),
+            emotes: Default::default(),
+            emote_wheel: Default::default(),
             skin_3d: Default::default(),
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
@@ -22708,6 +22759,7 @@ mod tests {
         let all = [
             Screen::Playing,
             Screen::GameModeSwitcher,
+            Screen::EmoteWheel,
             Screen::Paused,
             Screen::Options,
             Screen::Chat,

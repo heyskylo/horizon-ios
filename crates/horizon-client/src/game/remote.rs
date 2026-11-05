@@ -6394,6 +6394,7 @@ impl Game<'_> {
         }
         // The player's own model (third person, the inventory's preview).
         self.tick_player_model();
+        self.tick_emotes();
         if !dead {
             self.remote_tick_using();
         }
