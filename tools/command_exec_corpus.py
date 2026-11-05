@@ -3587,7 +3587,7 @@ def allay_invalid_brain_retention():
             ops.append(cmd('/scoreboard players get success h226', expect_result=success))
     ops += setup('/execute store result score after h226 run time query gametime')
     ops.append(cmd('/execute if score after h226 = before h226', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h226')
 
 
 def large_fireball_fire():
@@ -3725,7 +3725,7 @@ def mob_baby_attribute_reads():
     reads(subject, False)
     ops.extend(setup('/execute store result score after h227 run time query gametime'))
     ops.append(cmd('/execute if score after h227 = before h227', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h227')
 
 
 
@@ -4859,7 +4859,8 @@ def advancement_world_loot_rewards(named_table=False, include_missing_ack=False)
                  '/scoreboard players operation elapsed reward_loot -= clock reward_loot')
     ops += [cmd('/scoreboard players get identity_changed reward_loot', expect_result=0),
             cmd('/scoreboard players get elapsed reward_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s')
+    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s',
+                       '/forceload remove 0 0 15 15')
 
 
 def advancement_empty_loot_reference():
@@ -4887,7 +4888,7 @@ def advancement_empty_loot_reference():
                  '/scoreboard players operation elapsed empty_loot -= clock empty_loot')
     ops += [cmd('/scoreboard players get identity_changed empty_loot', expect_result=0),
             cmd('/scoreboard players get elapsed empty_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove empty_loot')
+    return ops + setup('/scoreboard objectives remove empty_loot', '/forceload remove 0 0 15 15')
 
 
 def bell_server_glow():
