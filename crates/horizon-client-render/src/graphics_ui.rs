@@ -3360,6 +3360,7 @@ mod tests {
             GpuCullingOffer::Software,
             GpuCullingOffer::OutOfMemory,
             GpuCullingOffer::Dx12,
+            GpuCullingOffer::DeviceLost,
         ] {
             crate::graphics::offer_gpu_culling(offer);
             assert!(offer.reason().is_some());
@@ -3584,7 +3585,13 @@ mod tests {
             }
             // Every reason GPU Culling's switch can give, whatever this device offers.
             use crate::graphics::GpuCullingOffer as O;
-            for offer in [O::Unsupported, O::Software, O::OutOfMemory, O::Dx12] {
+            for offer in [
+                O::Unsupported,
+                O::Software,
+                O::OutOfMemory,
+                O::Dx12,
+                O::DeviceLost,
+            ] {
                 lang::get(offer.reason().unwrap());
             }
         });

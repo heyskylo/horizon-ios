@@ -6994,6 +6994,7 @@ impl Game<'_> {
                     &mut next_float,
                     border,
                     &self.res.motion().fluids,
+                    &mut |_, _| {},
                 );
                 // `tick` set `previous` to the stepped position: keep the
                 // pre-step one, as `xo` is in vanilla.

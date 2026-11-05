@@ -9439,8 +9439,8 @@ impl Game<'_> {
         let n = self.craft_size;
         let grid: Vec<Option<ItemStack>> = (0..n * n).map(|i| self.craft_grid[i].clone()).collect();
         let scale = |id: i32| self.maps.data.get(&id).map(|m| m.scale);
-        self.res
-            .recipes()
+        // The world's table, the one taking the result (`menu_click`) crafts from.
+        self.recipes()
             .find_with(&grid, n, &scale)
             .map(|(name, result)| (name.to_owned(), result))
     }
@@ -14615,6 +14615,14 @@ impl Game<'_> {
             .renderer
             .take()
             .ok_or("no renderer for graphics recovery")?;
+        // A GPU-culled frame may be what lost it: the renderers after this one don't
+        // offer GPU culling, until Horizon restarts (`graphics::lose_gpu_culling`).
+        if old.gpu_frame() {
+            log::warn!(
+                "Horizon: GPU culling off until the next start: the graphics device was lost in one of its frames"
+            );
+            horizon_client::graphics::lose_gpu_culling();
+        }
         let screenshot = old.screenshot.take();
         let screenshot_result = old.screenshot_result.take();
         drop(old);
