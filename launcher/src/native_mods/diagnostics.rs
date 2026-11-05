@@ -80,20 +80,25 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
     output
 }
 
+/// A file's functions: where each is, its name and its tokens.
 #[derive(Default)]
-struct Functions(Vec<(Range<usize>, String)>);
+struct Functions(Vec<(Range<usize>, String, String)>);
 
 impl<'ast> Visit<'ast> for Functions {
     fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
         self.0.push((
             function.span().byte_range(),
+            function.sig.ident.to_string(),
             function.to_token_stream().to_string(),
         ));
         syn::visit::visit_item_fn(self, function);
     }
 }
 
-/// A file being touched is insufficient: the entire helper must match and its owner be unique.
+/// A file being touched is insufficient: the error must be inside the helper, and its owner be
+/// unique. The helper is the function with its tokens, or with its name when the pristine
+/// source has no function of that name: the staged file may be formatted (a trailing comma
+/// added), which changes its tokens and not its name.
 fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) -> Option<String> {
     let stage = compiler.stage.canonicalize().ok()?;
     let file = Path::new(span["file_name"].as_str()?);
@@ -145,14 +150,17 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
                 continue;
             };
             let tokens = helper.to_token_stream().to_string();
-            if original.0.iter().any(|(_, body)| *body == tokens) {
-                continue;
-            }
-            if functions
+            let name = helper.sig.ident.to_string();
+            if original
                 .0
                 .iter()
-                .any(|(range, body)| range.start <= start && end <= range.end && *body == tokens)
+                .any(|(_, other, body)| *body == tokens || *other == name)
             {
+                continue;
+            }
+            if functions.0.iter().any(|(range, other, body)| {
+                range.start <= start && end <= range.end && (*body == tokens || *other == name)
+            }) {
                 owners.insert(format!("{id} {version}"));
             }
         }
@@ -291,6 +299,19 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("E0063") && error.ends_with(&original));
+
+        // The staged file was formatted after the helper was planned (rustfmt added a trailing
+        // comma): the helper is still found, by its name.
+        plan(
+            &dir,
+            json!([entry(
+                "fast_mesh",
+                "0.1.0",
+                "fn replace() -> MeshTables { MeshTables { base: 1, } }"
+            )]),
+        );
+        let error = capture(&compiler, Cursor::new(&stdout), Vec::new()).explain(original.clone());
+        assert!(error.contains("fast_mesh 0.1.0"), "{error}");
 
         for metadata in ["not json", "{}", r#"{"schema":99,"injections":[]}"#] {
             fs::write(dir.join(".horizon-mixins-stage.json"), metadata).unwrap();
