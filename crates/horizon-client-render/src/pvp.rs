@@ -267,7 +267,12 @@ impl ViewWeather {
 /// world's), at that time.
 pub fn view_day_time(world: i64, fixed: Option<ViewTime>) -> i64 {
     match fixed {
-        Some(t) => world.div_euclid(24000) * 24000 + t.day_time(),
+        Some(t) => {
+            // The day's start may lie outside i64 even when the selected
+            // time fits. If that time cannot fit, retain the actual clock.
+            let time = i128::from(world).div_euclid(24000) * 24000 + i128::from(t.day_time());
+            i64::try_from(time).unwrap_or(world)
+        }
         None => world,
     }
 }
@@ -1450,6 +1455,24 @@ mod tests {
             9 * 24000 + 18000
         );
         assert_eq!(view_day_time(-100, Some(ViewTime::Noon)), -24000 + 6000);
+    }
+
+    #[test]
+    fn a_fixed_time_handles_the_complete_signed_clock_range() {
+        assert_eq!(view_day_time(i64::MIN, None), i64::MIN);
+        assert_eq!(view_day_time(i64::MAX, None), i64::MAX);
+        // The day's start is below i64::MIN, but midnight itself is representable.
+        assert_eq!(
+            view_day_time(i64::MIN, Some(ViewTime::Midnight)),
+            -9_223_372_036_854_774_000
+        );
+        assert_eq!(
+            view_day_time(i64::MAX, Some(ViewTime::Noon)),
+            9_223_372_036_854_774_000
+        );
+        // A chosen time outside the clock's range retains the actual clock, never wraps days.
+        assert_eq!(view_day_time(i64::MIN, Some(ViewTime::Morning)), i64::MIN);
+        assert_eq!(view_day_time(i64::MAX, Some(ViewTime::Midnight)), i64::MAX);
     }
 
     #[test]
