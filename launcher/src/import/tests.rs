@@ -295,3 +295,65 @@ fn a_java_pack_cannot_plant_the_browsers_list() {
     assert_eq!(names, ["mods"]);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_zip_bomb_stops_at_the_limit_and_leaves_nothing() {
+    let dir = scratch("bomb");
+    let made = dir.join("instances");
+    // 64 KiB of zeros compresses to almost nothing; the limit here is 16 KiB.
+    let bomb = dir.join("bomb.zip");
+    zip_file(
+        &bomb,
+        &[
+            ("options.txt", b"ok"),
+            ("saves/Big/region/r.0.0.mca", &[0u8; 64 << 10]),
+        ],
+    );
+    assert!(fs::metadata(&bomb).unwrap().len() < 4 << 10);
+    let refused = import_any(&bomb, NONE, &maker(&made), false, 16 << 10).unwrap_err();
+    assert!(refused.contains("more than 16 KiB"), "{refused}");
+    assert!(!made.join("bomb").exists(), "the half-made instance goes");
+    // Under the limit, all of it comes in; the limit counts every file together.
+    let two = dir.join("two.zip");
+    zip_file(
+        &two,
+        &[
+            ("options.txt", &[1u8; 8 << 10]),
+            ("servers.dat", &[2u8; 8 << 10]),
+        ],
+    );
+    let i = import_any(&two, NONE, &maker(&made), false, 16 << 10).unwrap();
+    assert_eq!(fs::read(i.home.join("servers.dat")).unwrap().len(), 8 << 10);
+    let three = dir.join("three.zip");
+    zip_file(
+        &three,
+        &[
+            ("options.txt", &[1u8; 8 << 10]),
+            ("servers.dat", &[2u8; 8 << 10 | 1]),
+        ],
+    );
+    assert!(import_any(&three, NONE, &maker(&made), false, 16 << 10).is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_mrpack_bomb_stops_at_the_limit_too() {
+    // import_mrpack_into takes every path a pack carries (a Java instance): the same cap applies.
+    let dir = scratch("mrpack-bomb");
+    let made = dir.join("instances");
+    let pack = dir.join("bomb.mrpack");
+    zip_file(
+        &pack,
+        &[
+            (
+                "modrinth.index.json",
+                br#"{"name":"Bomb","files":[],"dependencies":{"fabric-loader":"0.16"}}"#,
+            ),
+            ("overrides/kubejs/data.bin", &[0u8; 64 << 10]),
+        ],
+    );
+    let refused = import_any(&pack, NONE, &maker(&made), true, 16 << 10).unwrap_err();
+    assert!(refused.contains("more than 16 KiB"), "{refused}");
+    assert!(!made.join("bomb").exists(), "the half-made instance goes");
+    fs::remove_dir_all(&dir).unwrap();
+}
