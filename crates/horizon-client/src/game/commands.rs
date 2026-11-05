@@ -697,11 +697,13 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map_or_else(|| Text::translate("entity.", &[]), |m| m.command_name()),
+            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
+                || Text::translate("entity.", &[]),
+                |m| match self.mob_team_of(m) {
+                    Some(team) => team.formatted_name(m.command_name()),
+                    None => m.command_name(),
+                },
+            ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = match other {
@@ -2835,7 +2837,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        save::consume_container_loot(&mut extras, key);
         let taken = rolled.is_some();
         extras.rolled_loot.extend(rolled);
         chunk.saved = Some(std::sync::Arc::new(extras));

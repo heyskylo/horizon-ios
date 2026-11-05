@@ -18,13 +18,17 @@ impl Game<'_> {
     /// stays open with nobody there. Tickets are kept until the owner lets go
     /// or the server stops, not saved: keep what you hold (a level
     /// attachment) and hold it again in `native_level_load`. True when the
-    /// set of owners changed; false for an owner without a namespace and off
-    /// a server. API @API:chunk_tickets@.
+    /// set of owners changed; false for an owner without a namespace, a chunk
+    /// past the world's edge (as `/forceload` refuses it) and off a server. API @API:chunk_tickets@.
     pub(super) fn native_force_chunk(&mut self, owner: &str, chunk: [i32; 2], hold: bool) -> bool {
         let namespaced = owner
             .split_once(':')
             .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
-        if !namespaced || !self.native_authoritative() {
+        // `/forceload`'s world: blocks -30,000,000 to 29,999,999, so a mod's
+        // corrupt saved list asks for nothing past the edge (where the ring's
+        // arithmetic would overflow).
+        let in_world = chunk.iter().all(|c| (-1_875_000..1_875_000).contains(c));
+        if !namespaced || !self.native_authoritative() || (hold && !in_world) {
             return false;
         }
         let key = (chunk[0], chunk[1]);

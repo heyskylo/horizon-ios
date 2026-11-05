@@ -4092,6 +4092,129 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
 
 
 
+def mob_nbt_damage_cooldown():
+    """Unrelated NBT edits retain a live mob's internal damage protection."""
+    objective = 'rewrite_hit'
+    out = setup('/gamerule minecraft:spawn_mobs false', '/forceload remove 0 0 31 15')
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    def action(command, accepted=1):
+        check(f'/scoreboard players set #r {objective} 31', 31)
+        check(f'/scoreboard players set #s {objective} 17', 17)
+        out.append(cmd(f'/execute store result score #r {objective} '
+                       f'store success score #s {objective} run {command.lstrip("/")}'))
+        check(f'/scoreboard players get #r {objective}', accepted)
+        check(f'/scoreboard players get #s {objective}', accepted)
+
+    def state(health, hurt, custom='before', silent=False):
+        # Identity and actual values precede every rejected-hit observation.
+        check(f'/execute as {uid} if entity @s[type=minecraft:pig,tag=rewrite_hit_{serial}]')
+        check(f'/execute if data entity {uid} {{UUID:[I;294,0,0,{serial}],'
+              f'Health:{health}f,HurtTime:{hurt}s,Pos:[{x}d,200d,10.5d],'
+              f'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,CustomName:"{custom}"}}')
+        check(f'/data get entity {uid} Health', health)
+        check(f'/data get entity {uid} HurtTime', hurt)
+        check(f'/data get entity {uid} CustomName', len(custom))
+        check(f'/execute as {uid} {"if" if silent else "unless"} entity @s[nbt={{Silent:1b}}]')
+        out.extend(setup(f'/execute store result score #clock {objective} run time query gametime'))
+        check(f'/scoreboard players operation #clock {objective} -= #before {objective}', elapsed)
+
+    check('/tick freeze')
+    check('/gamerule minecraft:spawn_mobs', 0)
+    check('/forceload add 0 0 31 15', 2)
+    out.append({'op': 'settle'})
+    check('/execute if loaded 0 200 0')
+    check('/execute if loaded 31 200 15')
+    out.extend(setup('/kill @e[type=!player]', '/fill 0 199 0 31 203 15 air'))
+    check(f'/scoreboard objectives add {objective} dummy')
+    cases = ['no_write', 'name', 'silent', 'unchanged', 'stronger', 'expiry',
+             'fresh_write', 'health_write', 'hurt_write']
+    for serial, case in enumerate(cases, 1):
+        x = 2.5 + 3 * (serial - 1)
+        uid = f'00000126-0000-0000-0000-{serial:012x}'
+        elapsed = 0
+        check(f'/execute if block {int(x)} 200 10 air')
+        check(f'/setblock {int(x)} 199 10 stone')
+        check(f'/execute if block {int(x)} 199 10 stone')
+        out.extend(setup(f'/execute store result score #before {objective} run time query gametime'))
+        check(f'/summon pig {x} 200 10.5 {{UUID:[I;294,0,0,{serial}],'
+              f'Tags:["rewrite_hit","rewrite_hit_{serial}"],NoAI:1b,NoGravity:1b,'
+              'Silent:0b,PersistenceRequired:1b,Health:10f,CustomName:"before"}')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        state(10, 0)
+        if case == 'fresh_write':
+            action(f'/data merge entity {uid} {{CustomName:"after"}}')
+            state(10, 0, 'after')
+            action(f'/damage {uid} 1 generic')
+            state(9, 10, 'after')
+            action(f'/damage {uid} 1 generic', 0)
+            state(9, 10, 'after')
+        else:
+            action(f'/damage {uid} 1 generic')
+            state(9, 10)
+            action(f'/damage {uid} 1 generic', 0)
+            state(9, 10)
+            custom, silent, health, hurt = 'before', False, 9, 10
+            if case != 'no_write':
+                changes = {'name': 'CustomName:"after"', 'silent': 'Silent:1b',
+                           'unchanged': 'CustomName:"before"', 'stronger': 'Silent:1b',
+                           'expiry': 'CustomName:"after"', 'health_write': 'Health:6f,Silent:1b',
+                           'hurt_write': 'HurtTime:0s,CustomName:"after"'}[case]
+                action(f'/data merge entity {uid} {{{changes}}}', int(case != 'unchanged'))
+                if case in ('name', 'expiry', 'hurt_write'):
+                    custom = 'after'
+                if case in ('silent', 'stronger', 'health_write'):
+                    silent = True
+                if case == 'health_write':
+                    health = 6
+                if case == 'hurt_write':
+                    hurt = 0
+                state(health, hurt, custom, silent)
+            if case == 'expiry':
+                check('/tick step 9')
+                out.append({'op': 'tick', 'n': 9})
+                elapsed = 9
+                state(9, 1, custom)
+                action(f'/damage {uid} 1 generic', 0)
+                state(9, 1, custom)
+                check('/tick step 1')
+                out.append({'op': 'tick', 'n': 1})
+                elapsed = 10
+                state(9, 0, custom)
+                action(f'/damage {uid} 1 generic')
+                state(8, 10, custom)
+            elif case == 'stronger':
+                action(f'/damage {uid} 2 generic')
+                state(8, 10, custom, silent)
+                action(f'/damage {uid} 2 generic', 0)
+                state(8, 10, custom, silent)
+            else:
+                action(f'/damage {uid} 1 generic', 0)
+                state(health, hurt, custom, silent)
+                if case == 'no_write':
+                    action(f'/damage {uid} 2 generic')
+                    state(8, 10)
+                    # Prove ordinary expiry independently of any NBT rewrite.
+                    check('/tick step 9')
+                    out.append({'op': 'tick', 'n': 9})
+                    elapsed = 9
+                    state(8, 1)
+                    action(f'/damage {uid} 2 generic', 0)
+                    state(8, 1)
+                    check('/tick step 1')
+                    out.append({'op': 'tick', 'n': 1})
+                    elapsed = 10
+                    state(8, 0)
+                    action(f'/damage {uid} 2 generic')
+                    state(6, 10)
+        out.extend(setup(f'/kill {uid}'))
+    return out + setup(f'/scoreboard objectives remove {objective}',
+                       '/fill 0 199 0 31 203 15 air', '/forceload remove 0 0 31 15', '/tick unfreeze')
+
+
 def mob_full_resistance_hits():
     lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
     for x, z in [(0, 0), (16, 0), (0, 16), (16, 16)]:
@@ -4662,6 +4785,115 @@ def mining_efficiency_9021():
 
 
 
+def advancement_loot_fixtures(group_names):
+    advancements, tables = {}, {}
+    if 'advancement world loot rewards' in group_names:
+        criteria = {'never': {'trigger': 'minecraft:impossible'}}
+        advancements = {'parity:loot_reward': {'criteria': criteria,
+                                             'rewards': {'loot': ['parity:reward']}},
+                        'parity:no_loot': {'criteria': criteria}}
+        tables['parity:reward'] = {'type': 'minecraft:advancement_reward',
+                                  'pools': [{'rolls': 1, 'entries': [
+                                      {'type': 'minecraft:item', 'name': 'minecraft:diamond'}]}]}
+    if 'advancement empty loot reference' in group_names:
+        tables['parity:empty_reward'] = {'type': 'minecraft:advancement_reward', 'pools': []}
+    return advancements, tables
+
+
+def advancement_world_loot_rewards(named_table=False, include_missing_ack=False):
+    """One world-only, modifier-free reward table; no XP, recipe or function reward."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/clear @s',
+                '/scoreboard objectives add reward_loot dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s Inventory')]
+    ops += setup('/data modify storage h292:identity value set from entity @s UUID',
+                 '/execute store result score clock reward_loot run time query gametime')
+    def reference(table):
+        return ('{type:"minecraft:advancement_reward",pools:[{rolls:1,entries:['
+                '{type:"minecraft:loot_table",value:"' + table + '"}]}]}')
+    target = 'parity:reward' if named_table else reference('parity:reward')
+    if not named_table:
+        # Same reference shape with a missing key must leave the inventory empty.
+        # Only its three codec/ACK rows are excluded from focused97; full100
+        # records them unchanged. Both Inventory guards always remain recorded.
+        ops += setup('/scoreboard players set missing_result reward_loot -99',
+                     '/scoreboard players set missing_success reward_loot -99')
+        ops += [cmd('/scoreboard players get missing_result reward_loot', expect_result=-99),
+                cmd('/scoreboard players get missing_success reward_loot', expect_result=-99),
+                cmd('/execute store result score missing_result reward_loot store success score missing_success reward_loot run loot give @s loot ' + reference('parity:missing_reward'), record=include_missing_ack),
+                cmd('/scoreboard players get missing_result reward_loot', record=include_missing_ack),
+                cmd('/scoreboard players get missing_success reward_loot', record=include_missing_ack),
+                cmd('/data get entity @s Inventory', expect_result=0),
+                cmd('/execute unless data entity @s Inventory[]', expect_result=1)]
+    # A reference, never an inline diamond definition, proves the world-only table.
+    ops += [cmd('/loot give @s loot ' + target, expect_result=1),
+            cmd('/data get entity @s Inventory'),
+            cmd('/execute if entity @s[nbt={Inventory:[{Slot:0b,id:"minecraft:diamond",count:1}]}]', expect_result=1),
+            cmd('/clear @s', expect_result=1),
+            cmd('/data get entity @s Inventory')]
+    cases = [('grant', 'parity:loot_reward', 1, 1, True),
+             ('grant', 'parity:loot_reward', 0, 1, True),
+             ('revoke', 'parity:loot_reward', 1, 1, False),
+             ('grant', 'parity:loot_reward', 1, 2, True),
+             ('grant', 'parity:no_loot', 1, 2, True),
+             ('grant', 'parity:no_loot', 0, 2, True),
+             ('revoke', 'parity:no_loot', 1, 2, False),
+             ('grant', 'parity:no_loot', 1, 2, True)]
+    for verb, advancement, changed, count, complete in cases:
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+        ops += setup('/scoreboard players set result reward_loot -99',
+                     '/scoreboard players set success reward_loot -99')
+        ops += [cmd('/scoreboard players get result reward_loot', expect_result=-99),
+                cmd('/scoreboard players get success reward_loot', expect_result=-99),
+                cmd(f'/execute store result score result reward_loot store success score success reward_loot run advancement {verb} @s only {advancement}'),
+                cmd('/scoreboard players get result reward_loot', expect_result=changed),
+                cmd('/scoreboard players get success reward_loot', expect_result=changed),
+                cmd('/data get entity @s Inventory'),
+                cmd(f'/execute if entity @s[nbt={{Inventory:[{{Slot:0b,id:"minecraft:diamond",count:{count}}}]}}]', expect_result=1)]
+        ops += setup('/execute store result score count reward_loot run clear @s minecraft:diamond 0')
+        ops += [cmd('/scoreboard players get count reward_loot', expect_result=count),
+                cmd(f'/execute {"if" if complete else "unless"} entity @s[advancements={{{advancement}=true}}]', expect_result=1)]
+    ops += [cmd('/loot give @s loot ' + target, expect_result=1),
+            cmd('/data get entity @s Inventory'),
+            cmd('/execute if entity @s[nbt={Inventory:[{Slot:0b,id:"minecraft:diamond",count:3}]}]', expect_result=1)]
+    ops += setup('/execute store success score identity_changed reward_loot run data modify storage h292:identity value set from entity @s UUID',
+                 '/execute store result score elapsed reward_loot run time query gametime',
+                 '/scoreboard players operation elapsed reward_loot -= clock reward_loot')
+    ops += [cmd('/scoreboard players get identity_changed reward_loot', expect_result=0),
+            cmd('/scoreboard players get elapsed reward_loot', expect_result=0)]
+    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s')
+
+
+def advancement_empty_loot_reference():
+    """Separate valid-empty table control: success with zero output, not a missing reference."""
+    reference = '{type:"minecraft:advancement_reward",pools:[{rolls:1,entries:[{type:"minecraft:loot_table",value:"parity:empty_reward"}]}]}'
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/clear @s',
+                '/scoreboard objectives add empty_loot dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1),
+            cmd('/data get entity @s Inventory', expect_result=0)]
+    ops += setup('/data modify storage h292:empty_identity value set from entity @s UUID',
+                 '/execute store result score clock empty_loot run time query gametime',
+                 '/scoreboard players set result empty_loot -99',
+                 '/scoreboard players set success empty_loot -99')
+    ops += [cmd('/scoreboard players get result empty_loot', expect_result=-99),
+            cmd('/scoreboard players get success empty_loot', expect_result=-99),
+            cmd('/execute store result score result empty_loot store success score success empty_loot run loot give @s loot ' + reference, expect_result=0),
+            cmd('/scoreboard players get result empty_loot', expect_result=0),
+            cmd('/scoreboard players get success empty_loot', expect_result=1),
+            cmd('/data get entity @s Inventory', expect_result=0),
+            cmd('/execute unless data entity @s Inventory[]', expect_result=1)]
+    ops += setup('/execute store success score identity_changed empty_loot run data modify storage h292:empty_identity value set from entity @s UUID',
+                 '/execute store result score elapsed empty_loot run time query gametime',
+                 '/scoreboard players operation elapsed empty_loot -= clock empty_loot')
+    ops += [cmd('/scoreboard players get identity_changed empty_loot', expect_result=0),
+            cmd('/scoreboard players get elapsed empty_loot', expect_result=0)]
+    return ops + setup('/scoreboard objectives remove empty_loot')
+
+
 def bell_server_glow():
     """Actual world ticks: near raiders trigger resonance that reaches farther raiders."""
     # Centre the harness owner's loading area so settle explicitly awaits entity ticking
@@ -4957,6 +5189,73 @@ def loaded_ticket_removal(blocks=False):
     ops += [cmd('/scoreboard players get changed loaded_audit', expect_result=0),
             cmd('/data get entity @s UUID', expect_result=4)]
     return ops
+def mob_team_command_names():
+    """Live mob command decoration; no damage, entity ticks or rendering claims."""
+    uid = '00000125-0000-0000-0000-000000000001'
+    team = 'command_red'
+    objective = 'team_name_cmd'
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/gamerule minecraft:spawn_mobs', 0)
+    out.extend(setup('/forceload remove 0 0'))
+    check('/forceload add 0 0')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 10 200 10')
+    check('/setblock 10 199 10 stone')
+    check('/execute if block 10 199 10 stone')
+    check(f'/scoreboard objectives add {objective} dummy')
+    out.extend(setup(f'/execute store result score #before {objective} run time query gametime'))
+    check('/summon zombie 10.5 200 10.5 {UUID:[I;293,0,0,1],Tags:["command_team_subject"],'
+          'NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}')
+
+    def observe(member, host_member, custom):
+        # Guard the actual actor and values before absence/default assertions.
+        check(f'/execute as {uid} if entity @s[type=minecraft:zombie,tag=command_team_subject]')
+        check(f'/execute if data entity {uid} {{UUID:[I;293,0,0,1],Health:20f,'
+              'Pos:[10.5d,200d,10.5d],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        check(f'/data get entity {uid} Health', 20)
+        check(f'/execute as {uid} {"if" if member else "unless"} entity @s[team={team}]')
+        check(f'/execute {"if" if host_member else "unless"} entity @s[team={team}]')
+        if custom:
+            check(f'/data get entity {uid} CustomName', 3)
+        else:
+            out.append(cmd(f'/data get entity {uid} CustomName'))
+        check(f'/tp {uid} 10.5 200 10.5')
+        check('/tp @s 8.5 230 8.5')
+        out.extend(setup(f'/execute store result score #clock {objective} run time query gametime'))
+        check(f'/scoreboard players operation #clock {objective} -= #before {objective}', 0)
+
+    observe(False, False, False)
+    check(f'/team add {team}')
+    check(f'/team modify {team} prefix "[P] "')
+    check(f'/team modify {team} suffix " [S]"')
+    check(f'/team modify {team} color red', 0)
+    check(f'/team join {team} @s')
+    # The host witnesses the same stored formatting before the mob joins.
+    observe(False, True, False)
+    check(f'/team join {team} {uid}')
+    observe(True, True, False)
+    check(f'/data merge entity {uid} {{CustomName:"Bob"}}')
+    observe(True, True, True)
+    check(f'/team modify {team} prefix ""')
+    observe(True, True, True)
+    check(f'/team modify {team} suffix ""')
+    observe(True, True, True)
+    check(f'/team leave {uid}')
+    observe(False, True, True)
+    check('/team leave @s')
+    check(f'/data remove entity {uid} CustomName')
+    observe(False, False, False)
+    check(f'/team remove {team}', 0)
+    out.extend(setup(f'/kill {uid}', f'/scoreboard objectives remove {objective}',
+                     '/setblock 10 199 10 air', '/forceload remove 0 0', '/tick unfreeze'))
+    return out
 
 
 def groups():
@@ -4976,10 +5275,13 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('advancement world loot rewards', advancement_world_loot_rewards()),
+        ('advancement empty loot reference', advancement_empty_loot_reference()),
         ('crafting recipe priority', crafting_recipe_priority()),
         ('crafting base recipe control', crafting_recipe_priority(False)),
         ('item stack-size override merges', stack_limit_merges(cmd, setup)),
         ('moving piston command data', moving_piston_data(cmd, setup)),
+        ('mob team command names', mob_team_command_names()),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),
@@ -5068,6 +5370,7 @@ def groups():
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
+        ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),

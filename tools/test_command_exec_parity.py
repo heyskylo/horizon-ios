@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, recipes=None):
-    if not predicates and not functions and not advancements and not recipes:
+def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None, recipes=None):
+    if not predicates and not functions and not advancements and not loot_tables and not recipes:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -66,6 +66,11 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
         target = pack / 'data' / namespace / 'advancement' / (path + '.json')
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(advancement), encoding='utf-8')
+    for identifier, table in (loot_tables or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'loot_table' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(table), encoding='utf-8')
 
 
     for identifier, recipe in (recipes or {}).items():
@@ -78,6 +83,10 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--advancement-loot-inline-parser-diagnostic', action='store_true',
+                        help='retain all 100 inline observations, including the three missing-reference ACK differences')
+    parser.add_argument('--advancement-loot-named-diagnostic', action='store_true',
+                        help='retain the separate named world-loot registry-admission diagnostic')
     parser.add_argument('--pot-string-sherd-diagnostic', action='store_true',
                         help='use string sherd input in the pot data group (known separate codec gap)')
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
@@ -109,6 +118,8 @@ def main():
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
+    parser.add_argument("--pufferfish-contact-fixture", action="store_true")
+    parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
     args = parser.parse_args()
@@ -136,6 +147,12 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.advancement_loot_named_diagnostic and args.advancement_loot_inline_parser_diagnostic:
+        parser.error('choose only one advancement-loot diagnostic')
+    if args.advancement_loot_named_diagnostic or args.advancement_loot_inline_parser_diagnostic:
+        groups = [(name, corpus_module.advancement_world_loot_rewards(
+            named_table=args.advancement_loot_named_diagnostic, include_missing_ack=True)
+                   if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     # These overlays replace built-in recipes: run each in its own world, never
     # beside the generic corpus's fixed vanilla recipe-count controls.
     isolated_recipes = {'crafting recipe priority', 'crafting base recipe control'}
@@ -199,6 +216,9 @@ def main():
     if args.boat_item_hit_fixture:
         from boat_item_hit_corpus import boat_item_hits
         groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import contact_fixture
+        groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -216,12 +236,18 @@ def main():
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     recipes = corpus_module.crafting_priority_recipes([name for name, _ in groups])
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
+    loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
+    advancements.update(loot_advancements)
+
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import advancements as contact_advancements
+        advancements.update(contact_advancements())
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, recipes=recipes)
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     java_options = []
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
@@ -239,10 +265,12 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] == 'cmd' and op.get('record', True)]
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True))]
         if len(recorded) != len(reference):
             sys.exit('reference-only record count differs')
         for op, row in zip(recorded, reference):
+            if "expect_observation" in op and row.get("state") != op["expect_observation"]:
+                sys.exit(f"Java observation prerequisite failed: {op}: {row}")
             if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
                 sys.exit(f'Java fixture guard failed: {op}: {row.get("results")}')
         print(f'Java reference: {len(reference)} records, fixture guards passed')
@@ -257,7 +285,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements=advancements, recipes=recipes)
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
@@ -287,12 +315,14 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
+        if "expect_observation" in op and reference.get("state") != op["expect_observation"]:
+            sys.exit(f"Java observation prerequisite failed: {op}: {reference}")
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
         if 'expect_values' in op and reference.get('results') != [[True, n] for n in op['expect_values']]:
@@ -306,7 +336,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
@@ -389,6 +419,8 @@ def compare(v, r, comparison=None):
         return None if left is not None and right is not None and left == right else 'positive_result'
     if comparison is not None:
         raise ValueError(f'unknown command comparison: {comparison}')
+    if v.get("state") != r.get("state"):
+        return "state"
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:
