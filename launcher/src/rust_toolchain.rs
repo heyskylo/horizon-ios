@@ -312,11 +312,16 @@ pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
         return Ok(done);
     }
     let host = host().ok_or_else(|| {
-        format!(
-            "Native mods need Rust, and the launcher has none for {} {}.",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )
+        if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+            crate::i18n::tr("Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.")
+                .to_string()
+        } else {
+            format!(
+                "Native mods need Rust, and the launcher has none for {} {}.",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        }
     })?;
     let dir = dir_for(host);
     let partial = root().join(format!(".{VERSION}-{}.partial", host.target));

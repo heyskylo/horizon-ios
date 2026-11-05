@@ -83,13 +83,19 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
+    parser.add_argument('--loaded-fixture', action='store_true', help='pin actual view/simulation2 and use real player tickets')
+    parser.add_argument('--loaded-block-diagnostic', action='store_true', help='retain separate FULL block-access observations')
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
+    if args.loaded_fixture:
+        for name in ['client_config.json', 'rust-client-config.json']:
+            (build / name).unlink(missing_ok=True)
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
@@ -107,6 +113,9 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.loaded_fixture:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
@@ -140,7 +149,7 @@ def main():
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
-    run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
+    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
     if args.binary:
@@ -157,13 +166,32 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
-    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 4], 'rust', game=True, cwd=rust_dir, env=env)
+    if args.loaded_fixture:
+        env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
+        env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
+    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
 
+    if args.loaded_fixture:
+        for name in ['client_config.json', 'rust-client-config.json']:
+            config = json.loads((build / name).read_text())
+            if config.get('view_distance') != 2 or config.get('simulation_distance') != 2:
+                sys.exit(f'actual login distance prerequisite failed: {name}: {config}')
+        java = json.loads((build / 'client_config.json').read_text())
+        if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
+            sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
+        for name in ['java.log', 'rust.log']:
+            waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
+            if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
+                    for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
+                sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
+        native = json.loads((build / 'rust-client-config.json').read_text())
+        if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
+            sys.exit(f'native settings/join prerequisite failed: {native}')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').open(encoding='utf-8')]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -171,12 +199,16 @@ def main():
     for op, reference in zip(recorded_ops, vanilla):
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
+        if 'expect_values' in op and reference.get('results') != [[True, n] for n in op['expect_values']]:
+            sys.exit(f'Java readiness/distance prerequisite failed: {op}: {reference}')
+        if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
+            sys.exit(f'Java loaded contract failed: {op}: {reference}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []

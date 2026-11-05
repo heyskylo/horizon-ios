@@ -1713,6 +1713,7 @@ impl Game<'_> {
                     m.needs_sync = true;
                     occupied = true;
                     self.break_leash(mob, true, false);
+                    self.note_started_riding(id);
                 }
                 continue;
             }
@@ -2139,7 +2140,7 @@ impl Game<'_> {
                 if !self.native_may_board(id) {
                     return true;
                 }
-                self.riding = Some(id);
+                self.start_riding(id);
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => self.open_cart_container(i),
@@ -2808,6 +2809,8 @@ impl Minecart {
         c.yaw = yaw;
         c.previous_yaw = yaw;
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
+        c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
+        c.previous_pitch = c.pitch;
         let int = |k: &str| match tag.get(k) {
             Some(Tag::Byte(v)) => Some(i32::from(*v)),
             Some(Tag::Short(v)) => Some(i32::from(*v)),

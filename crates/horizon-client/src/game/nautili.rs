@@ -133,9 +133,8 @@ impl Game<'_> {
             }
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
             self.mount.reset_jump();
-            self.trigger_player("minecraft:started_riding");
+            self.start_riding(id);
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).

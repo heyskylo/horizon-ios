@@ -303,8 +303,14 @@ impl Game<'_> {
         if name == "minecraft:shears" && self.golem_shearable(index) {
             // CopperGolem.shear: the sound, the antenna slot emptied (an
             // unequip) and the flower dropped 1.5 up.
-            self.audio
-                .play("minecraft:entity.copper_golem.shear", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(
+                index,
+                "minecraft:entity.copper_golem.shear",
+                7,
+                1.0,
+                1.0,
+                false,
+            );
             let antenna = self.mobs[index].saddle_item();
             self.mobs[index].set_saddle(None);
             let id = self.mobs[index].id;
@@ -331,8 +337,7 @@ impl Game<'_> {
         }
         if is_axe && waxed {
             self.mobs[index].extra.vector[0] = -1.0;
-            self.audio
-                .play("minecraft:item.axe.scrape", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
             self.level_event_at(3004, block, 0);
             self.damage_held_tool();
             return true;
@@ -341,8 +346,7 @@ impl Game<'_> {
             let m = &mut self.mobs[index];
             m.extra.vector[0] = -1.0;
             m.extra.variant = horizon_client::mobs::copper_golem::weather_previous(m.extra.variant);
-            self.audio
-                .play("minecraft:item.axe.scrape", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
             self.level_event_at(3005, block, 0);
             self.damage_held_tool();
             return true;
