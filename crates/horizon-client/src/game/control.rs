@@ -17,7 +17,7 @@ const PROTOCOL: &str = "0.1.0";
 /// The command groups the game serves, as `help` chains them: what `hello` reports as its features.
 const FEATURES: &[&str] = &[
     "game", "station", "blocks", "lan", "friends", "render", "sculk", "agent", "ui", "options",
-    "events", "saves", "pad",
+    "events", "saves", "pad", "studio",
 ];
 
 /// `hello`: the protocol the socket speaks, the game's release and the command groups it serves.
@@ -118,6 +118,7 @@ impl Game<'_> {
             && let Some(flight) = self.flight.take()
         {
             let mut summary = self.frame_stats.summary();
+            self.add_async_occlusion_stats(&mut summary);
             let n = flight.tick_ms.len().max(1) as f32;
             summary["tick_ms"] = (flight.tick_ms.iter().sum::<f32>() / n).into();
             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
@@ -164,7 +165,21 @@ impl Game<'_> {
                     .collect(),
             );
         }
+        self.add_async_occlusion_stats(&mut summary);
         summary
+    }
+
+    fn add_async_occlusion_stats(&self, summary: &mut Value) {
+        if let Some(culler) = &self.async_occlusion_culler {
+            summary["async_occlusion_culling"] = culler.stats_value();
+        }
+    }
+
+    fn reset_frame_stats(&mut self) {
+        self.frame_stats.reset();
+        if let Some(culler) = &self.async_occlusion_culler {
+            culler.reset_stats();
+        }
     }
     pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
         if let Some((deadline, reply)) = self.pending_bench.take() {
@@ -362,6 +377,9 @@ impl Game<'_> {
         if let Some(value) = self.friends_control(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.studio_control(&words)? {
+            return Ok(Some(value));
+        }
         match self.agent_command(&words, line, reply, event_loop)? {
             super::agent::Handled::Reply(value) => return Ok(Some(value)),
             super::agent::Handled::Deferred => return Ok(None),
@@ -384,6 +402,7 @@ impl Game<'_> {
                 .chain(super::pad::HELP)
                 .chain(super::input_trace::HELP)
                 .chain(super::repro::HELP)
+                .chain(super::studio::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {
@@ -1024,7 +1043,7 @@ impl Game<'_> {
                     summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
                 }
                 if words[1..].contains(&"reset") {
-                    self.frame_stats.reset();
+                    self.reset_frame_stats();
                 }
                 Ok(Some(summary))
             }
@@ -1033,7 +1052,7 @@ impl Game<'_> {
                 if self.pending_bench.is_some() {
                     return Err("a benchmark is already running".into());
                 }
-                self.frame_stats.reset();
+                self.reset_frame_stats();
                 self.pending_bench = Some((
                     Instant::now() + Duration::from_secs_f64(seconds),
                     reply.clone(),
@@ -1047,7 +1066,7 @@ impl Game<'_> {
                 }
                 let n = |i: usize| -> Result<f64> { Ok(arg(i)?.parse()?) };
                 let pitch = words.get(8).map_or(Ok(10.0), |p| p.parse::<f32>())?;
-                self.frame_stats.reset();
+                self.reset_frame_stats();
                 self.flight = Some(Flight {
                     from: Vec3::new(n(1)?, n(2)?, n(3)?),
                     to: Vec3::new(n(4)?, n(5)?, n(6)?),

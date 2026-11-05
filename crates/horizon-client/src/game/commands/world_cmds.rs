@@ -2,7 +2,7 @@
 //! `/particle`, `/attribute`, `/ride` and `/spreadplayers`.
 use super::{Arg, Context, Game, R, Target, err, wrap_degrees};
 use horizon_client::{
-    mobs::{Damage, DamageKind, Who, finalize},
+    mobs::{Damage, DamageKind, MobEvent, Who, finalize},
     scoreboard_cmd::{Holder, Tracker},
     settings::SOUND_SOURCES,
     text::Text,
@@ -11,6 +11,24 @@ use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::attribute_map::ValueKind;
 use horizon_world::nbt::Tag;
+
+/// Queue bookkeeping for synchronous command damage, preserving prior requests
+/// and unrelated events. The existing game policy handles each extracted request.
+fn take_new_reinforcements(events: &mut Vec<MobEvent>, queued: usize) -> Vec<(u32, Who)> {
+    let mut requests = Vec::new();
+    let mut index = 0;
+    events.retain(|event| {
+        let new = index >= queued;
+        index += 1;
+        if new && let MobEvent::Reinforcements { mob, target } = event {
+            requests.push((*mob, *target));
+            false
+        } else {
+            true
+        }
+    });
+    requests
+}
 
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
@@ -359,19 +377,24 @@ impl Game<'_> {
         true
     }
 
-    /// Retain the mob hit's causing-player connection after the hit is accepted.
+    /// `DamageCommand.damage`: retain the accepted hit's player context and run
+    /// `Zombie.hurtServer`'s reinforcement requests before the command returns.
     fn command_damage_mob(&mut self, id: u32, amount: f32, damage: Damage) -> bool {
         let player_uuid = (damage.attacker == Some(Who::Player))
             .then(|| self.owner_damage_uuid())
             .flatten();
-        let hurt = self
-            .mobs
-            .iter_mut()
-            .find(|m| m.id == id)
-            .is_some_and(|m| match player_uuid {
+        let mut reinforcements = Vec::new();
+        let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+            let queued = m.outbox.len();
+            let hurt = match player_uuid {
                 Some(uuid) => m.damage_with_player_uuid(amount, damage, uuid, None),
                 None => m.damage(amount, damage),
-            });
+            };
+            if hurt {
+                reinforcements = take_new_reinforcements(&mut m.outbox, queued);
+            }
+            hurt
+        });
         if hurt {
             self.resolve_player_responsible(id, damage);
             if damage.attacker == Some(Who::Player) {
@@ -387,6 +410,9 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+        for (mob, target) in reinforcements {
+            self.call_reinforcements(mob, target);
         }
         hurt
     }
@@ -1990,7 +2016,44 @@ mod allay_owner_damage_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{look_at, playsound_placement};
+    use super::{look_at, playsound_placement, take_new_reinforcements};
+    use horizon_client::mobs::{MobEvent, Who};
+
+    #[test]
+    fn command_reinforcements_leave_prior_requests_and_other_events_queued() {
+        let request = |mob| MobEvent::Reinforcements {
+            mob,
+            target: Who::Player,
+        };
+        let mut events = vec![request(1), MobEvent::Sound("before", [0.; 3], 1., 1.)];
+        let queued = events.len();
+        events.extend([
+            request(2),
+            MobEvent::Sound("after", [0.; 3], 1., 1.),
+            request(3),
+        ]);
+        assert_eq!(
+            take_new_reinforcements(&mut events, queued),
+            [(2, Who::Player), (3, Who::Player)]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [
+                MobEvent::Reinforcements { mob: 1, .. },
+                MobEvent::Sound("before", ..),
+                MobEvent::Sound("after", ..)
+            ]
+        ));
+        assert!(take_new_reinforcements(&mut events, queued).is_empty());
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn command_reinforcements_tolerate_a_damage_handler_clearing_its_outbox() {
+        let mut events = vec![MobEvent::Sound("after", [0.; 3], 1., 1.)];
+        assert!(take_new_reinforcements(&mut events, 4).is_empty());
+        assert_eq!(events.len(), 1);
+    }
 
     fn assert_angle(got: f32, want: f32) {
         assert!((got - want).abs() < 1.0e-4, "{got} is not {want}");

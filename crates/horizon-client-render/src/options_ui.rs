@@ -1280,6 +1280,8 @@ pub enum Page {
     /// Horizon Settings: every page Horizon adds, as a mod's settings
     /// screen hangs off vanilla's Options.
     Horizon,
+    /// Replay Studio: saved recordings browser and 3D video editor launcher.
+    Studio,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
     /// SkinCustomizationScreen: the skin layers and Main Hand.
@@ -1507,6 +1509,8 @@ pub enum Event {
     ListMusicTracks,
     /// A Music page row: play this track of this event now.
     PlayMusicTrack(String, String),
+    /// Open the recordings folder in the system file browser.
+    OpenStudioFolder,
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1608,6 +1612,7 @@ pub struct OptionsUi {
     /// Whether the window was fullscreen before calibration made it so (the game keeps it).
     pub calibration_fullscreen: Option<bool>,
     pub split_setup: crate::split_ui::SplitUi,
+    pub studio: crate::studio_ui::StudioUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
     /// A repro recording is running: the AI Agent page's button says stop.
@@ -1675,6 +1680,7 @@ impl Default for OptionsUi {
             calibration: None,
             calibration_fullscreen: None,
             split_setup: Default::default(),
+            studio: Default::default(),
             agent_status: Vec::new(),
             agent_recording: false,
             music_groups: Vec::new(),
@@ -1740,6 +1746,7 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
         Page::Horizon => "horizon.pages.settings.tooltip",
+        Page::Studio => "horizon.pages.studio.tooltip",
         Page::Graphics => "horizon.pages.graphics.tooltip",
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
@@ -2286,6 +2293,9 @@ impl OptionsUi {
         if page == Page::SplitProfiles {
             self.split_profiles.reset();
         }
+        if page == Page::Studio {
+            self.studio.refresh();
+        }
     }
     /// What the graphics screen's actions do to these options.
     fn graphics_events(
@@ -2355,6 +2365,7 @@ impl OptionsUi {
             Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
+            Page::Studio => "horizon.pages.studio",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
             Page::SplitSetup => "horizon.pages.split_setup",
@@ -2550,6 +2561,7 @@ impl OptionsUi {
                         ),
                         Some(open("horizon.pages.open.pvp", Page::Pvp)),
                     ),
+                    Row::Buttons(open("horizon.pages.open.studio", Page::Studio), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -3669,6 +3681,10 @@ impl OptionsUi {
                 .draw(batch, atlas, cursor, self.in_world, self.pad_style);
             return;
         }
+        if self.page() == Page::Studio {
+            self.studio.draw(batch, atlas, cursor, self.in_world);
+            return;
+        }
         if self.page() == Page::Packs {
             self.watch_data_packs(atlas, (w, h));
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
@@ -4050,6 +4066,22 @@ impl OptionsUi {
                 Click::Nothing => Vec::new(),
                 Click::Pressed => vec![Event::ButtonClick],
                 Click::Done => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
+        }
+        if self.page() == Page::Studio {
+            if right || drag {
+                return Vec::new();
+            }
+            use crate::studio_ui::StudioAction;
+            return match self.studio.click((x, y), size) {
+                StudioAction::None => Vec::new(),
+                StudioAction::Refresh => vec![Event::ButtonClick],
+                StudioAction::OpenFolder => vec![Event::ButtonClick, Event::OpenStudioFolder],
+                StudioAction::Back => {
                     let mut events = vec![Event::ButtonClick];
                     events.extend(self.back(s));
                     events
@@ -4555,6 +4587,10 @@ impl OptionsUi {
         if Self::graphics_page(self.page()).is_some() {
             let actions = self.graphics.wheel(s, size, cursor, framebuffer, amount);
             return self.graphics_events(s, actions);
+        }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
+            return Vec::new();
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
@@ -7641,6 +7677,7 @@ mod tests {
                 Page::Mods,
                 Page::SplitSetup,
                 Page::Pvp,
+                Page::Studio,
                 Page::Agent,
             ]
         );
