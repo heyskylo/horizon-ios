@@ -5,6 +5,7 @@
 //! request with the entry. Reviewers decide; merging publishes. Signed-in
 //! players also rate published projects (`ratings`, its only data: sessions
 //! are signed cookies, and GitHub holds everything else).
+mod archive;
 pub mod github;
 pub mod ratings;
 
@@ -861,6 +862,7 @@ pub fn publish(
         return Err(bad("a project needs a name and a licence"));
     }
     // The file's own checks first: a wrong file never reaches GitHub.
+    archive::check(file).map_err(bad)?;
     let facts = index::inspect(&kind, file).map_err(bad)?;
     if let Some(id) = facts.id.as_ref().filter(|id| **id != form.id) {
         return Err(bad(format!("the file's id is {id:?}, not {:?}", form.id)));
@@ -909,6 +911,9 @@ pub fn publish(
                 license: form.license.trim().to_owned(),
                 source: form.source.trim().to_owned(),
                 icon: form.icon.clone(),
+                categories: Vec::new(),
+                tags: Vec::new(),
+                screenshots: Vec::new(),
                 key: form.key.clone().filter(|k| !k.trim().is_empty()),
                 versions: vec![version.clone()],
             },
@@ -1183,6 +1188,9 @@ pub fn list(config: &Config, login: &str, user_id: u64, form: &Form) -> Result<S
         license: form.license.trim().to_owned(),
         source: String::new(),
         icon: form.icon.clone(),
+        categories: Vec::new(),
+        tags: Vec::new(),
+        screenshots: Vec::new(),
         key: form.key.clone().filter(|k| !k.trim().is_empty()),
         versions: Vec::new(),
     };

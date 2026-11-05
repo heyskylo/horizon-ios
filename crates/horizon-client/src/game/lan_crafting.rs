@@ -14,6 +14,14 @@ use horizon_client::{
 };
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
+/// `AbstractContainerMenu.dropOrPlaceInInventory`: actual network disconnects
+/// drop inputs; a live close still returns them to the inventory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MenuRemoval {
+    Live,
+    Disconnected,
+}
+
 /// The guest's menus the game runs: kept between clicks, so a drag (quick
 /// craft) spans them as in vanilla.
 #[derive(Default)]
@@ -676,6 +684,18 @@ impl Game<'_> {
         conn: u32,
         window: Option<i32>,
     ) -> bool {
+        self.lan_crafting_removed(host, conn, window, MenuRemoval::Live)
+    }
+
+    /// `AbstractContainerMenu.clearContainer`: only input slots are removed;
+    /// `dropOrPlaceInInventory` chooses drops for a disconnected player.
+    pub(super) fn lan_crafting_removed(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        window: Option<i32>,
+        removal: MenuRemoval,
+    ) -> bool {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return false;
         };
@@ -695,7 +715,10 @@ impl Game<'_> {
             }
         };
         if !grid.is_empty() {
-            self.lan_place_back(host, gi, grid);
+            match removal {
+                MenuRemoval::Live => self.lan_place_back(host, gi, grid),
+                MenuRemoval::Disconnected => self.drop_guest_items(host, gi, grid),
+            }
         }
         true
     }

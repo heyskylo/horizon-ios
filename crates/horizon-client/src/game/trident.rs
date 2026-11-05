@@ -371,6 +371,10 @@ impl Game<'_> {
         if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1) {
             return;
         }
+        // Counted (on the server) before the throw or the spin.
+        if self.remote.is_none() {
+            self.award_stat("used", "minecraft:trident", 1);
+        }
         if riptide > 0 {
             // `hurtWithoutBreaking` and the sound belong to the server; a server's
             // client only launches.

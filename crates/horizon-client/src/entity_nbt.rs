@@ -707,12 +707,10 @@ pub fn mob_to_nbt(
             );
             map.insert("TimeInOverworld".into(), Tag::Int(m.extra.counter2));
             if id == "minecraft:hoglin" {
-                // Hoglin.addAdditionalSaveData writes it only when set.
-                if m.extra.cannot_be_hunted {
-                    map.insert("CannotBeHunted".into(), Tag::Byte(1));
-                } else {
-                    map.remove(&"CannotBeHunted".into());
-                }
+                map.insert(
+                    "CannotBeHunted".into(),
+                    Tag::Byte(m.extra.cannot_be_hunted as i8),
+                );
             }
             if id == "minecraft:piglin" {
                 // InventoryCarrier.writeInventoryToTag.
@@ -3113,6 +3111,9 @@ pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = base.tag(raw);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
     put(&mut tag, "color", string(c.color_name()));
+    if let Some(name) = &c.custom_name {
+        put(&mut tag, "CustomName", name.clone());
+    }
     tag
 }
 /// The position, block position, yaw and colour of a saved cushion.
@@ -3142,6 +3143,7 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
         yaw,
         color,
         check_interval: 0,
+        custom_name: tag.get("CustomName").cloned(),
     })
 }
 
@@ -3158,6 +3160,7 @@ mod cushion_tests {
             yaw: 270.0,
             color: 14,
             check_interval: 55,
+            custom_name: None,
         };
         let raw = Tag::compound([("CustomName", string("Seat"))]);
         let tag = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));
@@ -5163,8 +5166,8 @@ mod sheep_nbt_tests {
     }
 
     /// `Hoglin.readAdditionalSaveData` and `addAdditionalSaveData`:
-    /// `CannotBeHunted` (a bastion's hoglins) stays with the hoglin, and such a
-    /// hoglin is no piglin's prey (`Hoglin.canBeHunted`).
+    /// `CannotBeHunted` (a bastion's hoglins) stays with the hoglin and is always
+    /// written, and such a hoglin is no piglin's prey (`Hoglin.canBeHunted`).
     #[test]
     fn a_hoglin_keeps_cannot_be_hunted_and_is_no_prey() {
         use crate::mobs::Species;
@@ -5194,7 +5197,7 @@ mod sheep_nbt_tests {
             assert!(!prey.extra.cannot_be_hunted);
             assert!(prey.seen(None).huntable);
             let saved = mob_to_nbt(&prey, [0; 4], Some(&raw), None);
-            assert_eq!(saved.get("CannotBeHunted"), None);
+            assert_eq!(saved.get("CannotBeHunted"), Some(&Tag::Byte(0)));
         }
     }
 

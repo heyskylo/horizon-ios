@@ -30,7 +30,8 @@ address), op and deop, the whitelist, and metrics as Prometheus text.
    fixed address and token: `[api] bind` and `[api] token` in `server.toml` ([hosting.md](../hosting.md#a-bot-or-a-tool-of-your-own)).
 4. Moderate: `horizon-server players`, `horizon-server ban NAME [REASON]`, or `POST /api/v1/players/ban`. An
    action runs vanilla's console command on the running game, so it kicks, logs and saves `banned-players.json`
-   exactly as an operator's `/ban` does; the reply says whether anything `changed` and has the console's lines.
+   exactly as an operator's `/ban` does; the CLI also edits the vanilla list directly while stopped. The reply
+   says whether anything `changed` and has the console's lines.
 5. Monitor: point Prometheus (or any scraper that sends a bearer token) at `GET /api/v1/metrics/prometheus`.
 6. Watch: `GET /api/v1/events` with `Accept: text/event-stream` streams what happens as server-sent events: every
    log line (`log`), the supervisor's `phase`, and the game's typed `join`, `leave`, `kick`, `chat` and `death`
