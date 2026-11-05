@@ -28,10 +28,15 @@ def forced_chunks(words):
             for z in range(min(z1, z2), max(z1, z2) + 1)}
 
 
+def full_run():
+    """The groups test_command_exec_parity.py runs one after another in one world."""
+    return [(group, ops) for group, ops in corpus.groups() if group not in corpus.ISOLATED_GROUPS]
+
+
 class CommandFixtureStateTests(unittest.TestCase):
     def test_count_guards_match_what_earlier_groups_leave(self):
         objectives, forced = set(), set()
-        for group, operations in corpus.groups():
+        for group, operations in full_run():
             for op in operations:
                 words = op.get('cmd', '').split() if op['op'] == 'cmd' else []
                 expected = op.get('expect_result')
@@ -58,7 +63,7 @@ class CommandFixtureStateTests(unittest.TestCase):
 
     def test_groups_leave_the_world_rules_as_they_found_them(self):
         rules = dict(WORLD_RULES)
-        for group, operations in corpus.groups():
+        for group, operations in full_run():
             before = dict(rules)
             for op in operations:
                 words = op.get('cmd', '').split() if op['op'] == 'cmd' else []

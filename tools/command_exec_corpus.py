@@ -4844,7 +4844,7 @@ def crafter_map_extension():
     ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
     ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
             cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
-    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map')
+    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map', '/forceload remove 0 0 15 15')
 
 
 def advancement_loot_fixtures(group_names):
@@ -5499,6 +5499,14 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
     ops += setup('/execute store success score changed h300 run data modify storage h300:actor uuid set from entity @s UUID')
     ops += [cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,3.5d]}]', expect_result=1), cmd('/scoreboard players get changed h300', expect_result=0)]
     return ops
+
+
+# Groups the full run leaves out: each runs alone in its own world (--only), so
+# what they leave behind reaches no other group.
+ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
+# These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
+ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES
 
 
 def groups():

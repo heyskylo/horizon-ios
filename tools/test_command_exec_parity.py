@@ -153,7 +153,7 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
-    isolated_reinforcements = {'command zombie reinforcements', 'command reinforcement once'}
+    isolated_reinforcements = corpus_module.ISOLATED_REINFORCEMENTS
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_reinforcements]
     if args.reinforcement_raw_diagnostic or args.reinforcement_original_diagnostic:
@@ -173,7 +173,7 @@ def main():
                    if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     # These overlays replace built-in recipes: run each in its own world, never
     # beside the generic corpus's fixed vanilla recipe-count controls.
-    isolated_recipes = {'crafting recipe priority', 'crafting base recipe control'}
+    isolated_recipes = corpus_module.ISOLATED_RECIPES
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.loaded_fixture:
