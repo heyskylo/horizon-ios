@@ -102,7 +102,11 @@ pub(super) fn network_recipes(
     overlay: &horizon_world::loot::PackOverlay,
 ) -> (BTreeMap<String, Box<str>>, HashMap<String, i32>) {
     let mut all = BTreeMap::new();
-    recipes(&resources.join("data/minecraft/recipe"), "minecraft", &mut all);
+    recipes(
+        &resources.join("data/minecraft/recipe"),
+        "minecraft",
+        &mut all,
+    );
     for namespace in horizon_items::content_namespaces::namespaces(resources) {
         if namespace != "minecraft" {
             recipes(
