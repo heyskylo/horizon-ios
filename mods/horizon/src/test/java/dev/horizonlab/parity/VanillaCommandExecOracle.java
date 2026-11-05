@@ -404,6 +404,10 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "use_item" -> {
+                        if (!op.has("sequence")) {
+                            player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
+                                net.minecraft.world.InteractionHand.MAIN_HAND);
+                        } else {
                         player.connection.handleUseItem(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
                             net.minecraft.world.InteractionHand.MAIN_HAND, op.get("sequence").getAsInt(),
                             op.get("yaw").getAsFloat(), op.get("pitch").getAsFloat()));
@@ -415,6 +419,28 @@ public final class VanillaCommandExecOracle {
                         } catch (ReflectiveOperationException e) {
                             throw new IllegalStateException(e);
                         }
+                        }
+                    }
+                    case "crafter_max_map_fixture" -> {
+                        // Independent official saved-map file, copied unchanged to the Game scratch world.
+                        level.setMapData(new net.minecraft.world.level.saveddata.maps.MapId(31),
+                            net.minecraft.world.level.saveddata.maps.MapItemSavedData.createFresh(
+                                0, 0, (byte) 4, true, false, level.dimension()));
+                        level.getServer().getDataStorage().saveAndJoin();
+                    }
+                    case "map_state" -> {
+                        int id = op.get("id").getAsInt();
+                        var map = net.minecraft.world.item.MapItem.getSavedData(
+                            new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
+                        String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
+                            + ",center=" + map.centerX + "," + map.centerZ;
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#map_state " + id);
+                        JsonArray messages = new JsonArray();
+                        messages.add(spans(Component.literal(value)));
+                        record.add("messages", messages);
+                        record.add("results", new JsonArray());
+                        out.append(gson.toJson(record)).append('\n');
                     }
                     case "light" -> {
                         JsonArray p = op.getAsJsonArray("pos");

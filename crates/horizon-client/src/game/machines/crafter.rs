@@ -7,6 +7,7 @@ use horizon_client::{
     advancements as adv,
     containers::Crafter,
     hud::{HudBatch, rgba},
+    menu::{Maps as _, Menu},
 };
 use horizon_protocol::packets::play::{self, Serverbound as S};
 use serde_json::Value;
@@ -92,13 +93,14 @@ impl Game<'_> {
             return Ok(());
         };
         let grid: Vec<Option<ItemStack>> = crafter.items.to_vec();
-        // RecipeCache.get: query the active world recipe manager, then assemble its first match.
+        // Query active world recipes with this level's saved-map context.
+        let maps = self.level_maps(grid.iter().flatten());
         let found = self
             .recipes()
-            .find(&grid, 3)
+            .find_with(&grid, 3, &|id| maps.state(id).map(|(_, scale)| scale))
             .map(|(name, result)| (name.to_owned(), result))
             .filter(|(_, result)| result.count > 0);
-        let Some((recipe, result)) = found else {
+        let Some((recipe, mut result)) = found else {
             self.dispenser_event(1050, key, 0);
             return Ok(());
         };
@@ -119,6 +121,10 @@ impl Game<'_> {
             true,
             horizon_world::level::flags::UPDATE_CLIENTS,
         );
+        // ItemStack.onCraftedBySystem invokes MapItem.onCraftedPostProcess
+        // before dispensing, registering the derived map under its new id.
+        Menu::map_crafted(Some(&maps), &mut result);
+        self.register_made_maps(maps);
         // The remainders come from the grid as it was before anything moved.
         let remainders = self.recipes().remainders(&recipe, &grid, 3);
         self.crafter_eject(key, facing, result, &recipe);

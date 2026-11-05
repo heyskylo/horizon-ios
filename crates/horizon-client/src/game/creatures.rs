@@ -5,8 +5,8 @@
 mod pufferfish_player;
 
 use super::{
-    Dim, Game, Hand, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
-    native_projectiles::Impact, view_vector,
+    Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
+    native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -15,6 +15,7 @@ use horizon_client::{
     blocks::Fluid,
     collisions::SceneCollisions,
     crafting::Recipes,
+    graphics::EntityCullingMode,
     health::{HurtSource, Hurting, Knock, knockback_canceled},
     items::ItemStack,
     mesher::Vertex,
@@ -6901,6 +6902,25 @@ impl Game<'_> {
         skinned: Skinned,
     ) {
         let corners = skinned.and_then(|(_, bounds)| bounds);
+        if out.len() == entity_start {
+            if let Some((lo, hi)) = corners
+                && self.cull_entity_camera_bounds(lo, hi)
+                && let Some((mark, _)) = skinned
+            {
+                if self.pack_shadow_casters.0 {
+                    let mut frame = self.skin_frame.borrow_mut();
+                    let end = frame.vertices as usize;
+                    horizon_client::gfx::pack_draw::EntitySpan::hide(
+                        &mut frame.spans,
+                        mark.2 as usize,
+                        end,
+                    );
+                } else {
+                    self.skin_frame.borrow_mut().truncate(mark);
+                }
+            }
+            return;
+        }
         if let Some((lo, hi)) = corners {
             out.extend([lo, hi].map(|pos| Vertex {
                 pos: pos.to_array(),
@@ -6940,6 +6960,30 @@ impl Game<'_> {
     }
 
     pub(super) fn mob_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        // The coarse mob bounds pay off only in dense async scenes; otherwise,
+        // keep the existing exact mesh-culling path.
+        if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
+            && self
+                .async_occlusion_culler
+                .as_ref()
+                .is_some_and(|culler| culler.camera_is_stationary())
+            && self.settings.horizon.entity_culling_precheck != 0
+            && self.mobs.len() >= self.settings.horizon.entity_culling_precheck as usize
+            && !self.pack_shadow_casters.0
+            && horizon_client::mod_api::mods().is_empty()
+        {
+            self.mob_geometry_inner::<true>(camera, alpha, out);
+        } else {
+            self.mob_geometry_inner::<false>(camera, alpha, out);
+        }
+    }
+
+    fn mob_geometry_inner<const PRECHECK: bool>(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+    ) {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
@@ -6965,43 +7009,27 @@ impl Game<'_> {
             ..Default::default()
         });
         for mob in &self.mobs {
-            let entity_start = out.len();
-            self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
-            let outline = self.mob_outline(mob);
-            // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
-            // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
-            // A player keeps its armour, elytra and held items
-            // (`LivingEntityRenderer.submit` skips only the body).
-            let is_player = &*mob.kind.id == "minecraft:player";
-            let layers_only = mob.invisible && outline.is_none() && is_player;
-            if mob.invisible && outline.is_none() && !layers_only {
-                continue;
-            }
             // LevelRenderer: the entity the view looks out of is not drawn
             // in first person.
             if self.hides_as_camera(mob.id) {
                 continue;
             }
+            let is_player = &*mob.kind.id == "minecraft:player";
             let d = glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z) - camera;
             // Entity.shouldRenderAtSqrDistance: 64 times the bounding box's
             // mean edge, scaled by the view scale. RemotePlayer's box counts
             // ten times.
             let (w, h, _) = mob.dims();
-            let edge = (w + h + w) / 3.0
-                * if &*mob.kind.id == "minecraft:player" {
-                    10.0
-                } else {
-                    1.0
-                };
+            let edge = (w + h + w) / 3.0 * if is_player { 10.0 } else { 1.0 };
             let range = edge * 64.0 * scale;
             if d.length_squared() >= range * range {
                 continue;
             }
-            // EntityRenderer.shouldRender: the box its renderer culls with
-            // (`getBoundingBoxForCulling`, interpolated over the frame), grown
-            // by 0.5 (GuardianRenderer also draws while its beam is out).
+            let beam = horizon_client::mobs::guardian::beam(mob, alpha as f32);
+            // EntityRenderer.shouldRender: the renderer's interpolated culling box,
+            // grown by 0.5 (GuardianRenderer also draws while its beam is out).
             if let Some(view) = &self.view_frustum
-                && horizon_client::mobs::guardian::beam(mob, alpha as f32).is_none()
+                && beam.is_none()
             {
                 let (lo, hi) = super::entity_culling::cull_box(mob, alpha);
                 let (lo, hi) = (
@@ -7012,6 +7040,40 @@ impl Game<'_> {
                     continue;
                 }
             }
+            let outline = self.mob_outline(mob);
+            // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
+            // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
+            // A player keeps its armour, elytra and held items
+            // (`LivingEntityRenderer.submit` skips only the body).
+            let layers_only = mob.invisible && outline.is_none() && is_player;
+            if mob.invisible && outline.is_none() && !layers_only {
+                continue;
+            }
+            let culling = if PRECHECK
+                && outline.is_none()
+                && !is_player
+                && mob.kind.id.starts_with("minecraft:")
+                && [
+                    &mob.extra.head,
+                    &mob.extra.chest,
+                    &mob.extra.legs,
+                    &mob.extra.feet,
+                    &mob.extra.main_hand,
+                    &mob.extra.off_hand,
+                ]
+                .iter()
+                .all(|item| item.is_none())
+                && beam.is_none()
+            {
+                self.entity_cull_decision(mob, alpha)
+            } else {
+                EntityCullDecision::CheckVertices
+            };
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
+            self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
@@ -7210,14 +7272,12 @@ impl Game<'_> {
             }
             // Glowing outlines and a guardian's beam remain visible independently
             // of whether the body is hidden behind terrain.
-            if outline.is_none()
-                && horizon_client::mobs::guardian::beam(mob, alpha as f32).is_none()
-            {
+            if outline.is_none() && culling.checks_vertices() && beam.is_none() {
                 // What the GPU draws of the mob counts by its bounds' corners.
                 self.cull_skinned(out, entity_start, skinned);
             }
             // GuardianRenderer: the laser to the locked target.
-            if let Some((time, scale)) = horizon_client::mobs::guardian::beam(mob, alpha as f32)
+            if let Some((time, scale)) = beam
                 && let Some(target) = self.beam_target(mob.ai.target, alpha)
                 && let Some(uv) = lookup("entity/guardian/guardian_beam")
             {

@@ -5202,6 +5202,16 @@ impl Renderer {
     pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
         self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
     }
+    /// Whether the camera's current section graph knows this section is
+    /// reachable. `None` means the graph cannot safely answer for this camera
+    /// or section, so callers should keep the geometry.
+    pub fn section_occlusion_visible(
+        &self,
+        key: SectionKey,
+        camera_section: SectionKey,
+    ) -> Option<bool> {
+        self.occlusion.visible_for_camera(key, camera_section)
+    }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
@@ -7441,7 +7451,8 @@ impl Renderer {
             });
         }
         // A shader pack's shadow pass draws the sections in its camera's box, all of them (the
-        // occlusion graph follows the eye, not the light), within shadowDistanceRenderMul.
+        // occlusion graph follows the eye, not the light), within shadowDistanceRenderMul; for
+        // an Iris-format pack, only those whose shadow can fall into the camera's view.
         let shadow_view = self
             .pack_post
             .as_ref()
@@ -7596,8 +7607,11 @@ impl Renderer {
             let radius = v
                 .distance
                 .map_or(radius, |d| radius.min((d / 16.0).ceil() as i32));
-            let light = Frustum {
-                planes: frustum(v.cull),
+            let light = ShadowCull {
+                light: Frustum {
+                    planes: frustum(v.cull),
+                },
+                casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
             };
             crate::spans::time("shadow visibility", || {
                 // Within the unculled distance every section, then those in the light's box.
@@ -11242,6 +11256,10 @@ pub struct Frusta(pub Frustum, pub Option<Frustum>);
 pub trait Cull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool;
     fn contains(&self, min: Vec3, max: Vec3) -> bool;
+    /// Whether a section is tested by the box around its geometry, not its whole 16 blocks.
+    fn tight(&self) -> bool {
+        true
+    }
 }
 impl Cull for Frustum {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool {
@@ -11258,6 +11276,31 @@ impl Cull for Frusta {
     /// Entirely inside one of them is entirely inside the union.
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
         self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
+    }
+}
+/// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
+/// (`shadow_casters`): a box must meet all of them.
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowCull {
+    pub light: Frustum,
+    pub casters: Option<[Frustum; 2]>,
+}
+impl Cull for ShadowCull {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        self.light.intersects(min, max)
+            && self
+                .casters
+                .is_none_or(|c| c.iter().all(|f| f.intersects(min, max)))
+    }
+    fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        self.light.contains(min, max)
+            && self
+                .casters
+                .is_none_or(|c| c.iter().all(|f| f.contains(min, max)))
+    }
+    /// Our probe's Iris 1.11.7 maps fit testing the casters' whole sections (a guess that matched).
+    fn tight(&self) -> bool {
+        self.casters.is_none()
     }
 }
 /// Camera-relative clip planes (`Frustum`).
@@ -11417,6 +11460,68 @@ fn facing_runs_from(
         }
         None => sides.every(part, draw),
     }
+}
+/// The camera's view `view_proj` (wgpu depth, reversed or not) stretched without end toward
+/// `light` (a direction): the boxes whose shadow, cast away from the light, can fall into the
+/// view. Its planes are the view's faces turned toward the light, and through each edge between
+/// such a face and one turned away, the plane along the light; unused ones take in everything.
+fn shadow_casters(view_proj: Mat4, light: Vec3) -> [Frustum; 2] {
+    let faces = frustum(view_proj);
+    let toward = faces.map(|p| p.truncate().dot(light) >= 0.0);
+    let inverse = view_proj.inverse();
+    // Corner (x, y, z) of clip space's box; `frustum`'s faces at x -1 and 1 are 0 and 1, at
+    // y -1 and 1 are 2 and 3, at depth 0 and 1 are 4 and 5.
+    let corner = |c: [usize; 3]| {
+        inverse.project_point3(Vec3::new(
+            c[0] as f32 * 2.0 - 1.0,
+            c[1] as f32 * 2.0 - 1.0,
+            c[2] as f32,
+        ))
+    };
+    let corners: Vec<[usize; 3]> = (0..8).map(|i| [i & 1, (i >> 1) & 1, i >> 2]).collect();
+    let centre = corners.iter().map(|&c| corner(c)).sum::<Vec3>() / 8.0;
+    let mut planes = [Vec4::W; 12];
+    let mut n = 0;
+    for (k, &face) in faces.iter().enumerate() {
+        if toward[k] {
+            planes[n] = face;
+            n += 1;
+        }
+    }
+    for a in &corners {
+        for axis in 0..3 {
+            if a[axis] == 1 {
+                continue;
+            }
+            let mut b = *a;
+            b[axis] = 1;
+            // The edge from a to b lies on the faces of the two other axes.
+            let [f, g] = [(axis + 1) % 3, (axis + 2) % 3].map(|o| o * 2 + a[o]);
+            if toward[f] == toward[g] {
+                continue;
+            }
+            let (p, q) = (corner(*a), corner(b));
+            let normal = (q - p).cross(light);
+            if normal.length_squared() < 1e-12 {
+                continue;
+            }
+            let normal = normal.normalize();
+            let side = if normal.dot(centre - p) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            // At most six such edges with at most four faces toward the light: 12 planes.
+            if let Some(plane) = planes.get_mut(n) {
+                *plane = (normal * side).extend(-normal.dot(p) * side);
+                n += 1;
+            }
+        }
+    }
+    let [a, b] = [0, 6].map(|i| Frustum {
+        planes: planes[i..i + 6].try_into().expect("six planes"),
+    });
+    [a, b]
 }
 fn frustum(m: Mat4) -> [Vec4; 6] {
     let r = |i| m.row(i);
@@ -13069,6 +13174,7 @@ mod shadow_face_tests {
             distance: None,
             unculled: None,
             every_face,
+            view_casters: true,
         }
     }
 
@@ -13081,5 +13187,98 @@ mod shadow_face_tests {
         assert_eq!(drawn(&view(true), origin), [0, 1, 2, 3, 4, 5]);
         // Horizon's own packs keep drawing only what can face the light: no bottom face.
         assert!(!drawn(&view(false), origin).contains(&3));
+    }
+}
+
+#[cfg(test)]
+mod shadow_caster_tests {
+    use super::*;
+
+    /// What the shadow pass keeps of a camera-relative section at `min`, the camera at the
+    /// origin looking along -X (yaw 90) with the scenes' 70 degree, 16:9 view, and the light in
+    /// direction `light`; the light's own box takes in everything.
+    fn kept(light: Vec3, min: [f32; 3]) -> bool {
+        kept_looking(Vec3::NEG_X, light, min)
+    }
+
+    /// `kept` with the camera looking along `forward`.
+    fn kept_looking(forward: Vec3, light: Vec3, min: [f32; 3]) -> bool {
+        let camera = world_projection(70.0, 16.0 / 9.0, 192.0)
+            * Mat4::look_to_rh(Vec3::ZERO, forward, Vec3::Y);
+        let cull = ShadowCull {
+            light: Frustum {
+                planes: [Vec4::W; 6],
+            },
+            casters: Some(shadow_casters(camera, light)),
+        };
+        let min = Vec3::from(min);
+        cull.intersects(min, min + 16.0)
+    }
+
+    /// Our probes' Iris 1.11.7 shadow maps fit keeping only the terrain whose shadow can fall
+    /// into the camera's view (#8464).
+    #[test]
+    fn the_shadow_pass_keeps_what_can_shade_the_view() {
+        // A noon sun: a treetop high above the ground ahead shades it, though the camera doesn't
+        // see it; behind the camera, or far off to the side, nothing does.
+        assert!(kept(Vec3::Y, [-48.0, 64.0, -8.0]));
+        assert!(!kept(Vec3::Y, [32.0, 0.0, -8.0]));
+        assert!(!kept(Vec3::Y, [-32.0, 0.0, 96.0]));
+        // Nor does what lies under the ground the camera looks along.
+        assert!(!kept(Vec3::Y, [-48.0, -96.0, -8.0]));
+        // A low sun ahead (west, -X) throws shadows toward the camera: what is behind it can't
+        // reach the view.
+        let west = Vec3::new(-1.0, 0.1, 0.0).normalize();
+        assert!(kept(west, [-48.0, 0.0, -8.0]));
+        assert!(!kept(west, [32.0, 0.0, -8.0]));
+        // The same sun behind the camera throws the terrain behind it forward, into the view.
+        let east = Vec3::new(1.0, 0.1, 0.0).normalize();
+        assert!(kept(east, [32.0, 0.0, -8.0]));
+        assert!(kept(east, [96.0, 0.0, -8.0]));
+        // Looking 20 degrees down under a noon sun, the view's sides lean out below the camera:
+        // a treetop above the ground ahead still shades it, one off to the side doesn't, though
+        // it lies inside each of the view's planes that faces the light.
+        let down = Vec3::new(-20f32.to_radians().cos(), -20f32.to_radians().sin(), 0.0);
+        assert!(kept_looking(down, Vec3::Y, [-48.0, 16.0, -8.0]));
+        assert!(!kept_looking(down, Vec3::Y, [-32.0, 16.0, -96.0]));
+    }
+
+    /// With the camera looking straight up under a noon sun, our probe's Iris 1.11.7 map holds
+    /// 7 columns there, which testing whole sections reproduces (a guess): the sections beside
+    /// the camera whose 16 blocks reach above it are kept, even where their terrain lies below
+    /// the camera.
+    #[test]
+    fn the_shadow_pass_tests_whole_sections() {
+        let camera = DVec3::new(8.0, 6.0, 8.0);
+        let up = world_projection(70.0, 16.0 / 9.0, 192.0)
+            * Mat4::look_to_rh(Vec3::ZERO, Vec3::Y, Vec3::Z);
+        let view = Frustum {
+            planes: frustum(up),
+        };
+        // The section east of the camera's, y 0..16, with ground only in its lowest 2 blocks.
+        let mut sections = resident::Resident::<()>::default();
+        let key = (1, -crate::chunk::MIN_Y / 16, 0);
+        sections.insert_with_bounds(key, (), Some([Vec3::ZERO, Vec3::new(16.0, 2.0, 16.0)]));
+        let drawn = |cull: &dyn Fn(&mut Vec<resident::Visible>)| {
+            let mut out = Vec::new();
+            cull(&mut out);
+            out.iter().map(|v| v.key).collect::<Vec<_>>()
+        };
+        let all = Frustum {
+            planes: [Vec4::W; 6],
+        };
+        let shadow = ShadowCull {
+            light: all,
+            casters: Some(shadow_casters(up, Vec3::Y)),
+        };
+        assert_eq!(
+            drawn(&|out| sections.visible(camera, 4, &shadow, |_| true, |_, _| false, out)),
+            [key]
+        );
+        // The camera's own view goes by the terrain's box, which lies below it.
+        assert!(
+            drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
+                .is_empty()
+        );
     }
 }

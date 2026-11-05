@@ -699,6 +699,10 @@ pub fn tick(
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
         }
+        if m.species() == Species::Pufferfish {
+            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
+            aquatic::sting_touching_mobs(m, w, events);
+        }
     } else {
         ai_step(m, w, level_random, events);
     }
