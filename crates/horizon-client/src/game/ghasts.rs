@@ -2,6 +2,7 @@
 //! off), riding, getting off on top, and the ghastling a dried ghast block
 //! hatches.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     items::ItemStack,
     mobs::{MobEvent, happy_ghast},
@@ -65,7 +66,7 @@ impl Game<'_> {
             return false;
         }
         let at = m.center();
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let harnessed = m.extra.body.is_some();
         // Equippable.equipOnInteract: a harness goes on a bare adult.
         if item.ends_with("_harness") && item.starts_with("minecraft:") && !harnessed {

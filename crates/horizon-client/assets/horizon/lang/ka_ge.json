@@ -324,7 +324,6 @@
   "horizon.osk.close": "დახურვა",
   "horizon.extras.chat_animation.tooltip": "ჩეთის ახალი ხაზი შემოდის მარცხნიდან, სანამ ის ქრება, ნაცვლად იმისა, რომ მთლიანად გამოჩნდეს.",
   "horizon.extras.chat_indicator.tooltip": "ფერადი ზოლი ჩატის ხაზის მარცხნივ.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "ღილაკზე გადახვევის ბორბალი პარამეტრებში ცვლის მის მნიშვნელობას, როგორც ვანილის შემთხვევაში. გამორთულია, საჭე მხოლოდ გადახვევს სიას.",
   "horizon.extras.pack_browser.tooltip": "რესურსების პაკეტების არჩევა მიიღებს დამატებას ღილაკს, რომელიც ეძებს Modrinth-ს და დააინსტალირებს პაკეტს თქვენს პაკეტების საქაღალდეში. გამორთულია, თამაში არასოდეს დაუკავშირდება მოდრინთს.",
   "horizon.extras.splitscreen.tooltip": "მსოფლიოში, სხვა კონტროლერს შეუძლია შეუერთდეს ახალ მოთამაშეს: დააჭირე A-ს, როცა ის ითხოვს, შემდეგ აირჩიე პროფილი და სად უნდა ითამაშოს.",
   "horizon.splitscreen.setup.monitor": "მონიტორი %s",
@@ -472,8 +471,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "დამალული: ყოველი Horizon მოთამაშე გხედავთ თქვენი კოსმეტიკის გარეშე, თქვენ ჩათვლით. იგივე გადამრთველი, როგორც გამშვების გარდერობი.",
   "horizon.extras.cosmetics_others": "სხვა მოთამაშეების კოსმეტიკა",
   "horizon.extras.cosmetics_others.tooltip": "რას აცვია სხვა Horizon მოთამაშეები: ყველაფერი, მხოლოდ მათი სახელების სტილები, ან არაფერი. დამალული, თამაში არასდროს ეკითხება, რა აცვიათ.",
-  "horizon.extras.cosmetics_auras": "სხვების აურა და ბილიკები",
-  "horizon.extras.cosmetics_auras.tooltip": "აურები და ბილიკები ატარებენ სხვა მოთამაშეებს. ნაგულისხმევად გამორთულია.",
+  "horizon.extras.cosmetics_hide_fx": "სხვა მოთამაშეების კვალისა და აურების დამალვა",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "სხვა მოთამაშეების კვალი და აურები დამალული რჩება; მათი სხვა კოსმეტიკა კვლავ ჩანს. ნაგულისხმევად გამორთულია.",
   "horizon.extras.cosmetics.shown": "ნაჩვენებია",
   "horizon.extras.cosmetics.hidden": "დამალული",
   "horizon.extras.cosmetics.name_tags": "მხოლოდ სახელების ტეგები"

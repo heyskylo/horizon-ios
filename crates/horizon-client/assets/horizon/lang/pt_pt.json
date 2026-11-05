@@ -293,7 +293,6 @@
   "horizon.osk.close": "Fechar",
   "horizon.extras.chat_animation.tooltip": "Uma nova linha de chat desliza a partir da esquerda enquanto aparece gradualmente, em vez de surgir por inteiro.",
   "horizon.extras.chat_indicator.tooltip": "A barra colorida à esquerda de uma linha de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "A roda do rato sobre um botão nas definições altera o seu valor, tal como no vanilla. Se desligado, a roda apenas percorre a lista.",
   "horizon.extras.splitscreen.tooltip": "Num mundo, outro comando pode juntar-se como novo jogador:prime A quando for pedido, depois escolhe um perfil e onde jogar.",
   "horizon.splitscreen.setup.monitor_unknown": "um monitor",
   "horizon.splitscreen.setup.window": "Janela %s",
