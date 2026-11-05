@@ -353,6 +353,7 @@ mod test_environments;
 mod test_instance_edit;
 mod test_instances;
 mod text_displays;
+mod tick_profile;
 mod titles;
 mod tnt;
 mod totem;

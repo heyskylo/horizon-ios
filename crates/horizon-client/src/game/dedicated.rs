@@ -1270,9 +1270,16 @@ impl Game<'_> {
             let ticked =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     match &mut state.report {
-                        Some(recording) => self.tick_server_spans(paused, |wall, cpu, spans| {
-                            recording.add(wall, cpu, spans)
-                        }),
+                        Some(recording) => {
+                            let sampled = recording.sample_next();
+                            super::tick_profile::set_sampling(sampled);
+                            let ticked =
+                                self.tick_server_spans(paused, |wall, cpu, spans, recorded| {
+                                    recording.add(wall, cpu, spans, recorded, sampled)
+                                });
+                            super::tick_profile::set_sampling(false);
+                            ticked
+                        }
                         None => self.tick_server_timed(paused),
                     }
                 }));
@@ -1552,6 +1559,17 @@ impl Game<'_> {
                 state.lists.lock().unwrap().stop = true;
             }
             // Horizon's own, on the console only: a performance report (report.rs).
+            "horizon-report" if rest.first() == Some(&"stop") => match state.report.take() {
+                Some(recording) => {
+                    log("INFO", "Stopping the performance report: writing it now");
+                    self.finish_report(recording, state.view, state.max_players);
+                }
+                None => log("INFO", "No performance report is being recorded"),
+            },
+            "horizon-report" if rest.first() == Some(&"status") => match &state.report {
+                Some(recording) => log("INFO", &recording.status()),
+                None => log("INFO", "No performance report is being recorded"),
+            },
             "horizon-report" => {
                 let seconds = match rest.first().map(|s| s.parse::<u32>()) {
                     None => Ok(60),
@@ -1562,7 +1580,7 @@ impl Game<'_> {
                     (Err(()), _) => log(
                         "INFO",
                         &format!(
-                            "horizon-report [SECONDS]: 1 to {} seconds, 60 by default",
+                            "horizon-report [SECONDS | stop | status]: 1 to {} seconds, 60 by default",
                             report::MAX_SECONDS
                         ),
                     ),
@@ -1570,7 +1588,7 @@ impl Game<'_> {
                         log("INFO", "A performance report is already being recorded")
                     }
                     (Ok(seconds), None) => {
-                        state.report = Some(report::Recording::start(seconds));
+                        state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
                         log(
                             "INFO",
                             &format!("Recording a performance report for {seconds} s (reports/)"),

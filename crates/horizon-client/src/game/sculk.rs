@@ -816,12 +816,18 @@ impl Game<'_> {
     /// and moving over blocks.
     pub(super) fn tick_sculk_entities(&mut self) {
         self.sculk.ticks = self.sculk.ticks.wrapping_add(1);
+        // Its steps as spans for `horizon-report` (nothing is read while spans are off).
+        let mut laps = horizon_client::spans::laps();
         self.sculk_prepare();
+        laps.lap("sculk_prepare");
         self.load_warden_tracker();
         self.sculk.tracker.tick();
         self.tick_darkness_blend();
+        laps.lap("sculk_wardens");
         self.sculk_step_on();
+        laps.lap("sculk_step_on");
         self.tick_entity_events();
+        laps.lap("sculk_entity_events");
     }
     /// The block entity phase for sculk: vibration tickers and catalysts, in
     /// the order the block entities were added (`Level.tickBlockEntities`).
