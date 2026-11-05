@@ -2249,6 +2249,27 @@ mod hub_tests {
         assert!(sent.contains(&id::CONTAINER_SET_CONTENT), "{sent:?}");
     }
 
+    /// The arrival's join line names the player as the server's own join line does: by its
+    /// nickname and team (Player.getDisplayName), not only by its account name.
+    #[test]
+    fn the_join_line_of_an_arrival_shows_its_nickname() {
+        let (mut hub, seen, _mine) = import_without_placing(serde_json::json!({}));
+        hub.set_nickname(UUID_N, Some("Captain".into()));
+        let _ = packets(&seen);
+        let reply = confirm(&mut hub, UUID);
+        assert_eq!(reply["placed"], true);
+        let lines: Vec<Vec<u8>> = packets(&seen)
+            .into_iter()
+            .filter(|(id, _)| *id == id::SYSTEM_CHAT)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(lines.len(), 1, "one join line");
+        assert!(
+            lines[0].windows(b"Captain".len()).any(|w| w == b"Captain"),
+            "the join line names the nickname"
+        );
+    }
+
     #[test]
     fn a_silent_import_stays_silent_when_it_is_confirmed() {
         let (mut hub, seen, _mine) =

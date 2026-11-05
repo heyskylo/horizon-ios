@@ -1485,7 +1485,10 @@ impl Hub {
         };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names("multiplayer.player.joined", vec![display_name(uuid, &name)]),
+                content: yellow_names(
+                    "multiplayer.player.joined",
+                    vec![self.player_display_name(uuid, &name)],
+                ),
                 overlay: false,
             })
             .encode();
