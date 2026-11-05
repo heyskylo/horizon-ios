@@ -149,9 +149,12 @@ mod tests {
 
     #[test]
     fn a_search_finds_names_tags_and_categories_in_any_case() {
-        let mut browser = ModBrowser::default();
-        browser.listings = vec![listing("ruby", &["gems"]), listing("pipes", &["tech"])];
-        browser.listings[1].categories = vec!["technology".into()];
+        let mut pipes = listing("pipes", &["tech"]);
+        pipes.categories = vec!["technology".into()];
+        let browser = ModBrowser {
+            listings: vec![listing("ruby", &["gems"]), pipes],
+            ..ModBrowser::default()
+        };
         assert_eq!(browser.found(""), [0, 1]);
         assert_eq!(browser.found("RUBY"), [0]);
         assert_eq!(browser.found("gems"), [0]);
@@ -174,7 +177,13 @@ mod tests {
         let text = "# Ruby\n\nAdds **rubies**. See [the wiki](https://x.y).\n\n![shot](https://x.y/a.png)\n- one\n* two\n```\ncode\n```\n";
         assert_eq!(
             plain_lines(text),
-            ["Ruby", "Adds rubies. See the wiki.", "• one", "• two", "code"]
+            [
+                "Ruby",
+                "Adds rubies. See the wiki.",
+                "• one",
+                "• two",
+                "code"
+            ]
         );
     }
 }

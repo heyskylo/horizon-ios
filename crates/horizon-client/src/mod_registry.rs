@@ -322,9 +322,7 @@ impl Installed {
         {
             return Some(version.to_owned());
         }
-        let path: PathBuf = home
-            .join(crate::mod_list::DIR)
-            .join(format!("{id}.hmod"));
+        let path: PathBuf = home.join(crate::mod_list::DIR).join(format!("{id}.hmod"));
         horizon_mods::Package::read(&path)
             .ok()
             .filter(|p| p.manifest.id == id)
