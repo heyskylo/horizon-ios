@@ -48,6 +48,7 @@
   "horizon.mods.open_folder": "Ouvrir le dossier des mods",
   "horizon.mods.browse": "Parcourir les mods...",
   "horizon.mods.browse.title": "Parcourir les mods",
+  "horizon.mods.browse.search": "Rechercher des mods...",
   "horizon.mods.browse.project": "Mod",
   "horizon.mods.browse.loading": "Lecture du registre des mods Horizon...",
   "horizon.mods.browse.failed": "Impossible de lire le registre des mods : %s",

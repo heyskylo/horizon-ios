@@ -4098,17 +4098,21 @@ impl OptionsUi {
                 search.focused = true;
             }
             search.draw(batch, atlas, None);
+            let hint = match self.page() {
+                Page::ModBrowser => "horizon.mods.browse.search",
+                _ => "horizon.options.search",
+            };
             // Horizon's search box sits in the header, before the list.
             crate::widgets::last_narratable(|n| {
                 n.order = -1;
                 if let crate::widgets::What::EditBox { message, .. } = &mut n.what {
-                    *message = tr("horizon.options.search").plain();
+                    *message = tr(hint).plain();
                 }
             });
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
                     atlas,
-                    &tr("horizon.options.search").with_color(text::GRAY).italic(),
+                    &tr(hint).with_color(text::GRAY).italic(),
                     search.text_x(),
                     search.text_y(),
                     u32::MAX,

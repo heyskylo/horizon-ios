@@ -99,6 +99,7 @@
   "horizon.mods.open_folder": "Open Mod Folder",
   "horizon.mods.browse": "Browse Mods...",
   "horizon.mods.browse.title": "Browse Mods",
+  "horizon.mods.browse.search": "Search mods...",
   "horizon.mods.browse.project": "Mod",
   "horizon.mods.browse.loading": "Reading Horizon's mod registry...",
   "horizon.mods.browse.failed": "Couldn't read the mod registry: %s",
