@@ -580,6 +580,16 @@ impl Options {
         else {
             return Ok(None);
         };
+        // Paths given on the command line stay relative to where the game was started.
+        if o.game_dir.is_some() {
+            o.control = o.control.map(std::path::absolute).transpose()?;
+        }
+        // Refused here, before the account's file is used up or anything loads.
+        if let Some(path) = &o.control {
+            horizon_client::control::check_path(path).map_err(|e| {
+                launch_api::UsageError(format!("--control-socket {}: {e}", path.display()))
+            })?;
+        }
         // The launcher's account: online-mode servers need it. A bad file
         // only leaves the game offline.
         let session = if o.session_stdin {
@@ -607,10 +617,9 @@ impl Options {
         }
         split::launcher::read_now();
         if let Some(dir) = o.game_dir.take() {
-            // Paths given on the command line stay relative to where the game was started.
+            // These too stay relative to where the game was started.
             o.resources = std::path::absolute(&o.resources)?;
             o.report = o.report.map(std::path::absolute).transpose()?;
-            o.control = o.control.map(std::path::absolute).transpose()?;
             std::fs::create_dir_all(&dir)
                 .and_then(|()| std::env::set_current_dir(&dir))
                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
