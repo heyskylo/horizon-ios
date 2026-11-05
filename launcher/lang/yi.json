@@ -460,6 +460,7 @@
   "Copying…": "קאפירן...",
   "Filters": "פילטערס",
   "{count} followers": "{count} אנהענגערס",
+  "{count} stars on GitHub": "{count} שטערן אויף GitHub",
   "Connect an AI agent": "פאַרבינדן אַן אַי אַגענט",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "יעדער באַשטימען איז אַוועק סייַדן איר קער עס אויף. וואָס עס סענדז איז אונטן עס; די פּריוואַטקייט בלאַט אויף playhorizon.dev זאגט ווי לאַנג עס איז געהאלטן.",
   "Players": "פּלייַערס",
@@ -644,6 +645,7 @@
   "Default skin": "פעליקייַט הויט",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "א לינק צו אַ ריפּאַזאַטאָרי (זייַן לעצטע מעלדונג), אַ מעלדונג, אַ צווייַג אָדער קוויטל אָדער אַ יבערגעבן. דער לאָנטשער ינסטאָלז איין פּינטלעך מעלדונג טעקע אָדער יבערגעבן, קיינמאָל אַ צווייַג וואָס באוועגט.",
   "Sign in with GitHub to rate": "קלאָץ אין מיט GitHub צו אָפּשאַצן",
+  "Star on GitHub": "גיב אַ שטערן אויף GitHub",
   "Up to date: {instance} plays these mods.": "דערהייַנטיקט: {instance} פיעסעס די מאָדס.",
   "On this computer": "אויף דעם קאָמפּיוטער",
   "Needs preparing": "דאַרף פּריפּערינג",
@@ -1144,7 +1146,7 @@
   "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.": "Moves all launcher, game and build data, including settings, worlds, instances and installed versions. Choose an empty folder with enough free space.",
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
-  "Open the shop": "עפֿן דעם קראָם",
+  "Get more cosmetics on playhorizon.dev": "מער קאָסמעטיק אויף playhorizon.dev",
   "You don't own any cosmetics yet.": "דו האסט נאָך קיין קאָסמעטיקס נישט.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.",
   "Game architecture": "Game architecture",
@@ -1178,5 +1180,7 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "טאַגן",
+  "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on."
 }

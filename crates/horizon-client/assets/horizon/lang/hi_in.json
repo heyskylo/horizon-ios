@@ -402,6 +402,7 @@
   "Frame Generation": "फ्रेम जनरेशन",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "प्रत्येक दो वास्तविक फ़्रेमों के बीच एक काल्पनिक फ़्रेम दिखाता है: अधिक सुचारू, थोड़ा अधिक लैग।",
   "Shadow Cache": "शैडो कैश",
+  "Shader Packs...": "शेडर पैक्स...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "जब सूरज, दृश्य और दुनिया मेल खाते हैं तो पैक शैडो मैप का पुन उपयोग करता है। डिफ़ॉल्ट रूप से बंद।",
   "Find BlueMap": "ब्लूमेप खोजें",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "सर्वर पर, दूर के भू-भाग के लिए उनका ब्लूमेप वेब मैप खोजता है। अगली शुरुआत पर।",

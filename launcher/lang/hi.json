@@ -462,6 +462,7 @@
   "Copying…": "कॉपी हो रहा है…",
   "Filters": "फ़िल्टर",
   "{count} followers": "{count} फॉलोअर्स",
+  "{count} stars on GitHub": "GitHub पर {count} स्टार",
   "Connect an AI agent": "एक AI एजेंट कनेक्ट करें",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "जब तक आप इसे चालू नहीं करते, तब तक प्रत्येक स्विच बंद रहता है। यह क्या भेजता है इसके नीचे है; playhorizon.dev पर गोपनीयता पृष्ठ बताता है कि इसे कितने समय तक रखा जाता है।",
   "Players": "खिलाड़ी",
@@ -646,6 +647,7 @@
   "Default skin": "डिफ़ॉल्ट स्किन",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "एक रिपॉजिटरी (इसकी नवीनतम रिलीज़), एक रिलीज़, एक शाखा या टैग, या एक कमिट का लिंक। लॉन्चर एक सटीक रिलीज़ फ़ाइल या कमिट इंस्टॉल करता है, कभी भी आगे बढ़ने वाली शाखा नहीं।",
   "Sign in with GitHub to rate": "रेट करने के लिए GitHub के साथ साइन इन करें",
+  "Star on GitHub": "GitHub पर स्टार दें",
   "Up to date: {instance} plays these mods.": "अप टू डेट: {instance} इन मॉड के साथ खेलता है।",
   "On this computer": "इस कंप्यूटर पर",
   "Needs preparing": "तैयार करने की आवश्यकता है",
@@ -1144,7 +1146,7 @@
   "Move…": "स्थानांतरित करें…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "आपका डेटा कॉपी और सत्यापित किए जाने के दौरान लॉन्चर बंद रहता है, फिर दोबारा खुलता है। पुराने फ़ोल्डर सुरक्षित रखे जाते हैं और तब तक डिस्क पर जगह घेरते रहते हैं, जब तक आप स्थानांतरण सफल होने की पुष्टि करके उन्हें खुद नहीं हटा देते।",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "दुकान खोलें",
+  "Get more cosmetics on playhorizon.dev": "playhorizon.dev पर और कॉस्मेटिक्स पाएं",
   "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "स्वचालित इस लॉन्चर के आर्किटेक्चर का उपयोग करता है। Windows ARM पर x64 या ARM64 चुनें। ARM64 न होने वाली रिलीज़ हस्ताक्षरित x64 बिल्ड का उपयोग करती हैं।",
   "Game architecture": "गेम आर्किटेक्चर",
@@ -1178,5 +1180,7 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "टैग",
+  "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on."
 }

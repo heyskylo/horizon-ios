@@ -409,6 +409,7 @@
   "Frame Generation": "Gineadh frèam",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "A’ sealltainn frèam dèanta eadar gach dà fhìor: nas socair, beagan a bharrachd lag.",
   "Shadow Cache": "Cache sgàile",
+  "Shader Packs...": "Pacaidean Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ath-chleachdadh mapa sgàil a’ phasgan nuair a bhios grian, sealladh agus saoghal a’ maidseadh. Cuir dheth gu bunaiteach.",
   "Find BlueMap": "Lorg BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Air frithealaichean, lorg am mapa lìn BlueMap aca airson fearann fada. An ath cheangail.",

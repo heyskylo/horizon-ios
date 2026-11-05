@@ -61,3 +61,18 @@ differences (two rejected raid commands and twelve absent raid observations),
 not a parser defect or a qualified loss-phase baseline. Reproduce that diagnostic
 with `--raid-release-command-diagnostic --allow-gaps`. The strict fixture and its
 baseline/fix observations use the matched flags above.
+
+## CI maintenance refresh
+
+Verification on `5cede4ff4` was cancelled while Rust tests were running; its log
+contains no failed test before cancellation. Main `ff4b4b17b` was merged without
+rewriting history. The sole manual conflict was spacing in the Java command-trace
+line. All main Java case registrations and Rust operation arms are retained,
+plus `raid_state`; the raid production fix, unit and corpus are unchanged.
+
+The merged Java oracle/driver matches **373/373** against the archived validated
+`624c4f626` fixed native binary; script and fresh Java reference hashes remain
+byte-identical to those above. The shared frame-map fixture matches **192/192**.
+These are harness compatibility checks, not a runtime replay of the newer merged
+Rust tree. Formatting, whitespace and public-tree checks pass. New-head CI must
+provide verification of that merged tree.

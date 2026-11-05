@@ -460,7 +460,7 @@ public final class VanillaCommandExecOracle {
                             JsonArray r = new JsonArray();
                             results.forEach(r::add);
                             record.add("results", r);
-                            if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: "+gson.toJson(record));
+                            if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
                     }

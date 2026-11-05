@@ -398,6 +398,7 @@
   "Frame Generation": "프레임 생성",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "실제 프레임 사이에 가상의 프레임을 삽입합니다: 더 부드러워지지만 지연이 약간 증가합니다.",
   "Shadow Cache": "그림자 캐시",
+  "Shader Packs...": "셰이더 팩...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "태양, 시점, 월드가 일치할 때 팩 그림자 맵을 재사용합니다. 기본값은 끔입니다.",
   "Find BlueMap": "BlueMap 찾기",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "서버 접속 시 원거리 지형을 위한 BlueMap 웹 맵을 찾습니다. 다음 참여 시 적용됩니다.",

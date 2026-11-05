@@ -405,6 +405,7 @@
   "Frame Generation": "Generacion de quadres",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Mòstra un encastre fabricat entre cadun dos reals: mai doç, un pauc mai de retard.",
   "Shadow Cache": "Cache d'ombra",
+  "Shader Packs...": "Paquets de Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Reutiliza la mapa d'ombra del paquet quand solelh, vista e mond correspondon. Desactivat per defaut.",
   "Find BlueMap": "Trobar BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Sus de servidors, tròba lor mapa web BlueMap per de terrens luènhs. Seguent rejónher.",
