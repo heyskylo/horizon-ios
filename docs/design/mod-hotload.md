@@ -95,15 +95,19 @@ player lands back in the world.
 
 ### What "a few seconds" means here, measured
 
-Measured on the desktop (i7-13700KF, NVMe, `profile.fast`) with the fixture mod of the hot reload PR. The numbers are
-filled in by that PR and repeated here.
+Measured in game on the ThinkPad (i7-7500U, Intel HD 620, Vulkan, `profile.fast`; the desktop can't run the game
+over ssh) with the fixture mod of #10217: a recipe, an item tag, two functions and a language file. Four runs, on
+2026-11-05:
 
 | Step | Time |
 |---|---|
-| Build a content root for one small mod (classification included) | see PR 2 |
-| Client resource reload with that root | see PR 2 |
-| Server data reload (`reload_world_tables`) | see PR 2 |
-| Turn the mod off again | see PR 2 |
+| Turn on the first time: build its content root, then reload the client's resources | 3.2 to 5.6 s |
+| Turn off, or on again (the root is reused) | 1.1 to 1.7 s |
+| Then the server's data reload (`reload_datapacks`, as `/reload`), on its own thread | 0.9 to 1.7 s |
+
+So a switch lands in about 2 to 3 s, and the first time a mod set is used in about 4 to 7 s. The root alone, on
+the desktop (i7-13700KF, NVMe, under a load of 30 to 40), in #10217's test: built in 5.1 to 5.4 s, reused in 0 to
+19 ms, over three runs. Most of a first switch is building the root; a set used before costs only the reloads.
 
 ## The in-game mod browser
 
@@ -112,19 +116,19 @@ with the options screen's widgets (`options_ui`), every string through `Text::tr
 `assets/horizon/lang/*.json`.
 
 - **The index.** The same file the launcher reads (`horizon-mods` `index.json`, `HORIZON_MOD_INDEX` for a test
-  registry), fetched on a worker with the game's `ureq`, at most once every ten minutes, kept in
-  `mod-browser/horizon-index.json` beside `options.txt`. The launcher and the game share that copy, so an offline
-  game still lists what the launcher saw last. Parsed with `horizon_mods::index::Index::parse`, which refuses an
-  index with a bad entry as the launcher does.
+  registry), fetched on a worker with the game's `ureq` when the page opens (a Pages file, not the API: no rate
+  limit), kept in `mod-browser/horizon-index.json` beside `options.txt`. The launcher and the game share that copy,
+  so an offline game still lists what the launcher saw last. Parsed with `horizon_mods::index::Index::parse`, which
+  refuses an index with a bad entry as the launcher does.
 - **The list.** A search box and the projects this game can install, sorted by downloads: name, author, summary,
   its categories, and **Installed**, **Update** or nothing. A search matches the name, id, summary, tags and
   categories.
 - **A project's page.** Name, authors, licence, version and date, categories and tags, the summary and description
   (the index's markdown read as plain text: headings, lists and links shown as text), its changelog, and buttons:
-  **Install**, **Update**, **Turn on** or **Turn off**, **Remove**, and **Open page** (the site's page in the
-  browser). Screenshots come in a second step: the registry mirrors them as PNG and JPEG under its own Pages
-  ([registry-v2.md](registry-v2.md)); the page will draw them through the same dynamic-texture path as player skins
-  (`skin_slots`), one at a time, loaded when the page opens.
+  **Install** or **Update**, the mod's on and off switch once it is installed, and **Open page** (the site's page in
+  the browser). **Remove** stays in the launcher for now. Screenshots come in a second step: the registry mirrors
+  them as PNG and JPEG under its own Pages ([registry-v2.md](registry-v2.md)); the page will draw them through the
+  same dynamic-texture path as player skins (`skin_slots`), one at a time, loaded when the page opens.
 - **Install.** As the launcher's `install_version`: the newest version for this game that was not taken down, into
   `mod-browser/downloads/`, then `horizon_mods::index::check_file` (size, SHA-256, the author's signature, the
   file's manifest against the index), then moved to `horizon-mods/<id>.hmod`, turned on in `horizon-mods.txt`, and
@@ -165,26 +169,33 @@ A native mod's code is in the game's binary. What can be made fast:
   (#798) and the wasm runtime. They merge upstream through their own PRs; Horizon's side is to keep the hook catalog
   and `Hooks` dispatch shaped so both can sit behind it.
 - **A is the biggest win for the least risk, now.** Turning a native mod on or off is the common case (trying a mod,
-  finding a conflict, a modpack switch), and it needs no compiler at all if every installed native mod is already in
-  the build. The launcher builds every installed mod, whatever its `mod.<id>` line says. The game skips a turned-off
-  trait mod in `Hooks` dispatch (`mod_api`), so it stops at once without its author doing anything, and mixin mods
-  keep honouring `native_on` (they paste code into the game's own functions, so only they can check). A mixin mod
-  that doesn't check is marked on its row: "This mod keeps running until the launcher's next build leaves it out".
+  finding a conflict, a modpack switch), and it needs no compiler at all while the mod is in the build. Step one
+  (#10218): the game skips a turned-off trait mod in `Hooks` dispatch (`mod_api`), so a mod that was on at launch
+  stops at once without its author doing anything, and starts again at once when turned back on. `RenderHooks`
+  run every frame over a plain list, so they are not switched yet, and mixin mods keep honouring `native_on` (they
+  paste code into the game's own functions, so only they can check). Step two: the launcher builds every installed
+  mod, whatever its `mod.<id>` line says, so a mod that was off at launch also turns on without a build; it waits
+  for step one to settle, because a build with every installed mod costs players who keep many mods turned off.
 - **B comes next.** With A in, a build is needed only to install, update or remove. The launcher already rebuilds
   before play (#9901); B lets the player keep playing during it, and then restarts into the same world.
 
 ### Measured
 
-On the desktop (i7-13700KF, `-j 8`, Linux, `rustc` 1.99, the launcher's `profile.fast`), building
-`horizon-client` as the launcher does:
+On the desktop (i7-13700KF, `-j 8`, Linux, `rustc` 1.99, the launcher's `profile.fast`, incremental), building
+`horizon-client` as the launcher does, on 2026-11-05 while other builds kept the machine at a load of about 30 to 40
+(an idle machine is faster; the ratios are the point):
 
 | Build | Time |
 |---|---|
-| Cold, empty target | see PR 3 |
-| No change | see PR 3 |
-| One line changed in gameplay (`game/mods.rs`), as a mixin into gameplay does | see PR 3 |
-| One line changed in `horizon-world`, as a mixin into a lower crate does | see PR 3 |
-| The gameplay change, linked with mold | see PR 3 |
+| Cold, empty target | 812 s |
+| No change | 55 s |
+| One line changed in gameplay (`game/mods.rs`), as a mixin into gameplay does | 570 s (the revert: 668 s) |
+| One line changed in `horizon-world`, as a mixin into a lower crate does | 427 s (the revert: 469 s) |
+| The gameplay change, linked with mold | 612 s |
+
+Mold changes nothing: the time is spent compiling the gameplay crate again, not linking it. A native mod's change
+costs most of a cold build, so the run-time switch (A) is what makes on and off fast, and only a smaller gameplay
+crate or code outside the game's binary (C, E) makes a change fast.
 
 ## Security
 
@@ -202,11 +213,12 @@ Nothing in this note widens what a mod can do.
 ## Plan, small PRs
 
 1. This note.
-2. The in-game browser and install, for content mods.
-3. Live switching of content mods: a root per mod set, classification, the client and server reloads, tests that
-   load, unload and load again a fixture mod and check the recipes, tags and lang it adds. Measured on the desktop.
-4. Native step A: every installed native mod built in, on and off at run time through `Hooks` dispatch. Measured on
-   the desktop.
+2. The in-game browser and install, for content mods (#10104).
+3. Live switching of content mods (#10217): a root per mod set, classification, the client and server reloads,
+   tests that load, unload and load again a fixture mod and check the recipes, tags and lang it adds. Measured in
+   game on the ThinkPad, the root alone on the desktop.
+4. Native step A, first half (#10218): a trait mod built in turns off and on at run time through `Hooks` dispatch. Then
+   the launcher builds every installed mod, and `RenderHooks` get the same switch.
 
 Later: the world reload for registry changes (replaceable process-wide tables), screenshots on the project page,
 the other kinds in the browser, and B.
