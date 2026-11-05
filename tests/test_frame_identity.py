@@ -14,9 +14,9 @@ def paeth(a, b, c):
     return a if pa <= pb and pa <= pc else b if pb <= pc else c
 
 
-def encode(path, width, height, depth, rows, kind):
+def encode(path, width, height, depth, rows, kind, colour=2):
     """An RGB PNG of `rows` (bytes), every row filtered with PNG filter `kind` (0 None, 1 Sub, 2 Up, 3 Average, 4 Paeth)."""
-    bpp = 3 * depth // 8
+    bpp = {0: 1, 2: 3, 4: 2, 6: 4}[colour] * depth // 8
     stream, previous = b'', bytes(width * bpp)
     for row in rows:
         out = bytearray()
@@ -31,7 +31,7 @@ def encode(path, width, height, depth, rows, kind):
 
     def chunk(name, body):
         return struct.pack('>I', len(body)) + name + body + struct.pack('>I', zlib.crc32(name + body))
-    header = struct.pack('>IIBBBBB', width, height, depth, 2, 0, 0, 0)
+    header = struct.pack('>IIBBBBB', width, height, depth, colour, 0, 0, 0)
     Path(path).write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(stream))
                            + chunk(b'IEND', b''))
 
@@ -64,7 +64,7 @@ class CompareTests(unittest.TestCase):
         encode(self.dir / 'b.png', 6, 4, 8, [bytes(r) for r in changed], 4)
         problem = identity.compare(self.dir / 'a.png', self.dir / 'b.png', self.dir / 'd.png')
         self.assertEqual(problem, '1 of 24 pixels (4.167%), largest step 4')
-        width, height, bpp, raw = identity.read_png(self.dir / 'd.png')
+        width, height, bpp, raw, _ = identity.read_png(self.dir / 'd.png')
         diff = identity.unfilter(width, height, bpp, raw)
         reds = [(x, y) for y, row in enumerate(diff) for x in range(width)
                 if row[3 * x] == 255 and row[3 * x + 1] < 255]
@@ -84,6 +84,13 @@ class CompareTests(unittest.TestCase):
     def test_a_different_size_is_reported(self):
         encode(self.dir / 'a.png', 4, 4, 8, picture(4, 4, 8), 0)
         encode(self.dir / 'b.png', 4, 3, 8, picture(4, 3, 8), 0)
+        self.assertIn('size or format differs',
+                      identity.compare(self.dir / 'a.png', self.dir / 'b.png', self.dir / 'd.png'))
+
+    def test_same_bytes_with_different_pixel_formats_are_not_identical(self):
+        rows = [bytes((1, 2, 3, 4))]
+        encode(self.dir / 'a.png', 1, 1, 8, rows, 0, colour=6)
+        encode(self.dir / 'b.png', 1, 1, 16, rows, 0, colour=4)
         self.assertIn('size or format differs',
                       identity.compare(self.dir / 'a.png', self.dir / 'b.png', self.dir / 'd.png'))
 

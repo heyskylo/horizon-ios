@@ -112,7 +112,7 @@ def lavapipe():
 # 🤖 Agent: PNG, with the standard library only.
 
 def read_png(path):
-    """(width, height, bytes per pixel, the IDAT stream decompressed): pixel rows still filtered."""
+    """Width, height, bytes per pixel, filtered stream, and (depth, colour type)."""
     data = Path(path).read_bytes()
     if data[:8] != b'\x89PNG\r\n\x1a\n':
         raise ValueError(f'{path}: not a PNG')
@@ -129,7 +129,7 @@ def read_png(path):
     channels = {0: 1, 2: 3, 4: 2, 6: 4}[colour]
     if interlace or depth not in (8, 16):
         raise ValueError(f'{path}: {depth}-bit, interlace {interlace} is not what the game writes')
-    return width, height, channels * depth // 8, zlib.decompress(b''.join(idat))
+    return width, height, channels * depth // 8, zlib.decompress(b''.join(idat)), (depth, colour)
 
 
 def unfilter(width, height, bpp, raw):
@@ -174,23 +174,23 @@ def write_png(path, width, height, rows):
 def compare(base_path, head_path, diff_path):
     """None when the two PNGs hold the same pixels, else what differs (writing the diff image, unless None)."""
     a, b = read_png(base_path), read_png(head_path)
-    if a[:3] != b[:3]:
-        return f'size or format differs: {a[:3]} against {b[:3]}'
+    if a[:3] != b[:3] or a[4] != b[4]:
+        return f'size or format differs: {a[:3] + (a[4],)} against {b[:3] + (b[4],)}'
     if a[3] == b[3]:
         return None
-    width, height, bpp, _ = a
-    rows_a, rows_b = unfilter(*a), unfilter(*b)
+    width, height, bpp, _, (depth, colour) = a
+    rows_a, rows_b = unfilter(*a[:4]), unfilter(*b[:4])
     if rows_a == rows_b:
         return None
     if diff_path is None:
         return 'the pixels differ'
-    channel = 2 if bpp in (6, 8) else 1
+    channel = depth // 8
     differing, largest, picture = 0, 0, []
     for ra, rb in zip(rows_a, rows_b):
         out = bytearray()
         for x in range(width):
             pa, pb = ra[x * bpp:(x + 1) * bpp], rb[x * bpp:(x + 1) * bpp]
-            grey = pa[0] // 3 if bpp < 3 else (pa[0] + pa[channel] + pa[2 * channel]) // 9
+            grey = pa[0] // 3 if colour in (0, 4) else (pa[0] + pa[channel] + pa[2 * channel]) // 9
             if pa != pb:
                 differing += 1
                 step = max(abs(int.from_bytes(pa[i:i + channel], 'big') - int.from_bytes(pb[i:i + channel], 'big'))
