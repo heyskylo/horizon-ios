@@ -1,12 +1,15 @@
 """tools/wire_stream.py cuts a capture's serverbound play stream into client ticks: the comparison of a Horizon
 client's packets with vanilla's (tools/test_wire_stream_parity.py) is only as good as this cut."""
 from pathlib import Path
+import importlib.util
 import struct
-import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-import wire_stream  # noqa: E402
+# Loaded by path: tools/ on sys.path would shadow tests/ modules that share a name with a tools/ harness.
+_spec = importlib.util.spec_from_file_location(
+    'wire_stream', Path(__file__).resolve().parents[1] / 'tools' / 'wire_stream.py')
+wire_stream = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(wire_stream)
 
 
 def varint(v):
