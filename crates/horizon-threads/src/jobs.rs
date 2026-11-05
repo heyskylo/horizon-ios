@@ -775,7 +775,17 @@ mod tests {
             hold: Some(gate.clone()),
         });
         let reg = pool.register(held.clone());
-        std::thread::sleep(Duration::from_millis(100));
+        // A worker takes the job off the queue before holding it on the gate: wait for
+        // that take, not a fixed sleep past it (a busy runner may start it later), so
+        // `drop(reg)` below always has a running job to wait for.
+        let picked = Instant::now();
+        while lock(&held.jobs).len() > 1 {
+            assert!(
+                picked.elapsed() < Duration::from_secs(10),
+                "no worker picked the job up"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let opener = {
             let gate = gate.clone();
             std::thread::spawn(move || {

@@ -944,9 +944,16 @@ impl Game<'_> {
         let port = match ctx.get("port") {
             Some(Arg::Int(p)) => *p,
             // HttpUtil.getAvailablePort.
-            _ => std::net::TcpListener::bind(("0.0.0.0", 0))
-                .and_then(|l| l.local_addr())
-                .map_or(25564, |a| i32::from(a.port())),
+            _ => std::net::TcpListener::bind((
+                if std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1") {
+                    "127.0.0.1"
+                } else {
+                    "0.0.0.0"
+                },
+                0,
+            ))
+            .and_then(|l| l.local_addr())
+            .map_or(25564, |a| i32::from(a.port())),
         };
         let published = if self.serving() {
             self.published_port()
