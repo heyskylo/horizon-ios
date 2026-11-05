@@ -2960,6 +2960,12 @@ sets the point at the box's middle, the turn (`yaw`, counterclockwise seen from 
 north), the tilt of its top towards the viewer (`pitch`) and the pixels per block (`scale`). The scene has a depth of its
 own and is cut to the box. Draw it from the screen's drawing hook; Create's Ponder steps through its scenes this way.
 
+Limits: each call collects every block's models again and calls `native_block_entity_submit` for every block entity
+(`keep` has no effect here), so keep scenes small. The hook gets the scene's position as `pos`, with no world around it:
+what it reads of the world at that position is unrelated. Only a mod's block entity draws; a chest or a sign shows its
+block model only. `spin` parts follow the world's game time (and stop under `/tick freeze`): a scene with its own
+timeline turns parts through the pose instead. Faces are shaded and culled as in the world.
+
 ### Chat and commands a client mod sends
 
 API 404, `crates/horizon-client/src/game/native_net.rs`: `native_send_chat(message)` sends what the player
