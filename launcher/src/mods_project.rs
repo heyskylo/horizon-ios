@@ -14,7 +14,7 @@ use super::*;
 use gpui::img;
 use horizon_launcher::browser::{
     self,
-    details::{Details, Environment, Filters, Sort, Tags},
+    details::{Details, Environment, Filters, Image, Sort, Tags},
     images, java, Kind as PackKind, Project, SourceId, Support, Version,
 };
 use std::collections::{HashMap, HashSet};
@@ -83,6 +83,8 @@ pub(super) struct Opened {
     versions: Option<Result<Arc<[ProjectVersion]>, String>>,
     version_list: cull::Cull,
     checked_versions: HashMap<String, horizon_port_pack::check::Verdict>,
+    /// The gallery image shown large.
+    shot: usize,
 }
 
 /// Cached verdicts are read with the version request, never while drawing a frame.
@@ -198,6 +200,7 @@ impl Launcher {
             versions: None,
             version_list: cull::Cull::default(),
             checked_versions: HashMap::new(),
+            shot: 0,
         });
     }
 
@@ -403,12 +406,15 @@ impl Launcher {
         wrap
     }
 
-    /// The filter bar: sort always; loader, version, environment and categories when shown.
+    /// The filter bar: sort always (Horizon's registry has its own bar); loader, version,
+    /// environment and categories when shown, only categories for the registry.
     pub(super) fn mods_filters(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
         let sorts = self.mods_sorts();
-        let sort = (!t.glass).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
+        let registry =
+            self.mods.source == SourceId::Horizon && self.mods.java_for(self.mods.kind).is_none();
+        let sort = (!t.glass && !registry).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
             + f.loader.is_some() as usize
@@ -526,11 +532,10 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        bar = bar
-            .child(loaders)
-            .child(versions)
-            .child(environment)
-            .child(categories);
+        if !registry {
+            bar = bar.child(loaders).child(versions).child(environment);
+        }
+        bar = bar.child(categories);
         if active > 0 {
             bar = bar.child(div().flex().child(clear));
         }
@@ -543,6 +548,7 @@ impl Launcher {
         let o = self.mods.browse.open.as_ref()?;
         let p = o.project.clone();
         let tab = o.tab;
+        let shot = o.shot;
         let support = self.mods.support(&p);
         let color = match support {
             Support::Works => t.success,
@@ -578,6 +584,17 @@ impl Launcher {
         let authors = match &details {
             Some(Ok(d)) if !d.authors.is_empty() => d.authors.join(", "),
             _ => p.author.clone(),
+        };
+        // The project's categories, as its source lists them.
+        let categories = match &details {
+            Some(Ok(d)) if !d.categories.is_empty() => Some(
+                div().flex().flex_wrap().gap(px(6.)).children(
+                    d.categories
+                        .iter()
+                        .map(|c| blocks::badge(c.replace('-', " "), t.muted, &t)),
+                ),
+            ),
+            _ => None,
         };
         let icon = self.mods_icon(&p, 72.);
         let busy = self.mods.busy.as_ref().map(|b| b.0.clone());
@@ -644,7 +661,8 @@ impl Launcher {
                         text(theme::CAPTION)
                             .text_color(t.muted)
                             .child(meta.join(" · ")),
-                    ),
+                    )
+                    .children(categories),
             )
             .child(action);
         let mut page = div()
@@ -720,7 +738,13 @@ impl Launcher {
             page = page.child(links);
         }
         let this = cx.entity().downgrade();
-        page = page.child(div().flex().child(segments("mods-tab", &TABS, tab, &t, {
+        // No Gallery tab for a project without images.
+        let no_gallery = matches!(&details, Some(Ok(d)) if d.gallery.is_empty());
+        let tabs: Vec<(Tab, &str)> = TABS
+            .into_iter()
+            .filter(|(tab, _)| !(no_gallery && *tab == Tab::Gallery))
+            .collect();
+        page = page.child(div().flex().child(segments("mods-tab", &tabs, tab, &t, {
             move |value, _, cx| {
                 let _ = this.update(cx, |this, cx| {
                     if let Some(o) = &mut this.mods.browse.open {
@@ -740,31 +764,7 @@ impl Launcher {
                 None => centered(tr("Loading…"), &t),
                 Some(Err(e)) => notice(e.clone(), &t),
                 Some(Ok(d)) if d.gallery.is_empty() => centered(tr("No gallery images."), &t),
-                Some(Ok(d)) => {
-                    let mut grid = div().flex().flex_wrap().gap(px(16.));
-                    for g in &d.gallery {
-                        let shot = match self.mods_image(&g.url, images::GALLERY) {
-                            Some(path) => img(path).w(px(360.)).h(px(203.)).into_any_element(),
-                            None => plate(&t).w(px(360.)).h(px(203.)).into_any_element(),
-                        };
-                        grid = grid.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .w(px(360.))
-                                .child(plate(&t).overflow_hidden().child(shot))
-                                .when(!g.title.is_empty(), |d| {
-                                    d.child(
-                                        text(theme::CAPTION)
-                                            .text_color(t.ink_soft)
-                                            .child(g.title.clone()),
-                                    )
-                                }),
-                        );
-                    }
-                    grid
-                }
+                Some(Ok(d)) => self.mods_gallery(&d.gallery, shot, cx),
             },
             Tab::Versions => match &versions {
                 None => centered(tr("Loading…"), &t),
@@ -808,6 +808,102 @@ impl Launcher {
             },
         };
         Some(page.child(body))
+    }
+}
+
+impl Launcher {
+    /// A gallery: image `shot` large, the previous and next ones a click away, and every image
+    /// as a strip of thumbnails that picks the large one.
+    fn mods_gallery(&mut self, gallery: &[Image], shot: usize, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let count = gallery.len();
+        let shot = shot.min(count.saturating_sub(1));
+        let pick = |to: usize| {
+            cx.listener(move |this: &mut Self, _: &ClickEvent, _, cx| {
+                if let Some(o) = &mut this.mods.browse.open {
+                    o.shot = to;
+                }
+                cx.notify();
+            })
+        };
+        let image = |this: &mut Self, url: &str, w: f32, h: f32| match this
+            .mods_image(url, images::GALLERY)
+        {
+            Some(path) => img(path)
+                .w(px(w))
+                .h(px(h))
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element(),
+            None => plate(&t).w(px(w)).h(px(h)).into_any_element(),
+        };
+        let current = &gallery[shot];
+        let large = image(self, &current.url, 760., 428.);
+        let step = |id: &'static str, back: bool, to: usize| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(32.))
+                .cursor_pointer()
+                .child(
+                    blocks::icon("chevron-right", 16., t.ink_soft).with_transformation(
+                        gpui::Transformation::rotate(gpui::radians(if back {
+                            std::f32::consts::PI
+                        } else {
+                            0.
+                        })),
+                    ),
+                )
+                .on_click(pick(to))
+        };
+        let mut out = div().flex().flex_col().gap(px(10.)).max_w(px(760.)).child(
+            plate(&t)
+                .id("mods-shot")
+                .overflow_hidden()
+                .cursor_pointer()
+                .child(large)
+                .on_click(pick((shot + 1) % count)),
+        );
+        if !current.title.is_empty() {
+            out = out.child(
+                text(theme::CAPTION)
+                    .text_color(t.ink_soft)
+                    .child(current.title.clone()),
+            );
+        }
+        if count < 2 {
+            return out;
+        }
+        let mut strip = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .child(step("mods-shot-back", true, (shot + count - 1) % count));
+        for (i, g) in gallery.iter().enumerate() {
+            let thumb = image(self, &g.url, 120., 68.);
+            strip = strip.child(
+                div()
+                    .id(SharedString::from(format!("mods-shot-{i}")))
+                    .flex_none()
+                    .overflow_hidden()
+                    .border_2()
+                    .border_color(if i == shot { t.accent } else { t.outline })
+                    .cursor_pointer()
+                    .child(thumb)
+                    .on_click(pick(i)),
+            );
+        }
+        strip = strip
+            .child(step("mods-shot-next", false, (shot + 1) % count))
+            .child(
+                text(theme::CAPTION)
+                    .text_color(t.muted)
+                    .child(format!("{} / {count}", shot + 1)),
+            );
+        out.child(strip)
     }
 }
 

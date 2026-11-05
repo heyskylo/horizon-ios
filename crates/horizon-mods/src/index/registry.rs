@@ -212,9 +212,6 @@ impl Entry {
         for e in rules::check(&self.kind, &self.description, &self.categories, &self.tags) {
             errors.push(format!("{id}: {e}"));
         }
-        if rules::REQUIRED && self.icon.is_none() {
-            errors.push(format!("{id}: has no icon (icons/{id}.png, a square PNG)"));
-        }
         if self.screenshots.len() > rules::MAX_SCREENSHOTS {
             errors.push(format!(
                 "{id}: {} screenshots, at most {}",
@@ -641,6 +638,25 @@ pub fn build(src: &Sources) -> Result<Index, Vec<String>> {
     let mut errors = Vec::new();
     let mut projects = Vec::new();
     for entry in entries.iter().filter(|e| listed(e, src)) {
+        // A listed project's page is complete (registry v2's rollout, step 4).
+        let page = match &entry.repo {
+            Some(_) => Cache::read(src.registry, &entry.id)
+                .map(|c| c.page)
+                .unwrap_or_default(),
+            None => Page::default(),
+        };
+        let e = entry.resolved(&page);
+        errors.extend(
+            rules::check_required(
+                &e.id,
+                &e.description,
+                &e.categories,
+                e.icon.as_deref(),
+                &e.screenshots,
+            )
+            .into_iter()
+            .map(|problem| format!("{}: {problem}", e.id)),
+        );
         match project(entry, src) {
             Ok(p) => projects.push(p),
             Err(e) => errors.extend(e),
@@ -760,6 +776,14 @@ pub fn review(base: &[Entry], head: &[Entry], author: &str) -> Review {
         }
     }
     for new in head {
+        // Every version is a submission, checked and reviewed: the registry no longer follows a
+        // repository's releases (entries from before keep theirs until they are pinned).
+        if new.repo.is_some() && base.iter().all(|e| e.id != new.id || e.repo.is_none()) {
+            r.errors.push(format!(
+                "{}: the registry doesn't follow repositories any more: list each version's file (the form, or [[versions]])",
+                new.id
+            ));
+        }
         if !base.iter().any(|e| e.id == new.id) {
             r.notes.push(format!(
                 "{}: a new {} by {}{}",

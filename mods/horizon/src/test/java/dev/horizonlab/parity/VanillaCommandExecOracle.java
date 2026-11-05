@@ -482,6 +482,14 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
+                    case "close_menu" -> player.closeContainer();
+                    case "menu_state" -> {
+                        int slots = player.containerMenu == player.inventoryMenu ? 0 : player.containerMenu.slots.size() - 36;
+                        JsonObject state = new JsonObject();state.addProperty("own_slots", slots);
+                        JsonObject record = new JsonObject();record.addProperty("cmd", "#menu_state " + op.get("label").getAsString());
+                        record.add("messages", new JsonArray());record.add("results", new JsonArray());record.add("state", state);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());

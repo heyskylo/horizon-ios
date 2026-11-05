@@ -1140,6 +1140,8 @@ impl Game<'_> {
             self.consume_held();
             self.give_or_drop_stack(filled);
         }
+        // EmptyMapItem.use: consumed, then counted.
+        self.award_stat("used", "minecraft:map", 1);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_map_filled(player, &name, id);
         }
