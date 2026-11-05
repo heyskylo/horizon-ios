@@ -24,6 +24,30 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::lan_actions::GuestPlay;
 
+/// `FishingHook.retrieve`: the table's named random sequence, or the level
+/// random when a datapack table does not name one.
+fn fishing_loot(
+    loot: &horizon_world::loot::LootData,
+    sequences: &mut horizon_client::random_sequences::RandomSequences,
+    level_random: &mut LegacyRandom,
+    world_seed: i64,
+    luck: f32,
+    biome: Option<&str>,
+    open_water: bool,
+) -> Vec<horizon_world::loot::LootStack> {
+    let table = "minecraft:gameplay/fishing";
+    match loot.random_sequence(table) {
+        Some(sequence) => loot.roll(
+            table,
+            sequences.get(sequence, world_seed),
+            luck,
+            biome,
+            Some(open_water),
+        ),
+        None => loot.roll(table, level_random, luck, biome, Some(open_water)),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
     Flying,
@@ -196,6 +220,17 @@ fn bite_impulse(r: &mut impl RandomSource) -> f64 {
     // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
     f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
+
+/// `FishingHook` constructor's three independent triangle draws.
+fn cast_velocity(y_sin: f32, y_cos: f32, dir_y: f32, random: &mut LegacyRandom) -> Vec3 {
+    let v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
+    let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    Vec3::new(
+        v.x * (0.6 / len + random.triangle(0.5, 0.0103365)),
+        v.y * (0.6 / len + random.triangle(0.5, 0.0103365)),
+        v.z * (0.6 / len + random.triangle(0.5, 0.0103365)),
+    )
+}
 /// `FishingHook.onHitBlock`: `getDeltaMovement().normalize().scale(hit.distanceTo(this))`,
 /// where `HitResult.distanceTo` is the *squared* distance to the hook: the bobber
 /// springs back a little off a wall instead of stopping dead.
@@ -203,6 +238,123 @@ fn rebound(velocity: Vec3, hit: Vec3, at: Vec3) -> Vec3 {
     velocity.normalize().scale(hit.distance_squared(at))
 }
 impl Game<'_> {
+    /// Run real `catchingFish` states for the vanilla differential harness.
+    pub(super) fn fishing_tick_reference(&mut self) -> Vec<serde_json::Value> {
+        self.world.weather.raining = false;
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            for phase in 0..5 {
+                let mut hook = Hook::remote(1, Vec3::new(0.5, 400.0, 0.5));
+                hook.random = LegacyRandom::new(seed);
+                hook.nibble = if phase == 4 { 2 } else { 0 };
+                hook.time_until_lured = if phase == 1 { 2 } else { 0 };
+                hook.time_until_hooked = match phase {
+                    2 => 3,
+                    3 => 1,
+                    _ => 0,
+                };
+                hook.fish_angle = 12.5;
+                self.catching_fish(&mut hook, [0, 400, 0]);
+                rows.push(serde_json::json!({
+                    "seed": seed, "phase": phase, "nibble": hook.nibble,
+                    "lured": hook.time_until_lured, "hooked": hook.time_until_hooked,
+                    "angle_bits": hook.fish_angle.to_bits() as i32, "next": hook.random.next_long(),
+                }));
+            }
+        }
+        rows
+    }
+    /// Exercise the actual rod-use path with a table without a named sequence.
+    pub(super) fn fishing_fallback_reference(&mut self) -> Vec<serde_json::Value> {
+        let rod = ItemStack {
+            item: Arc::from("minecraft:fishing_rod"),
+            count: 1,
+            damage: 0,
+            extra: None,
+        };
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            let position = self.player.as_ref().expect("harness player").position;
+            let mut hook = Hook::remote(1, position);
+            hook.nibble = 10;
+            hook.random = LegacyRandom::new(seed);
+            self.hook = Some(hook);
+            let item_start = self.dropped.len();
+            let orb_start = self.orbs.len();
+            self.world.random = LegacyRandom::new(seed);
+            self.use_fishing_rod(&rod);
+            let items: Vec<_> = self
+                .dropped
+                .iter()
+                .skip(item_start)
+                .map(|item| item.stack.item.to_string())
+                .collect();
+            let xp: Vec<_> = self
+                .orbs
+                .iter()
+                .skip(orb_start)
+                .map(|orb| orb.value)
+                .collect();
+            rows.push(serde_json::json!({
+                "seed": seed, "level_next": self.world.random.next_long(), "items": items, "xp": xp,
+            }));
+        }
+        rows
+    }
+    /// Exercise `FishingHook.tick` in a still-water block on the server.
+    pub(super) fn fishing_bobbing_reference(&mut self) -> Vec<serde_json::Value> {
+        let old_position = self.player.as_ref().unwrap().position;
+        let block = [
+            old_position.x.floor() as i32,
+            300,
+            old_position.z.floor() as i32,
+        ];
+        let old_block = self.world.block(block[0], block[1], block[2]);
+        let water = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        self.level_set(block, water).unwrap();
+        assert_eq!(
+            self.world.block(block[0], block[1], block[2]),
+            water,
+            "bobbing fixture water not placed"
+        );
+        let x = f64::from(block[0]) + 0.5;
+        let z = f64::from(block[2]) + 0.5;
+        self.player.as_mut().unwrap().position = Vec3::new(x, 300.0, z - 2.0);
+        let old_offhand = self.offhand.replace(ItemStack {
+            item: Arc::from("minecraft:fishing_rod"),
+            count: 1,
+            damage: 0,
+            extra: None,
+        });
+        let old_hook = self.hook.take();
+        self.world.weather.raining = false;
+        let mut rows = Vec::new();
+        for seed in [0_i64, 1, 42, 123456789, -1] {
+            let mut hook = Hook::remote(1, Vec3::new(x, 300.5, z));
+            hook.state = State::Bobbing;
+            hook.velocity = Vec3::new(0.1, 0.03, -0.2);
+            hook.nibble = 0;
+            hook.random = LegacyRandom::new(seed);
+            self.hook = Some(hook);
+            self.tick_fishing();
+            let mut hook = self.hook.take().expect("bobbing hook removed");
+            rows.push(serde_json::json!({
+                "seed": seed,
+                "vx": hook.velocity.x.to_bits() as i64, "vy": hook.velocity.y.to_bits() as i64,
+                "vz": hook.velocity.z.to_bits() as i64, "nibble": hook.nibble, "next": hook.random.next_long(),
+            }));
+        }
+        self.hook = old_hook;
+        self.offhand = old_offhand;
+        self.player.as_mut().unwrap().position = old_position;
+        self.level_set(block, old_block).unwrap();
+        rows
+    }
     fn holds_rod(&self) -> bool {
         self.held()
             .is_some_and(|s| &*s.item == "minecraft:fishing_rod")
@@ -236,10 +388,10 @@ impl Game<'_> {
             return false;
         };
         let at = [p.position.x, p.position.y, p.position.z];
-        let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
         if self.hook.is_some() {
             let damage = self.retrieve_hook(stack);
             self.damage_held(damage);
+            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.retrieve",
                 Some(at),
@@ -247,6 +399,7 @@ impl Game<'_> {
                 pitch,
             );
         } else {
+            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.throw",
                 Some(at),
@@ -265,14 +418,8 @@ impl Game<'_> {
                 eye_y,
                 p.position.z - f64::from(y_cos) * 0.3,
             );
-            let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
-            let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
             let mut random = LegacyRandom::new(unique_seed());
-            v = Vec3::new(
-                v.x * (0.6 / len + random.triangle(0.5, 0.0103365)),
-                v.y * (0.6 / len + random.triangle(0.5, 0.0103365)),
-                v.z * (0.6 / len + random.triangle(0.5, 0.0103365)),
-            );
+            let v = cast_velocity(y_sin, y_cos, dir_y, &mut random);
             self.next_entity += 1;
             self.hook = Some(Hook {
                 id: self.next_entity,
@@ -380,12 +527,18 @@ impl Game<'_> {
                 .as_mut()
                 .and_then(|p| p.attribute("minecraft:luck").ok())
                 .unwrap_or(0.0) as f32;
-            let items = loot.roll(
-                "minecraft:gameplay/fishing",
-                &mut hook.random,
-                hook.luck as f32 + owner_luck,
+            // FishingHook.retrieve calls LootTable.getRandomItems without an
+            // explicit random source. LootContext uses the table's sequence,
+            // or the level random if the table has no sequence.
+            let luck = hook.luck as f32 + owner_luck;
+            let items = fishing_loot(
+                &loot,
+                &mut self.rand_sequences,
+                &mut self.world.random,
+                self.level.seed,
+                luck,
                 biome.as_deref(),
-                Some(hook.open_water),
+                hook.open_water,
             );
             let mut caught = Vec::new();
             for stack in items {
@@ -437,7 +590,9 @@ impl Game<'_> {
                     0,
                 );
                 let xp = hook.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
-                self.spawn_orbs([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
+                // Vanilla constructs a single orb directly; ExperienceOrb.award
+                // would split it and draw a merge id from the level random.
+                self.add_orb([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
             }
             // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
             let bobber = EntityView {
@@ -1594,6 +1749,86 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
+
+    /// Compare the production loot selector to a real FishingHook.retrieve oracle.
+    #[test]
+    #[ignore = "requires prepared resources and the vanilla fishing reference"]
+    fn fishing_retrieve_reference() {
+        use horizon_core::random::{LegacyRandom, RandomSource};
+        use horizon_world::loot::{LootData, PackOverlay};
+        let resources = std::env::var_os("HORIZON_FISHING_RESOURCES").unwrap();
+        let path = std::env::var_os("HORIZON_FISHING_REFERENCE").unwrap();
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 5, "missing vanilla retrieval cases");
+        let loot = LootData::load(std::path::Path::new(&resources), &PackOverlay::NONE).unwrap();
+        for row in rows {
+            let seed = row["sequence_seed"].as_i64().unwrap();
+            let mut sequences = horizon_client::random_sequences::RandomSequences::default();
+            let mut level_random = LegacyRandom::new(1);
+            let items = super::fishing_loot(
+                &loot,
+                &mut sequences,
+                &mut level_random,
+                seed,
+                0.0,
+                None,
+                true,
+            );
+            let drops = row["drops"].as_array().unwrap();
+            let expected_items: Vec<_> = drops.iter().filter(|d| d.get("item").is_some()).collect();
+            assert_eq!(row["damage"].as_i64(), Some(1), "seed {seed}");
+            assert!(
+                !expected_items.is_empty(),
+                "missing vanilla catch for seed {seed}"
+            );
+            assert_eq!(items.len(), expected_items.len(), "seed {seed}");
+            let mut hook_random = LegacyRandom::new(row["hook_seed"].as_i64().unwrap());
+            for (item, expected) in items.iter().zip(expected_items) {
+                assert_eq!(item.item, expected["item"].as_str().unwrap(), "seed {seed}");
+                assert_eq!(i64::from(item.count), expected["count"].as_i64().unwrap());
+                let xp = hook_random.next_int_bound(6).unwrap() + 1;
+                assert!(
+                    drops
+                        .iter()
+                        .any(|d| d["xp"].as_i64() == Some(i64::from(xp)))
+                );
+            }
+            assert_eq!(
+                hook_random.next_long(),
+                row["hook_next"].as_i64().unwrap(),
+                "seed {seed}"
+            );
+            assert_eq!(
+                sequences
+                    .get("minecraft:gameplay/fishing", seed)
+                    .next_long(),
+                row["sequence_next"].as_i64().unwrap(),
+                "seed {seed}"
+            );
+        }
+        let casts: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(std::env::var_os("HORIZON_FISHING_CAST_REFERENCE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(casts.len(), 5, "missing vanilla cast cases");
+        for row in casts {
+            let mut random = LegacyRandom::new(row["seed"].as_i64().unwrap());
+            let (sin, cos, vertical) = super::cast_direction(
+                row["yaw"].as_f64().unwrap() as f32,
+                row["pitch"].as_f64().unwrap() as f32,
+            );
+            let velocity = super::cast_velocity(sin, cos, vertical, &mut random);
+            for (name, value) in [
+                ("x_bits", velocity.x),
+                ("y_bits", velocity.y),
+                ("z_bits", velocity.z),
+            ] {
+                assert_eq!(value.to_bits() as i64, row[name].as_i64().unwrap(), "{row}");
+            }
+            assert_eq!(random.next_long(), row["next"].as_i64().unwrap(), "{row}");
+        }
+    }
     #[test]
     fn a_breeze_deflects_the_hook_without_attaching_it() {
         use super::{EntityCollision, Hook, State};
