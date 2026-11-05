@@ -170,7 +170,30 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
         }),
         "minecraft:slot_source" => element_or_list(t, &|x| {
-            dispatch(x, reg, "minecraft:slot_source_type", &|_, _, _| Ok(()))
+            dispatch(x, reg, "minecraft:slot_source_type", &|id, map, t| {
+                if id == "minecraft:contents" {
+                    require(map, t, &["component"])?;
+                    let value = get(map, "component").expect("required component");
+                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
+                    let component = parse_identifier(&name)
+                        .ok_or_else(|| format!("Not a valid resource location: {name}"))?;
+                    let known = reg.ids("minecraft:data_component_type");
+                    if !known.is_empty() && !known.contains(&component) {
+                        return Err(format!(
+                            "Unknown registry key in ResourceKey[minecraft:root / minecraft:data_component_type]: {component}"
+                        ));
+                    }
+                    if !matches!(
+                        component.as_str(),
+                        "minecraft:container"
+                            | "minecraft:bundle_contents"
+                            | "minecraft:charged_projectiles"
+                    ) {
+                        return Err("No items in component".into());
+                    }
+                }
+                Ok(())
+            })
         }),
         // Dialog types: CommonDialogData's title, then each type's own.
         "minecraft:dialog" => dispatch(t, reg, "minecraft:dialog_type", &|id, map, t| {
@@ -259,6 +282,41 @@ mod predicate_tests {
             r#"{type:"minecraft:inverted",term:{}}"#,
         ] {
             assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod contents_component_tests {
+    use super::*;
+
+    #[test]
+    fn only_component_collections_are_admitted_for_contents_sources() {
+        let reg = Registries::default();
+        for component in [
+            "container",
+            "bundle_contents",
+            "charged_projectiles",
+            "damage",
+        ] {
+            let raw = Tag::compound([
+                ("type", Tag::String("contents".into())),
+                ("component", Tag::String(component.into())),
+                (
+                    "slot_source",
+                    Tag::compound([
+                        ("type", Tag::String("slot_range".into())),
+                        ("slots", Tag::String("container.0".into())),
+                    ]),
+                ),
+            ]);
+            let result = decode("minecraft:slot_source", &raw, &reg);
+            if component == "damage" {
+                // Exact outer codec error independently captured from Java.
+                assert_eq!(result, Err(r#"Failed to parse either. First: No items in component; Second: Failed to parse either. First: Not a string; Second: Failed to parse either. First: Not a list: {component:"damage",slot_source:{slots:"container.0",type:"slot_range"},type:"contents"}; Second: No items in component"#.into()));
+            } else {
+                assert_eq!(result, Ok(()));
+            }
         }
     }
 }

@@ -39,10 +39,13 @@ impl DensitySampler for RangeChoiceSampler {
             context.with_buffer(volume.size(), |context, outside| {
                 self.when_out_of_range
                     .sample_volume(context, outside, volume)?;
-                for i in 0..buffer.len() {
-                    if !self.contains(input[i]) {
-                        buffer[i] = outside[i];
-                    }
+                // A select rather than a conditional store, so the loop vectorizes.
+                for ((value, &input), &outside) in buffer.iter_mut().zip(&*input).zip(&*outside) {
+                    *value = if self.contains(input) {
+                        *value
+                    } else {
+                        outside
+                    };
                 }
                 Ok(())
             })

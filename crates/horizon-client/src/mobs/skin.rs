@@ -87,7 +87,7 @@ impl SkinModels {
         frame.clear_draws();
     }
 
-    fn restart(&mut self, frame: &mut SkinFrame) {
+    pub fn restart(&mut self, frame: &mut SkinFrame) {
         self.stored.clear();
         self.items.clear();
         self.vertices = 0;
@@ -506,6 +506,33 @@ mod tests {
     use super::*;
     use crate::gfx::entity_skin::expand;
     use crate::mobs::{Mob, MobData, MobTypes, render};
+
+    #[test]
+    fn restart_clears_models_and_marks_frame_reset() {
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        frame.jobs.push(Default::default());
+        frame.parts.push(SkinPart {
+            matrix: [0.0; 16],
+            normal: [0.0; 9],
+        });
+        frame.vertices = 4;
+        frame.outline_jobs.push(Default::default());
+        frame.outline_vertices = 4;
+        assert!(frame.pending());
+
+        models.restart(&mut frame);
+        frame.clear_draws();
+
+        assert_eq!(models.vertices, 0);
+        assert_eq!(frame.base, 0);
+        assert_eq!(frame.vertices, 0);
+        assert_eq!(frame.outline_vertices, 0);
+        assert!(frame.jobs.is_empty());
+        assert!(frame.parts.is_empty());
+        assert!(frame.outline_jobs.is_empty());
+        assert!(frame.reset);
+    }
 
     /// Every vanilla mob, at a few ages and turns: the GPU path's vertices
     /// (its jobs expanded as `entity_skin.wgsl` does) are the CPU path's, to

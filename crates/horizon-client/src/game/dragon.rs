@@ -111,6 +111,12 @@ pub(super) struct Fight {
     needs_scan: bool,
     pub killed: bool,
     pub previously_killed: bool,
+    /// `dragonUUID`: the fight's own dragon. Only its death wins the fight
+    /// (`setDragonKilled`); a dragon summoned after the fight is won is not it.
+    dragon_uuid: Option<[i32; 4]>,
+    /// `ticksSinceDragonSeen`: ticks since the fight's dragon last ticked
+    /// (`updateDragon`); at 1200 the fight looks for another one.
+    dragon_unseen: i32,
     gateways: Vec<i32>,
     exit_portal: Option<[i32; 3]>,
     alive_crystals: i32,
@@ -391,6 +397,8 @@ pub(super) struct Dragon {
     /// The player a crystal destroyed while it held its pattern sends it
     /// after (`strafe_after_crystal`), taken on its next tick.
     strafe_request: Option<FightWho>,
+    /// `Mob.isNoAi` (`NoAI`): it flaps in place, with no phase or flight.
+    no_ai: bool,
     random: LegacyRandom,
 }
 /// A player in the fight: the window's own player, or a guest by
@@ -520,6 +528,7 @@ impl Dragon {
             nodes: None,
             nearest_crystal: None,
             strafe_request: None,
+            no_ai: false,
             random: LegacyRandom::new(seed),
         }
     }
@@ -835,6 +844,10 @@ impl Game<'_> {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
                 _ => None,
             },
+            dragon_uuid: match data.and_then(|d| d.get("dragon_uuid")) {
+                Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+                _ => None,
+            },
             // The first tick scans for players.
             player_scan: 21,
             ..Default::default()
@@ -885,6 +898,9 @@ impl Game<'_> {
         ];
         if let Some(p) = f.exit_portal {
             data.push(("exit_portal_location", Tag::IntArray(p.to_vec())));
+        }
+        if let Some(u) = f.dragon_uuid {
+            data.push(("dragon_uuid", Tag::IntArray(u.to_vec())));
         }
         if let Some((stage, _)) = f.respawn {
             data.push(("respawn_stage", Tag::String(stage.name().into())));
@@ -1018,11 +1034,7 @@ impl Game<'_> {
         }
         if self.fight.players {
             if self.fight.needs_scan {
-                // scanState: a missing exit portal means a fight in progress.
-                self.fight.previously_killed = self.end_portal_active();
-                if !self.fight.previously_killed {
-                    self.fight.killed = false;
-                }
+                self.scan_state();
                 self.fight.needs_scan = false;
                 self.fight.dirty = true;
             }
@@ -1030,8 +1042,19 @@ impl Game<'_> {
                 self.tick_respawn();
             }
             if !self.fight.killed {
-                if self.dragon.is_none() {
-                    self.create_new_dragon();
+                // Without a dragon of its own, or 1200 ticks after it last
+                // ticked, the fight takes the End's dragon or makes one
+                // (`findOrCreateDragon`).
+                let look = match self.fight.dragon_uuid {
+                    None => true,
+                    Some(_) => {
+                        self.fight.dragon_unseen += 1;
+                        self.fight.dragon_unseen >= 1200
+                    }
+                };
+                if look {
+                    self.find_or_create_dragon();
+                    self.fight.dragon_unseen = 0;
                 }
                 self.fight.crystal_scan += 1;
                 if self.fight.crystal_scan >= 100 {
@@ -1052,6 +1075,12 @@ impl Game<'_> {
         for c in self.crystals.iter_mut().filter(|c| c.id == 0) {
             self.next_entity += 1;
             c.id = self.next_entity;
+        }
+        // updateDragon, from the fight's dragon's aiStep (not with NoAI) and
+        // tickDeath: it has been seen.
+        let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
+        if ticks && self.is_fight_dragon() {
+            self.fight.dragon_unseen = 0;
         }
         self.tick_dragon();
     }
@@ -2112,6 +2141,12 @@ impl Game<'_> {
         }
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
+        // EnderDragon.aiStep with isNoAi: the flap stops half way, and nothing
+        // else moves it (no flight history, phase, steering or parts).
+        if d.no_ai {
+            d.flap = 0.5;
+            return;
+        }
         d.record();
         self.tick_phase();
         // Steering towards the phase's fly target.
@@ -2380,6 +2415,16 @@ impl Game<'_> {
             d.in_wall = in_wall;
         }
     }
+    /// `Entity.isSilent` of the dragon: its `Silent`, kept with the fields
+    /// Horizon models nowhere (`remember_tags`: `/summon`, a load).
+    fn dragon_silent(&self) -> bool {
+        let raw = self
+            .dragon
+            .as_ref()
+            .filter(|d| d.id != 0)
+            .and_then(|d| self.persist.raw.get(&d.id));
+        saved_silent(raw)
+    }
     /// `tickDeath`: rising for 200 ticks, explosions, experience, then the
     /// exit portal, the egg and a gateway.
     fn tick_dragon_death(&mut self) {
@@ -2405,18 +2450,19 @@ impl Game<'_> {
                 [0.0; 3],
             );
         }
-        // ServerLevel.getDragonFight: only the End has a fight; elsewhere
-        // (`/summon`) a dragon is worth 500 and its death ends nothing.
-        let fight = self.dim == Dim::End;
+        // Only the fight's own dragon has a fight (`dragonFight`): elsewhere
+        // (`/summon`), or summoned in the End after the fight is won, a
+        // dragon is worth 500 and its death ends nothing.
+        let fight = self.is_fight_dragon();
         let first_kill = fight && !self.fight.previously_killed;
         let xp = if first_kill { 12000 } else { 500 };
         let drops = self.ui.rules.bool("mob_drops");
         if t > 150 && t % 5 == 0 && drops {
             self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.08) as u32);
         }
-        if t == 1 {
+        if t == 1 && !self.dragon_silent() {
             // EnderDragon.tickDeath: global level event 1028, the death
-            // roar, heard everywhere.
+            // roar, heard everywhere, unless the dragon is silent.
             let at = [p.x, p.y, p.z].map(|v| v.floor() as i32);
             self.global_level_event(1028, at, 0);
         }
@@ -2706,7 +2752,7 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.motion.health, self.world.health_rules);
+        let (health, rules) = (&self.health_resources, self.world.health_rules);
         let id = health.damage.id("minecraft:mob_attack");
         let mut canceled = false;
         if let Some(p) = self.player.as_mut() {
@@ -3245,6 +3291,11 @@ impl Game<'_> {
         }
     }
 }
+/// `Entity.isSilent` from an entity's saved compound: `Silent`, written only
+/// when set.
+fn saved_silent(raw: Option<&Tag>) -> bool {
+    matches!(raw.and_then(|t| t.get("Silent")), Some(Tag::Byte(b)) if *b != 0)
+}
 /// Saving and loading the dragon and the crystals as chunk entities.
 impl Dragon {
     pub(super) fn to_nbt(&self, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -3260,6 +3311,10 @@ impl Dragon {
             map.insert("Health".into(), Tag::Float(self.health.to_bits()));
             map.insert("DragonPhase".into(), Tag::Int(self.phase.id()));
             map.insert("DragonDeathTime".into(), Tag::Int(self.death_time));
+            // Mob.addAdditionalSaveData writes NoAI only when set.
+            if self.no_ai {
+                map.insert("NoAI".into(), Tag::Byte(1));
+            }
             map.insert(
                 "sitting_damage_received".into(),
                 Tag::Float(self.sitting_damage.to_bits()),
@@ -3280,6 +3335,7 @@ impl Dragon {
         if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
             d.death_time = *t;
         }
+        d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
         Some(d)
     }
 }
@@ -3396,6 +3452,10 @@ impl Game<'_> {
         let phase = d.phase.id();
         if phase != 10 {
             meta.push((16, serializer::INT, Value::Int(phase)));
+        }
+        // Mob.DATA_MOB_FLAGS_ID: NoAI is its first bit.
+        if d.no_ai {
+            meta.push((15, serializer::BYTE, Value::Byte(1)));
         }
         Some(horizon_client::lan::entity::EntityState {
             id: d.id as i32,
@@ -3532,9 +3592,10 @@ impl Game<'_> {
     /// drops it, and a killed dragon never gets there.
     pub(super) fn kill_dragon(&mut self, id: u32) {
         if self.dragon.as_ref().is_some_and(|d| d.id == id) {
+            // Only the fight's own dragon (`dragonFight`) ends it.
+            let fight = self.is_fight_dragon();
             self.dragon = None;
-            // ServerLevel.getDragonFight: only the End has a fight.
-            if self.dim == Dim::End {
+            if fight {
                 self.dragon_killed();
             }
         }
@@ -3829,10 +3890,67 @@ impl Game<'_> {
         }
     }
     /// `EnderDragonFight.createNewDragon`: over the podium, holding pattern, a random yaw.
+    /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = self.world.random.next_long();
-        self.dragon = Some(Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed));
+        let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // EnderDragon's constructor takes its id and its parts' from the
+        // entity counter.
+        d.id = self.next_entity + 1;
+        self.next_entity += 9;
+        let id = d.id;
+        self.dragon = Some(d);
+        self.fight.dragon_uuid = Some(self.uuid_for(id));
+        self.fight.dirty = true;
+    }
+    /// `EnderDragonFight.findOrCreateDragon`: the End's dragon becomes the
+    /// fight's, or a new one is made.
+    fn find_or_create_dragon(&mut self) {
+        match self.dragon.as_ref().map(|d| (d.id, d.alive())) {
+            None => self.create_new_dragon(),
+            Some((id, true)) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.dirty = true;
+            }
+            // `ServerLevel.getDragons` takes only living dragons, so vanilla
+            // makes a new one beside a dying one; with one dragon to a level,
+            // the new one comes once the dying one is gone.
+            Some((_, false)) => {}
+        }
+    }
+    /// `EnderDragonFight.scanState`, for a world from before the fight was
+    /// saved: an active exit portal means the dragon was killed before. A
+    /// living dragon there is the fight's, unless there is no active portal:
+    /// then it is removed for a new one.
+    fn scan_state(&mut self) {
+        let active = self.end_portal_active();
+        self.fight.previously_killed = active;
+        match self.dragon.as_ref().filter(|d| d.alive()).map(|d| d.id) {
+            None => self.fight.killed = true,
+            Some(id) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.killed = false;
+                if !active {
+                    self.dragon = None;
+                    self.fight.dragon_uuid = None;
+                }
+            }
+        }
+        if !self.fight.previously_killed && self.fight.killed {
+            self.fight.killed = false;
+        }
+    }
+    /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
+    /// only for the dragon whose UUID is the fight's `dragonUUID`).
+    fn is_fight_dragon(&mut self) -> bool {
+        if self.dim != Dim::End {
+            return false;
+        }
+        match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
+            (Some(id), Some(uuid)) if id != 0 => self.uuid_for(id) == uuid,
+            _ => false,
+        }
     }
     /// The END stage: the portal crystals blow up (no block damage) and a
     /// new dragon takes over.
@@ -3972,6 +4090,8 @@ impl Game<'_> {
             match (index, value) {
                 (9, Value::Float(health)) => d.health = *health,
                 (16, Value::Int(phase)) => d.set_phase(Phase::from_id(*phase)),
+                // Mob.DATA_MOB_FLAGS_ID: isNoAi.
+                (15, Value::Byte(flags)) => d.no_ai = flags & 1 != 0,
                 _ => {}
             }
         }
@@ -4128,6 +4248,11 @@ impl Game<'_> {
         }
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
+        // EnderDragon.aiStep on a client with isNoAi, as on the server.
+        if d.no_ai {
+            d.flap = 0.5;
+            return;
+        }
         d.record();
         self.remote_dragon_phase_tick();
         self.place_dragon_parts();
@@ -4317,6 +4442,24 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
+    /// `!isSilent()`; `Silent` is saved only when set, as a byte.
+    #[test]
+    fn a_dragon_is_silent_only_with_a_set_silent_byte() {
+        use horizon_world::nbt::{Compound, Tag};
+        let with = |v: Option<i8>| {
+            let mut map = Compound::new();
+            if let Some(b) = v {
+                map.insert("Silent".into(), Tag::Byte(b));
+            }
+            Tag::Compound(map)
+        };
+        assert!(!super::saved_silent(None));
+        assert!(!super::saved_silent(Some(&with(None))));
+        assert!(!super::saved_silent(Some(&with(Some(0)))));
+        assert!(super::saved_silent(Some(&with(Some(1)))));
     }
 
     #[test]
