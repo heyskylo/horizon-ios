@@ -152,6 +152,17 @@ fn an_integer_vertex_output_without_flat_travels_flat() {
 }
 
 #[test]
+fn a_matrix_built_from_one_vector_takes_its_components_column_by_column() {
+    // Bloop: `mat2(fract(sin(...vec4...)))` in its water noise.
+    assert_terrain_translates(
+        "#version 330\nfloat n2d(vec2 p) {\n vec2 i = floor(p);\n p -= i;\n\
+         return dot(mat2(fract(sin(mod(vec4(0, 1, 113, 114) + dot(i, vec2(1, 113)), 6.2831853)) * 43758.5453)) \
+         * vec2(1. - p.y, p.y), vec2(1. - p.x, p.x));\n}\n\
+         layout(location = 0) out vec4 color;\nvoid main() { color = vec4(n2d(vec2(0.5))); }\n",
+    );
+}
+
+#[test]
 fn integer_samplers_read_through_the_float_sampling_functions() {
     // Mello, Voyager, Exposa, Reverie: `uint mask = texture(colortex3, uv).r` on a usampler2D.
     let module = assert_terrain_translates(
