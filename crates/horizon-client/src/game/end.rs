@@ -467,7 +467,7 @@ impl Game<'_> {
                     self.set_state_named(p, "minecraft:end_portal", &[])?;
                 }
             }
-            let _ = self.process_level_events();
+            self.process_level_events()?;
             // EnderEyeItem.useOn: global level event 1038 (END_PORTAL_SPAWN),
             // heard by every player (vanilla places it at the frame's corner
             // + (1, 0, 1); only its direction matters).
@@ -1856,20 +1856,5 @@ mod tests {
         for (x, y) in [(-60.0, -180.0), (10.0, 95.0), (-25.0, 3.0)] {
             assert!((at(x, y).length() - 100.0).abs() < 1e-3);
         }
-    }
-
-    #[test]
-    fn portal_ring_opening_cells_are_nine_around_center() {
-        let center = [10, 64, 20];
-        let mut cells = Vec::new();
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                cells.push([center[0] + dx, center[1], center[2] + dz]);
-            }
-        }
-        assert_eq!(cells.len(), 9);
-        assert!(cells.contains(&[10, 64, 20]));
-        assert!(cells.contains(&[9, 64, 19]));
-        assert!(cells.contains(&[11, 64, 21]));
     }
 }
