@@ -482,6 +482,7 @@ impl Game<'_> {
             lang::Language::load(&[&root], &code)
         });
         self.refresh_remote_language();
+        self.invalidate_pvp_hud();
         self.audio.reload_with(&root, sounds);
         self.clear_lod();
         // A pack that may replace leaf models falls back to `Off` before the

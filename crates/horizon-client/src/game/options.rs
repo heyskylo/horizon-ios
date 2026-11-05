@@ -432,6 +432,7 @@ impl Game<'_> {
     pub(super) fn load_language(&mut self, code: &str) {
         let root = self.options.resources.clone();
         lang::set(lang::Language::load(&[&root], code));
+        self.invalidate_pvp_hud();
         self.refresh_remote_language();
         self.ui.chat.rescale(&self.gui.atlas);
         self.creative_screen.forget_items();

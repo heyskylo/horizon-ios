@@ -180,9 +180,22 @@ impl Game<'_> {
             self.pvp.combo.hurt(id, by_me, now);
         }
     }
-    /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
+    /// Replace vanilla's effect icons only when the custom widget's corner can draw.
     pub(super) fn pvp_effects_shown(&self) -> bool {
-        self.settings.extras.pvp.hud.effects
+        let hud = self.settings.extras.pvp.hud;
+        hud.effects && self.native_corner_shown(hud.effects_corner)
+    }
+    /// Text and measured widths belong to the current language/font atlas.
+    /// Forget those caches without resetting combat or chat-search state.
+    pub(super) fn invalidate_pvp_hud(&mut self) {
+        let state = &mut self.pvp;
+        state.armour.clear();
+        state.effects.clear();
+        state.held.clear();
+        state.ping.clear();
+        state.coords.clear();
+        state.server.clear();
+        state.combo_count.clear();
     }
     /// The HUD widgets that are on, after the minimap and before mods' boxes. Each rebuilds its
     /// lines only when what it shows changed.
