@@ -516,6 +516,8 @@ fn rewrite(path: &Path, gone: &Bits) -> io::Result<()> {
     match writer {
         Some(w) => {
             w.finish()?;
+            // The new file keeps the old one's permissions (a server folder readable by its owner only).
+            fs::set_permissions(&staged, fs::metadata(path)?.permissions())?;
             fs::rename(&staged, path)
         }
         None => fs::remove_file(path),
@@ -915,6 +917,11 @@ mod tests {
         assert!(ow.join("region/r.5.5.mca").is_file());
         assert!(dry.summary.contains("Would delete (dry run) 5 of 19 chunks"), "{}", dry.report);
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(ow.join("region/r.2.0.mca"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let done = run(&world, &settings(4), true, 2).unwrap();
         assert!(done.summary.starts_with("Deleted 5 of 19 chunks"), "{}", done.report);
         let mut kept: Vec<Chunk> = vec![(65, 20), (90, 5), (91, 5)];
@@ -931,6 +938,12 @@ mod tests {
         assert_eq!(chunks_in(&ow.join("entities/r.2.0.mca")), vec![(70, 5)]);
         assert!(!ow.join("poi/r.2.0.mca").exists());
         assert!(!ow.join("region").join(STAGING).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(ow.join("region/r.2.0.mca")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "a rewritten file keeps its permissions");
+        }
 
         // Compacted: 2 header sectors plus one per kept chunk (each fits one), and the kept bytes as they were.
         let after = fs::read(ow.join("region/r.2.0.mca")).unwrap();
