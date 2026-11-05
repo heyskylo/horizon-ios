@@ -48,7 +48,12 @@ impl Game<'_> {
     fn modern_weapon_damage(&self) -> f64 {
         use horizon_client::mobs::equip::{Slot, attribute_with};
         self.attack_item_info().map_or(0.0, |info| {
-            attribute_with(&info.modifiers, "minecraft:attack_damage", 1.0, Slot::MainHand) - 1.0
+            attribute_with(
+                &info.modifiers,
+                "minecraft:attack_damage",
+                1.0,
+                Slot::MainHand,
+            ) - 1.0
         })
     }
 
