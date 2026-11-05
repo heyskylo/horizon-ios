@@ -59,6 +59,7 @@ mod owner_page;
 mod packs_page;
 mod partner;
 mod perf;
+mod picture_cache;
 mod plate;
 mod profile_heads;
 mod scene;
@@ -471,6 +472,8 @@ struct Launcher {
     multiplayer: multiplayer_page::Multiplayer,
     screenshots: screenshots_page::Screenshots,
     shot_blur: glass_shot_blur::ShotBlur,
+    /// Pictures from disk made at their drawn size (`picture_cache`).
+    pictures: picture_cache::Pictures,
     game_packs: packs_page::Packs,
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
@@ -729,6 +732,7 @@ impl Launcher {
             multiplayer: multiplayer_page::Multiplayer::default(),
             screenshots: screenshots_page::Screenshots::default(),
             shot_blur: Default::default(),
+            pictures: Default::default(),
             game_packs: packs_page::Packs::default(),
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
@@ -3588,19 +3592,25 @@ impl Launcher {
                         gpui::linear_color_stop(t.page.opacity(to), at),
                     ))
             };
-            let picture = self.home_background().map(|path| {
-                [
-                    gpui::img(path)
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover)
-                        .into_any_element(),
-                    veil(90., 0.82, 0., 0.62).into_any_element(),
-                    veil(180., 0., 0.75, 1.).into_any_element(),
-                ]
-            });
+            // Fitted to a 4K screen (`picture_cache`): a chosen picture may be far bigger.
+            let picture = self
+                .home_background()
+                .and_then(|path| {
+                    self.picture(&path, picture_cache::Look::Fit(picture_cache::FULL), cx)
+                })
+                .map(|image| {
+                    [
+                        gpui::img(image)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        veil(90., 0.82, 0., 0.62).into_any_element(),
+                        veil(180., 0., 0.75, 1.).into_any_element(),
+                    ]
+                });
             div()
                 .relative()
                 .flex()
@@ -5322,6 +5332,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
+        self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
