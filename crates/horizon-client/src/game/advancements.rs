@@ -209,8 +209,21 @@ impl adv::World for View<'_, '_> {
     fn smokey(&self, p: [i32; 3]) -> bool {
         horizon_client::beehive::smokey(&self.0.mob_world_base(&[]), p)
     }
+    fn block_entity_nbt(&self, p: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        self.0.block_entity_nbt(p)
+    }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
-        let items = &self.0.res.items();
+        // The world's packs' tags over the game's own, as the server's
+        // registries bind them (`TagLoader.loadTagsForExistingRegistries`).
+        if let Some(tags) = self
+            .0
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get(registry))
+        {
+            return tags.get(tag).is_some_and(|t| t.contains(id));
+        }
+        let items = self.0.items();
         match registry {
             "item" => items.item_in_tag(tag, id),
             "block" => items.block_in_tag(tag, id),
@@ -871,10 +884,7 @@ impl Game<'_> {
             .recipe_book
             .add_recipes(&world_stations!(self).recipe_index, &rewards);
         for table in &a.rewards.loot {
-            let items = self
-                .res
-                .items()
-                .loot_table(table, false, None, &mut self.world.random);
+            let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
             for s in items {
                 if let Some(rest) = self.give(s)
                     && let Some(eye) = self.eye_position()

@@ -2493,9 +2493,6 @@ impl Game<'_> {
                     // survives the reopen, so it follows the change.
                     self.level.set_difficulty(self.ui.difficulty);
                     self.sync_rules();
-                    if self.ui.difficulty == 0 {
-                        self.mobs.retain(|m| !m.hostile());
-                    }
                     host.hub
                         .broadcast(&C::ChangeDifficulty(play::ChangeDifficulty {
                             difficulty: i32::from(self.ui.difficulty),
@@ -4585,6 +4582,13 @@ impl Game<'_> {
                 health: &game.health_resources,
             }
             .server_travel();
+            // Player.aiStep's entity contacts run with the player's body,
+            // even when the level and its mobs are frozen. Flush their damage
+            // events and marked velocity through the existing guest path.
+            game.touch_pufferfish();
+            let Some(player) = game.player.as_mut() else {
+                return (events, None);
+            };
             // Landing damage from this travel reaches the tracker too.
             events.append(&mut player.events);
             // A hurt since the last tick marked the velocity (Entity.markHurt):
@@ -4662,18 +4666,31 @@ impl Game<'_> {
                         host.hub.sound(name, at, volume, pitch, source, None);
                     }
                 }
-                // LivingEntity.causeFallDamage: Player.playSound skips the
-                // guest, whose own client plays it; everyone else hears it.
+                // LivingEntity.causeFallDamage, and HoneyBlock.fallOn's
+                // `entity.playSound`: Player.playSound skips the guest, whose
+                // own client plays it; everyone else hears it.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
                     sound,
                     volume,
                     pitch,
                     ..
                 }) => {
-                    if let Some(name) = sound.player_fall_sound() {
+                    if let Some(name) = sound
+                        .player_fall_sound()
+                        .or_else(|| sound.honey_landing_sound())
+                    {
                         let source = horizon_client::settings::sound_source(name) as i32;
                         self.audio.play_unshared(name, Some(at), volume, pitch);
                         host.hub.sound(name, at, volume, pitch, source, Some(conn));
+                    }
+                }
+                // HoneyBlock.fallOn: entity event 54, including the player who
+                // landed (`broadcastEntityEvent` has no excluded player).
+                MotionEvent::Fall(horizon_client::landing::FallEvent::Broadcast(event))
+                    if horizon_client::landing::honey_particle_count(event as i8).is_some() =>
+                {
+                    if let Some(id) = host.hub.guest(conn).map(|g| g.entity_id) {
+                        host.hub.entity_event(id, event as i8, at);
                     }
                 }
                 MotionEvent::Fall(event) => self.landing_block_updates(&event),

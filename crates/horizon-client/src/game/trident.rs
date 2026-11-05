@@ -253,6 +253,8 @@ impl Game<'_> {
             .unwrap_or_else(|| self.items().get(&stack.item).map_or(250, |i| i.max_damage))
     }
     /// `TridentItem.use`: start the throw unless one more use would break it.
+    /// Returns false for `InteractionResult.FAIL` (about to break, or Riptide
+    /// while dry) so callers neither dip the hand nor consume the click.
     pub(super) fn use_trident(&mut self, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:trident" {
             return false;
@@ -260,7 +262,7 @@ impl Game<'_> {
         let max = self.trident_max_damage(stack);
         let riptide = stack.enchantment_level("minecraft:riptide") > 0;
         if stack.damage >= max.saturating_sub(1) || (riptide && !self.in_water_or_rain()) {
-            return true;
+            return false;
         }
         self.start_using_item();
         true

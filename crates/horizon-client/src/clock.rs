@@ -2,6 +2,18 @@
 //! milliseconds turn into game ticks, partial ticks and real-time deltas, and
 //! the `/tick` freeze, step and sprint state.
 
+/// `HORIZON_STILL=1`, read once (`FixedStep::still`).
+fn still_requested() -> bool {
+    static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STILL.get_or_init(|| {
+        let on = std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1");
+        if on {
+            log::warn!("HORIZON_STILL=1: worlds start frozen (/tick unfreeze), frames follow the world's ticks");
+        }
+        on
+    })
+}
+
 /// `DeltaTracker.Timer`: float arithmetic on integer milliseconds, exactly as
 /// the client does it.
 #[derive(Clone, Debug)]
@@ -311,11 +323,23 @@ pub struct FixedStep {
     /// (`ServerTickRateManager.updateStepTicks` broadcasts each one).
     step_changes: u32,
     step_requested: i32,
+    /// `HORIZON_STILL=1`, a dev switch for screenshots that come out the same every run: the
+    /// world starts frozen, and while it is, the camera's partial tick is held at 1 as the
+    /// level's is. With the frame's other time (`Game::visual_ticks`) following the world's
+    /// ticks, a frozen scene draws the same frame every time, and `/tick step` moves it on by
+    /// whole ticks.
+    still: bool,
 }
 
 impl Default for FixedStep {
     fn default() -> Self {
-        Self {
+        Self::new(still_requested())
+    }
+}
+
+impl FixedStep {
+    fn new(still: bool) -> Self {
+        let mut clock = Self {
             timer: Timer::new(20.0, 0),
             manager: ServerTickRateManager::default(),
             now: std::time::Duration::ZERO,
@@ -328,11 +352,16 @@ impl Default for FixedStep {
             client: false,
             step_changes: 0,
             step_requested: 0,
-        }
+            still,
+        };
+        // Frozen before any tick: how many run while the world loads differs between runs.
+        clock.manager.base.set_frozen(still);
+        clock
     }
-}
-
-impl FixedStep {
+    /// `HORIZON_STILL` (`still`).
+    pub fn still(&self) -> bool {
+        self.still
+    }
     /// The clock of a client connected to a server: the `ClientLevel`'s
     /// `TickRateManager`, set by the server's ticking packets.
     pub fn client() -> Self {
@@ -386,8 +415,12 @@ impl FixedStep {
     }
     /// The camera entity's partial tick (`Camera.getCameraEntityPartialTicks`
     /// for a player, who is never frozen): `getGameTimeDeltaPartialTick(true)`,
-    /// so the view and the hand stay smooth in a frozen level.
+    /// so the view and the hand stay smooth in a frozen level. Under `still`, held at 1 there
+    /// like the level's, so a frame doesn't depend on when it's drawn.
     pub fn camera_fraction(&self) -> f64 {
+        if self.still && !self.runs_normally() {
+            return 1.0;
+        }
         f64::from(self.timer.game_time_delta_partial_tick(true))
     }
     /// After a frame: whether the game is paused by a screen (the residual
@@ -553,6 +586,23 @@ mod tests {
         clock.end_frame(false);
         assert_eq!(clock.fraction(), 1.0, "frozen entities stay put");
         assert_eq!(clock.camera_fraction(), 0.5, "the player does not");
+    }
+    #[test]
+    fn a_still_clock_starts_frozen_and_holds_the_camera_too() {
+        let mut clock = FixedStep::new(true);
+        clock.world_runs();
+        assert!(!clock.runs_normally(), "frozen before the first tick");
+        clock.advance(std::time::Duration::from_millis(25));
+        clock.end_frame(false);
+        assert_eq!(clock.fraction(), 1.0);
+        assert_eq!(clock.camera_fraction(), 1.0);
+        // `/tick unfreeze`: the world runs as without the switch.
+        clock.set_frozen(false);
+        assert!(clock.world_runs());
+        assert!(
+            FixedStep::new(false).world_runs(),
+            "without the switch, unfrozen"
+        );
     }
     #[test]
     fn only_a_started_or_stopped_step_is_broadcast() {

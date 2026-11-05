@@ -38,6 +38,7 @@ pub(super) mod events;
 mod management;
 mod report;
 mod status;
+mod transfer;
 
 /// What the tick loop tells `ServerWatchdog`: when the tick in progress was
 /// due (`getNextTickTime`), how long a tick is, and whether the server runs.
@@ -985,9 +986,6 @@ impl Game<'_> {
         };
         self.level.set_difficulty(self.ui.difficulty);
         self.sync_rules();
-        if self.ui.difficulty == 0 {
-            self.mobs.retain(|m| !m.hostile());
-        }
         // DedicatedServer.initServer: a legacy `announce-player-achievements`
         // sets the show_advancement_messages rule once, as the file is read.
         if let Some(announce) = props.announce_player_achievements {
@@ -1025,6 +1023,18 @@ impl Game<'_> {
             .filter(|b| png_size(b) == Some((64, 64)));
         // Behind a Velocity proxy: `forwarding.secret` in the server folder, like the proxy's own file.
         let forwarding_secret = forwarding_secret(online.is_some())?;
+        // `[transfer]` on: a player's only way in must be the proxy, or one who joins this server
+        // directly finds the older copy of itself that a hand-over left here, and items double.
+        let transfers = self
+            .options
+            .transfers
+            .clone()
+            .map(horizon_client::lan::arrivals::Transfers::new);
+        if transfers.is_some() && forwarding_secret.is_none() {
+            return Err("server.toml's [transfer] is on, but players can join this server without the proxy: \
+                 turn on Velocity forwarding (forwarding.secret, docs/velocity-forwarding.md) or turn [transfer] off"
+                .into());
+        }
         let net = NetConfig {
             bind: (!props.server_ip.is_empty())
                 .then(|| props.server_ip.parse().ok())
@@ -1053,6 +1063,7 @@ impl Game<'_> {
             gate: Some(gate),
             online,
             forwarding_secret,
+            arrivals: transfers.as_ref().map(|t| t.expected.clone()),
             log: Some(NetLog {
                 write: Arc::new(log_from),
                 lang: Arc::new(horizon_client::net::load_language(&self.options.resources)),
@@ -1113,6 +1124,22 @@ impl Game<'_> {
             log("WARN", &format!("The exception was: {e}"));
             log("WARN", "Perhaps a server is already running on that port?");
             return Ok(());
+        }
+        if let Some(transfers) = transfers
+            && let Some(host) = self.lan.as_mut()
+        {
+            let s = &transfers.settings;
+            log(
+                "INFO",
+                &format!(
+                    "Transfers on (server.toml [transfer]): players expected for {} s ({} s at most, {} at once), frozen for {} ticks at most",
+                    s.expect.as_secs(),
+                    s.max_expect.as_secs(),
+                    s.max_expected,
+                    s.max_freeze_ticks
+                ),
+            );
+            host.hub.transfers = Some(transfers);
         }
         self.sync_ops(&lists);
         let anticheat = load_anticheat();

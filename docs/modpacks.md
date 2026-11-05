@@ -880,6 +880,15 @@ templates miss; **not yet** with the API tier it waits for, or the dependency; *
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
 (the 20 CurseForge-only rows the reviewed table only guesses) count as not yet.
 
+Both files open with a plain headline for players, counted from the rows' own status, class and
+tier: how many of the mods that need porting came over (ported or partial, as content: blocks,
+items and structures, never the mod's own code), how many of the rest `port` can still carry
+over, how many need mod API the game doesn't have yet, and how many aren't sorted yet. Resource
+packs and shader packs aren't counted as mods. Each row also has its reason in plain words
+(`plain` in `coverage.json`, the last column of `coverage.md`, above the technical line on the
+Modpacks page), next to the unchanged technical `reason` for modders. The launcher words the
+headline through its translations; the sentences per row are English, like the reasons.
+
 **ATM10, measured** (`import` of ATM10's `modlist.json` from its repository on 2026-10-16, 496
 files; `inventory`; `carry` and the harness on the eight mods we downloaded; `report`):
 

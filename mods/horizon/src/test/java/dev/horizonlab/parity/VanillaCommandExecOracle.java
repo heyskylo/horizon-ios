@@ -313,6 +313,37 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
+                    case "player_loop" -> {
+                        int n=op.get("n").getAsInt();
+                        int before=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME));
+                        messages.clear();
+                        for (int i=0;i<n;i++) { tick(); player.connection.tick(); }
+                        int delta=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME))-before;
+                        if (delta!=n) throw new IllegalStateException("player loop did not advance play_time: "+delta+"/"+n);
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#player_loop "+op.get("label").getAsString());
+                        JsonArray captured=new JsonArray();messages.forEach(captured::add);
+                        record.add("messages",captured);record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "player_state" -> {
+                        try {
+                            var field=net.minecraft.server.PlayerAdvancements.class.getDeclaredField("progress");field.setAccessible(true);
+                            var progress=(java.util.Map<?,?>)field.get(player.getAdvancements());
+                            var loaded=new java.util.ArrayList<String>();var done=new java.util.TreeMap<String,Boolean>();
+                            for (var a:getAdvancements().getAllAdvancements()) {
+                                String id=a.id().toString();if (!id.startsWith("h311:")) continue;
+                                loaded.add(id);var value=(net.minecraft.advancements.AdvancementProgress)progress.get(a);
+                                done.put(id,value!=null && value.isDone());
+                            }
+                            java.util.Collections.sort(loaded);
+                            var poison=player.getEffect(net.minecraft.world.effect.MobEffects.POISON);
+                            JsonObject state=new JsonObject();state.addProperty("health",player.getHealth());
+                            state.addProperty("poison_ticks",poison==null?0:poison.getDuration());state.add("loaded",gson.toJsonTree(loaded));state.add("done",gson.toJsonTree(done));
+                            JsonObject record=new JsonObject();record.addProperty("cmd","#player_state "+op.get("label").getAsString());
+                            record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                            out.append(gson.toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {throw new IllegalStateException(e);}
+                    }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
                         messages.clear();
@@ -385,6 +416,23 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
+                    case "light" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#light " + p);
+                        record.add("messages", new JsonArray());
+                        JsonArray results = new JsonArray();
+                        for (var layer : new net.minecraft.world.level.LightLayer[]{
+                            net.minecraft.world.level.LightLayer.BLOCK, net.minecraft.world.level.LightLayer.SKY}) {
+                            JsonArray value = new JsonArray();
+                            value.add(true);
+                            value.add(player.level().getBrightness(layer, pos));
+                            results.add(value);
+                        }
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "use_block" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
@@ -394,6 +442,14 @@ public final class VanillaCommandExecOracle {
                             net.minecraft.core.Direction.from3DDataValue(face), pos, false);
                         player.gameMode.useItemOn(player, player.level(), player.getMainHandItem(),
                             net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                    }
+                    case "crafter_tick" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        var state = player.level().getBlockState(pos);
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
+                            throw new IllegalStateException("crafter tick without a crafter");
+                        state.tick(player.level(), pos, player.level().getRandom());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");

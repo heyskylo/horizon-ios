@@ -77,7 +77,7 @@ ClientPacketListener.applyPlayerInfoUpdate	inline	crates/horizon-client/src/game
 ClientPacketListener.initializeChatSession	port	crates/horizon-client/src/game/remote.rs::Remote::new_chat_validator	the session each INITIALIZE_CHAT entry carries is kept and checked against the services' profile-key keys when the player's chat is first read
 ClientPacketListener.enforcesSecureChat	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	the Login flag is kept as serverEnforcesSecureChat and the fallback message validator enforces it
 ClientPacketListener.handleGameRuleValues	port	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_rules	
-ClientPacketListener.handleSoundEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SoundEntity arm: the sound plays where the tracked entity is
+ClientPacketListener.handleSoundEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SoundEntity arm binds the sound to the current entity object, preserving packet category and seed; unknown entities are ignored
 ClientPacketListener.handleAddObjective	port	crates/horizon-client/src/game/remote.rs::Game::remote_objective	add, remove and update of an objective
 ClientPacketListener.handleSetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetScore arm
 ClientPacketListener.handleResetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ResetScore arm

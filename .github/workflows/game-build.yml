@@ -83,10 +83,10 @@ jobs:
   build:
     needs: exporters
     name: build ${{ matrix.name }}
-    # Windows ARM64 is new: its failure never holds the other platforms' release (the signing job
+    # Windows ARM64 and musl are new: a failure never holds the other platforms' release (the signing job
     # needs this job, and a failed entry of it would fail it). The release steps leave the missing
-    # ARM64 files out with a warning.
-    continue-on-error: ${{ matrix.name == 'windows-arm64' }}
+    # optional archives out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' || matrix.name == 'linux-musl' }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,6 +98,11 @@ jobs:
             # The server build too: packaging/server/install.sh installs it on Linux.
             server_dir: horizon-server-linux-x86_64
             server_asset: horizon-server-linux-x86_64.tar.gz
+          - name: linux-musl
+            os: ubuntu-22.04
+            musl: true
+            dir: horizon-linux-musl-x86_64
+            asset: horizon-linux-musl-x86_64.tar.gz
           - name: windows
             os: windows-latest
             dir: horizon-windows-x64
@@ -155,17 +160,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
+        if: runner.environment == 'github-hosted' && !matrix.musl
         with:
           # A release restores only what a release saved: an untrusted build has its own key and saves nothing.
           shared-key: ${{ inputs.trusted && 'release' || 'nightly' }}-${{ matrix.name }}
           save-if: ${{ inputs.trusted }}
       - name: ALSA and udev headers
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.musl
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the client, horizon-ctl, horizon-prepare and horizon-server
+        if: ${{ !matrix.musl }}
         run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Every program the release folder takes was built
+        if: ${{ !matrix.musl }}
         run: |
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
             test -f "$BIN/$binary${{ matrix.exe }}" || { echo "::error::$BIN/$binary${{ matrix.exe }} is missing"; exit 1; }
@@ -193,6 +200,7 @@ jobs:
             codesign --verify --strict --verbose=2 "$BIN/$binary"
           done
       - name: Only system libraries
+        if: ${{ !matrix.musl }}
         # Windows: no non-system DLL (a "DLL not found" dialog on some players' machines). Linux: the standard
         # loader and libraries every desktop distribution has. macOS: only the system's own libraries.
         run: |
@@ -208,13 +216,14 @@ jobs:
       - name: Baseline x86-64 CPUs only
         # No POPCNT or LZCNT at all (the script says why only those): a C library's count intrinsic killed the
         # game before main on a Core 2 (#7264). Not the Mac builds: every Intel Mac that runs macOS 11 has both.
-        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64'
+        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64' && !matrix.musl
         run: |
           set -euo pipefail
           rustup component add llvm-tools
           ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_cpu_baseline.py \
             $(for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do echo "$BIN/$binary${{ matrix.exe }}"; done)
       - name: Every program starts
+        if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
           bin=$BIN
@@ -270,7 +279,15 @@ jobs:
         with:
           name: original-exporters
           path: exporters
+      - name: Build, check and package for musl in Alpine
+        if: matrix.musl
+        # Run Docker on the Ubuntu host: JavaScript actions themselves require glibc.
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e HORIZON_VERSION -e HORIZON_NIGHTLY \
+            rust:alpine3.22 sh tools/ci/build-musl.sh
       - name: Package
+        if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
           cargo run --locked -p xtask -- package "$BIN/horizon-client${{ matrix.exe }}" "dist/${{ matrix.dir }}"

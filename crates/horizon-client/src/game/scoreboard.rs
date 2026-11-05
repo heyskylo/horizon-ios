@@ -865,7 +865,7 @@ impl Game<'_> {
             objective,
             screen_width: batch.width as i32,
             online_mode,
-            gui_ticks: self.ticks as i64,
+            gui_ticks: self.visual_ticks() as i64,
             // Horizon has no "chat background only" option: vanilla's default (on).
             background: tab_list::row_background(
                 true,
@@ -975,6 +975,7 @@ mod tab_list_tests {
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(42)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             uuid as i32,
             [0.0, 64.0, 0.0],

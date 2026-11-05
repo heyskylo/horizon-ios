@@ -2,6 +2,8 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod pufferfish_player;
+
 use super::{
     Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
@@ -326,6 +328,9 @@ impl Game<'_> {
             main_hand: self.held().map(|s| s.item.clone()),
             off_hand: self.offhand.as_ref().map(|s| s.item.clone()),
             head: self.armor[0].as_ref().map(|s| s.item.clone()),
+            chest: self.armor[1].as_ref().map(|s| s.item.clone()),
+            legs: self.armor[2].as_ref().map(|s| s.item.clone()),
+            feet: self.armor[3].as_ref().map(|s| s.item.clone()),
             armor_cover: self.armor.iter().filter(|a| a.is_some()).count() as f32 / 4.0,
             invisible: self.potions.effects.get("invisibility").is_some(),
             spectator: self.spectator(),
