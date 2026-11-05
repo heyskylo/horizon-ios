@@ -5155,6 +5155,7 @@ def mob_team_command_names():
 
 def groups():
     try:
+        from .allay_damage_corpus import allay_player_damage
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
         from .carpet_farm_corpus import carpet_farms
@@ -5162,6 +5163,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
+        from allay_damage_corpus import allay_player_damage
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
         from carpet_farm_corpus import carpet_farms
@@ -5170,6 +5172,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('allay player damage immunity', allay_player_damage(cmd, setup)),
         ('advancement world loot rewards', advancement_world_loot_rewards()),
         ('advancement empty loot reference', advancement_empty_loot_reference()),
 
