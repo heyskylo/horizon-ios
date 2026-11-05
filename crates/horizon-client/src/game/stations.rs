@@ -2457,10 +2457,15 @@ impl Game<'_> {
                 }
             }
         }
+        let item_max = item_info.map_or(0, |info| info.max_damage);
+        let max_damage = stack.max_damage(item_max);
+        let damage = stack.damage_value(item_max);
         if display.shows("minecraft:damage")
-            && let Some(info) = item_info
-            && info.max_damage > 0
-            && stack.damage > 0
+            && max_damage > 0
+            && damage > 0
+            && stack
+                .data()
+                .is_none_or(|d| d.other("minecraft:unbreakable").is_none())
             && advanced
         {
             // `item.durability`, in the selected language.
@@ -2469,9 +2474,9 @@ impl Game<'_> {
                     "item.durability",
                     &[
                         horizon_client::text::Text::literal(
-                            info.max_damage.saturating_sub(stack.damage).to_string(),
+                            max_damage.saturating_sub(damage).to_string(),
                         ),
-                        horizon_client::text::Text::literal(info.max_damage.to_string()),
+                        horizon_client::text::Text::literal(max_damage.to_string()),
                     ],
                 ),
                 u32::MAX,

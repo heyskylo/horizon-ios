@@ -267,6 +267,35 @@ impl ItemStack {
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
     }
+    /// ItemStack.getMaxDamage: read the effective component over the item's
+    /// prototype, including an explicit removal. Invalid numeric tags retain
+    /// the prototype, as the existing component readers do.
+    pub fn max_damage(&self, item_default: u32) -> u32 {
+        if self.count == 0 || &*self.item == "minecraft:air" {
+            return 0;
+        }
+        let Some(data) = self.data() else {
+            return item_default;
+        };
+        if data.other("!minecraft:max_damage").is_some() {
+            return 0;
+        }
+        match data.other("minecraft:max_damage") {
+            Some(Tag::Int(value)) => u32::try_from(*value).unwrap_or(item_default),
+            _ => item_default,
+        }
+    }
+    /// ItemStack.getDamageValue: component removal reads as zero; reading
+    /// clamps to the effective maximum without rewriting the stored patch.
+    pub fn damage_value(&self, item_default: u32) -> u32 {
+        if self
+            .data()
+            .is_some_and(|d| d.other("!minecraft:damage").is_some())
+        {
+            return 0;
+        }
+        self.damage.min(self.max_damage(item_default))
+    }
     /// The patch the server sent for this stack, while the stack is still what
     /// it decoded to (its count aside); None once anything else changed.
     pub fn wire_patch(&self) -> Option<Arc<[u8]>> {
@@ -1107,6 +1136,36 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durability_reads_follow_component_overrides_removals_and_clamping() {
+        let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (528, 0));
+        stack
+            .data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(20)));
+        stack.damage = 5;
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (20, 5));
+        stack.data_mut().set_other(
+            "!minecraft:max_damage",
+            Some(Tag::Compound(Default::default())),
+        );
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (0, 0));
+        stack.data_mut().set_other("!minecraft:max_damage", None);
+        stack
+            .data_mut()
+            .set_other("!minecraft:damage", Some(Tag::Compound(Default::default())));
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (20, 0));
+        stack.data_mut().set_other("!minecraft:damage", None);
+        stack.damage = 30;
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (20, 20));
+        assert_eq!(
+            stack.damage, 30,
+            "querying does not rewrite the raw component"
+        );
+        stack.count = 0;
+        assert_eq!((stack.max_damage(528), stack.damage_value(528)), (0, 0));
+    }
 
     #[test]
     fn components_round_trip() {

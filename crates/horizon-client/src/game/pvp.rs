@@ -194,8 +194,12 @@ impl Game<'_> {
         // What each widget shows, read before its cache is borrowed.
         let armour: [Option<(Arc<str>, u32, u32)>; 4] = std::array::from_fn(|i| {
             let s = self.armor[i].as_ref()?;
-            let max = self.items().get(&s.item).map_or(0, |i| i.max_damage);
-            Some((s.item.clone(), s.damage, max))
+            let item_max = self.items().get(&s.item).map_or(0, |i| i.max_damage);
+            Some((
+                s.item.clone(),
+                s.damage_value(item_max),
+                s.max_damage(item_max),
+            ))
         });
         let held = if hud.held { self.held_count() } else { None };
         let multiplayer = self.remote.is_some() && !self.has_singleplayer_server();

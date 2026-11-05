@@ -13,6 +13,7 @@ use horizon_assets::{
     model::{Material, TextureSlot},
     resolve::{MISSING_MODEL, ModelLibrary},
 };
+#[cfg(test)]
 use horizon_world::nbt::Tag;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -81,14 +82,9 @@ fn legacy(name: &str) -> &str {
 
 /// The `max_damage` a CIT rule's `damage` test reads: the stack's own
 /// component when it holds a non-negative int, else `item_max`, its item's.
+/// An explicit component removal reads as zero.
 pub fn stack_max_damage(stack: &ItemStack, item_max: u32) -> u32 {
-    stack
-        .data()
-        .and_then(|d| match d.other("minecraft:max_damage") {
-            Some(Tag::Int(v)) => u32::try_from(*v).ok(),
-            _ => None,
-        })
-        .unwrap_or(item_max)
+    stack.max_damage(item_max)
 }
 
 /// The winning `kind` (Armor or Elytra) rule of a worn `stack` whose item has `item_max` max
@@ -716,6 +712,12 @@ mod tests {
         assert_eq!(with(None), 384);
         assert_eq!(with(Some(Tag::Int(-1))), 384);
         assert_eq!(with(Some(Tag::String("20".into()))), 384);
+        let mut removed = ItemStack::new("minecraft:bow", 1);
+        removed.data_mut().set_other(
+            "!minecraft:max_damage",
+            Some(Tag::Compound(Default::default())),
+        );
+        assert_eq!(stack_max_damage(&removed, 384), 0);
     }
 
     fn armor_rules(text: &str) -> CitRules {

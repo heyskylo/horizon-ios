@@ -235,8 +235,8 @@ impl CitRules {
         if rule.stack_size.as_ref().is_some_and(|r| !r.contains(count)) {
             return false;
         }
-        // CIT Resewn: only damageable items have damage.
-        let damage = if max_damage > 0 { stack.damage } else { 0 };
+        // ItemStack.getDamageValue clamps reads and honors an explicitly removed component.
+        let damage = stack.damage_value(max_damage);
         if rule
             .damage
             .as_ref()
@@ -676,6 +676,7 @@ mod tests {
         let cit = rules(&[
             ("worn", "items=diamond_sword\ndamage=50-100%"),
             ("new", "items=stick\ndamage=0"),
+            ("zero_sword", "items=diamond_sword\ndamage=0"),
         ]);
         let damaged = |id: &str, damage: u32, max: u32| {
             let mut stack = new(id);
@@ -686,6 +687,16 @@ mod tests {
         assert_eq!(damaged("diamond_sword", 780, 1561), None);
         assert_eq!(damaged("diamond_sword", 781, 1561), Some("worn"));
         assert_eq!(damaged("stick", 5, 0), Some("new"));
+        assert_eq!(damaged("diamond_sword", 2000, 1561), Some("worn"));
+        let mut removed = new("diamond_sword");
+        removed.damage = 781;
+        removed
+            .data_mut()
+            .set_other("!minecraft:damage", Some(Tag::Compound(Default::default())));
+        assert_eq!(
+            stem(&cit, cit.select(Kind::Item, &removed, Hand::Main, 1561)),
+            Some("zero_sword")
+        );
     }
 
     #[test]
