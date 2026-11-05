@@ -152,12 +152,12 @@ fn hurt_sound_for(
     damage: &horizon_world::damage_source::Catalog,
     source_type: i32,
 ) -> &'static str {
-    if let Some(Tag::String(effects)) = registries
-        .data("minecraft:damage_type", source_type)
-        .and_then(|t| t.get("effects"))
-        && let Ok(effects) = effects.to_string()
-    {
-        return horizon_client::health::hurt_sound(&effects);
+    if let Some(data) = registries.data("minecraft:damage_type", source_type) {
+        let effects = data.get("effects").and_then(|t| match t {
+            Tag::String(effects) => effects.to_string().ok(),
+            _ => None,
+        });
+        return horizon_client::health::hurt_sound(effects.as_deref().unwrap_or("hurt"));
     }
     registries
         .name("minecraft:damage_type", source_type)
@@ -533,6 +533,10 @@ pub(super) struct Remote {
     /// The dimension of the client level the mods heard made
     /// (`native_client_level_load`), to be told dropped once.
     heard_level: Option<String>,
+    /// The epoch native mods' entity handles carry on this client
+    /// (`native_entity_refs.rs`): a fresh one for each client level, so a
+    /// handle of the level before reads as None. None before the first.
+    native_epoch: Option<horizon_client::mod_api::NativeWorldEpoch>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
     /// or respawn, until the player's section is shown.
     pub(super) level_load: horizon_client::level_loading::LevelLoadTracker,
@@ -571,6 +575,8 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// The player's place in its vehicle's `getPassengers`.
+    pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -798,7 +804,7 @@ impl Game<'_> {
     /// `hurt` default when the type is unknown.
     pub(super) fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
         match self.remote.as_ref() {
-            Some(r) => hurt_sound_for(&r.registries, &self.motion.health.damage, source_type),
+            Some(r) => hurt_sound_for(&r.registries, &self.health_resources.damage, source_type),
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
@@ -1064,6 +1070,7 @@ impl Game<'_> {
             abilities: None,
             loaded_sent: false,
             heard_level: None,
+            native_epoch: None,
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
@@ -1080,6 +1087,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passenger_index: 0,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -2261,10 +2269,10 @@ impl Game<'_> {
                 renderer.clear_sections(self.world.layout());
             }
             // The new ClientLevel is told before setLevel drops the old one.
-            let old = self
-                .remote
-                .as_mut()
-                .and_then(|r| r.heard_level.replace(spawn.dimension.clone()));
+            let old = self.remote.as_mut().and_then(|r| {
+                r.native_epoch = Some(super::native_lifecycle::fresh_epoch());
+                r.heard_level.replace(spawn.dimension.clone())
+            });
             self.native_client_level_load(&spawn.dimension);
             if let Some(old) = old {
                 self.native_client_level_unload(&old);
@@ -2915,7 +2923,7 @@ impl Game<'_> {
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.
-    fn menu_slot(menu: &str, slot: i32) -> Option<usize> {
+    pub(super) fn menu_slot(menu: &str, slot: i32) -> Option<usize> {
         let s = usize::try_from(slot).ok()?;
         // A container of `n` slots, then the inventory and the hotbar.
         let slots = |n: usize| -> Option<usize> {
@@ -3121,7 +3129,7 @@ impl Game<'_> {
         }
     }
 
-    fn handle_packet(&mut self, packet: C) -> Result<()> {
+    pub(super) fn handle_packet(&mut self, packet: C) -> Result<()> {
         self.native_client_packet(&packet);
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
@@ -4048,7 +4056,10 @@ impl Game<'_> {
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
-                if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
+                let me = self.remote.as_ref().map(|r| r.entity_id);
+                let own = me == Some(p.id);
+                self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
+                if own {
                     let at = self
                         .player
                         .as_ref()
@@ -6169,6 +6180,7 @@ impl Game<'_> {
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
+                health: &self.health_resources,
             }
             .controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;
         } else {
@@ -6185,6 +6197,7 @@ impl Game<'_> {
                     assets: &self.pack.assets,
                     collision_binding: self.collision,
                     resources: self.motion,
+                    health: &self.health_resources,
                 };
                 passenger.passenger_pose_tick()?;
                 // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
@@ -8556,12 +8569,7 @@ impl Game<'_> {
             return;
         }
         self.start_using_item();
-        let at = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio
-            .play(&instrument.sound, at, instrument.range / 16.0, 1.0);
+        self.play_player_bound_sound(&instrument.sound, 2, instrument.range / 16.0, 1.0, true);
         if instrument.use_duration > 0.0 {
             self.add_cooldown(group, instrument.use_ticks());
         }
@@ -8955,6 +8963,7 @@ impl Game<'_> {
                 self.send(S::Attack(play::Attack {
                     id: self.mobs[i].id as i32,
                 }));
+                self.pvp_attacked(self.mobs[i].id as i32);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
@@ -9024,6 +9033,14 @@ impl Game<'_> {
             );
         }
         self.stop_sprint_after_extra_knockback();
+    }
+    /// The latency the server's player list gives this player
+    /// (`PlayerInfo.getLatency`). A new entry reads 0 until the server's first
+    /// latency update (every 600 ticks), so 0 shows nothing rather than `0 ms`.
+    pub(super) fn own_latency(&self) -> Option<i32> {
+        let r = self.remote.as_ref()?;
+        let me = r.tab_players.get(&r.profile)?;
+        (me.latency > 0).then_some(me.latency)
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
@@ -10618,6 +10635,26 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// The epoch of this client level's entity handles (`native_epoch`).
+    pub(super) fn native_epoch(&self) -> Option<horizon_client::mod_api::NativeWorldEpoch> {
+        self.native_epoch
+    }
+    /// An entity the server added to this client level: its type
+    /// (`minecraft:text_display`) and its position as last sent.
+    pub(super) fn tracked_entity(&self, id: i32) -> Option<(&str, [f64; 3])> {
+        self.entities
+            .get(&id)
+            .map(|t| (t.kind.as_str(), t.position))
+    }
+    /// The profile of the player entity `id`: this window's own player, or
+    /// another one by the UUID it was added with and its profile name.
+    pub(super) fn level_player(&self, id: i32) -> Option<(u128, Option<&str>)> {
+        if id == self.entity_id {
+            return Some((self.profile, Some(self.profile_name.as_str())));
+        }
+        let uuid = *self.level_players.get(&id)?;
+        Some((uuid, self.level_player_names.get(&id).map(String::as_str)))
+    }
     /// `PlayerInfo.getMessageValidator().updateAndValidate(message)` for `message.sender`.
     fn validate_chat(
         &mut self,
@@ -11318,6 +11355,25 @@ mod tests {
         assert_eq!(
             hurt_sound_for(&registries, &catalog, 0),
             "minecraft:entity.player.hurt_on_fire"
+        );
+    }
+    #[test]
+    fn synchronized_damage_defaults_override_a_different_local_definition() {
+        let local = horizon_world::damage_source::Catalog::from_json(&serde_json::json!({
+            "data_version": horizon_world::DATA_VERSION,
+            "types": [{"id":"demo:heat", "message_id":"heat", "exhaustion":"00000000", "scaling":"never", "effects":"burning", "death_message_type":"default"}]
+        }), &serde_json::json!({})).unwrap();
+        let mut registries = horizon_protocol::registry::Dynamic::default();
+        registries.add(horizon_protocol::packets::configuration::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![horizon_protocol::packets::configuration::RegistryEntry {
+                id: "demo:heat".into(),
+                data: Some(horizon_world::nbt::Tag::Compound(Default::default())),
+            }],
+        });
+        assert_eq!(
+            super::hurt_sound_for(&registries, &local, 0),
+            "minecraft:entity.player.hurt"
         );
     }
     /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it

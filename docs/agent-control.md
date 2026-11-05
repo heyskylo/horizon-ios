@@ -42,13 +42,20 @@ An agent adds one server, `horizon-launcher mcp`. It holds:
   - `account_sign_in`, `account_list`.
 - **The game's tools.** It runs the selected version's `horizon-ctl mcp` (shipped beside the
   game) as a child. It lists that server's tools as `game_<name>`, all but `launch`, and passes
-  calls and results through, images included. `play` starts the game with a control socket in
-  the launcher's data folder. While no game answers, `game_*` calls say to call `play`.
+  calls and results through, images included. `play` starts the game with a control endpoint in
+  the launcher's data folder. A game the player started and turned Agent Control on in answers on
+  the game's default endpoint ([Connecting](#connecting)). Each call goes to the first of the two
+  where a game answers, the launcher's first, so a game from `play` wins over one from the window.
+  While no game answers on either, `game_*` calls say to call `play` or to turn Agent Control on.
+
+The default endpoint is worked out in the launcher's own process, so `$HORIZON_CONTROL`, and on
+Linux `$XDG_RUNTIME_DIR`, must be the same for `horizon-launcher mcp` as for the game.
 
 Why one server rather than two: the game's tools stay defined once, in horizon-ctl's table. The
-agent's client needs one entry and one approval. The version that plays is always the one the
-launcher selected, so the game's tools always match the game. `horizon-ctl mcp` stays available
-on its own, for a game started by hand or by a script.
+agent's client needs one entry and one approval, whichever way the game was started. The tools
+are always those of the version the launcher selected, even for a game of another version: a
+command that game does not know answers with an error, and `game_hello` tells which game it is.
+`horizon-ctl mcp` stays available on its own, for a game started by hand or by a script.
 
 ## Protocol revisions
 
@@ -185,12 +192,16 @@ turn the switch off.
   - `horizon-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
 - **Game, Horizon Settings > AI Agent:**
   - **Agent Control** (`agentControl` in horizon-extras.txt, off by default) opens the default
-    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory) in a game
-    the player started. Turning it off closes the endpoint and stops its listener.
+    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory, or
+    `horizon-control.json` in the temporary directory on Windows) in a game the player started.
+    `horizon-launcher mcp` reaches it as it is, with no second server. Turning it off closes the
+    endpoint and stops its listener.
   - The page shows whether a client is connected (`Server::clients`), when the last command came,
     and the socket's name.
   - **Copy Connection Details** copies the socket path, a `horizon-ctl --socket ... state` line
-    and an `mcpServers` config for this game's `horizon-ctl mcp`.
+    and an `mcpServers` config for this game's `horizon-ctl mcp`. That config points into the
+    version's folder, so it stops working once the launcher removes that version; an agent that
+    already has `horizon-launcher mcp` does not need it.
 - **The default:** a game an agent starts (`play` in MCP, `horizon-ctl launch`, `--control`) is
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent

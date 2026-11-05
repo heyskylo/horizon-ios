@@ -36,13 +36,20 @@ and listed in its signed `SHA256SUMS`. The launcher archive, `horizon-launcher-w
 and `horizon-launcher-setup-arm64.exe` are attached to the [launcher releases](https://github.com/horizon-rust/horizon/releases)
 and listed in their signed `SHA256SUMS`.
 
-Each launcher keeps its own architecture: an x64 launcher on an ARM64 PC (under emulation) updates
-itself from the x64 archive and installs the x64 game, so an update never moves a working setup to
-another build. `horizon-launcher-setup-arm64.exe` installs the ARM64 launcher, which installs
-`horizon-windows-arm64.zip` and falls back to `horizon-windows-x64.zip` (under emulation) for a release
-without an ARM64 build. Native-mod builds need the x64 launcher for now: the bundled Windows compiler is
-x64-only, and the ARM64 launcher reports that no matching compiler is available instead of building x64
-binaries.
+Launcher updates always follow the launcher's own process architecture. Game architecture is a
+separate choice in Settings on native Windows ARM, detected from the machine even when an x64
+launcher runs under emulation. **Automatic** preserves existing behavior: an x64 launcher uses x64,
+and an ARM64 launcher prefers ARM64. Either launcher can choose x64 or ARM64 for the game. The
+choice is saved and used for installs and updates; when a release has no ARM64 archive, ARM64
+selection safely installs the signed x64 fallback. A changed choice installs the selected version
+again when automatic updates are on; otherwise use **Install selected build** on the Versions page.
+Launching is blocked with an explanation if a manual choice does not match the installed game.
+Choosing a game architecture never changes or replaces the launcher binary.
+
+Native-mod compilers remain independent of this setting. The managed compiler currently builds x64
+only; an x64 launcher cannot build native mods for an ARM64 game, and the ARM64 launcher has no
+matching compiler yet. The launcher refuses mismatched native-mod builds rather than producing a
+binary for the wrong game.
 
 On Windows ARM64, `Graphics API: Auto` tries DirectX 12 before Vulkan following a device-loss observed
 in testing. Vulkan remains selectable in settings.

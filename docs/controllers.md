@@ -75,6 +75,17 @@ awkward, which is why Bedrock does the same) and acts like vanilla's toggle
 crouch: a screen stands you up while it is open and closing it crouches you
 again. The controls options can make it hold-to-sneak.
 
+A Nintendo pad's face buttons can go by their places, as the table and SDL's
+layout have them (B, at the bottom, jumps and confirms), or by their letters,
+as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
+back and drops, X swaps the offhand, Y opens the inventory, and the binds list
+and the on-screen keyboard's hints show those letters (splitscreen's join and
+lost-controller prompts, which a controller nobody holds yet answers, stay by
+places). `nintendoLetters:true|false` in `horizon-controller.txt`
+picks one; by places unless it says otherwise (a build for the Switch itself
+goes by letters). Bindings name the part, so a rebinding means the same on
+either.
+
 ## Menus and inventories
 
 Vanilla's screens are all mouse-driven, and Horizon draws them 1:1. A pad
@@ -243,9 +254,11 @@ language, at the bottom of the screen (at the top when the field is in the
 lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
 Menu is Enter, B closes it. It opens by itself when the pad opens chat or a
-sign. It types into every field the keyboard reaches: chat (local and
-server), signs, books, the title screens' fields, the options' searches, the
-creative and recipe-book searches, the anvil, the LAN port.
+sign, but not over the chat a sleeper gets (the game opens that one): there
+it waits for A on the chat box. It types into every field the keyboard
+reaches: chat (local and server), signs, books, the title screens' fields,
+the options' searches, the creative and recipe-book searches, the anvil, the
+LAN port.
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;

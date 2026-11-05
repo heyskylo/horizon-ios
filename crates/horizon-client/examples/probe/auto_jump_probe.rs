@@ -119,6 +119,7 @@ pub fn main() -> Result<()> {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .update_auto_jump(fl(&c["xa"]), fl(&c["za"]))?;
         }
