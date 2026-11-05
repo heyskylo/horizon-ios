@@ -1778,6 +1778,11 @@ trusting native code is the player's decision, never an agent's.
    and `libudev` and names what is missing, with the install command for the distribution in `/etc/os-release`
    (Debian, Ubuntu and Mint: `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has
    GCC without the C library's headers, and a read-only system: native builds don't work there yet.
+   On Windows, Smart App Control lets only signed programs run, and a build runs programs it has just compiled
+   (build scripts, horizon-mixins, the game) and some of the toolchain's own (`dlltool.exe`), which Windows refuses
+   with os error 4551 (#5911). No build setting avoids it. A build that hits os error 4551 leads its error with what
+   to do: turn it off in Windows Security > App & browser control > Smart App Control settings. Nothing is checked
+   before the build: with Smart App Control on, a build whose programs already ran before it was turned on succeeds.
    `horizon-launcher rust status|install|remove`.
 2. **horizon-mixins**, at the commit the mods name (their `.hnmod`'s `mixins`), else `native_mods::MIXINS_REV`,
    built once with that cargo (`cargo install --locked --git … --rev …`) into `native/tools/<commit>/`.

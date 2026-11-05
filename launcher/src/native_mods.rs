@@ -1696,7 +1696,7 @@ fn run_with_compiler(
     let mut child = cmd
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Could not start {what}: {e}"))?;
+        .map_err(|e| app_control(format!("Could not start {what}: {e}")))?;
     std::thread::scope(|scope| {
         let messages = compiler.zip(stdout).map(|(compiler, log)| {
             let input = BufReader::new(child.stdout.take().expect("piped"));
@@ -1704,6 +1704,7 @@ fn run_with_compiler(
         });
         let mut tail = std::collections::VecDeque::new();
         let mut errors = Vec::new();
+        let mut blocked = false;
         for text in BufReader::new(child.stderr.take().expect("piped"))
             .lines()
             .map_while(Result::ok)
@@ -1712,6 +1713,7 @@ fn run_with_compiler(
                 let _ = writeln!(log, "{kept}");
             }
             line(&text);
+            blocked |= rust_toolchain::blocked_by_app_control(&text);
             if text.starts_with("error") && errors.len() < 4 {
                 errors.push(text.clone());
             }
@@ -1728,8 +1730,25 @@ fn run_with_compiler(
             return Ok(());
         }
         let tail: Vec<String> = tail.into();
-        Err(messages.explain(failure(what, &status.to_string(), &errors, &tail)))
+        let error = messages.explain(failure(what, &status.to_string(), &errors, &tail));
+        Err(match blocked {
+            true => with_app_control(error),
+            false => app_control(error),
+        })
     })
+}
+
+/// `error` led by what to do when Windows' Smart App Control refused one of the build's
+/// programs (#5911): cargo's own lines only say a build script was "never executed".
+fn app_control(error: String) -> String {
+    match rust_toolchain::blocked_by_app_control(&error) {
+        true => with_app_control(error),
+        false => error,
+    }
+}
+
+fn with_app_control(error: String) -> String {
+    format!("{}\n\n{error}", rust_toolchain::smart_app_control())
 }
 
 /// [`run`]'s error: the `errors` lines not already among the last ones (`tail`), then those.
@@ -4692,5 +4711,36 @@ mod tests {
         // An error still among the last lines isn't said twice.
         let e = failure("horizon-mixins", "exit status: 1", &errors, &errors);
         assert!(e.contains("The end of its output") && e.matches("alsa-sys").count() == 1);
+    }
+
+    /// Smart App Control refusing a build script (#5911): cargo names the crate, Windows' reason
+    /// is only in a `Caused by` line in the middle of its output, so the error leads with what to do.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_smart_app_control_blocked_says_how_to_build() {
+        let _guard = LOG_TEST.lock().unwrap();
+        clear_log().unwrap();
+        // cargo's output on Windows 11 25H2 with Smart App Control on (the report in #5911).
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", r#"
+            echo 'error: failed to run custom build command for `quote v1.0.47`' >&2
+            echo 'Caused by:' >&2
+            echo '  could not execute process `C:\target\build-script-build` (never executed)' >&2
+            echo 'Caused by:' >&2
+            echo '  An Application Control policy has blocked this file. (os error 4551)' >&2
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do echo "warning: build failed, waiting ($i)" >&2; done
+            exit 101
+        "#]);
+        let e = run(cmd, "Building horizon-mixins", |_| {}).unwrap_err();
+        assert!(e.starts_with(&rust_toolchain::smart_app_control()), "{e}");
+        assert!(e.contains("quote v1.0.47"), "{e}");
+        // Another failure says nothing about it.
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "echo 'error: could not compile `horizon-client`' >&2; exit 101",
+        ]);
+        let e = run(cmd, "Compiling the game", |_| {}).unwrap_err();
+        assert!(!e.contains("Smart App Control"), "{e}");
     }
 }
