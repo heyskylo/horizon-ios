@@ -7267,9 +7267,16 @@ impl Game<'_> {
                 let mark = self.skin_frame.borrow().mark();
                 let base = horizon_client::mobs::render::base_transform(mob, alpha as f32, camera);
                 let gpu = skinning;
-                if let Some((lo, hi)) =
-                    self.cosmetics_geometry(mob, false, base, alpha as f32, packed, gpu, out)
-                {
+                if let Some((lo, hi)) = self.cosmetics_geometry(
+                    mob,
+                    false,
+                    base,
+                    Some(camera),
+                    alpha as f32,
+                    packed,
+                    gpu,
+                    out,
+                ) {
                     skinned = Some(match skinned {
                         Some((first, Some((l, h)))) => (first, Some((l.min(lo), h.max(hi)))),
                         Some((first, None)) => (first, Some((lo, hi))),
