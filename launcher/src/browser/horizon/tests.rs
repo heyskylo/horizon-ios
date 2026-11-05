@@ -150,7 +150,10 @@ fn searches_by_category_and_tag() {
     };
     assert_eq!(found("", &["bloom"]), ["glow"]);
     assert_eq!(found("", &["bloom", "fantasy"]), ["glow"]);
-    assert!(found("", &["bloom", "pbr"]).is_empty(), "every category asked");
+    assert!(
+        found("", &["bloom", "pbr"]).is_empty(),
+        "every category asked"
+    );
     assert_eq!(found("sunset", &[]), ["glow"], "tags are searched");
     assert!(found("dawn", &[]).is_empty());
     // The filter offers the kind's own list: a resolution for resource packs, not for shaders.
@@ -167,7 +170,10 @@ fn data_pack(index: &mut Index, dir: &Path) -> Project {
     let path = dir.join("lanterns-1.0.0.zip");
     let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
     for (name, text) in [
-        ("pack.mcmeta", r#"{"pack": {"description": "Lanterns", "pack_format": 94}}"#),
+        (
+            "pack.mcmeta",
+            r#"{"pack": {"description": "Lanterns", "pack_format": 94}}"#,
+        ),
         ("data/lanterns/function/light.mcfunction", "say lit"),
     ] {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
