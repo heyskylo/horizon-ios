@@ -150,7 +150,7 @@ mod tests {
     const PIER_NO_PROPERTIES: BlockStateId = BlockStateId(5);
     const OPEN_NO_FACING: BlockStateId = BlockStateId(6);
 
-    /// A trapdoor with `facing` and `open`, and four blocks a mod put in the trapdoor tag that
+    /// A trapdoor with `facing` and `open`, and three blocks a mod put in the trapdoor tag that
     /// are not trapdoors: no `open` (Macaw's rail bridge), no properties (its pier), and no
     /// `facing`.
     fn registry() -> BlockRegistry {
