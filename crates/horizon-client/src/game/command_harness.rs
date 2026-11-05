@@ -533,6 +533,23 @@ impl Game<'_> {
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }
+                "light" => {
+                    let pos = std::array::from_fn::<_, 3, _>(|i| {
+                        op["pos"][i].as_i64().unwrap_or(0) as i32
+                    });
+                    let levels = self.harness_owner(|g| {
+                        use horizon_client::mobs::spawn_rules::SpawnLevel;
+                        let level = g.natural_level();
+                        Ok([
+                            level.block_light(pos[0], pos[1], pos[2]),
+                            level.sky_light(pos[0], pos[1], pos[2]),
+                        ])
+                    })?;
+                    let record = json!({"cmd": format!("#light {}", op["pos"]),
+                        "messages": [], "results": levels.map(|v| (true, v))});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);

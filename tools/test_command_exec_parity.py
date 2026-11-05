@@ -118,6 +118,9 @@ def main():
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
+    parser.add_argument('--reinforcement-original-diagnostic', action='store_true', help='replay the original unisolated174/108 fixture, retaining its terrain prerequisite failure')
+    parser.add_argument('--reinforcement-target-diagnostic', action='store_true', help='retain the separate creative-callee target relation record (full209)')
+    parser.add_argument('--reinforcement-raw-diagnostic', action='store_true', help='add unnormalized full callee snapshots; not the typed gate')
     parser.add_argument("--pufferfish-contact-fixture", action="store_true")
     parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
@@ -147,6 +150,18 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    isolated_reinforcements = {'command zombie reinforcements', 'command reinforcement once'}
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in isolated_reinforcements]
+    if args.reinforcement_raw_diagnostic or args.reinforcement_original_diagnostic:
+        groups = [(name, corpus_module.command_zombie_reinforcements(
+            once=name == 'command reinforcement once', raw=args.reinforcement_raw_diagnostic, legacy=args.reinforcement_original_diagnostic) if name in isolated_reinforcements else ops)
+            for name, ops in groups]
+    if not args.reinforcement_target_diagnostic and not args.reinforcement_raw_diagnostic and not args.reinforcement_original_diagnostic:
+        # H300's declared208 gate excludes exactly this separate target-policy lead.
+        # --reinforcement-target-diagnostic retains full209/all30 original records.
+        groups = [(name, [op for op in ops if op.get('label') != 'h300 original/hard/callee target']
+                   if name == 'command zombie reinforcements' else ops) for name, ops in groups]
     if args.advancement_loot_named_diagnostic and args.advancement_loot_inline_parser_diagnostic:
         parser.error('choose only one advancement-loot diagnostic')
     if args.advancement_loot_named_diagnostic or args.advancement_loot_inline_parser_diagnostic:
@@ -224,6 +239,8 @@ def main():
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
+    if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
+        parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('crafting recipe fixtures require --only with one exact group')
     script = []
@@ -320,7 +337,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'player_state', 'player_loop') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -340,10 +357,12 @@ def main():
             sys.exit(f'Java map fixture control failed: {op}: {reference}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
+        if 'expect_light' in op and reference.get('results') != [[True, n] for n in op['expect_light']]:
+            sys.exit(f'Java light prerequisite failed: {op}: {reference}')
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
