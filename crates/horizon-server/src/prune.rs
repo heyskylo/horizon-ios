@@ -984,6 +984,22 @@ mod tests {
     }
 
     #[test]
+    fn server_toml_turns_it_on_and_the_supervisor_turns_it_off() {
+        let dir = temp("toml");
+        let text = format!("{}\n[prune_chunks]\nmode = \"delete\"\nring = 2\n", crate::config::TEMPLATE);
+        fs::write(dir.join("server.toml"), text).unwrap();
+        let config = crate::config::Config::load(&dir).unwrap();
+        assert_eq!((config.prune_chunks.mode, config.prune_chunks.ring), (Mode::Delete, 2));
+        crate::config::update(&dir, "prune_chunks", "mode", toml::Value::String("off".into())).unwrap();
+        let config = crate::config::Config::load(&dir).unwrap();
+        assert_eq!((config.prune_chunks.mode, config.prune_chunks.ring), (Mode::Off, 2));
+        assert!(fs::read_to_string(dir.join("server.toml")).unwrap().contains("[discord]"));
+        fs::write(dir.join("server.toml"), "[prune_chunks]\nkeep_files = [\"../ops.json\"]\n").unwrap();
+        assert!(crate::config::Config::load(&dir).is_err(), "keep_files stay inside the world");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn spawn_comes_from_level_dat() {
         let dir = temp("spawn");
         let root = NamedTag {

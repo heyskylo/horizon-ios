@@ -1716,6 +1716,7 @@ dependencies = [
  "horizon-mcp",
  "horizon-release-sign",
  "horizon-server-files",
+ "horizon-world",
  "libc",
  "p12-keystore",
  "png",
