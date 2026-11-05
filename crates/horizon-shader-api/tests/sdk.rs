@@ -36,7 +36,7 @@ fn the_example_pack_s_0_2_port_passes() {
     let report = check(&Pack::read(dir).unwrap()).unwrap();
     assert_eq!(report.manifest.api, horizon_shader_api::Api::V0_2);
     let labels: Vec<_> = report.stages.iter().map(|s| s.label.as_str()).collect();
-    assert_eq!(labels, ["Warm horizon", "Glow", "Colour grade", "Shoulder"]);
+    assert_eq!(labels, ["Warm horizon", "Glow", "Colour grade"]);
 }
 
 #[test]

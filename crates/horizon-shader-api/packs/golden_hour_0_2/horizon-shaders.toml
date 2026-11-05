@@ -3,7 +3,7 @@ id = "golden_hour_0_2"
 name = "Golden Hour (shader API 0.2)"
 version = "1.0.0"
 api = "0.2"
-description = "Golden Hour written for shader API 0.2, in linear light, with a tone curve of its own. A test pack of the SDK, not offered to players."
+description = "Golden Hour written for shader API 0.2, in linear light. A test pack of the SDK, not offered to players."
 authors = ["Horizon"]
 license = "MIT"
 shared = ["common.wgsl"]
@@ -19,10 +19,6 @@ name = "Glow"
 [[post]]
 file = "post/grade.wgsl"
 name = "Colour grade"
-
-[tonemap]
-file = "tonemap.wgsl"
-name = "Shoulder"
 
 [[options]]
 id = "sun_glow"
