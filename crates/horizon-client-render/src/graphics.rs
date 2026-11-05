@@ -549,6 +549,9 @@ pub enum GpuCullingOffer {
     /// DX12 with flat page groups, whose count draws leave each draw's base vertex out of
     /// what the near sections' packed faces are read by (`gpu_culling::loses_base_vertex`).
     Dx12 = 3,
+    /// The graphics device was lost while its frames were drawn (`lose_gpu_culling`): off
+    /// for the renderers after it, until Horizon restarts.
+    DeviceLost = 5,
     Offered = 4,
 }
 impl GpuCullingOffer {
@@ -559,6 +562,7 @@ impl GpuCullingOffer {
             Self::Software => Some("Not with software rendering, which runs it on the CPU."),
             Self::OutOfMemory => Some("Out of video memory: off until the next start."),
             Self::Dx12 => Some("Not on DirectX 12 yet: try the Vulkan graphics API."),
+            Self::DeviceLost => Some("The graphics device was lost: off until the next start."),
             Self::Offered => None,
         }
     }
@@ -574,8 +578,19 @@ pub fn gpu_culling_offer() -> GpuCullingOffer {
         2 => GpuCullingOffer::OutOfMemory,
         3 => GpuCullingOffer::Dx12,
         4 => GpuCullingOffer::Offered,
+        5 => GpuCullingOffer::DeviceLost,
         _ => GpuCullingOffer::Unsupported,
     }
+}
+/// Set once the graphics device was lost while GPU culling drew the frames (the game's
+/// `recover_device`): the renderers made after it don't offer it (`GpuCullingOffer::DeviceLost`),
+/// so a fault in its frames can't lose the device again after every recovery.
+static GPU_CULLING_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn lose_gpu_culling() {
+    GPU_CULLING_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn gpu_culling_lost() -> bool {
+    GPU_CULLING_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
