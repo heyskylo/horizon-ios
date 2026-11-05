@@ -190,6 +190,8 @@ fn real_packs_read() {
                     item_id_declared: true,
                     ..terrain.clone()
                 }),
+                // As the game's (`pack_atlas::terrain_parts`): solid, then cutout terrain.
+                terrain_parts: Some([terrain.clone(), terrain.clone()]),
                 terrain_geometry: Some(horizon_shaders::GeometryInputs {
                     inputs: horizon_shaders::GbuffersInputs {
                         declarations: format!(
@@ -306,6 +308,7 @@ fn real_packs_read() {
 fn backends(post: &horizon_shaders::Post) {
     let optional = [
         &post.terrain,
+        &post.terrain_cutout,
         &post.water,
         &post.sky,
         &post.sky_textured,

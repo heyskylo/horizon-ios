@@ -41,7 +41,7 @@ Entity.awardKillScore	inline	crates/horizon-client/src/game.rs::Game::tick	the p
 Entity.shouldRender	port	crates/horizon-client/src/game/entity_culling.rs::Game::entity_in_view	range from default_range (64 times the mean box edge times the view scale), then the frustum
 Entity.saveAsPassenger	port	crates/horizon-client/src/game/persist.rs::Game::mob_tree_nbt	a mob with its riders nested under Passengers; players and unsaved types are skipped
 Entity.getEncodeId	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	the id written is the mob type's id
-Entity.dropAllLeashConnections	port	crates/horizon-client/src/game/dispenser.rs::Game::shear_off_leashes	gap: minor: only shears (dispenser) reach it; a firework used while gliding does not drop the player's leads
+Entity.dropAllLeashConnections	port	crates/horizon-client/src/game/leads.rs::Game::drop_all_leash_connections	FireworkRocketItem.use while gliding; dispenser shears still drop through Game::shear_off_leashes
 Entity.canCollideWith	inline	crates/horizon-client/src/game/ghasts.rs::Game::player_entity_collisions	gap: player: the entities a player cannot walk through are boats and happy ghasts only; a live shulker (canBeCollidedWith) is not solid, so the player walks through it
 Entity.getDefaultPassengerAttachmentPoint	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	one point per vehicle, so the passenger index is always 0; default is the top of the box
 Entity.ejectPassengers	port	crates/horizon-client/src/game/boat_passengers.rs::Game::eject_boat_mobs	gap: minor: boats place riders at the dismount spot; when a mob vehicle dies sync_riders only lets go and the rider stays where it was seated

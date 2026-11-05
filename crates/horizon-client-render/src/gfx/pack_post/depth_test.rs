@@ -3,15 +3,15 @@ use super::*;
 use crate::{gfx::Frame, hud::HudBatch};
 use wgpu::{TextureFormat as T, util::DeviceExt};
 
-const SIZE: [u32; 2] = [16, 16];
+pub(super) const SIZE: [u32; 2] = [16, 16];
 
-struct Gpu {
+pub(super) struct Gpu {
     adapter: wgpu::Adapter,
-    device: wgpu::Device,
+    pub(super) device: wgpu::Device,
     queue: wgpu::Queue,
 }
 impl Gpu {
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -27,7 +27,7 @@ impl Gpu {
             queue,
         })
     }
-    fn texture(&self, format: T) -> wgpu::TextureView {
+    pub(super) fn texture(&self, format: T) -> wgpu::TextureView {
         self.device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("Original depth fixture input"),
@@ -47,11 +47,33 @@ impl Gpu {
             })
             .create_view(&Default::default())
     }
-    fn load(
+    pub(super) fn load(
         &self,
         files: Vec<(String, String)>,
         world: World<'_>,
         inputs: horizon_shaders::GameInputs,
+    ) -> PackPost {
+        self.load_expected(files, world, inputs, false)
+    }
+
+    /// A valid source pair whose pipeline must fail on the requested target.
+    /// This explicitly checks the failure is after translation, and that neither
+    /// terrain half survives the renderer's split-coupling guard.
+    pub(super) fn load_gpu_rejected(
+        &self,
+        files: Vec<(String, String)>,
+        world: World<'_>,
+        inputs: horizon_shaders::GameInputs,
+    ) -> PackPost {
+        self.load_expected(files, world, inputs, true)
+    }
+
+    fn load_expected(
+        &self,
+        files: Vec<(String, String)>,
+        world: World<'_>,
+        inputs: horizon_shaders::GameInputs,
+        gpu_rejection: bool,
     ) -> PackPost {
         use std::io::{Cursor, Write};
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -72,6 +94,17 @@ impl Gpu {
         let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
         let post = horizon_shaders::load_post(&pack, "", &properties, &macros, &inputs);
         assert!(
+            post.complete,
+            "fixture source must translate: {:?}",
+            post.notes
+        );
+        if gpu_rejection {
+            assert!(
+                post.terrain.is_some() && post.terrain_cutout.is_some(),
+                "both terrain sources must reach GPU pipeline creation"
+            );
+        }
+        assert!(
             post.programs.iter().any(|p| p.name == "final"),
             "{:?}",
             post.notes
@@ -90,7 +123,16 @@ impl Gpu {
             "{:?}",
             built.notes
         );
-        assert!(built.complete, "incomplete fixture: {:?}", built.notes);
+        if gpu_rejection {
+            assert!(!built.complete, "GPU-incompatible fixture unexpectedly ran");
+            assert!(
+                built.terrain.is_none() && built.terrain_cutout.is_none(),
+                "a failed split pipeline must remove both terrain passes: {:?}",
+                built.notes
+            );
+        } else {
+            assert!(built.complete, "incomplete fixture: {:?}", built.notes);
+        }
         built
     }
     fn clear(&self, color: &wgpu::TextureView, depth: &wgpu::TextureView, reverse_depth: f32) {
@@ -123,7 +165,7 @@ impl Gpu {
         });
         self.queue.submit([encoder.finish()]);
     }
-    fn render(
+    pub(super) fn render(
         &self,
         post: &mut PackPost,
         color: &wgpu::TextureView,
@@ -214,7 +256,7 @@ enum Scene {
     WaterOnly,
 }
 
-const VERTEX: &str =
+pub(super) const VERTEX: &str =
     "#version 120\nvarying vec2 uv;void main(){uv=gl_MultiTexCoord0.xy;gl_Position=ftransform();}";
 
 fn shaders(sampler: &str, stage: Stage, scene: Scene) -> Vec<(String, String)> {
@@ -598,7 +640,7 @@ fn attached_compute_preserves_distinct_hand_snapshots() {
 }
 
 // Frame literal adapted from MIT Horizon f700231 pack_uniforms.rs test API setup.
-fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
+pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         eye: glam::DVec3::ZERO,
         eye_rotation: [0.0; 2],

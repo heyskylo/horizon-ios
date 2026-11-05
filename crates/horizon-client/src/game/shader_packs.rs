@@ -538,6 +538,17 @@ impl Game<'_> {
             // One of Horizon's own packs (game/native_shaders.rs).
             self.tick_native_shader_pack(&path);
         } else if let Some(renderer) = &mut self.renderer {
+            // Lava uses the solid terrain program. Supply its sprite layers before
+            // taking the renderer inputs handed to the background source parser.
+            renderer.set_pack_lava_layers(
+                ["lava_still", "lava_flow"]
+                    .iter()
+                    .filter_map(|f| {
+                        let name = format!("minecraft:block/{f}");
+                        self.pack.render.sprite_layers.get(&name).map(|&l| l as u16)
+                    })
+                    .collect(),
+            );
             let key = LoadKey {
                 path: path.clone(),
                 resources: self.options.resources.clone(),
@@ -689,6 +700,7 @@ impl Game<'_> {
             mod_params: self.native_shader_params_now(partial),
             status,
             ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
+            still_ticks: self.clock.still().then(|| self.visual_ticks()),
         }
     }
 

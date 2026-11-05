@@ -806,8 +806,8 @@ fn run(
         }
     };
     status(send, &tr(lang, "connect.joining"));
-    c.send(&cfg::Serverbound::ClientInformation(info).encode())
-        .map_err(e)?;
+    // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
+    // the client information.
     c.send(
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
@@ -816,6 +816,8 @@ fn run(
         .encode(),
     )
     .map_err(e)?;
+    c.send(&cfg::Serverbound::ClientInformation(info).encode())
+        .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(
@@ -956,6 +958,7 @@ fn configure(
 ) -> Result<Dynamic, Reason> {
     let mut registries = Dynamic::default();
     let mut content_verified = false;
+    let mut known_core = None;
     let reply = |p: cfg::Serverbound| -> Result<(), Reason> {
         match writer.lock().unwrap().as_mut() {
             Some(w) => w
@@ -1012,16 +1015,20 @@ fn configure(
                 receive_brand(&p, send);
             }
             cfg::Clientbound::Ping(p) => reply(cfg::Serverbound::Pong(p))?,
-            // Know no packs: the server then sends every registry entry in full.
-            cfg::Clientbound::SelectKnownPacks(_) => {
+            cfg::Clientbound::SelectKnownPacks(p) => {
+                let (packs, core) = select_known_packs(p.packs, resources);
+                known_core = core;
                 reply(cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks {
-                    packs: vec![],
+                    packs,
                 }))?
             }
             cfg::Clientbound::UpdateEnabledFeatures(p) => {
                 let _ = send.send(Event::Features(p.features));
             }
-            cfg::Clientbound::RegistryData(r) => registries.add(r),
+            cfg::Clientbound::RegistryData(mut r) => {
+                fill_known_entries(&mut r, known_core.as_ref()).map_err(Reason::plain)?;
+                registries.add(r);
+            }
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
             cfg::Clientbound::CodeOfConduct(c) => {
                 let _ = send.send(Event::CodeOfConduct(c.text));
@@ -1073,6 +1080,130 @@ fn configure(
             _ => {}
         }
     }
+}
+
+/// A verified snapshot of the prepared core registry data. Server-supplied
+/// identifiers only index this map; they never become filesystem paths.
+struct KnownCore(std::collections::HashMap<(String, String), Tag>);
+
+impl KnownCore {
+    fn load(resources: &Path) -> Option<Self> {
+        let root = std::fs::canonicalize(resources).ok()?;
+        let mut budget = 64 * 1024 * 1024;
+        let manifest = known_json(&root, Path::new("horizon-resources.json"), &mut budget)?;
+        if manifest.get("minecraft")?.as_str()? != horizon_protocol::GAME_VERSION {
+            return None;
+        }
+        let catalog = known_json(&root, Path::new("command-registries.json"), &mut budget)?;
+        let catalog = catalog.get("by_registry")?.as_object()?;
+        let mut entries = std::collections::HashMap::new();
+        for &registry in crate::lan::data::SYNCHRONIZED {
+            let registry_path = core_identifier_path(registry)?;
+            let ids = catalog.get(registry)?.get("ids")?.as_array()?;
+            for id in ids {
+                let id = id.as_str()?;
+                let entry_path = core_identifier_path(id)?;
+                let relative = Path::new("data/minecraft")
+                    .join(registry_path)
+                    .join(format!("{entry_path}.json"));
+                let json = known_json(&root, &relative, &mut budget)?;
+                if !json.is_object() && !json.is_array() {
+                    return None;
+                }
+                let data = crate::lan::data::json_to_nbt(&json);
+                if entries
+                    .insert((registry.to_owned(), id.to_owned()), data)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+        }
+        // Empty/partial prepared trees must not advertise a pack they cannot supply.
+        if entries.is_empty() {
+            return None;
+        }
+        Some(Self(entries))
+    }
+}
+
+/// ResourceLocation's allowed characters alone do not make a safe path:
+/// it permits dots and slashes, but file conversion rejects empty, . and .. components.
+fn core_identifier_path(id: &str) -> Option<&str> {
+    let path = id.strip_prefix("minecraft:")?;
+    (!path.is_empty()
+        && path.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+        }))
+    .then_some(path)
+}
+
+/// Canonical containment is checked before opening, including symlink targets.
+/// Both a per-file cap and aggregate budget bound the pre-negotiation snapshot.
+fn known_json(root: &Path, relative: &Path, budget: &mut usize) -> Option<serde_json::Value> {
+    use std::io::Read;
+    if relative
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let path = std::fs::canonicalize(root.join(relative)).ok()?;
+    if !path.starts_with(root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(&path).ok()?;
+    let limit = (*budget).min(16 * 1024 * 1024);
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > limit {
+        return None;
+    }
+    *budget -= bytes.len();
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Only acknowledge the exact core pack after verifying all locally expected
+/// registry entries. Otherwise the server sends their full data, as before.
+fn select_known_packs(
+    offered: Vec<cfg::KnownPack>,
+    resources: &Path,
+) -> (Vec<cfg::KnownPack>, Option<KnownCore>) {
+    let (namespace, id, version) = crate::lan::data::CORE_PACK;
+    let selected: Vec<_> = offered
+        .into_iter()
+        .filter(|p| p.namespace == namespace && p.id == id && p.version == version)
+        .collect();
+    if selected.is_empty() {
+        return (Vec::new(), None);
+    }
+    match KnownCore::load(resources) {
+        Some(core) => (selected, Some(core)),
+        None => (Vec::new(), None),
+    }
+}
+
+/// Omitted data is legal only for an entry in the pack actually selected in
+/// this configuration phase. Preserve complete server-supplied data unchanged.
+fn fill_known_entries(r: &mut cfg::RegistryData, core: Option<&KnownCore>) -> Result<(), String> {
+    for entry in r.entries.iter_mut().filter(|e| e.data.is_none()) {
+        let data = core
+            .and_then(|core| core.0.get(&(r.registry.clone(), entry.id.clone())))
+            .ok_or_else(|| {
+                "Server omitted registry data not supplied by a selected known pack".to_owned()
+            })?;
+        entry.data = Some(data.clone());
+    }
+    Ok(())
 }
 
 fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
@@ -1282,6 +1413,188 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
+        cfg::KnownPack {
+            namespace: namespace.into(),
+            id: id.into(),
+            version: version.into(),
+        }
+    }
+
+    fn known_fixture() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hz-known-core-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("horizon-resources.json"),
+            serde_json::json!({"minecraft": horizon_protocol::GAME_VERSION}).to_string(),
+        )
+        .unwrap();
+        let mut catalog = serde_json::Map::new();
+        for &registry in crate::lan::data::SYNCHRONIZED {
+            catalog.insert(
+                registry.into(),
+                serde_json::json!({"ids": ["minecraft:fixture"]}),
+            );
+            let dir = root
+                .join("data/minecraft")
+                .join(core_identifier_path(registry).unwrap());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("fixture.json"), br#"{"fixture":1}"#).unwrap();
+        }
+        std::fs::write(
+            root.join("command-registries.json"),
+            serde_json::json!({"by_registry": catalog}).to_string(),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn the_client_knows_only_the_exact_complete_core_pack() {
+        let root = known_fixture();
+        let core = pack("minecraft", "core", horizon_protocol::GAME_VERSION);
+        let offered = vec![
+            core.clone(),
+            pack(
+                "minecraft",
+                "trade_rebalance",
+                horizon_protocol::GAME_VERSION,
+            ),
+            pack("example", "server_pack", "1"),
+        ];
+        let (selected, snapshot) = select_known_packs(offered, &root);
+        assert_eq!(selected, vec![core]);
+        assert!(snapshot.is_some());
+        assert!(
+            select_known_packs(vec![pack("minecraft", "core", "1.21.11")], &root)
+                .0
+                .is_empty()
+        );
+        std::fs::remove_file(root.join("data/minecraft/damage_type/fixture.json")).unwrap();
+        assert!(
+            select_known_packs(
+                vec![pack("minecraft", "core", horizon_protocol::GAME_VERSION)],
+                &root
+            )
+            .0
+            .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selected_snapshot_hydrates_only_known_core_entries_without_more_disk_reads() {
+        let root = known_fixture();
+        let (_, core) = select_known_packs(
+            vec![pack("minecraft", "core", horizon_protocol::GAME_VERSION)],
+            &root,
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        let mut packet = cfg::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![cfg::RegistryEntry {
+                id: "minecraft:fixture".into(),
+                data: None,
+            }],
+        };
+        assert!(fill_known_entries(&mut packet, None).is_err());
+        fill_known_entries(&mut packet, core.as_ref()).unwrap();
+        assert!(packet.entries[0].data.is_some());
+        let sent = packet.entries[0].data.clone();
+        fill_known_entries(&mut packet, None).unwrap();
+        assert_eq!(packet.entries[0].data, sent);
+        for id in [
+            "example:fixture",
+            "minecraft:missing",
+            "minecraft:../../outside",
+            "minecraft:/outside",
+        ] {
+            packet.entries[0] = cfg::RegistryEntry {
+                id: id.into(),
+                data: None,
+            };
+            assert!(fill_known_entries(&mut packet, core.as_ref()).is_err());
+            assert!(packet.entries[0].data.is_none());
+        }
+    }
+
+    #[test]
+    fn registry_paths_reject_traversal_absolute_and_invalid_identifiers() {
+        for id in [
+            "minecraft:../outside",
+            "minecraft:a/../b",
+            "minecraft:./a",
+            "minecraft:/tmp/a",
+            "minecraft:a//b",
+            "minecraft:a\\b",
+            "../minecraft:fixture",
+            "example:fixture",
+        ] {
+            assert!(core_identifier_path(id).is_none(), "{id}");
+        }
+        assert_eq!(
+            core_identifier_path("minecraft:worldgen/biome"),
+            Some("worldgen/biome")
+        );
+        assert_eq!(
+            core_identifier_path("minecraft:valid.name"),
+            Some("valid.name")
+        );
+    }
+
+    #[test]
+    fn decoded_server_identifiers_cannot_escape_the_selected_core_snapshot() {
+        let root = known_fixture();
+        let core = KnownCore::load(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        for (registry, id) in [
+            ("minecraft:damage_type", "minecraft:/tmp/outside"),
+            ("minecraft:../../outside", "minecraft:fixture"),
+            ("minecraft:damage_type", "example:fixture"),
+        ] {
+            let wire = cfg::Clientbound::RegistryData(cfg::RegistryData {
+                registry: registry.into(),
+                entries: vec![cfg::RegistryEntry {
+                    id: id.into(),
+                    data: None,
+                }],
+            })
+            .encode();
+            let mut input = horizon_protocol::buf::Reader::new(&wire);
+            let kind = input.varint().unwrap();
+            let cfg::Clientbound::RegistryData(mut decoded) =
+                cfg::Clientbound::decode(kind, input.rest()).unwrap()
+            else {
+                panic!("wrong packet")
+            };
+            assert!(fill_known_entries(&mut decoded, Some(&core)).is_err());
+            assert!(decoded.entries[0].data.is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_core_rejects_outside_symlink_targets_and_oversized_json() {
+        let root = known_fixture();
+        let outside = root.with_extension("outside.json");
+        std::fs::write(&outside, br#"{"outside":true}"#).unwrap();
+        let entry = root.join("data/minecraft/damage_type/fixture.json");
+        std::fs::remove_file(&entry).unwrap();
+        std::os::unix::fs::symlink(&outside, &entry).unwrap();
+        assert!(KnownCore::load(&root).is_none());
+        std::fs::remove_file(&entry).unwrap();
+        let file = std::fs::File::create(&entry).unwrap();
+        file.set_len(16 * 1024 * 1024 + 1).unwrap();
+        assert!(KnownCore::load(&root).is_none());
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
     #[test]
     fn the_connecting_line_is_vanillas() {
@@ -1394,11 +1707,7 @@ mod tests {
                 login::Serverbound::decode(id, &body).unwrap(),
                 login::Serverbound::LoginAcknowledged(_)
             ));
-            let (id, body) = server.recv().unwrap();
-            assert!(matches!(
-                cfg::Serverbound::decode(id, &body).unwrap(),
-                cfg::Serverbound::ClientInformation(_)
-            ));
+            // handleLoginFinished: the brand first, then the information.
             let (id, body) = server.recv().unwrap();
             assert_eq!(
                 cfg::Serverbound::decode(id, &body).unwrap(),
@@ -1407,6 +1716,11 @@ mod tests {
                     data: b"\x07vanilla".to_vec(),
                 })
             );
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::ClientInformation(_)
+            ));
             server
                 .send(
                     &cfg::Clientbound::CustomPayload(cfg::CustomPayload {

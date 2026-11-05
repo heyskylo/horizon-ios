@@ -389,7 +389,7 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     launcher_skip = None if launcher else "launcher untouched"
     for name, command in [("launcher rustfmt", "cargo fmt --check"),
                           ("launcher clippy", "cargo clippy --all-targets --locked $features -- -D warnings"),
-                          ("launcher tests", "cargo test --locked --lib $features")]:
+                          ("launcher tests", "cargo test --locked --lib --bins $features")]:
         steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}\nin_shell {shlex.quote(command)}", skip=launcher_skip,
                           summary=tests_passed if name == "launcher tests" else None))
     harness = Step("Parity", summary=parity_summary)

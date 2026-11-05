@@ -174,7 +174,11 @@ Settings, all optional:
 Fixed limits: per client address (IPv6 by /64), 6 host registrations a minute (burst 3), 12 joins a
 minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes; a relayed stream idle
 for 120 s is closed (the game's keep-alive sends every 15 s); the first line must be complete within 10 s;
-hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one.
+hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one,
+waiting 1 s before registering again, then twice as long for each code it retires (at most 5 minutes);
+after 50 wrong secrets in one sharing session it leaves the relay (the full code still works directly).
+A relayed key exchange that ends without the guest's confirmation counts as a wrong secret, and only as
+many run at once as wrong secrets are left, so a relay gets at most 50 guesses at 20-bit secrets.
 
 ### The relay protocol
 

@@ -256,7 +256,15 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     match ImageFormat::sniff(data) {
         Some(ImageFormat::WebP) => decode_webp(data),
         Some(ImageFormat::Jpeg) => decode_jpeg(data),
-        Some(ImageFormat::Png) | None => decode_bytes(data),
+        // A PNG's IHDR states the size before the decoder sizes its pixel
+        // buffer, so it is checked there like the WebP and JPEG headers: the
+        // PNG reader alone would trust the header and allocate it.
+        Some(ImageFormat::Png) | None => {
+            if let Some((width, height)) = png_bytes_size(data) {
+                check_fetched_size(u64::from(width), u64::from(height))?;
+            }
+            decode_bytes(data)
+        }
     }
 }
 
@@ -281,6 +289,12 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut bytes = vec![0; output];
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
+    if channels == 4 {
+        // The decoder already produced RGBA. Keep its owned output instead of
+        // retaining a second full-size pixel buffer while copying every pixel.
+        bytes.truncate(info.buffer_size());
+        return Ok((info.width, info.height, bytes));
+    }
     let mut rgba = Vec::with_capacity(rgba_size);
     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
         rgba.extend(match channels {
@@ -320,15 +334,19 @@ fn within_budget(files: &[&PathBuf], budget: u64) -> HashSet<PathBuf> {
         .map(|p| (*p).clone())
         .collect()
 }
+/// A PNG's width and height from its first 24 bytes (`IHDR`), before any
+/// pixel buffer is made.
+fn png_bytes_size(data: &[u8]) -> Option<(u32, u32)> {
+    let header = data.get(..24)?;
+    if header[..8] != *b"\x89PNG\r\n\x1a\n" || header[12..16] != *b"IHDR" {
+        return None;
+    }
+    let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
+    Some((field(16), field(20)))
+}
 /// A PNG's width and height, from its header alone.
 fn png_size(path: &Path) -> Option<(u32, u32)> {
-    let header: [u8; 24] = horizon_core::prepared_files::read_head(path, 24)
-        .ok()?
-        .try_into()
-        .ok()?;
-    let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
-    (header[..8] == *b"\x89PNG\r\n\x1a\n" && header[12..16] == *b"IHDR")
-        .then(|| (field(16), field(20)))
+    png_bytes_size(&horizon_core::prepared_files::read_head(path, 24).ok()?)
 }
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     // A prepared root's folder: from its data file, without listing the disk.
@@ -1960,7 +1978,7 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, false)
+        self.styled_text(atlas, text, x, y, color, shadow, false, None)
     }
     /// `text_styled` for text drawn in the world (`TextRenderable.render`
     /// with `flat` false): each quad's `depth` is its z in text units, the
@@ -1976,7 +1994,42 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, true)
+        self.styled_text(atlas, text, x, y, color, shadow, true, None)
+    }
+    /// `Font.drawInBatch8xOutline`: eight glyph offsets in the outline color,
+    /// then the original text. Returns (advance, first front-text vertex), so
+    /// world rendering can use POLYGON_OFFSET for the front and NORMAL for
+    /// its outline. Offsets use each glyph's own shadow offset (unihex: 0.5).
+    pub fn text_styled_outline_world(
+        &mut self,
+        atlas: &HudAtlas,
+        text: &crate::text::Text,
+        x: f32,
+        y: f32,
+        color: u32,
+        outline: u32,
+    ) -> (f32, usize) {
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if dx != 0 || dy != 0 {
+                    self.styled_text(
+                        atlas,
+                        text,
+                        x,
+                        y,
+                        color,
+                        false,
+                        true,
+                        Some((outline, [dx as f32, dy as f32])),
+                    );
+                }
+            }
+        }
+        let front = self.vertices.len();
+        (
+            self.styled_text(atlas, text, x, y, color, false, true, None),
+            front,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn styled_text(
@@ -1988,6 +2041,7 @@ impl HudBatch {
         color: u32,
         shadow: bool,
         world: bool,
+        outline: Option<(u32, [f32; 2])>,
     ) -> f32 {
         // StringDecomposer.iterateFormatted inside Font.drawInternal:
         // `§` codes inside a span restyle what follows and are not drawn.
@@ -2055,10 +2109,11 @@ impl HudBatch {
         }
         self.patches.extend(font.take_patches());
         let white = font.white();
-        let has_shadow = shadow
-            || glyphs
-                .iter()
-                .any(|glyph| glyph.3.is_some_and(|color| color != 0));
+        let has_shadow = outline.is_none()
+            && (shadow
+                || glyphs
+                    .iter()
+                    .any(|glyph| glyph.3.is_some_and(|color| color != 0)));
         let passes: &[bool] = if has_shadow { &[true, false] } else { &[false] };
         // ARGB.scaleRGB(color, 0.25): the default shadow colour.
         let shade = |c: u32| {
@@ -2093,8 +2148,9 @@ impl HudBatch {
                 } else {
                     shade(*c)
                 };
-                let has_shadow = (custom_shadow.is_some_and(|argb| argb != 0)
-                    || custom_shadow.is_none() && shadow)
+                let has_shadow = outline.is_none()
+                    && (custom_shadow.is_some_and(|argb| argb != 0)
+                        || custom_shadow.is_none() && shadow)
                     && !(world && shadow_color == 0);
                 if is_shadow && !has_shadow {
                     continue;
@@ -2104,7 +2160,11 @@ impl HudBatch {
                 } else {
                     (0.0, *c)
                 };
-                let (px, py) = (*gx + dx, y + dx);
+                let (px, py, col) = if let Some((color, [dx, dy])) = outline {
+                    (*gx + dx * g.offset, y + dy * g.offset, color)
+                } else {
+                    (*gx + dx, y + dx, col)
+                };
                 if let Some(object) = object {
                     // `PlainTextRenderable.render`: sprite glyphs use the same
                     // shadow colour and offset as text, with the front at SHADOW_DEPTH.
@@ -2976,6 +3036,41 @@ mod tests {
         assert!(check_fetched_size(4096, 4096).is_ok());
         assert!(check_fetched_size(4097, 4096).is_err());
         assert!(check_fetched_size(16_383, 16_383).is_err());
+    }
+
+    /// A fetched PNG is refused by the size its own header claims, before the
+    /// reader makes the pixel buffer: a few hundred bytes of payload would
+    /// otherwise ask for 64 MiB or much more.
+    #[test]
+    fn a_fetched_png_is_refused_by_the_size_its_header_claims() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[7; 16]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(matches!(
+            ImageFormat::sniff(&encoded),
+            Some(ImageFormat::Png)
+        ));
+        assert_eq!(
+            decode_image_bytes(&encoded).expect("a small PNG decodes").0,
+            2
+        );
+
+        // The same image, its IHDR claiming one pixel row past the limit: the
+        // CRC is ignored on purpose, so this stands in for a hostile header.
+        let ihdr = encoded.windows(4).position(|w| w == b"IHDR").expect("IHDR");
+        encoded[ihdr + 4..ihdr + 8].copy_from_slice(&4097u32.to_be_bytes());
+        encoded[ihdr + 8..ihdr + 12].copy_from_slice(&4096u32.to_be_bytes());
+        let refused = decode_image_bytes(&encoded).expect_err("the size is refused");
+        assert!(
+            refused.to_string().contains("too large to decode"),
+            "{refused}"
+        );
     }
 
     /// Only the network path reads WebP and JPEG: a resource pack's texture
@@ -3905,6 +4000,44 @@ texture=wide",
             foreign.is_empty(),
             "read from the pack after all: {foreign:?}"
         );
+    }
+    #[test]
+    fn outlined_world_text_keeps_font_metrics_and_overrides_outline_color() {
+        let root = two_glyph_font("world-outline");
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let mut batch = HudBatch::new([1, 1]);
+        let text = crate::text::Text::colored("ab", 0xff0000);
+        let outline = rgba(1, 2, 3, 128);
+        let (advance, front) =
+            batch.text_styled_outline_world(&atlas, &text, 10.0, 20.0, u32::MAX, outline);
+        assert_eq!((advance, front, batch.vertices.len()), (10.0, 96, 108));
+        assert!(batch.vertices[..front].iter().all(|v| v.color == outline));
+        assert!(
+            batch.vertices[front..]
+                .iter()
+                .all(|v| v.color == rgba(255, 0, 0, 255))
+        );
+        // Eight independently offset silhouettes, retaining both glyphs and
+        // the bitmap font's advance (a=4, b=6); front text has no shadow.
+        for (i, [dx, dy]) in [
+            [-1.0, -1.0],
+            [-1.0, 0.0],
+            [-1.0, 1.0],
+            [0.0, -1.0],
+            [0.0, 1.0],
+            [1.0, -1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = batch.vertices[i * 12].pos;
+            let main = batch.vertices[front].pos;
+            assert_eq!(at, [main[0] + dx, main[1] + dy]);
+            assert_eq!(batch.vertices[i * 12 + 6].pos[0] - at[0], 4.0);
+        }
     }
     #[test]
     fn obfuscated_glyphs_keep_the_width() {

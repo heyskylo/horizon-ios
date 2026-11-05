@@ -12,6 +12,14 @@ is part of the wire.
 Rules (vanilla's code in brackets):
 - no-play-before-login: nothing in the play state before the server's Login. [Minecraft.tick sends
   ServerboundClientTickEndPacket only while it has a level, made by ClientPacketListener.handleLogin]
+- brand-before-information: the configuration phase opens with the brand, then the client information.
+  [ClientHandshakePacketListenerImpl.handleLoginFinished]
+- no-play-information: no ClientInformation in the play state while no option changed. [the configuration
+  phase sent it; ClientPacketListener.broadcastClientInformation runs only from Options.broadcastOptions]
+- known-packs-as-vanilla: the client answers the server's known packs with the ones it has, vanilla's core
+  pack; the server then leaves that pack's registry data out. [KnownPacksManager.trySelectingPacks]
+- known-data-used: with that data left out, a `/say` still shows as vanilla's chat type formats it
+  ("[Server] ..."): the client filled the entries from its own copy. [RegistryDataCollector]
 
   python3 tools/vanilla_wire_e2e.py
   python3 tools/vanilla_wire_e2e.py --rules no-play-before-login --login-delay 2
@@ -80,8 +88,51 @@ def rule_no_play_before_login(entries):
     return 'no serverbound play packet before Login'
 
 
+def rule_brand_before_information(entries):
+    """The first two serverbound configuration packets: the brand payload, then the client information."""
+    sent = [e for e in entries if e['dir'] == 'c2s' and e['state'] == 'configuration'][:2]
+    names = [e['name'] for e in sent]
+    if names != ['custom_payload', 'client_information']:
+        raise Failed(f'configuration opens with {names}, vanilla sends [custom_payload (brand), client_information]')
+    payload = bytes.fromhex(sent[0].get('data', ''))
+    channel = payload[1:1 + payload[0]] if payload else b''  # a short string: one length byte
+    if channel != b'minecraft:brand':
+        raise Failed(f'the first payload is {channel!r}, not minecraft:brand')
+    return 'brand, then client_information'
+
+
+def rule_no_play_information(entries):
+    """No client_information in play: the options never change during the run."""
+    sent = [e for e in entries if e['dir'] == 'c2s' and e['state'] == 'play' and e['name'] == 'client_information']
+    if sent:
+        raise Failed(f'{len(sent)} client_information in play with no option changed (first at {sent[0]["t"]} s)')
+    return 'no client_information in play'
+
+
+def rule_known_packs_as_vanilla(entries):
+    """The serverbound select_known_packs carries the same packs as the server's (vanilla's core pack)."""
+    offered = [e for e in entries if e['dir'] == 's2c' and e['name'] == 'select_known_packs']
+    answer = [e for e in entries if e['dir'] == 'c2s' and e['name'] == 'select_known_packs']
+    if not offered or not answer:
+        raise Failed(f'no known packs exchange (server {len(offered)}, client {len(answer)})')
+    if answer[0].get('data') != offered[0].get('data'):
+        raise Failed(f'the server offered {offered[0].get("data")}, the client answered {answer[0].get("data")}')
+    return 'answered with the packs offered (minecraft:core)'
+
+
+def rule_known_data_used(entries, messages):
+    """The client shows the server's /say as vanilla's say_command chat type formats it."""
+    if not any('[Server] wire-check' in line for line in messages):
+        raise Failed(f'no "[Server] wire-check" among the client\'s messages: {messages[:5]}')
+    return '"[Server] wire-check" shown'
+
+
 RULES = {
     'no-play-before-login': rule_no_play_before_login,
+    'brand-before-information': rule_brand_before_information,
+    'no-play-information': rule_no_play_information,
+    'known-packs-as-vanilla': rule_known_packs_as_vanilla,
+    'known-data-used': rule_known_data_used,
 }
 
 
@@ -108,6 +159,7 @@ def run(args, out):
     capture = out / 'capture.jsonl'
     capture.touch()
     game = None
+    messages = []
     try:
         server.wait_for(r'Done \(', timeout=300)
         if args.login_delay > 0:
@@ -118,6 +170,9 @@ def run(args, out):
         game('connect', f'127.0.0.1:{listen}', PLAYER)
         game('wait-for', 'loaded', '--timeout', 180)
         game('wait', args.ticks)
+        server.console('say wire-check')
+        game('wait', 20)
+        messages = [str(m) for m in game('messages', 10, ok=False).get('chat', [])]
         game('disconnect', ok=False)
         time.sleep(1)
         stop.set()
@@ -132,7 +187,9 @@ def run(args, out):
     results = []
     for name in args.rules:
         try:
-            results.append((name, 'pass', RULES[name](entries)))
+            rule = RULES[name]
+            detail = rule(entries, messages) if rule is rule_known_data_used else rule(entries)
+            results.append((name, 'pass', detail))
         except Failed as e:
             results.append((name, 'FAIL', str(e)))
     shutil.rmtree(work, ignore_errors=True)

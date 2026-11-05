@@ -10,8 +10,6 @@ use horizon_core::{
     position::BlockPos,
     random::RandomSource,
 };
-use std::sync::Arc;
-
 /// A baked frame model: (corners in block units, unit UVs, sprite) per quad.
 pub(super) type FrameModel = Vec<([[f32; 3]; 4], [[f32; 2]; 4], String)>;
 
@@ -165,12 +163,21 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
-        let invisible = stack.extra.as_ref().is_some_and(|extra| {
-            extra.other.iter().any(|(k, v)| {
-                (k == "minecraft:entity_data" || k == "entity_data")
-                    && horizon_client::save::number(v.get("Invisible")).unwrap_or(0) != 0
+        let entity_data = stack.extra.as_ref().and_then(|extra| {
+            extra.other.iter().find_map(|(k, v)| {
+                (k == "minecraft:entity_data" || k == "entity_data").then_some(v)
             })
         });
+        let invisible = entity_data
+            .and_then(|v| horizon_client::save::number(v.get("Invisible")))
+            .unwrap_or(0)
+            != 0;
+        // `applyComponentsFromItemStack` sets `CUSTOM_NAME`, then `entity_data`
+        // loads (`updateCustomEntityTag`): a missing `CustomName` clears it.
+        let custom_name = match entity_data {
+            Some(data) => data.get("CustomName").cloned(),
+            None => stack.data().and_then(|d| d.custom_name.clone()),
+        };
         let pos: [i32; 3] = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
         // `ItemFrameItem.mayPlace`: `Level.isInsideBuildHeight(blockPos)`, so a frame is not
         // placed on the top face of the highest block or under the lowest one.
@@ -191,6 +198,7 @@ impl Game<'_> {
             fixed: false,
             invisible,
             check_interval: 0,
+            custom_name,
         };
         if !self.frame_survives(&frame) {
             return false;
@@ -384,12 +392,8 @@ impl Game<'_> {
         let at = [c[0] + s[0] * 0.15, c[1], c[2] + s[2] * 0.15];
         let mut drops = Vec::new();
         if with_frame {
-            drops.push(ItemStack {
-                item: Arc::from(f.kind()),
-                count: 1,
-                damage: 0,
-                extra: None,
-            });
+            // `ItemFrame.getFrameItemStackWithData` (glow frames share it).
+            drops.push(f.item_stack_with_data());
         }
         if let Some(item) = f.item.clone()
             && self.world.random.next_float() < f.drop_chance

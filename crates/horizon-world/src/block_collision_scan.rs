@@ -58,10 +58,11 @@ pub trait BlockCollisionWorld {
     ) -> Result<bool, Self::Error> {
         Ok(false)
     }
-    /// Whether a chunk `collision_chunk` reports missing stays missing for the whole scan, and
-    /// asking again has no effect: true lets the scan pass the rest of a row in that chunk
-    /// without asking. False, the default, asks at every cell of a missing chunk, as vanilla's
-    /// `BlockCollisions` does.
+    /// Whether the chunks `collision_chunk` reports, missing or not, stay as they are for the
+    /// whole scan, and asking again has no effect: true lets the scan pass the rest of a row in
+    /// a missing chunk without asking, and go back to the chunk it just left without asking
+    /// again. False, the default, asks at every cell of a missing chunk and at every change of
+    /// chunk, as vanilla's `BlockCollisions` does.
     fn missing_chunks_stay_missing(&self) -> bool {
         false
     }
@@ -138,9 +139,20 @@ pub fn scan_cells(bounds: Aabb) -> Option<usize> {
     cells(bounds).ok().map(|(_, _, count)| count)
 }
 
-/// Sections whose `may_reach_out` a scan remembers: 2 x 2 columns by two
+/// Sections whose facts a scan remembers: 2 x 2 columns by two
 /// sections holds every section of a box up to 16 blocks on each side.
 const REACH_SECTIONS: usize = 8;
+
+/// What a scan asked the world about one section, once.
+#[derive(Clone, Copy)]
+struct SectionFacts {
+    at: ChunkPos,
+    section_y: i32,
+    /// `section_is_empty`.
+    empty: bool,
+    /// `may_reach_out`; not asked (false) for an empty section, whose cells are all passed.
+    reaches: bool,
+}
 
 pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     world: &'w mut W,
@@ -157,16 +169,17 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     cursor: [usize; 3],
     count: usize,
     budget: usize,
-    chunk: Option<(ChunkPos, W::Chunk)>,
-    /// `may_reach_out` of the last sections outer cells were in, replaced
-    /// in turn. A box across a chunk border goes back and forth between
-    /// two columns on every row, so one remembered section is asked again
-    /// at each crossing.
-    reach: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
-    reach_next: usize,
-    /// `section_is_empty` of the last sections the scan entered, kept as `reach` is.
-    empty: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
-    empty_next: usize,
+    /// The last cell's chunk and its section's facts: the cells of a row in one chunk share
+    /// them, so most cells need one comparison.
+    here: Option<(W::Chunk, SectionFacts)>,
+    /// The `here` before, with `missing_stays`: a row across a chunk border goes back and forth
+    /// between the two.
+    there: Option<(W::Chunk, SectionFacts)>,
+    /// The facts of the last sections cells were in, replaced in turn. A box
+    /// across a chunk border goes back and forth between two columns on every
+    /// row, so one remembered section is asked again at each crossing.
+    sections: [Option<SectionFacts>; REACH_SECTIONS],
+    sections_next: usize,
     /// `missing_chunks_stay_missing`, asked once.
     missing_stays: bool,
     failed: bool,
@@ -199,11 +212,10 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             cursor: [0; 3],
             count,
             budget: candidate_budget,
-            chunk: None,
-            reach: [None; REACH_SECTIONS],
-            reach_next: 0,
-            empty: [None; REACH_SECTIONS],
-            empty_next: 0,
+            here: None,
+            there: None,
+            sections: [None; REACH_SECTIONS],
+            sections_next: 0,
             missing_stays,
             failed: false,
         })
@@ -217,28 +229,79 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             .min(self.budget.saturating_sub(self.index))
     }
 
-    /// `section_is_empty`, asked once per section the scan enters.
-    fn section_is_empty(
+    /// The chunk and section facts of a cell in another chunk or section than the last one's;
+    /// None in a missing chunk.
+    fn enter(
+        &mut self,
+        at: ChunkPos,
+        section_y: i32,
+    ) -> Result<Option<(W::Chunk, SectionFacts)>, CollisionScanError<W::Error>> {
+        if self.missing_stays
+            && let Some((chunk, facts)) = self.there
+            && facts.at == at
+            && facts.section_y == section_y
+        {
+            std::mem::swap(&mut self.here, &mut self.there);
+            return Ok(Some((chunk, facts)));
+        }
+        let chunk = match self.here {
+            Some((chunk, facts)) if facts.at == at => chunk,
+            _ => match self
+                .world
+                .collision_chunk(at)
+                .map_err(CollisionScanError::World)?
+            {
+                Some(chunk) => chunk,
+                None => {
+                    // Vanilla forgets its chunk after a missing one and asks for it again. With
+                    // `missing_stays` asking has no effect: `here` stays, as no cell of the
+                    // missing chunk matches it.
+                    if !self.missing_stays {
+                        self.here = None;
+                    }
+                    return Ok(None);
+                }
+            },
+        };
+        let facts = self.section_facts(at, chunk, section_y)?;
+        self.there = self.here;
+        self.here = Some((chunk, facts));
+        Ok(Some((chunk, facts)))
+    }
+
+    /// The facts of the section a cell is in, asked once per section the scan enters.
+    fn section_facts(
         &mut self,
         at: ChunkPos,
         chunk: W::Chunk,
         section_y: i32,
-    ) -> Result<bool, CollisionScanError<W::Error>> {
-        if let Some(&(_, _, empty)) = self
-            .empty
+    ) -> Result<SectionFacts, CollisionScanError<W::Error>> {
+        if let Some(&facts) = self
+            .sections
             .iter()
             .flatten()
-            .find(|(c, y, _)| *c == at && *y == section_y)
+            .find(|facts| facts.at == at && facts.section_y == section_y)
         {
-            return Ok(empty);
+            return Ok(facts);
         }
         let empty = self
             .world
             .section_is_empty(chunk, section_y)
             .map_err(CollisionScanError::World)?;
-        self.empty[self.empty_next] = Some((at, section_y, empty));
-        self.empty_next = (self.empty_next + 1) % REACH_SECTIONS;
-        Ok(empty)
+        let reaches = !empty
+            && self
+                .world
+                .may_reach_out(chunk, section_y)
+                .map_err(CollisionScanError::World)?;
+        let facts = SectionFacts {
+            at,
+            section_y,
+            empty,
+            reaches,
+        };
+        self.sections[self.sections_next] = Some(facts);
+        self.sections_next = (self.sections_next + 1) % REACH_SECTIONS;
+        Ok(facts)
     }
 
     /// Move the cursor `n` cells further along its row; `n` must not pass
@@ -289,31 +352,31 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 .start
                 .offset(relative[0] as i32, relative[1] as i32, relative[2] as i32);
             let chunk_position = p.chunk();
-            let chunk = match self.chunk {
-                Some((at, chunk)) if at == chunk_position => Some(chunk),
-                _ => {
-                    let chunk = self
-                        .world
-                        .collision_chunk(chunk_position)
-                        .map_err(CollisionScanError::World)?;
-                    self.chunk = chunk.map(|chunk| (chunk_position, chunk));
-                    chunk
+            let section_y = p.y >> 4;
+            let (chunk, facts) = match self.here {
+                Some((chunk, facts))
+                    if facts.at == chunk_position && facts.section_y == section_y =>
+                {
+                    (chunk, facts)
                 }
-            };
-            let Some(chunk) = chunk else {
-                // A chunk that stays missing has nothing in the rest of the row's cells in it:
-                // they are passed at once, as a section without blocks is below.
-                if self.missing_stays {
-                    let rest = self.rest_in_chunk(relative[0], p.x);
-                    self.skip(rest);
-                }
-                continue;
+                _ => match self.enter(chunk_position, section_y)? {
+                    Some(here) => here,
+                    None => {
+                        // A chunk that stays missing has nothing in the rest of the row's cells
+                        // in it: they are passed at once, as a section without blocks is below.
+                        if self.missing_stays {
+                            let rest = self.rest_in_chunk(relative[0], p.x);
+                            self.skip(rest);
+                        }
+                        continue;
+                    }
+                },
             };
             // A section whose blocks have no collision shape gives nothing for any cell in it,
             // inner or outer: the rest of the row in it is passed at once (never beyond the
             // budget, which still ends the scan where it would have). A far move's sweep is
             // mostly sky and chunks not loaded.
-            if self.section_is_empty(chunk_position, chunk, p.y >> 4)? {
+            if facts.empty {
                 let rest = self.rest_in_chunk(relative[0], p.x);
                 self.skip(rest);
                 continue;
@@ -322,40 +385,20 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             // cell: most sections hold none, so their outer cells go unread
             // (the result is the same, with a fifth of the block reads for a
             // mob's box).
-            if kind != 0 {
-                let section_y = p.y >> 4;
-                let known = self
-                    .reach
-                    .iter()
-                    .flatten()
-                    .find(|(at, y, _)| *at == chunk_position && *y == section_y);
-                let reaches = match known {
-                    Some(&(_, _, reaches)) => reaches,
-                    None => {
-                        let reaches = self
-                            .world
-                            .may_reach_out(chunk, section_y)
-                            .map_err(CollisionScanError::World)?;
-                        self.reach[self.reach_next] = Some((chunk_position, section_y, reaches));
-                        self.reach_next = (self.reach_next + 1) % REACH_SECTIONS;
-                        reaches
-                    }
-                };
-                if !reaches {
-                    // On a row along the box's bottom, top or sides every
-                    // cell is outer: the rest of it in this chunk is passed
-                    // at once (never beyond the budget, which still ends the
-                    // scan where it would have).
-                    if relative[1] == 0
-                        || relative[1] == height - 1
-                        || relative[2] == 0
-                        || relative[2] == depth - 1
-                    {
-                        let rest = self.rest_in_chunk(relative[0], p.x);
-                        self.skip(rest);
-                    }
-                    continue;
+            if kind != 0 && !facts.reaches {
+                // On a row along the box's bottom, top or sides every
+                // cell is outer: the rest of it in this chunk is passed
+                // at once (never beyond the budget, which still ends the
+                // scan where it would have).
+                if relative[1] == 0
+                    || relative[1] == height - 1
+                    || relative[2] == 0
+                    || relative[2] == depth - 1
+                {
+                    let rest = self.rest_in_chunk(relative[0], p.x);
+                    self.skip(rest);
                 }
+                continue;
             }
             let block = self
                 .world

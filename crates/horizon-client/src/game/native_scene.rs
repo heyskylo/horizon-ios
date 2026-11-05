@@ -21,6 +21,10 @@ struct SceneQuad {
     uv: [[f32; 2]; 4],
     color: u32,
     normal: Vec3,
+    /// Dropped when it faces away: block model faces, and the quads a block
+    /// entity marks for culling as `entity.wgsl` does (`CULL_BACK`,
+    /// `SHADED_CULL_W`). Other quads draw both sides, as in the world.
+    cull: bool,
 }
 
 /// The GUI transform of `view` in the box `rect` (x0, y0, x1, y1): the view's
@@ -82,8 +86,14 @@ impl Game<'_> {
         if !self.native_window() || !view.scale.is_finite() || view.scale <= 0.0 {
             return;
         }
-        let occupied: std::collections::HashMap<[i32; 3], _> =
-            blocks.iter().map(|b| (b.pos, b.state)).collect();
+        // A state the registry doesn't know (a mod's stale id) culls nothing
+        // instead of panicking in the block facts.
+        let registry = &self.pack.assets.registry;
+        let occupied: std::collections::HashMap<[i32; 3], _> = blocks
+            .iter()
+            .filter(|b| registry.state(b.state).is_some())
+            .map(|b| (b.pos, b.state))
+            .collect();
         let solid = |pos: [i32; 3]| {
             occupied.get(&pos).is_some_and(|&state| {
                 self.res.behaviours().facts(state).flags & state_flags::SOLID_RENDER != 0
@@ -140,6 +150,7 @@ impl Game<'_> {
                     }),
                     color,
                     normal,
+                    cull: true,
                 });
             }
             if let Some(entity) = block.entity {
@@ -166,14 +177,27 @@ impl Game<'_> {
                 );
                 for q in placed.as_chunks::<4>().0 {
                     let corners = q.each_ref().map(|v| Vec3::from_array(v.pos));
-                    let normal = (corners[1] - corners[0])
+                    let [nx, ny, nz, w] = q[0].normal;
+                    let mut normal = (corners[1] - corners[0])
                         .cross(corners[2] - corners[0])
                         .normalize_or_zero();
+                    if normal == Vec3::ZERO {
+                        normal = Vec3::new(f32::from(nx), f32::from(ny), f32::from(nz))
+                            .normalize_or_zero();
+                    }
+                    // `entity.wgsl`: |w| >= 0.5 is shaded by the normal; smaller
+                    // keeps the colour baked in (quads, cubes, items, text).
+                    let unbaked = w.unsigned_abs() >= 64;
                     quads.push(SceneQuad {
                         corners,
                         uv: q.each_ref().map(|v| v.uv),
-                        color: shaded(q[0].color, face_shade(normal)),
+                        color: if unbaked {
+                            shaded(q[0].color, face_shade(normal))
+                        } else {
+                            q[0].color
+                        },
                         normal,
+                        cull: (1..64).contains(&w) || (-126..0).contains(&w),
                     });
                 }
             }
@@ -181,7 +205,7 @@ impl Game<'_> {
         let m = scene_matrix(rect, view);
         let mut seen: Vec<(f32, [[f32; 3]; 4], [[f32; 2]; 4], u32)> = quads
             .into_iter()
-            .filter(|q| m.transform_vector3(q.normal).z > 0.0)
+            .filter(|q| !q.cull || m.transform_vector3(q.normal).z > 0.0)
             .map(|q| {
                 let p = q.corners.map(|c| m.transform_point3(c));
                 let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
