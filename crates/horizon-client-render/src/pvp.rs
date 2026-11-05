@@ -596,6 +596,27 @@ pub struct Hud {
     /// A dark box behind each widget.
     pub background: bool,
 }
+impl Hud {
+    /// Whether any widget is on: with none, the HUD draws nothing and reads nothing.
+    pub fn any(&self) -> bool {
+        [
+            self.armour,
+            self.effects,
+            self.held,
+            self.ping,
+            self.coords,
+            self.server,
+            self.combo,
+            self.fps,
+            self.cps,
+            self.keys,
+            self.clock,
+            self.reach,
+            self.speed,
+        ]
+        .contains(&true)
+    }
+}
 impl Default for Hud {
     fn default() -> Self {
         Self {

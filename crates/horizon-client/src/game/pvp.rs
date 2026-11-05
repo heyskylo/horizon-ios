@@ -240,7 +240,7 @@ impl Game<'_> {
     /// lines only when what it shows changed.
     pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let hud = self.settings.extras.pvp.hud;
-        if self.player.is_none() {
+        if self.player.is_none() || !hud.any() {
             return;
         }
         // What each widget shows, read before its cache is borrowed.
