@@ -326,6 +326,29 @@ struct Launch {
 }
 
 impl Game<'_> {
+    /// Only the owner window changes its integrated server's command tree. A remote
+    /// server (or a splitscreen guest) keeps its own choice and permissions.
+    pub(super) fn sync_pregen_option(&self) {
+        let Some(server) = &self.integrated else {
+            return;
+        };
+        let enabled = self.options.pregen || self.settings.extras.pregen;
+        if horizon_client::command::vanilla::game_dispatcher()
+            .find("pregen")
+            .is_some()
+            == enabled
+        {
+            return;
+        }
+        server.call(move |g| {
+            use horizon_client::command::vanilla;
+            if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
+                vanilla::set_horizon_commands(enabled);
+                g.resend_commands_filtered();
+            }
+        });
+    }
+
     /// `Minecraft.hasSingleplayerServer`: a world of this window's own, run
     /// in the frame or on its server thread.
     pub(super) fn has_singleplayer_server(&self) -> bool {
@@ -351,6 +374,9 @@ impl Game<'_> {
     ) -> Result<()> {
         // The window's mod configs before the server's, as on NeoForge.
         self.native_configs_client_start();
+        horizon_client::command::vanilla::set_horizon_commands(
+            self.options.pregen || self.settings.extras.pregen,
+        );
         let auth = horizon_client::auth::current();
         let player = auth
             .as_ref()

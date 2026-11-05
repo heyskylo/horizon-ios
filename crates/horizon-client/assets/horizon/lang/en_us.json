@@ -1,4 +1,7 @@
 {
+  "horizon.extras.header.world": "World",
+  "horizon.extras.pregen": "Chunk pregeneration",
+  "horizon.extras.pregen.tooltip": "Enables /pregen in your single-player and LAN worlds. With cheats enabled, use /pregen start to generate an area before exploring it. Does not enable the command on servers you join.",
   "horizon.options.controller": "Controller",
   "horizon.options.three_d_skin_layers": "3D Skin Layers",
   "horizon.options.vibration": "Vibration",
