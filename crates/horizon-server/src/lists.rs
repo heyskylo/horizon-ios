@@ -155,7 +155,7 @@ fn edit_locked(
                     ),
                 )
             } else {
-                (false, "That player is already banned".to_owned())
+                (false, "Nothing changed. The player is already banned".to_owned())
             }
         }
         ("pardon", [name]) => {
@@ -164,12 +164,12 @@ fn edit_locked(
             if user.as_ref().is_some_and(|user| bans.remove(user)) {
                 (true, format!("Unbanned {name}"))
             } else {
-                (false, "That player is not banned".to_owned())
+                (false, "Nothing changed. The player isn't banned".to_owned())
             }
         }
         ("ban-ip", [ip, rest @ ..]) => {
             if ip.parse::<std::net::IpAddr>().is_err() {
-                return Err("Invalid IP address".into());
+                return Err("Invalid IP address or unknown player".into());
             }
             let reason = reason(rest);
             let mut bans = load(IpBanList::new(dir.join("banned-ips.json")))?;
@@ -182,12 +182,12 @@ fn edit_locked(
                 (
                     true,
                     format!(
-                        "Banned IP address {ip}: {}",
+                        "Banned IP {ip}: {}",
                         reason.as_deref().unwrap_or("Banned by an operator.")
                     ),
                 )
             } else {
-                (false, "That IP address is already banned".to_owned())
+                (false, "Nothing changed. That IP is already banned".to_owned())
             }
         }
         ("pardon-ip", [ip]) => {
@@ -196,9 +196,9 @@ fn edit_locked(
             }
             let mut bans = load(IpBanList::new(dir.join("banned-ips.json")))?;
             if bans.remove(&(*ip).to_owned()) {
-                (true, format!("Unbanned IP address {ip}"))
+                (true, format!("Unbanned IP {ip}"))
             } else {
-                (false, "That IP address is not banned".to_owned())
+                (false, "Nothing changed. That IP isn't banned".to_owned())
             }
         }
         _ => {
@@ -359,9 +359,12 @@ mod tests {
         check("ban_ip_again", "ban-ip", &["203.0.113.7", "abuse"]);
         check("pardon_ip", "pardon-ip", &["203.0.113.7"]);
         check("pardon_ip_again", "pardon-ip", &["203.0.113.7"]);
-        for command in ["ban-ip", "pardon-ip"] {
+        for (command, message) in [
+            ("ban-ip", "Invalid IP address or unknown player"),
+            ("pardon-ip", "Invalid IP address"),
+        ] {
             match edit_stopped(&dir, command, &["not-an-ip"]) {
-                Err(error) => assert_eq!(error, "Invalid IP address"),
+                Err(error) => assert_eq!(error, message),
                 Ok(_) => panic!("{command} accepted an invalid address"),
             }
         }
