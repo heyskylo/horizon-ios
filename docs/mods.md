@@ -317,8 +317,11 @@ it. A world opened without the
 mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
 server with it may be disconnected when one spawns.
 
-A living type copies a mob, `minecraft:zombie` or `minecraft:villager`, the way NeoForge's
-`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. It has no `item` or `damage`. `attributes`
+A living type copies a mob, `minecraft:zombie`, `minecraft:villager` or `minecraft:wandering_trader`, the way NeoForge's
+`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. The wandering trader is the neutral one whose
+behaviour is all goals, so a native mod's [`register_goals`](native-mods.md#mob-goals) can replace all of it (a citizen,
+a guard, an NPC); its trades on a right click are still a wandering trader's until a native mod answers the
+interaction (`native_interact_entity`). A villager's behaviour is its brain, which stays. It has no `item` or `damage`. `attributes`
 sets default attribute values that differ from its template's (`EntityAttributeCreationEvent`), by attribute id, and
 only for attributes the template has; one it lacks stops the content root's build:
 

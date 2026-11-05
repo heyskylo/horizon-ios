@@ -242,6 +242,18 @@ jobs:
           $output = & $launcher --version 2>&1
           if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'horizon-launcher --version failed' }
           Write-Output ($output -join "`n")
+      - name: Build a native-mod game with the launcher's managed toolchain
+        working-directory: launcher
+        shell: pwsh
+        env:
+          HORIZON_LAUNCHER_HOME: ${{ runner.temp }}\horizon-native-arm64-toolchain
+          HORIZON_NATIVE_TARGET_DIR: ${{ runner.temp }}\horizon-native-arm64-toolchain\target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --release --locked --target aarch64-pc-windows-msvc --lib rust_toolchain::tests::managed_arm64_toolchain_builds_the_game -- --ignored --exact --nocapture
+          $client = Join-Path $env:HORIZON_NATIVE_TARGET_DIR 'fast/horizon-client.exe'
+          python ../tools/check_pe_arch.py arm64 $client
+          python ../tools/check_imports.py $client
   # Most pull requests leave the harnesses to parity-main, which runs them on main a batch of merges at a time
   # (.github/workflows/parity-main.yml; releases wait for it). A pull request still runs them itself when it changes
   # a harness, an oracle, a probe or the runner, or carries the run-parity label (run-parity.yml, when it is added).

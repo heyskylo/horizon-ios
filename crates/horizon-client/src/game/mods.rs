@@ -447,12 +447,16 @@ pub(super) fn living_mod_types()
         r#""width":0.6,"height":1.95,"eye_height":1.74,"category":"monster","fire_immune":false"#;
     let villager =
         r#""width":0.6,"height":1.95,"eye_height":1.62,"category":"misc","fire_immune":false"#;
+    let trader =
+        r#""width":0.6,"height":1.95,"eye_height":1.62,"category":"creature","fire_immune":false"#;
     let table = format!(
         r#"{{"minecraft:zombie":{{{zombie},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.23000000417232513}}}},
         "minecraft:villager":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}}}},
+        "minecraft:wandering_trader":{{{trader},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.7}}}},
         "minecraft:snowball":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false}},
         "ruby:ghoul":{{{zombie},"attributes":{{"minecraft:max_health":40.0,"minecraft:movement_speed":0.23000000417232513}},"template":"minecraft:zombie"}},
         "ruby:settler":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}},"template":"minecraft:villager"}},
+        "ruby:merchant":{{{trader},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.7}},"template":"minecraft:wandering_trader"}},
         "ruby:bolt":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false,"template":"minecraft:snowball"}}}}"#
     );
     // A folder per call: tests run in parallel in one process, and each removes its own.
@@ -538,6 +542,42 @@ mod tests {
         assert_eq!(
             death_loot_table(&zombie, true).as_deref(),
             Some("minecraft:entities/zombie")
+        );
+    }
+
+    /// A content mod's type from the wandering trader, the neutral template
+    /// whose behaviour is all goals: a trader under its own id, with a
+    /// trader's goals, that saves what a trader saves and loads back.
+    #[test]
+    fn a_mod_trader_type_is_a_wandering_trader_under_its_own_id() {
+        use horizon_client::mobs::{Mob, Species};
+        use horizon_world::nbt::Tag;
+        let types = living_mod_types();
+        let merchant = &types["ruby:merchant"];
+        assert_eq!(merchant.species, Species::WanderingTrader);
+        assert_eq!(merchant.class_id(), "minecraft:wandering_trader");
+        let at = horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5);
+        let trader = Mob::new(1, types["minecraft:wandering_trader"].clone(), at, 0.0);
+        let merchant = Mob::new(2, merchant.clone(), at, 0.0);
+        assert!(merchant.ai.goals.has("Float") && trader.ai.goals.has("Float"));
+        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let keys = |tag: &Tag| -> Vec<String> {
+            let Tag::Compound(map) = tag else {
+                panic!("a mob saves a compound");
+            };
+            map.keys().map(|k| k.to_string_lossy()).collect()
+        };
+        let tag = saved(&merchant);
+        assert_eq!(
+            keys(&tag),
+            keys(&saved(&trader)),
+            "it saves what a trader saves"
+        );
+        let loaded =
+            horizon_client::entity_nbt::mob_from_nbt(&tag, &types, 3, None).expect("it loads back");
+        assert_eq!(
+            (loaded.kind.id.as_str(), loaded.species()),
+            ("ruby:merchant", Species::WanderingTrader)
         );
     }
 
