@@ -568,6 +568,14 @@ pub fn full(id: &str) -> std::borrow::Cow<'_, str> {
         format!("minecraft:{id}").into()
     }
 }
+/// The entry of a map keyed by registry ids (`Identifier.parse` on the key),
+/// such as an item predicate's `components` or `predicates`.
+fn keyed<'a>(map: &'a Value, id: &str) -> Option<&'a Value> {
+    map.as_object()?
+        .iter()
+        .find(|(k, _)| full(k) == id)
+        .map(|(_, v)| v)
+}
 /// A registry id, `#tag`, or list matched against one id.
 pub fn id_matches(v: &Value, registry: &str, id: &str, w: &dyn World) -> bool {
     match v {
@@ -640,18 +648,18 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     }
     // Data components: exact matches on the few the data uses.
     let comps = &v["components"];
-    if let Some(p) = comps["minecraft:potion_contents"].as_str()
-        && it.potion.as_deref() != Some(p)
+    if let Some(p) = keyed(comps, "minecraft:potion_contents").and_then(Value::as_str)
+        && !it.potion.as_deref().is_some_and(|h| full(h) == full(p))
     {
         return false;
     }
-    if let Some(d) = comps["minecraft:damage"].as_u64()
+    if let Some(d) = keyed(comps, "minecraft:damage").and_then(Value::as_u64)
         && u64::from(it.damage) != d
     {
         return false;
     }
     let preds = &v["predicates"];
-    if let Some(list) = preds["minecraft:enchantments"].as_array() {
+    if let Some(list) = keyed(preds, "minecraft:enchantments").and_then(Value::as_array) {
         for e in list {
             let ok = it.enchantments.iter().any(|(id, lvl)| {
                 id_matches(&e["enchantments"], "enchantment", id, w)
@@ -662,7 +670,7 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
             }
         }
     }
-    if let Some(d) = preds["minecraft:damage"].as_object() {
+    if let Some(d) = keyed(preds, "minecraft:damage").and_then(Value::as_object) {
         let damage = Value::Object(d.clone());
         if !range_i(&damage["damage"], i64::from(it.damage)) {
             return false;
@@ -1618,6 +1626,58 @@ mod tests {
         // `unlocksWith(EMPTY)` too.
         let none = serde_json::json!({});
         assert!(can_unlock(&none, false, None, &Flat));
+    }
+    /// `ItemPredicate`'s `components` and `predicates` are keyed by registry
+    /// ids, so a key without a namespace is a `minecraft:` one. An unread key
+    /// used to be skipped, which let every stack pass.
+    #[test]
+    fn item_predicate_reads_bare_component_keys() {
+        let potion = ItemView {
+            id: "minecraft:potion".into(),
+            count: 1,
+            potion: Some("minecraft:swiftness".into()),
+            ..Default::default()
+        };
+        let sword = ItemView {
+            id: "minecraft:iron_sword".into(),
+            count: 1,
+            damage: 3,
+            enchantments: vec![("minecraft:sharpness".into(), 2)],
+            ..Default::default()
+        };
+        let cases = [
+            (
+                serde_json::json!({"components": {"potion_contents": "minecraft:swiftness"}}),
+                serde_json::json!({"components": {"potion_contents": "minecraft:healing"}}),
+                &potion,
+            ),
+            (
+                serde_json::json!({"components": {"damage": 3}}),
+                serde_json::json!({"components": {"damage": 4}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": 2}
+                ]}}),
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": {"min": 3}}
+                ]}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"damage": {"damage": {"max": 3}}}}),
+                serde_json::json!({"predicates": {"damage": {"damage": {"min": 4}}}}),
+                &sword,
+            ),
+        ];
+        for (yes, no, stack) in cases {
+            assert!(item(&yes, stack, &Flat), "{yes} should match");
+            assert!(!item(&no, stack, &Flat), "{no} should not match");
+        }
+        // The potion is a registry id too.
+        let bare = serde_json::json!({"components": {"minecraft:potion_contents": "swiftness"}});
+        assert!(item(&bare, &potion, &Flat));
     }
     /// `PassengerPredicate.matches`: ride_a_boat_with_a_goat's vehicle holds a goat.
     #[test]
