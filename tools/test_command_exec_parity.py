@@ -83,8 +83,12 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument("--pufferfish-contact-fixture",action="store_true")
+    parser.add_argument("--reference-only",action="store_true")
+    parser.add_argument("--work-dir",type=Path)
+    parser.add_argument("--pufferfish-body-diagnostic",action="store_true")
     args = parser.parse_args()
-    build = lab.LOCAL / 'command-exec-parity'
+    build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
@@ -115,6 +119,9 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import contact_fixture
+        groups=[('pufferfish player contact',contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -129,6 +136,9 @@ def main():
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import advancements as contact_advancements
+        advancements.update(contact_advancements())
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
@@ -137,6 +147,18 @@ def main():
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
+
+    if args.reference_only:
+        rows=[json.loads(line) for line in (build/'vanilla.jsonl').read_text().splitlines()]
+        recorded=[op for op in script if op['op'] in ('player_state','player_loop') or (op['op']=='cmd' and op.get('record',True))]
+        assert len(rows)==len(recorded),(len(rows),len(recorded))
+        for op,row in zip(recorded,rows):
+            if 'expect_result' in op and row['results'] != [[True,op['expect_result']]]:
+                sys.exit(f'Java prerequisite failed: {op}: {row}')
+            if 'expect_observation' in op and row['state']!=op['expect_observation']:
+                sys.exit(f'Java observation prerequisite failed: {op}: {row}')
+        print(f'Java prerequisites pass: {len(rows)} records')
+        return
 
     if args.binary:
         binary = args.binary.resolve(strict=True)
@@ -158,12 +180,14 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
+        if 'expect_observation' in op and reference.get('state') != op['expect_observation']:
+            sys.exit(f'Java observation prerequisite failed: {op}: {reference}')
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
@@ -171,7 +195,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
@@ -254,6 +278,8 @@ def compare(v, r, comparison=None):
         return None if left is not None and right is not None and left == right else 'positive_result'
     if comparison is not None:
         raise ValueError(f'unknown command comparison: {comparison}')
+    if v.get('state') != r.get('state'):
+        return 'state'
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:

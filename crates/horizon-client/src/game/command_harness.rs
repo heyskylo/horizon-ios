@@ -252,6 +252,46 @@ impl Game<'_> {
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }
+                "player_loop" => {
+                    let ticks = op["n"].as_u64().unwrap_or(1);
+                    let count = |g: &mut Self| {
+                        Ok(g.stats
+                            .values
+                            .get("minecraft:custom")
+                            .and_then(|m| m.get("minecraft:play_time"))
+                            .copied()
+                            .unwrap_or(0))
+                    };
+                    let before = self.harness_owner(count)?;
+                    for _ in 0..ticks {
+                        self.tick_server(false)?;
+                    }
+                    let delta = self.harness_owner(count)? - before;
+                    if delta != ticks as i32 {
+                        return Err(format!(
+                            "player loop did not advance play_time: {delta}/{ticks}"
+                        )
+                        .into());
+                    }
+                    let record = json!({"cmd": format!("#player_loop {}",op["label"].as_str().unwrap_or("")), "messages": [], "results": [[true,delta]]});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "player_state" => {
+                    let state = self.harness_owner(|g| {
+                        let p = g.player.as_ref().ok_or("player state: no actor")?;
+                        let mut loaded = Vec::new();
+                        let mut done = std::collections::BTreeMap::new();
+                        for a in g.adv.tree.list.iter().filter(|a| a.id.starts_with("h311:")) {
+                            loaded.push(a.id.clone()); done.insert(a.id.clone(),g.adv.progress.done(a));
+                        }
+                        loaded.sort();
+                        Ok(json!({"health":p.health.health(),"poison_ticks":g.potions.effects.list.iter().find(|e|e.id=="poison").map_or(0,|e|e.duration),"loaded":loaded,"done":done}))
+                    })?;
+                    let record = json!({"cmd":format!("#player_state {}",op["label"].as_str().unwrap_or("")),"messages":[],"results":[],"state":state});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "tick" => {
                     self.chat_capture = Some(Vec::new());
                     for _ in 0..op["n"].as_u64().unwrap_or(1) {

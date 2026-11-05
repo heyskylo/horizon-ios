@@ -218,6 +218,35 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
+                    case "player_loop" -> {
+                        int n=op.get("n").getAsInt();
+                        int before=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME));
+                        for (int i=0;i<n;i++) { tick(); player.connection.tick(); }
+                        int delta=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME))-before;
+                        if (delta!=n) throw new IllegalStateException("player loop did not advance play_time: "+delta+"/"+n);
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#player_loop "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "player_state" -> {
+                        try {
+                            var field=net.minecraft.server.PlayerAdvancements.class.getDeclaredField("progress");field.setAccessible(true);
+                            var progress=(java.util.Map<?,?>)field.get(player.getAdvancements());
+                            var loaded=new java.util.ArrayList<String>();var done=new java.util.TreeMap<String,Boolean>();
+                            for (var a:getAdvancements().getAllAdvancements()) {
+                                String id=a.id().toString();if (!id.startsWith("h311:")) continue;
+                                loaded.add(id);var value=(net.minecraft.advancements.AdvancementProgress)progress.get(a);
+                                done.put(id,value!=null && value.isDone());
+                            }
+                            java.util.Collections.sort(loaded);
+                            var poison=player.getEffect(net.minecraft.world.effect.MobEffects.POISON);
+                            JsonObject state=new JsonObject();state.addProperty("health",player.getHealth());
+                            state.addProperty("poison_ticks",poison==null?0:poison.getDuration());state.add("loaded",gson.toJsonTree(loaded));state.add("done",gson.toJsonTree(done));
+                            JsonObject record=new JsonObject();record.addProperty("cmd","#player_state "+op.get("label").getAsString());
+                            record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                            out.append(gson.toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {throw new IllegalStateException(e);}
+                    }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
                         messages.clear();
