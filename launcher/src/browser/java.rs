@@ -122,6 +122,7 @@ pub fn is_enabled(home: &Path, id: &str) -> bool {
 
 /// Turns mod `id` on (or off) in `horizon-mods.txt`, keeping the other lines.
 pub fn set_enabled(home: &Path, id: &str, on: bool) -> Result<(), String> {
+    let _lock = super::lock_home(home);
     let path = home.join(MODS_LIST);
     let text = fs::read_to_string(&path).unwrap_or_default();
     let key = format!("mod.{id}");
@@ -164,6 +165,7 @@ pub fn install(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     let job = Job {
         source,
         everything,
@@ -290,6 +292,7 @@ impl Job<'_> {
 
 /// Removes an installed mod's folder and turns it off.
 pub fn remove(home: &Path, entry: &Entry) -> Result<(), String> {
+    let _lock = super::lock_home(home);
     let Some(id) = entry.file.strip_prefix("horizon-mods/") else {
         return Err(format!("{} isn't in {MODS_DIR}/.", entry.file));
     };
