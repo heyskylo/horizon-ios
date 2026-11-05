@@ -149,6 +149,10 @@ impl Game<'_> {
     fn harness_settle(&mut self, deadline: Instant, required: Option<&Value>) -> Result<()> {
         loop {
             self.update_world();
+            // The oracle's settle takes its tickets at once (getChunk runs the
+            // DistanceManager updates); a tick would refresh these too, but a
+            // settle runs none, and `/execute if loaded` reads them.
+            self.update_chunk_tickets();
             if let Some(p) = &self.player {
                 let (cx, cz) = (
                     (p.position.x.floor() as i32) >> 4,
