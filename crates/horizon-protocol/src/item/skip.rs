@@ -4,7 +4,7 @@
 //! goes as its persistent Codec's NBT, `ByteBufCodecs.fromCodecWithRegistries`).
 //! Item data has no length prefix, so a component read short or long makes
 //! everything after it unreadable.
-use super::{Component, Template};
+use super::{Component, Nested, Template};
 use crate::{
     Error, Result,
     buf::{Codec, Reader},
@@ -277,6 +277,7 @@ fn mob_effect(r: &mut Reader) -> Result<()> {
 /// MobEffectInstance.Details: amplifier, duration, ambient, showParticles, showIcon, then the
 /// hidden effect's Details, recursively.
 fn effect_details(r: &mut Reader) -> Result<()> {
+    let _nested = Nested::enter()?;
     varint(r)?;
     varint(r)?;
     boolean(r)?;

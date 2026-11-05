@@ -170,6 +170,9 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-04: API 0.1 (change, experimental): the post stage's `scene_surface` is `texture_2d<u32>`, the bits of
+  the stored floats (RGBA32F is not renderable on OpenGL). Read it through `surface_at`, or
+  `bitcast<vec4<f32>>(textureLoad(scene_surface, p, 0))`; a `textureLoad` as `vec4<f32>` no longer validates.
 - 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
   `step`; the value is saved, and the pack rebuilt, when the slider is let go.
 - 2026-11-03: API 0.1 (additions): `[shadow] option`, `resolution_option` and `distance_option`: a pack's

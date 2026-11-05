@@ -84,11 +84,11 @@ pub fn chicken_egg_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
         if m.extra.egg_time <= 0 {
             let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
             let at = [m.position.x, m.position.y, m.position.z];
-            events.push(MobEvent::Sound("entity.chicken.egg", at, 1.0, pitch));
-            events.push(MobEvent::GiftLoot {
+            // The sound and `entity_place` follow only a drop (`LayEgg`).
+            events.push(MobEvent::LayEgg {
                 mob: m.id,
-                table: "minecraft:gameplay/chicken_lay",
                 at,
+                pitch,
             });
             m.extra.egg_time = m.random.next_int_bound(6000).unwrap_or(0) + 6000;
         }
@@ -175,6 +175,25 @@ mod tests {
         m.ai.steps.fly_dist = 1.8;
         assert!(chicken_process_flapping(&mut m));
         assert!((m.ai.steps.next_flap - 2.3).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn a_laid_egg_leaves_the_sound_to_the_drop() {
+        // Chicken.aiStep (expected): the pitch's two floats, then the timer's
+        // nextInt(6000); the sound and `entity_place` wait for the loot roll.
+        let mut m = chicken();
+        m.extra.egg_time = 1;
+        let mut oracle = m.random.clone();
+        let mut events = Vec::new();
+        chicken_egg_step(&mut m, &mut events);
+        let pitch = (oracle.next_float() - oracle.next_float()) * 0.2 + 1.0;
+        let next = oracle.next_int_bound(6000).unwrap() + 6000;
+        assert_eq!(m.extra.egg_time, next);
+        assert_eq!(events.len(), 1, "no sound before the drop");
+        assert!(matches!(
+            events[0],
+            MobEvent::LayEgg { mob: 1, pitch: p, .. } if p == pitch
+        ));
     }
 
     #[test]
