@@ -1215,13 +1215,27 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
         .to_string()
     })?;
     let sha256 = match &release.nightly {
-        // Signed for the Nightly channel, served under its own GitHub tag.
-        Some(published) => crate::signed::nightly_digest(
-            published,
-            asset,
-            &horizon_release_sign::trusted_keys(),
-            fetch_small,
-        )?,
+        // Signed for its own version (SHA256SUMS.v2.sig), which its title names and it installs as;
+        // served under its own GitHub tag. A title that doesn't parse strictly is refused: nothing
+        // signs GitHub's publication time.
+        Some(github_tag) => {
+            let version = horizon_release_sign::nightly_title_version(&release.name)
+                .filter(|v| *v == release.tag)
+                .ok_or_else(|| {
+                    crate::i18n::trf(
+                        "This Nightly's title ({title}) doesn't name its date and commit as Horizon \
+                         signs them, so it can't be checked: it was not installed.",
+                        &[("title", &format!("{:?}", release.name))],
+                    )
+                })?;
+            crate::signed::nightly_digest(
+                github_tag,
+                &version,
+                asset,
+                &horizon_release_sign::trusted_keys(),
+                fetch_small,
+            )?
+        }
         None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
@@ -3247,9 +3261,16 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         return Err(format!("{} has no build for this platform.", release.tag));
     }
     let before = installed();
+    let downgrade = nightly_downgrade(release, &before);
+    if let Some(warning) = &downgrade {
+        eprintln!("{warning}");
+    }
     install(release, progress)?;
     let mut settings = Settings::load();
-    if !as_update || select_after_update(settings.selected.as_deref(), &before) {
+    // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
+    let select = !as_update
+        || (downgrade.is_none() && select_after_update(settings.selected.as_deref(), &before));
+    if select {
         settings.selected = Some(release.tag.clone());
         settings.save()?;
     }
@@ -3258,6 +3279,24 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
     }
     prune_old_versions();
     Ok(release.tag.clone())
+}
+
+/// A warning when `release` is a Nightly older than a Nightly already installed: a rollback, which is
+/// allowed, but never what an update should do silently (an older build served as the current one
+/// shows its own date, since that date is signed). None otherwise.
+pub fn nightly_downgrade(release: &Release, installed: &[String]) -> Option<String> {
+    release.nightly.as_ref()?;
+    let newest = installed
+        .iter()
+        .filter(|v| crate::nightly::date_of(v).is_some())
+        .max_by(|a, b| compare_versions(a, b))?;
+    compare_versions(&release.tag, newest).is_lt().then(|| {
+        crate::i18n::trf(
+            "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection \
+             only moves to it when you pick it.",
+            &[("tag", &release.tag), ("newest", newest)],
+        )
+    })
 }
 
 /// The launcher's own path, read once at start: after a self-update the running file is gone.
@@ -3826,6 +3865,18 @@ pub fn cannot_replace_itself() -> bool {
     let place = app_bundle(&target).unwrap_or(&target);
     place.parent().is_none_or(|dir| {
         !writable(dir) || (cfg!(windows) && in_temp_folder(dir, &std::env::temp_dir()))
+    })
+}
+
+/// Whether a package manager owns this launcher: the update target is classified, rather than
+/// the executable inside an AppImage's mount. Asked while the sidebar is drawn, and the launcher
+/// doesn't move while it runs, so the path is resolved once.
+pub fn package_managed_launcher() -> bool {
+    static MANAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MANAGED.get_or_init(|| {
+        let target = update_target();
+        let target = target.canonicalize().unwrap_or(target);
+        crate::update_recovery::package_managed(&target)
     })
 }
 
@@ -5430,6 +5481,39 @@ pub fn {f}("
             parse_version_output(&format!("horizon-launcher {VERSION}\n")),
             Some(VERSION)
         );
+    }
+
+    #[test]
+    fn an_older_nightly_installs_as_a_rollback_with_a_warning() {
+        let nightly = |tag: &str| Release {
+            tag: tag.into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: Some(("u".into(), 1)),
+            prerelease: false,
+            nightly: Some("nightly".into()),
+        };
+        let installed = [
+            "v0.2.81".to_owned(),
+            "nightly-2026-10-28-0c02067".to_owned(),
+        ];
+        let warning =
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed).unwrap();
+        assert!(
+            warning.contains("older than nightly-2026-10-28-0c02067"),
+            "{warning}"
+        );
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-29-bbbbbbb"), &installed).is_none());
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-28-0c02067"), &installed).is_none());
+        // No Nightly installed, or a release: nothing to warn about.
+        assert!(
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed[..1]).is_none()
+        );
+        let mut release = nightly("v0.2.80");
+        release.nightly = None;
+        assert!(nightly_downgrade(&release, &installed).is_none());
     }
 
     #[test]

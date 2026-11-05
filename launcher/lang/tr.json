@@ -51,7 +51,8 @@
   "downloading {version}, {percent}%": "{version} indiriliyor, %{percent}",
   "A new version is available": "Yeni bir sürüm var",
   "Download again": "Yeniden indir",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Başlatıcının bu kopyası kendini değiştiremiyor. Onu bir kez yeniden indir; sonrasında kendini kendisi günceller.",
+  "Update this launcher with your package manager.": "Update this launcher with your package manager.",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "Close this launcher, move it to {folder}, and open it there to enable updates.",
   "the update failed: {error}": "güncelleme başarısız oldu: {error}",
   "Install": "Yükle",
   "Restart": "Yeniden Başlat",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "Kurucu seti artık senin.",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Yerel modlar için desteklenen Windows mimarilerinin eşleşmesi gerekir. Oyun: {game_arch}; derleme araç zinciri: {toolchain_arch}.",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Yerel modlar için desteklenen Windows mimarilerinin eşleşmesi gerekir. Oyun: {game_arch}; derleme araç zinciri: {toolchain_arch}."
 }

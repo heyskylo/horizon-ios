@@ -463,7 +463,8 @@
   "24/7 online": "24/7 online",
   "A new version is available": "Υπάρχει νέα έκδοση",
   "Download again": "Λήψη ξανά",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Αυτό το αντίγραφο του εκκινητή δεν μπορεί να αντικαταστήσει τον εαυτό του. Κατεβάστε το ξανά μία φορά· μετά ενημερώνεται μόνο του.",
+  "Update this launcher with your package manager.": "Update this launcher with your package manager.",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "Close this launcher, move it to {folder}, and open it there to enable updates.",
   "Any MCP client": "Οποιοσδήποτε πελάτης MCP",
   "{name}'s cape is kept.": "Το ακρωτήρι του {name} διατηρείται.",
   "Not reviewed by the Horizon registry": "Δεν έχει ελεγχθεί από το μητρώο Horizon",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "Το Ιδρυτικό σύνολο είναι δικό σου.",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}."
 }

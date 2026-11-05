@@ -463,7 +463,8 @@
   "24/7 online": "全天候在线",
   "A new version is available": "有新版本可用",
   "Download again": "重新下载",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "此启动器副本无法替换自身。请重新下载一次；之后它会自行更新。",
+  "Update this launcher with your package manager.": "请使用软件包管理器更新此启动器。",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "请关闭此启动器，将其移至 {folder}，然后从该位置打开以启用更新。",
   "Any MCP client": "任意 MCP 客户端",
   "{name}'s cape is kept.": "{name} 的披风已保存。",
   "Not reviewed by the Horizon registry": "未经 Horizon 注册表审核",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "创始者套装已归你所有。",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "原生模组需要匹配的受支持 Windows 架构。游戏：{game_arch}；构建工具链：{toolchain_arch}。",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "原生模组需要匹配的受支持 Windows 架构。游戏：{game_arch}；构建工具链：{toolchain_arch}。"
 }

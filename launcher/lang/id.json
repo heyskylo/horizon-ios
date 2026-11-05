@@ -463,7 +463,8 @@
   "24/7 online": "Online 24/7",
   "A new version is available": "Versi baru tersedia",
   "Download again": "Unduh lagi",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Salinan launcher ini tidak bisa mengganti dirinya sendiri. Unduh lagi sekali; setelah itu ia memperbarui dirinya sendiri.",
+  "Update this launcher with your package manager.": "Perbarui peluncur ini dengan pengelola paket Anda.",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "Tutup peluncur ini, pindahkan ke {folder}, lalu buka dari sana untuk mengaktifkan pembaruan.",
   "Any MCP client": "Klien MCP apa pun",
   "{name}'s cape is kept.": "Jubah {name} dipertahankan.",
   "Not reviewed by the Horizon registry": "Belum ditinjau oleh registri Horizon",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "Set pendiri kini milikmu.",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Mod native memerlukan arsitektur Windows yang didukung dan cocok. Gim: {game_arch}; toolchain build: {toolchain_arch}.",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Mod native memerlukan arsitektur Windows yang didukung dan cocok. Gim: {game_arch}; toolchain build: {toolchain_arch}."
 }

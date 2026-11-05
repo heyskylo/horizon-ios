@@ -463,7 +463,8 @@
   "24/7 online": "24/7 ऑनलाइन",
   "A new version is available": "एक नया संस्करण उपलब्ध है",
   "Download again": "फिर से डाउनलोड करें",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "लॉन्चर की यह कॉपी खुद को बदल नहीं सकती। इसे एक बार फिर से डाउनलोड करें; उसके बाद यह खुद अपडेट होता है।",
+  "Update this launcher with your package manager.": "इस लॉन्चर को अपने पैकेज मैनेजर से अपडेट करें।",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "इस लॉन्चर को बंद करें, इसे {folder} में ले जाएँ और अपडेट सक्षम करने के लिए वहीं से खोलें।",
   "Any MCP client": "कोई भी MCP क्लाइंट",
   "{name}'s cape is kept.": "{name} का केप रखा गया है।",
   "Not reviewed by the Horizon registry": "Horizon रजिस्ट्री द्वारा समीक्षित नहीं",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "फ़ाउंडर सेट अब आपका है।",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "नेटिव मॉड के लिए समर्थित Windows आर्किटेक्चर का मेल होना ज़रूरी है। गेम: {game_arch}; बिल्ड टूलचेन: {toolchain_arch}।",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "नेटिव मॉड के लिए समर्थित Windows आर्किटेक्चर का मेल होना ज़रूरी है। गेम: {game_arch}; बिल्ड टूलचेन: {toolchain_arch}।"
 }

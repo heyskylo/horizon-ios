@@ -463,7 +463,8 @@
   "24/7 online": "en ligne 24h/24",
   "A new version is available": "Une nouvelle version est disponible",
   "Download again": "Télécharger à nouveau",
-  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Cette copie du lanceur ne peut pas se remplacer elle-même. Téléchargez-le à nouveau une fois ; ensuite il se met à jour tout seul.",
+  "Update this launcher with your package manager.": "Mettez ce lanceur à jour avec votre gestionnaire de paquets.",
+  "Close this launcher, move it to {folder}, and open it there to enable updates.": "Fermez ce lanceur, déplacez-le vers {folder}, puis ouvrez-le depuis ce dossier pour activer les mises à jour.",
   "Any MCP client": "Tout client MCP",
   "{name}'s cape is kept.": "La cape de {name} est enregistrée.",
   "Not reviewed by the Horizon registry": "Non vérifié par le registre d'Horizon",
@@ -1141,6 +1142,8 @@
   "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "Le Set fondateur est à vous.",
   "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Les mods natifs nécessitent des architectures Windows prises en charge identiques. Jeu : {game_arch} ; chaîne de compilation : {toolchain_arch}.",
-  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back."
+  "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
+  "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
+  "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Les mods natifs nécessitent des architectures Windows prises en charge identiques. Jeu : {game_arch} ; chaîne de compilation : {toolchain_arch}."
 }
