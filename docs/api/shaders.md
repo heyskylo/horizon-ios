@@ -155,9 +155,10 @@ the same way every time (files in path order, fixed dates), so a pack's SHA-256 
 ## Shader API 0.2 (experimental)
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
-`api = "0.2"`. `horizon-shader check` and `pack` take it, but **the game refuses 0.2 packs for now and the registry
-doesn't list them**: the game draws 0.2 in a later step, behind `HORIZON_HDR_FRAME=float` at first. What it changes
-from 0.1:
+`api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
+`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a renderer made with a 0.2 pack
+picked draws the world into a float frame where the device can (else the 8-bit one), and a 0.2 pack picked or
+dropped later runs on the frame there is. What it changes from 0.1:
 
 - **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
   decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
@@ -196,7 +197,7 @@ refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`
 ## Stability
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
-0.2 is experimental too, and the game doesn't draw it yet.
+0.2 is experimental too, and the game draws it only with `HORIZON_HDR_FRAME=float`.
 
 ## Not there yet
 
@@ -205,6 +206,8 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a
+  float frame where the device can; `[frame] blend = "linear"` is still refused. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and
   `[frame] blend`, with its own reference. `horizon-shader` checks and packs it; the game and the registry refuse it
   for now. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 32 bytes after the fields 0.1 declares.

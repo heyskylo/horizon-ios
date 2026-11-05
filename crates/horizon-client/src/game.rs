@@ -14691,7 +14691,7 @@ impl Game<'_> {
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
-            shader_packs::picked_pack_draws_flat(&self.settings),
+            shader_packs::picked_pack_shape(&self.settings),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
@@ -14732,7 +14732,7 @@ impl Game<'_> {
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
-            shader_packs::picked_pack_draws_flat(&self.settings),
+            shader_packs::picked_pack_shape(&self.settings),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
@@ -21138,7 +21138,7 @@ fn build_renderer(
     // HDR with Smooth Gradients (`Graphics::wide_frame`): a 16-bit frame where HDR output is
     // offered (`Renderer::new`).
     wide_frame: bool,
-    shader_pack: bool,
+    shader_pack: shader_packs::PickedPack,
     filtering: (i32, i32),
 ) -> Result<Renderer> {
     let assets = &pack.render;
@@ -21177,7 +21177,8 @@ fn build_renderer(
         api,
         translucent_batching,
         wide_frame,
-        shader_pack,
+        shader_pack.draws_flat,
+        shader_pack.linear,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -21247,6 +21248,7 @@ fn loading_renderer(
         // It draws no terrain.
         false,
         // An 8-bit frame, which HDR output takes as well.
+        false,
         false,
         false,
     ))?;
@@ -21840,7 +21842,7 @@ impl Loading {
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
                 self.settings.horizon.wide_frame(),
-                shader_packs::picked_pack_draws_flat(&self.settings),
+                shader_packs::picked_pack_shape(&self.settings),
                 (
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),

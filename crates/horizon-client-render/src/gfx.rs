@@ -1375,9 +1375,12 @@ pub struct Renderer {
     hdr_output: Option<hdr::Output>,
     /// What every pipeline that draws the frame targets: the swapchain's 8-bit format, or
     /// `Rgba16Unorm` when the renderer was made with HDR output on (`wide_frame`) and the
-    /// device draws and blends into it. A 16-bit frame with HDR off since reaches the
-    /// swapchain through `readback`.
+    /// device draws and blends into it, or `LINEAR_FRAME` (`frame_format`). A 16-bit frame
+    /// with HDR off since reaches the swapchain through `readback`.
     frame_format: wgpu::TextureFormat,
+    /// Whether a pack picked or dropped since the renderer was made has been told it runs on
+    /// the frame that exists (`set_native_shader_pack`).
+    frame_kept_logged: bool,
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
@@ -1974,7 +1977,13 @@ fn draws_wide_frame(features: wgpu::Features, format: wgpu::TextureFormatFeature
     features.contains(
         wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-    ) && format.allowed_usages.contains(
+    ) && draws_frame(format)
+}
+
+/// Whether a format with the adapter's `format` features takes every usage and flag the
+/// passes take of the frame.
+fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
+    format.allowed_usages.contains(
         wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC
@@ -1984,8 +1993,14 @@ fn draws_wide_frame(features: wgpu::Features, format: wgpu::TextureFormatFeature
     )
 }
 
-/// What a renderer's frame is drawn in: `WIDE_FRAME` when it is made with HDR on and Smooth
-/// Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
+/// The frame of a renderer made with a shader API 0.2 pack picked under
+/// `HORIZON_HDR_FRAME=float` (docs/design/hdr-linear-light.md): float, so values over 1
+/// survive from the world to the tonemap.
+const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// What a renderer's frame is drawn in: `LINEAR_FRAME` for a 0.2 pack under the switch
+/// (`linear`: `(picked, the device draws it)`); else `WIDE_FRAME` when it is made with HDR on
+/// and Smooth Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
 /// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
 /// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
 fn frame_format(
@@ -1993,8 +2008,11 @@ fn frame_format(
     hdr_offered: bool,
     device_draws_it: bool,
     swapchain: wgpu::TextureFormat,
+    linear: (bool, bool),
 ) -> wgpu::TextureFormat {
-    if wide_frame && hdr_offered && device_draws_it {
+    if linear.0 && linear.1 {
+        LINEAR_FRAME
+    } else if wide_frame && hdr_offered && device_draws_it {
         WIDE_FRAME
     } else {
         swapchain.remove_srgb_suffix()
@@ -2442,6 +2460,7 @@ impl Renderer {
         translucent_batching: bool,
         wide_frame: bool,
         shader_pack: bool,
+        linear_pack: bool,
     ) -> Result<Self> {
         let Opened {
             instance,
@@ -2575,7 +2594,22 @@ impl Renderer {
             adapter.get_texture_format_features(WIDE_FRAME),
         );
         crate::graphics::offer_smooth_gradients(wide_ok);
-        let frame_format = frame_format(wide_frame, hdr_output.is_some(), wide_ok, config.format);
+        let linear = (
+            linear_pack,
+            draws_frame(adapter.get_texture_format_features(LINEAR_FRAME)),
+        );
+        if linear == (true, false) {
+            log::warn!(
+                "Horizon renderer: the device can't draw a float frame; the shader API 0.2 pack runs on the 8-bit one"
+            );
+        }
+        let frame_format = frame_format(
+            wide_frame,
+            hdr_output.is_some(),
+            wide_ok,
+            config.format,
+            linear,
+        );
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -4709,6 +4743,7 @@ impl Renderer {
             emission_stats,
             hdr_output,
             frame_format,
+            frame_kept_logged: false,
             hdr_marker: None,
             pack_post: None,
             native: None,
@@ -6489,6 +6524,18 @@ impl Renderer {
             block_light::LightTable,
         )>,
     ) -> std::result::Result<Vec<String>, String> {
+        let linear = pack
+            .as_ref()
+            .is_some_and(|p| p.0.manifest.api == horizon_shader_api::Api::V0_2);
+        if (linear || self.frame_format == LINEAR_FRAME)
+            && linear != (self.frame_format == LINEAR_FRAME)
+            && !std::mem::replace(&mut self.frame_kept_logged, true)
+        {
+            log::info!(
+                "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader API 0.2 pack picked or dropped since runs on it",
+                self.frame_format
+            );
+        }
         let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
             self.native = None;
             return Ok(Vec::new());
@@ -9252,6 +9299,8 @@ impl Renderer {
             }
         }
         if let Some(native) = &mut self.native {
+            let reflection =
+                reflection.map(|view| native.frame.linear_mirror(&self.device, &mut encoder, view));
             native
                 .frame
                 .set_reflection(&self.device, reflection.as_ref());
@@ -9914,12 +9963,7 @@ impl Renderer {
                     depth.size(),
                 );
                 if let Some((color, _)) = &scaled {
-                    let color = color.texture();
-                    encoder.copy_texture_to_texture(
-                        color.as_image_copy(),
-                        native.frame.opaque_color.as_image_copy(),
-                        color.size(),
-                    );
+                    native.frame.copy_opaque(&self.device, &mut encoder, color);
                 }
                 pass = world_pass_after_culling(
                     &mut encoder,
@@ -10551,12 +10595,18 @@ impl Renderer {
         {
             self.readback.present(&self.device, &mut encoder, image);
         }
+        // 🤖 Agent: A 0.2 pack is shown at paper white: HDR output lifts nothing of its world.
+        let lifts_world = !frame.title
+            && self
+                .native
+                .as_ref()
+                .is_none_or(|n| n.frame.api == horizon_shader_api::Api::V0_1);
         match (&self.hdr, &surface_frame) {
             (Some(hdr), Some(f)) => hdr.present(
                 &self.queue,
                 &mut encoder,
                 &f.texture,
-                !frame.title,
+                lifts_world,
                 self.own_timing.as_mut(),
             ),
             // Offscreen nothing shows HDR: the target gets the frame as SDR shows it, for
@@ -10575,7 +10625,7 @@ impl Renderer {
             .filter(|(request, _)| request.size.is_none())
             .zip(self.hdr.as_ref())
             .and_then(|(_, hdr)| {
-                let texture = hdr.capture(&self.device, &self.queue, &mut encoder, !frame.title)?;
+                let texture = hdr.capture(&self.device, &self.queue, &mut encoder, lifts_world)?;
                 let size = [self.config.width, self.config.height];
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
@@ -11994,20 +12044,39 @@ mod tests {
     fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
         use super::frame_format;
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
-        assert_eq!(frame_format(true, true, true, Bgra8Unorm), Rgba16Unorm);
-        for (wide_frame, hdr_offered, draws) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-            (false, false, false),
-        ] {
+        // 🤖 Agent: No 0.2 pack (or a device without the float frame) leaves it as before.
+        for linear in [(false, false), (false, true), (true, false)] {
             assert_eq!(
-                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb),
-                Bgra8Unorm
+                frame_format(true, true, true, Bgra8Unorm, linear),
+                Rgba16Unorm
             );
+            for (wide_frame, hdr_offered, draws) in [
+                (false, true, true),
+                (true, false, true),
+                (true, true, false),
+                (false, false, false),
+            ] {
+                assert_eq!(
+                    frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb, linear),
+                    Bgra8Unorm
+                );
+                assert_eq!(
+                    frame_format(wide_frame, hdr_offered, draws, Rgba8Unorm, linear),
+                    Rgba8Unorm
+                );
+            }
+        }
+    }
+    /// A shader API 0.2 pack picked under `HORIZON_HDR_FRAME=float` gets the float frame
+    /// wherever the device draws it, HDR on or off.
+    #[test]
+    fn a_0_2_pack_gets_the_float_frame_where_the_device_draws_it() {
+        use super::{LINEAR_FRAME, frame_format};
+        use wgpu::TextureFormat::Bgra8UnormSrgb;
+        for (wide_frame, hdr_offered, draws) in [(true, true, true), (false, false, false)] {
             assert_eq!(
-                frame_format(wide_frame, hdr_offered, draws, Rgba8Unorm),
-                Rgba8Unorm
+                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb, (true, true)),
+                LINEAR_FRAME
             );
         }
     }
