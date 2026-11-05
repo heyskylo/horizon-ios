@@ -52,6 +52,25 @@ impl Game<'_> {
             self.stop_using_item(stack);
             return;
         };
+        // `BrushItem.onUseTick` aims with `getHitResultOnViewVector`: a mob
+        // between the player and the block is nearer, so the hit is not a block
+        // and the use releases the same way. A guest acts on its client's
+        // targeted block, whose view we cannot trace here, so only the local
+        // aim runs the entity test.
+        if self.forced_hit.is_none()
+            && let Some((eye, _)) = self.aim()
+            && let Some((_, mob, _)) = self.mob_hit()
+        {
+            let block = (
+                hit.point[0] - eye[0],
+                hit.point[1] - eye[1],
+                hit.point[2] - eye[2],
+            );
+            if mob <= (block.0 * block.0 + block.1 * block.1 + block.2 * block.2).sqrt() {
+                self.stop_using_item(stack);
+                return;
+            }
+        }
         let elapsed = ticks + 1;
         // The last tick before the backswing.
         if elapsed % 10 == 5 {
