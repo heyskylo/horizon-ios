@@ -27,3 +27,4 @@ jobs:
       base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
+      frame_identity: ${{ contains(github.event.pull_request.labels.*.name, 'frame-identity') }}

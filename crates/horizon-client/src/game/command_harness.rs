@@ -247,6 +247,18 @@ impl Game<'_> {
             std::thread::sleep(Duration::from_millis(2));
         }
         self.harness_owner(|g| g.harness_settle(deadline, None))?;
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_TICK_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_tick_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_BOBBING_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_bobbing_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
+        if let Some(path) = std::env::var_os("HORIZON_FISHING_FALLBACK_REFERENCE") {
+            let rows = self.harness_owner(|g| Ok(g.fishing_fallback_reference()))?;
+            std::fs::write(path, serde_json::to_vec(&rows)?)?;
+        }
         let mut out = String::new();
         for line in std::fs::read_to_string(script)?.lines() {
             if line.trim().is_empty() {

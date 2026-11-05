@@ -408,6 +408,7 @@
   "Frame Generation": "Շրջանակների սերունդ",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Ցույց է տալիս պատրաստված շրջանակը յուրաքանչյուր երկու իրականի միջև՝ ավելի հարթ, մի փոքր ավելի ուշացումով:",
   "Shadow Cache": "Ստվերային քեշ",
+  "Shader Packs...": "Shader փաթեթներ...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Կրկին օգտագործում է փաթեթի ստվերային քարտեզը, երբ արևը, տեսարանը և աշխարհը համընկնում են: Լռելյայն անջատված է:",
   "Find BlueMap": "Գտեք BlueMap-ը",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Սերվերների վրա գտնում է իրենց BlueMap վեբ քարտեզը հեռավոր տեղանքի համար: Հաջորդ միանալ.",

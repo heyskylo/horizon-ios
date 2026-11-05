@@ -20,7 +20,7 @@ again restores vanilla's behaviour completely.
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
 | Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...** |
+| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
 
 The settings are grouped by extra, under a header each, two buttons to a row as
 vanilla's options lists are, and each says what it does in its tooltip. An
@@ -41,6 +41,14 @@ the Extras page, not in vanilla's Key Binds screen: Horizon has no Horizon categ
 in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
+
+### Chunk pregeneration (`pregen`, default off)
+- Makes `/pregen` available in single-player and hosted LAN worlds, with the existing cheat and
+  permission checks. It does not start generation: run `/pregen start` explicitly.
+- Saved with the other Extras settings and applied immediately; no launch argument or restart is
+  needed. `--pregen` still enables it for the whole run. Dedicated servers use their own property.
+- Turning it off hides the command without cancelling an existing task; turn it on again to manage
+  that task, or cancel it first. See [pregeneration](pregeneration.md).
 
 ### Fullbright (`fullbright`, default off)
 - Displays blocks and entities with a fully bright lightmap, including in dark caves.

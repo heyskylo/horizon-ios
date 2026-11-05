@@ -69,6 +69,8 @@ pub fn open(mode: Mode, cx: &mut App) {
 
 fn step_text(step: Step) -> String {
     match step {
+        // A launcher still open is being asked to quit (an existing, translated word).
+        Step::Closing => tr("Stopping").to_string(),
         Step::Files => tr("Copying files").to_string(),
         Step::Shortcuts => tr("Making shortcuts").to_string(),
         Step::Registry => tr("Registering with Windows").to_string(),
@@ -138,6 +140,7 @@ impl Setup {
             };
             let result = match mode {
                 Mode::Install => installer::install(&options, report).map(|_| Vec::new()),
+                // Asks a launcher that is still open to quit first (`installer::uninstall`).
                 Mode::Uninstall => installer::uninstall(options.remove_data, report),
             };
             let _ = tx.send(Event::Done(result));

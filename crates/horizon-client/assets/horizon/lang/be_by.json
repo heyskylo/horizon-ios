@@ -417,6 +417,7 @@
   "Frame Generation": "Генерацыя фрэймаў",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Паказвае прыдуманую рамку паміж двума сапраўднымі: больш гладкая, з крыху большым адставаннем.",
   "Shadow Cache": "Ценявы кэш",
+  "Shader Packs...": "Пакеты шэйдэраў...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Паўторна выкарыстоўвае карту ценяў зграі, калі сонца, выгляд і свет супадаюць. Выключана па змаўчанні.",
   "Find BlueMap": "Знайдзіце BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "На серверах знаходзіць вэб-карту BlueMap для далёкай мясцовасці. Далей далучыцца.",

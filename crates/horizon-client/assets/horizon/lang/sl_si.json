@@ -470,5 +470,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Avre in sledi, ki jih nosijo drugi igralci. Privzeto izklopljeno.",
   "horizon.extras.cosmetics.shown": "Prikazano",
   "horizon.extras.cosmetics.hidden": "Skrito",
-  "horizon.extras.cosmetics.name_tags": "Samo imenske oznake"
+  "horizon.extras.cosmetics.name_tags": "Samo imenske oznake",
+  "Shader Packs...": "Shader paketi..."
 }

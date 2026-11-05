@@ -444,5 +444,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Auraer og spor, som andre spillere bærer. Fra som standard.",
   "horizon.extras.cosmetics.shown": "Vist",
   "horizon.extras.cosmetics.hidden": "Skjult",
-  "horizon.extras.cosmetics.name_tags": "Kun navneskilte"
+  "horizon.extras.cosmetics.name_tags": "Kun navneskilte",
+  "Shader Packs...": "Shader-pakker..."
 }

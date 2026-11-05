@@ -409,6 +409,7 @@
   "Frame Generation": "Generaziun di fotogramm",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Mustra un quader truà intra ognun di dü reai: püsee lisc, un pooch püsee ritardo.",
   "Shadow Cache": "Cache d'ombra",
+  "Shader Packs...": "Pacchett de ombreggiatura...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Dupera ancamò la mapa del ombra del pachett quand el sul, la vista e el mund curispunden. Disattiva per predefiniziun.",
   "Find BlueMap": "Truva BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Süi server, truva luur mapa web BlueMap per terren luntan. Prossim uniment.",
