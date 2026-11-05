@@ -2287,3 +2287,7 @@ mod initial_history_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_uniforms/ftransform_test.rs"]
+mod ftransform_test;
