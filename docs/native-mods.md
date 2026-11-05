@@ -1704,6 +1704,10 @@ API 408 adds reading the server's play packets on the client (`native_client_pac
 
 API 409 adds `native_send_packet(packet)` sends any serverbound play packet (`ServerboundPlayPacket`), a plugin channel's custom payload included, to any server, unchecked; an error when not in a server's play state. Bundles need "hooks": 409.
 
+API 410 adds `native_gui_render_post(batch, gui_hidden, focused)` draws after the complete normal GUI batch: screens, prompts, toasts, debug overlays, pad cursor and IME included. It fires during gameplay, menus and the title, even with F1; loading/file-upgrade and resource-reload overlays do not fire it. The read-only host's `camera()` is the current frame's world camera (None on the panorama), including bob/spin, FOV and projection. `batch` uses GUI pixels; `gui_hidden` reports F1 and `focused` reports window focus so the mod can choose when its indicator is visible. The existing `hud` and `screen_render_post` hooks retain their drawing order and visibility rules. Bundles need "hooks": 410.
+
+API 411 adds Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). Bundles need "hooks": 411.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
