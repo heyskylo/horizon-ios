@@ -259,6 +259,7 @@ mod options;
 mod ordered_tick;
 mod packs;
 mod pad;
+mod pad_actions;
 mod pad_menu;
 mod paintings;
 mod pandas;
@@ -4370,9 +4371,7 @@ impl Game<'_> {
                 && (alive || item.age == 6000 && item.position.y > -128.0)
                 && item.ticks.is_multiple_of(rate)
             {
-                let catalog = world_items!(self);
-                let max_stack =
-                    |stack: &ItemStack| catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1);
+                let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
                 horizon_client::entities::merge_with_neighbours(
                     &mut items,
                     &mut removed,

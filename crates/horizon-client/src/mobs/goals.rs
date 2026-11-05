@@ -647,7 +647,11 @@ impl Mob {
             return false;
         };
         let eye = Vec3::new(self.position.x, self.eye_y(), self.position.z);
-        let v = w.line_of_sight(eye, Vec3::new(t.position.x, t.eye_y, t.position.z));
+        let v = w.line_of_sight_for(
+            Some(self.position.y),
+            eye,
+            Vec3::new(t.position.x, t.eye_y, t.position.z),
+        );
         self.ai.seen_cache.push((who, v));
         v
     }
