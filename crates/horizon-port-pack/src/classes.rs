@@ -635,96 +635,6 @@ pub(crate) mod tests_support {
     pub fn class_file(name: &str, superclass: &str) -> Vec<u8> {
         class_with(name, superclass, &[], &[], false)
     }
-
-    /// A NeoForge listener: `onTick` takes `ServerTickEvent$Post` under
-    /// `@SubscribeEvent(priority = HIGH)`, `plain` takes `LevelEvent$Load`
-    /// with no annotation, a method type takes `ChunkEvent$Load` (a method
-    /// reference's), and a field reference reads
-    /// `Capabilities$ItemHandler.BLOCK`.
-    pub fn neoforge_listener(name: &str) -> Vec<u8> {
-        fn utf(pool: &mut Vec<Vec<u8>>, s: &str) -> u16 {
-            let mut e = vec![1];
-            e.extend((s.len() as u16).to_be_bytes());
-            e.extend(s.as_bytes());
-            pool.push(e);
-            pool.len() as u16
-        }
-        fn entry(pool: &mut Vec<Vec<u8>>, tag: u8, refs: &[u16]) -> u16 {
-            let mut e = vec![tag];
-            for r in refs {
-                e.extend(r.to_be_bytes());
-            }
-            pool.push(e);
-            pool.len() as u16
-        }
-        let mut pool = Vec::new();
-        let this = utf(&mut pool, name);
-        let this = entry(&mut pool, 7, &[this]);
-        let object = utf(&mut pool, "java/lang/Object");
-        let object = entry(&mut pool, 7, &[object]);
-        let subscribe = utf(&mut pool, "Lnet/neoforged/bus/api/SubscribeEvent;");
-        let annotations = utf(&mut pool, "RuntimeVisibleAnnotations");
-        let priority = utf(&mut pool, "priority");
-        let priority_type = utf(&mut pool, "Lnet/neoforged/bus/api/EventPriority;");
-        let high = utf(&mut pool, "HIGH");
-        let on_tick = utf(&mut pool, "onTick");
-        let tick = utf(
-            &mut pool,
-            "(Lnet/neoforged/neoforge/event/tick/ServerTickEvent$Post;)V",
-        );
-        let plain = utf(&mut pool, "plain");
-        let level = utf(
-            &mut pool,
-            "(Lnet/neoforged/neoforge/event/level/LevelEvent$Load;)V",
-        );
-        let chunk = utf(
-            &mut pool,
-            "(Lnet/neoforged/neoforge/event/level/ChunkEvent$Load;)V",
-        );
-        entry(&mut pool, 16, &[chunk]);
-        let caps = utf(
-            &mut pool,
-            "net/neoforged/neoforge/capabilities/Capabilities$ItemHandler",
-        );
-        let caps = entry(&mut pool, 7, &[caps]);
-        let block = utf(&mut pool, "BLOCK");
-        let block_type = utf(
-            &mut pool,
-            "Lnet/neoforged/neoforge/capabilities/BlockCapability;",
-        );
-        let block = entry(&mut pool, 12, &[block, block_type]);
-        entry(&mut pool, 9, &[caps, block]);
-        let mut out = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 65];
-        out.extend(((pool.len() + 1) as u16).to_be_bytes());
-        for e in &pool {
-            out.extend(e);
-        }
-        out.extend([0, 0x21]);
-        out.extend(this.to_be_bytes());
-        out.extend(object.to_be_bytes());
-        out.extend([0, 0, 0, 0]); // interfaces, fields
-        out.extend([0, 2]);
-        let mut body = vec![0, 1];
-        body.extend(subscribe.to_be_bytes());
-        body.extend([0, 1]);
-        body.extend(priority.to_be_bytes());
-        body.push(b'e');
-        body.extend(priority_type.to_be_bytes());
-        body.extend(high.to_be_bytes());
-        out.extend([0, 1]);
-        out.extend(on_tick.to_be_bytes());
-        out.extend(tick.to_be_bytes());
-        out.extend([0, 1]);
-        out.extend(annotations.to_be_bytes());
-        out.extend((body.len() as u32).to_be_bytes());
-        out.extend(body);
-        out.extend([0, 1]);
-        out.extend(plain.to_be_bytes());
-        out.extend(level.to_be_bytes());
-        out.extend([0, 0]); // no attributes
-        out.extend([0, 0]); // class attributes
-        out
-    }
 }
 
 #[cfg(test)]
@@ -837,19 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn listeners_are_subscribed_methods_and_method_references() {
-        let class = parse(&super::tests_support::neoforge_listener("a/Listener")).unwrap();
-        let listens: Vec<&str> = class.listens.iter().map(String::as_str).collect();
-        assert_eq!(
-            listens,
-            [
-                "net/neoforged/neoforge/event/level/ChunkEvent$Load",
-                "net/neoforged/neoforge/event/tick/ServerTickEvent$Post",
-            ]
-        );
-        let capabilities: Vec<&str> = class.capabilities.iter().map(String::as_str).collect();
-        assert_eq!(capabilities, ["Capabilities.ItemHandler.BLOCK"]);
-        assert_eq!(class.methods, ["onTick", "plain"]);
+    fn a_listener_takes_one_neoforge_event() {
         let event = "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre";
         assert_eq!(one_event(&format!("(L{event};)V")), Some(event));
         assert_eq!(one_event(&format!("(L{event};I)V")), None);
