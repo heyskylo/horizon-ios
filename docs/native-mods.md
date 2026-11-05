@@ -447,6 +447,19 @@ a version. Helpers (`native_text`, `native_player`…) have no hook entry; the c
 the generated `Host` offers, and they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
 catalog and the hook points' sources (`native_hooks.rs`, `gfx/native_render.rs`, `horizon-world`'s `loot.rs`) in step.
 
+### How fast a player digs
+
+`native_break_speed` is NeoForge's `PlayerEvent.BreakSpeed`, at the end of vanilla's `Player.getDestroySpeed`. It is
+told the block's state and position, and the speed vanilla gives the player for it: the tool, mining efficiency, Haste
+and Mining Fatigue, the block break speed attribute, and the slowdowns under water and off the ground. A mod may change
+`speed`. Every mod is called in turn, and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then divides
+the speed by the block's hardness, and by 30 (or 100 without the right tool), for each tick of the dig. A speed of 0
+makes no progress, so the block isn't broken, not even one that breaks at once. It isn't asked for an unbreakable
+block (hardness -1) or in creative mode. It fires on the `Game` that works out the dig: in single player, on a LAN or
+dedicated host for each guest (the helpers read that player), and in a remote client's own prediction. A mod that
+changes the speed alike on both sides keeps the crack in step with the server. It is asked every tick of a dig, on
+each side, so it takes `&self` and should only compute. API @API:break_speed@.
+
 ### Host-aware weapon damage (API next)
 
 `living_incoming_damage_v2` is an additive hook, like `menu_button_v2`; v1 keeps its signature and firing point.

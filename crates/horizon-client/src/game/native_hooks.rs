@@ -2587,6 +2587,30 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_left_click_block(self, mod_api::mods(), pos, face, state, canceled);
     }
+    /// NeoForge's `PlayerEvent.BreakSpeed`: how fast the player digs the block
+    /// `state` at `pos`, where `Player.getDestroySpeed` ends. `speed` starts as
+    /// vanilla's, `original` (the tool, mining efficiency, Haste and Mining
+    /// Fatigue, the block break speed attribute, the slowdowns under water and
+    /// off the ground), and a mod may change it; every mod is called in turn,
+    /// and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then
+    /// divides the speed by the block's hardness and by 30, or 100 without the
+    /// right tool, for each tick of the dig: a speed of 0 makes no progress, so
+    /// the block isn't broken, not even one that breaks at once. Not asked for
+    /// an unbreakable block (hardness -1) nor in creative mode. Fires on the
+    /// `Game` that works out the dig: single player's, a LAN or dedicated
+    /// host's for each guest (the helpers read that player), and a remote
+    /// client's own prediction, so a mod changes the speed alike on both sides
+    /// to keep the crack in step with the server. It is asked every tick of a
+    /// dig, on each side, so it should only compute. API @API:break_speed@.
+    pub(super) fn native_break_speed(
+        &self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        original: f32,
+        speed: &mut f32,
+    ) {
+        mod_api::dispatch_break_speed(self, mod_api::mods(), pos, state, original, speed);
+    }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
     /// cooldowns, statistics and advancements. The helpers read that player.

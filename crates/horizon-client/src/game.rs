@@ -7530,10 +7530,8 @@ impl Game<'_> {
                 ticks: 0,
             });
         }
-        let block_break_speed = self.block_break_speed();
         let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        let facts = self.res.facts().get(state);
-        if facts.hardness < 0.0 {
+        if self.res.facts().get(state).hardness < 0.0 {
             // The server still counts its destroy ticks on an unbreakable block.
             let m = self.mining.as_mut().ok_or("mining")?;
             m.ticks += 1;
@@ -7541,36 +7539,7 @@ impl Game<'_> {
             self.destroy_progress_event(pos, hit.face, ticks);
             return Ok(());
         }
-        // Player.getDestroySpeed / BlockBehaviour.getDestroyProgress.
-        let held = self.held();
-        let mut speed = self.items().mining_speed(held, &facts.name);
-        let hardness = facts.hardness;
-        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
-        speed = self.modify_destroy_speed(speed);
-        speed *= block_break_speed;
-        let player = self.player.as_ref().ok_or("no player")?;
-        if !player.ground.on_ground {
-            speed /= 5.0;
-        }
-        let eye = self.eye_position().unwrap_or_default();
-        if self
-            .res
-            .facts()
-            .get(self.world.block(
-                eye[0].floor() as i32,
-                eye[1].floor() as i32,
-                eye[2].floor() as i32,
-            ))
-            .fluid
-            == Fluid::Water
-        {
-            speed *= self.submerged_mining_speed();
-        }
-        let progress = if hardness == 0.0 {
-            1.0
-        } else {
-            speed / hardness / if harvest { 30.0 } else { 100.0 }
-        };
+        let progress = self.destroy_progress(hit.pos);
         self.swing_arm();
         let m = self.mining.as_mut().ok_or("mining")?;
         m.progress += progress;
