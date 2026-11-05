@@ -9129,10 +9129,7 @@ impl Game<'_> {
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
     }
     /// Horizon's own health HUD state, for a mod answering
-    /// `native_health_hud`. `left_height`/`right_height` as they stand when
-    /// the hook returns place the selected item's name and the action bar
-    /// (vanilla's `Hud.leftHeight`/`rightHeight`): set them when you draw
-    /// more or fewer rows. `layout` draws Horizon's rows and advances their
+    /// `native_health_hud`. `layout` draws Horizon's rows and advances their
     /// frame state (the hearts' blink, the bubble pop sound), so call it at
     /// most once a frame, and only when you keep some of its rows.
     /// API @API:health_hud_state@.
