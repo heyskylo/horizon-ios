@@ -217,10 +217,12 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
         index::Kind::Mod => Some(Kind::Mod),
         index::Kind::ResourcePack => Some(Kind::ResourcePack),
         index::Kind::Modpack => Some(Kind::Modpack),
-        index::Kind::Shader => Some(Kind::Shader),
+        // Both go in shaderpacks/: the game reads `.hshader` packs and shaders/-folder zips.
+        index::Kind::Shader | index::Kind::ShaderPack => Some(Kind::Shader),
         // Mixin mods: installed beside the others, compiled into the game by `native_mods`.
         index::Kind::NativeMod => Some(Kind::Mod),
-        index::Kind::Other(_) => None,
+        // Data packs go into a world: offered once the browser's install picks one.
+        index::Kind::DataPack | index::Kind::Other(_) => None,
     }
 }
 
