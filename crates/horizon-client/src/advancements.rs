@@ -68,6 +68,75 @@ pub struct Tree {
     /// The triggers with a criterion that may test an entity's `nbt`
     /// (`index_nbt`).
     nbt_triggers: BTreeSet<String>,
+    /// What the criteria of each trigger may ask of the player's level,
+    /// statistics, advancements and recipes (`index_player_facts`).
+    player_fact_triggers: HashMap<String, FactsAsked>,
+}
+/// Which of `PlayerPredicate`'s level, `stats`, `advancements` and `recipes`
+/// a trigger's criteria may test: only those are filled in its player view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FactsAsked {
+    pub level: bool,
+    pub stats: bool,
+    pub advancements: bool,
+    pub recipes: bool,
+}
+impl FactsAsked {
+    pub const ALL: Self = Self {
+        level: true,
+        stats: true,
+        advancements: true,
+        recipes: true,
+    };
+    /// Asked by either.
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            level: self.level || other.level,
+            stats: self.stats || other.stats,
+            advancements: self.advancements || other.advancements,
+            recipes: self.recipes || other.recipes,
+        }
+    }
+}
+/// What `v` (a predicate, a list of conditions or an item modifier) may ask
+/// of the player's level, statistics, advancements and recipes: the fields
+/// of its player predicates, and all four for a `minecraft:reference` to a
+/// predicate file. Walked without reading anything else, for the commands
+/// that test a predicate on the player.
+pub fn facts_asked_in(v: &Value) -> FactsAsked {
+    let mut asked = FactsAsked::default();
+    let mut todo = vec![v];
+    while let Some(v) = todo.pop() {
+        match v {
+            Value::Array(list) => todo.extend(list),
+            Value::Object(o) => {
+                // A predicate file, or (`function`) an item modifier file.
+                let kind =
+                    (o.get("condition").or_else(|| o.get("type"))).or_else(|| o.get("function"));
+                if kind
+                    .and_then(Value::as_str)
+                    .is_some_and(|k| full(k) == "minecraft:reference")
+                {
+                    return FactsAsked::ALL;
+                }
+                for (key, value) in o {
+                    if full(key) == "minecraft:type_specific/player"
+                        && let Some(p) = value.as_object()
+                    {
+                        asked = asked.or(FactsAsked {
+                            level: p.contains_key("level"),
+                            stats: p.contains_key("stats"),
+                            advancements: p.contains_key("advancements"),
+                            recipes: p.contains_key("recipes"),
+                        });
+                    }
+                    todo.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    asked
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -150,6 +219,7 @@ impl Tree {
         tree.index_recipes();
         tree.index_looking_at();
         tree.index_nbt();
+        tree.index_player_facts();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -217,6 +287,43 @@ impl Tree {
     /// Whether any criterion may test an entity's `nbt`.
     pub fn tests_nbt(&self) -> bool {
         !self.nbt_triggers.is_empty()
+    }
+    /// Index what each trigger's criteria may ask of the player's level,
+    /// statistics, advancements and recipes: a player predicate naming the
+    /// field, or a `minecraft:reference` to a predicate file that might (all
+    /// four). The text is searched, nothing is read.
+    pub fn index_player_facts(&mut self) {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        let mut out: HashMap<String, FactsAsked> = HashMap::new();
+        for c in self.list.iter().flat_map(|a| &a.criteria) {
+            let json = c.conditions.json();
+            let asked = if reference.iter().any(|r| json.contains(r)) {
+                FactsAsked::ALL
+            } else if json.contains("type_specific/player") {
+                FactsAsked {
+                    level: json.contains("\"level\""),
+                    stats: json.contains("\"stats\""),
+                    advancements: json.contains("\"advancements\""),
+                    recipes: json.contains("\"recipes\""),
+                }
+            } else {
+                continue;
+            };
+            if asked == FactsAsked::default() {
+                continue;
+            }
+            let e = out.entry(c.trigger.clone()).or_default();
+            *e = e.or(asked);
+        }
+        self.player_fact_triggers = out;
+    }
+    /// What a criterion of `trigger` may ask of the player's level,
+    /// statistics, advancements and recipes.
+    pub fn player_facts_asked(&self, trigger: &str) -> FactsAsked {
+        self.player_fact_triggers
+            .get(trigger)
+            .copied()
+            .unwrap_or_default()
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
@@ -534,6 +641,9 @@ pub struct EntityView {
     /// Player: the sneak input is held (`Input.shift`, what `input.sneak`
     /// asks; not the sneaking pose).
     pub input_sneak: bool,
+    /// Player: its level, statistics, advancements and recipes, as far as
+    /// they were filled.
+    pub player_facts: PlayerFacts,
     /// Lightning: entities it struck.
     pub struck: Vec<EntityView>,
     /// Lightning: blocks it set on fire (`LightningBolt.blocksSetOnFire`).
@@ -545,6 +655,34 @@ pub struct EntityView {
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
     pub nbt: Option<horizon_world::nbt::Tag>,
+}
+/// What `PlayerPredicate` reads of a player beyond its entity. Each part is
+/// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
+/// a predicate that asks for a part left `None` fails.
+#[derive(Clone, Default)]
+pub struct PlayerFacts {
+    /// `Player.experienceLevel`.
+    pub level: Option<i32>,
+    /// `ServerStatsCounter`: stat type -> stat id -> value, both namespaced.
+    pub stats: Option<BTreeMap<String, BTreeMap<String, i32>>>,
+    /// `PlayerAdvancements`: the loaded advancements and the player's
+    /// progress in them.
+    pub advancements: Option<(Arc<Tree>, Progress)>,
+    /// `ServerRecipeBook`: the known recipe ids.
+    pub recipes: Option<BTreeSet<String>>,
+}
+impl std::fmt::Debug for PlayerFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlayerFacts")
+            .field("level", &self.level)
+            .field("stats", &self.stats)
+            .field(
+                "advancements",
+                &self.advancements.as_ref().map(|(_, p)| p.criteria.len()),
+            )
+            .field("recipes", &self.recipes.as_ref().map(BTreeSet::len))
+            .finish()
+    }
 }
 fn range_f(v: &Value, x: f64) -> bool {
     match v {
@@ -876,6 +1014,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                             .as_ref()
                             .is_some_and(|t| entity(&p["looking_at"], t, w, origin)))
                     && (p["input"].is_null() || input(&p["input"], e))
+                    && player_facts(p, &e.player_facts)
             }
             "minecraft:type_specific/lightning" => {
                 range_i(&p["blocks_set_on_fire"], i64::from(e.blocks_set_on_fire))
@@ -891,6 +1030,89 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
             "minecraft:predicates" => true,
             _ => false,
         };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+/// The rest of `PlayerPredicate.matches` (expected from it): the experience
+/// level in the `level` bounds; each `stats` entry's value (0 when never
+/// counted) in its bounds; each listed recipe known or not as asked; each
+/// listed advancement loaded, and done or not, or each named criterion of it
+/// granted or not. A field asked of facts that weren't filled fails.
+fn player_facts(p: &Value, f: &PlayerFacts) -> bool {
+    let level = &p["level"];
+    if !level.is_null() && !f.level.is_some_and(|l| range_i(level, i64::from(l))) {
+        return false;
+    }
+    let stats = &p["stats"];
+    if !stats.is_null() {
+        let Some(list) = stats.as_array() else {
+            return false;
+        };
+        // `StatMatcher.matches`: the counter's value for the type's stat.
+        let ok = list.is_empty()
+            || f.stats.as_ref().is_some_and(|counts| {
+                list.iter().all(|m| {
+                    let (Some(ty), Some(stat)) = (m["type"].as_str(), m["stat"].as_str()) else {
+                        return false;
+                    };
+                    let value = counts
+                        .get(&*full(ty))
+                        .and_then(|of| of.get(&*full(stat)))
+                        .copied()
+                        .unwrap_or(0);
+                    range_i(&m["value"], i64::from(value))
+                })
+            });
+        if !ok {
+            return false;
+        }
+    }
+    let recipes = &p["recipes"];
+    if !recipes.is_null() {
+        let Some(map) = recipes.as_object() else {
+            return false;
+        };
+        let ok = map.is_empty()
+            || f.recipes.as_ref().is_some_and(|known| {
+                map.iter().all(|(id, want)| {
+                    want.as_bool()
+                        .is_some_and(|want| known.contains(&*full(id)) == want)
+                })
+            });
+        if !ok {
+            return false;
+        }
+    }
+    let advancements = &p["advancements"];
+    if !advancements.is_null() {
+        let Some(map) = advancements.as_object() else {
+            return false;
+        };
+        let ok = map.is_empty()
+            || f.advancements.as_ref().is_some_and(|(tree, progress)| {
+                map.iter().all(|(id, want)| {
+                    // An advancement that isn't loaded matches nothing.
+                    let Some(a) = tree.get(&full(id)) else {
+                        return false;
+                    };
+                    match want {
+                        // `AdvancementDonePredicate`.
+                        Value::Bool(want) => progress.done(a) == *want,
+                        // `AdvancementCriterionsPredicate`: a criterion the
+                        // advancement doesn't have matches nothing.
+                        Value::Object(criteria) => criteria.iter().all(|(name, want)| {
+                            want.as_bool().is_some_and(|want| {
+                                a.criteria.iter().any(|c| c.name == *name)
+                                    && progress.has(&a.id, name) == want
+                            })
+                        }),
+                        _ => false,
+                    }
+                })
+            });
         if !ok {
             return false;
         }
@@ -1455,6 +1677,7 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn advancement_reward_function_is_optional_and_namespaced() {
@@ -2350,6 +2573,345 @@ mod tests {
         assert_eq!(l[3], Some((2, 1.0)));
         assert_eq!(l[4], Some((1, 2.0)));
         assert_eq!(l[1], Some((2, 2.0)));
+    }
+    /// A tree of the given advancements, indexed as `load_with` does.
+    fn tree_of(list: &[(&str, Value)]) -> Tree {
+        let mut tree = Tree::default();
+        for (id, v) in list {
+            let a = parse(id, v).expect("an advancement");
+            for (ci, c) in a.criteria.iter().enumerate() {
+                (tree.by_trigger.entry(c.trigger.clone()).or_default()).push((tree.list.len(), ci));
+            }
+            tree.by_id.insert((*id).into(), tree.list.len());
+            tree.list.push(a);
+        }
+        tree.index_player_facts();
+        tree
+    }
+    /// Whether the player `facts` match `{"type_specific/player": p}`.
+    fn player_matches(p: Value, facts: &PlayerFacts) -> bool {
+        let me = EntityView {
+            kind: "minecraft:player".into(),
+            player_facts: facts.clone(),
+            ..EntityView::default()
+        };
+        entity(&json!({"type_specific/player": p}), &me, &Flat, [0.0; 3])
+    }
+    #[test]
+    fn player_level_is_tested_in_its_bounds() {
+        let five = PlayerFacts {
+            level: Some(5),
+            ..PlayerFacts::default()
+        };
+        for (level, expected) in [
+            (json!({"min": 5}), true),
+            (json!({"min": 6}), false),
+            (json!({"max": 4}), false),
+            (json!({"min": 1, "max": 5}), true),
+            (json!(5), true),
+            (json!(6), false),
+        ] {
+            assert_eq!(
+                player_matches(json!({"level": level}), &five),
+                expected,
+                "{level}"
+            );
+        }
+        // Not filled: a level asked fails, none asked passes.
+        assert!(!player_matches(
+            json!({"level": {"min": 0}}),
+            &PlayerFacts::default()
+        ));
+        assert!(player_matches(json!({}), &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_stats_match_each_counter_by_type_and_id() {
+        let mut counts: BTreeMap<String, BTreeMap<String, i32>> = BTreeMap::new();
+        (counts.entry("minecraft:custom".into()).or_default())
+            .insert("minecraft:walk_one_cm".into(), 1000);
+        (counts.entry("minecraft:mined".into()).or_default()).insert("minecraft:stone".into(), 3);
+        let facts = PlayerFacts {
+            stats: Some(counts),
+            ..PlayerFacts::default()
+        };
+        let stat =
+            |ty: &str, id: &str, value: Value| json!({"type": ty, "stat": id, "value": value});
+        for (stats, expected) in [
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1000}),
+                )],
+                true,
+            ),
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1001}),
+                )],
+                false,
+            ),
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"max": 999}),
+                )],
+                false,
+            ),
+            // Bare ids are `minecraft:` ones.
+            (
+                vec![stat("custom", "walk_one_cm", json!({"min": 1000}))],
+                true,
+            ),
+            // The same id under another type is another counter: never counted, 0.
+            (
+                vec![stat(
+                    "minecraft:mined",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1}),
+                )],
+                false,
+            ),
+            (
+                vec![stat(
+                    "minecraft:mined",
+                    "minecraft:walk_one_cm",
+                    json!({"max": 0}),
+                )],
+                true,
+            ),
+            (
+                vec![stat("minecraft:killed", "minecraft:zombie", json!(0))],
+                true,
+            ),
+            // Every entry must match.
+            (
+                vec![
+                    stat("minecraft:mined", "minecraft:stone", json!({"min": 3})),
+                    stat(
+                        "minecraft:custom",
+                        "minecraft:walk_one_cm",
+                        json!({"min": 5000}),
+                    ),
+                ],
+                false,
+            ),
+            (
+                vec![
+                    stat("minecraft:mined", "minecraft:stone", json!({"min": 3})),
+                    stat(
+                        "minecraft:custom",
+                        "minecraft:walk_one_cm",
+                        json!({"min": 500}),
+                    ),
+                ],
+                true,
+            ),
+        ] {
+            let p = json!({"stats": stats});
+            assert_eq!(player_matches(p.clone(), &facts), expected, "{p}");
+        }
+        let walked = json!({"stats": [stat("custom", "walk_one_cm", json!({"min": 0}))]});
+        assert!(!player_matches(walked, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_recipes_are_known_or_not_as_asked() {
+        let facts = PlayerFacts {
+            recipes: Some(["minecraft:iron_pickaxe".to_owned()].into()),
+            ..PlayerFacts::default()
+        };
+        for (recipes, expected) in [
+            (json!({"minecraft:iron_pickaxe": true}), true),
+            (json!({"iron_pickaxe": true}), true),
+            (json!({"minecraft:iron_pickaxe": false}), false),
+            (json!({"minecraft:diamond_pickaxe": false}), true),
+            (json!({"minecraft:diamond_pickaxe": true}), false),
+            (
+                json!({"minecraft:iron_pickaxe": true, "minecraft:diamond_pickaxe": true}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                player_matches(json!({"recipes": recipes}), &facts),
+                expected,
+                "{recipes}"
+            );
+        }
+        let unknown = json!({"recipes": {"minecraft:diamond_pickaxe": false}});
+        assert!(!player_matches(unknown, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_advancements_are_done_or_have_their_criteria_as_asked() {
+        let tick = json!({"trigger": "minecraft:tick"});
+        let tree = Arc::new(tree_of(&[(
+            "pack:a",
+            json!({"criteria": {"x": tick, "y": tick}}),
+        )]));
+        let mut progress = Progress::default();
+        progress.grant("pack:a", "x", "2026-11-04 12:00:00 +0000");
+        let half = PlayerFacts {
+            advancements: Some((tree.clone(), progress.clone())),
+            ..PlayerFacts::default()
+        };
+        for (advancements, expected) in [
+            (json!({"pack:a": true}), false),
+            (json!({"pack:a": false}), true),
+            (json!({"pack:a": {"x": true}}), true),
+            (json!({"pack:a": {"x": false}}), false),
+            (json!({"pack:a": {"y": true}}), false),
+            (json!({"pack:a": {"y": false}}), true),
+            (json!({"pack:a": {"x": true, "y": true}}), false),
+            // A criterion the advancement doesn't have, or an advancement
+            // that isn't loaded, matches nothing.
+            (json!({"pack:a": {"z": false}}), false),
+            (json!({"pack:missing": false}), false),
+        ] {
+            assert_eq!(
+                player_matches(json!({"advancements": advancements}), &half),
+                expected,
+                "{advancements}"
+            );
+        }
+        progress.grant("pack:a", "y", "2026-11-04 12:00:01 +0000");
+        let done = PlayerFacts {
+            advancements: Some((tree, progress)),
+            ..PlayerFacts::default()
+        };
+        assert!(player_matches(
+            json!({"advancements": {"pack:a": true}}),
+            &done
+        ));
+        assert!(!player_matches(
+            json!({"advancements": {"pack:a": false}}),
+            &done
+        ));
+        let asked = json!({"advancements": {"pack:a": false}});
+        assert!(!player_matches(asked, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_facts_are_asked_by_the_triggers_that_name_them() {
+        let player = |p: Value| {
+            json!({"player": [{"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"minecraft:type_specific/player": p}}]})
+        };
+        let tree = tree_of(&[
+            (
+                "pack:walk",
+                json!({"criteria": {"c": {"trigger": "minecraft:tick",
+                    "conditions": player(json!({"stats": [{"type": "minecraft:custom",
+                        "stat": "minecraft:walk_one_cm", "value": {"min": 1}}]}))}}}),
+            ),
+            (
+                "pack:milestone",
+                json!({"criteria": {"c": {"trigger": "minecraft:location",
+                    "conditions": player(json!({"advancements": {"pack:walk": true},
+                        "level": {"min": 30}}))}}}),
+            ),
+            (
+                "pack:ref",
+                json!({"criteria": {"c": {"trigger": "minecraft:inventory_changed",
+                    "conditions": {"player": [{"condition": "minecraft:reference",
+                        "name": "pack:p"}]}}}}),
+            ),
+            (
+                "pack:recipe",
+                json!({"criteria": {"c": {"trigger": "minecraft:recipe_unlocked",
+                    "conditions": {"recipe": "minecraft:iron_pickaxe"}},
+                    "d": {"trigger": "minecraft:using_item",
+                    "conditions": player(json!({"gamemode": ["survival"]}))}}}),
+            ),
+        ]);
+        let none = FactsAsked::default();
+        assert_eq!(
+            tree.player_facts_asked("minecraft:tick"),
+            FactsAsked {
+                stats: true,
+                ..none
+            }
+        );
+        assert_eq!(
+            tree.player_facts_asked("minecraft:location"),
+            FactsAsked {
+                advancements: true,
+                level: true,
+                ..none
+            }
+        );
+        assert_eq!(
+            tree.player_facts_asked("minecraft:inventory_changed"),
+            FactsAsked::ALL
+        );
+        assert_eq!(tree.player_facts_asked("minecraft:recipe_unlocked"), none);
+        assert_eq!(tree.player_facts_asked("minecraft:using_item"), none);
+    }
+    #[test]
+    fn a_command_predicate_asks_only_the_player_facts_it_names() {
+        let player = |p: Value| {
+            json!({"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"type_specific/player": p}})
+        };
+        let none = FactsAsked::default();
+        for (v, expected) in [
+            // Nothing of the player's records: nothing copied.
+            (
+                json!({"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"flags": {"is_sneaking": true}}}),
+                none,
+            ),
+            (player(json!({"gamemode": ["survival"]})), none),
+            (
+                json!({"condition": "minecraft:random_chance", "chance": 0.5}),
+                none,
+            ),
+            // A field named elsewhere than in a player predicate.
+            (
+                json!({"function": "minecraft:enchant_with_levels", "levels": 30,
+                "conditions": [{"condition": "minecraft:inverted",
+                "term": {"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"minecraft:effects": {"minecraft:speed": {}}}}}]}),
+                none,
+            ),
+            (
+                player(json!({"level": {"min": 3}})),
+                FactsAsked {
+                    level: true,
+                    ..none
+                },
+            ),
+            // Nested in a list, under `inverted`, in an item modifier.
+            (
+                json!([{"function": "minecraft:set_count", "count": 2, "conditions": [
+                    {"condition": "minecraft:inverted", "term": player(json!({
+                        "stats": [], "recipes": {"minecraft:bread": true}}))}]}]),
+                FactsAsked {
+                    stats: true,
+                    recipes: true,
+                    ..none
+                },
+            ),
+            (
+                json!({"condition": "minecraft:all_of", "terms": [player(json!(
+                    {"advancements": {"minecraft:story/root": true}}))]}),
+                FactsAsked {
+                    advancements: true,
+                    ..none
+                },
+            ),
+            // A predicate file could ask anything.
+            (
+                json!({"condition": "reference", "name": "pack:p"}),
+                FactsAsked::ALL,
+            ),
+            (
+                json!([{"function": "minecraft:reference", "name": "pack:m"}]),
+                FactsAsked::ALL,
+            ),
+        ] {
+            assert_eq!(facts_asked_in(&v), expected, "{v}");
+        }
     }
     #[test]
     fn saved_dates_read_back_to_their_instant() {

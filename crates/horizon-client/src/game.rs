@@ -207,6 +207,7 @@ pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_chunk_tickets;
 mod native_claimed_items;
+pub mod native_client_services;
 mod native_components;
 mod native_configs;
 mod native_criteria;
@@ -433,7 +434,7 @@ pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
 pub use native_criteria::NativeCriterion;
 pub use native_data_maps::NativeDataMapType;
 pub use native_falling::NativeFalling;
-pub use native_hooks::{NativeClock, NativeItemEntity, NativeShake};
+pub use native_hooks::{NativeClock, NativeItemEntity, NativePlayer, NativeShake};
 pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
@@ -2377,6 +2378,9 @@ struct Game<'a> {
     world_renderer_ready: bool,
     collision: &'a BlockCollisionRegistry<'a>,
     motion: &'a MotionResources,
+    /// This world's frozen damage definitions and reloadable tag snapshot.
+    pub(super) health_resources: horizon_client::health::HealthResources,
+    damage_tag_generation: u64,
     /// This game's resource packs (`reload_packs` replaces them).
     pack: PackResources,
     /// The title and menu bundle (GUI atlas, font and panorama).
@@ -3085,6 +3089,7 @@ struct Game<'a> {
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
+    native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
@@ -12488,16 +12493,19 @@ impl Game<'_> {
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
-        self.world_tables = self.build_world_tables();
+        (self.world_tables, self.health_resources) =
+            self.build_world_tables(false, &level.enabled_features)?;
+        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
-        // The registries a preload or an earlier world read are not this
-        // world's packs': a world with packs sends its own (their dialogs,
-        // recipes and advancements). For a world without packs, `sync_data`
-        // drops what was read with packs.
-        if self.world_tables.is_some() {
-            lan::forget_sync_data();
-        }
+        // Keep the no-pack preload; a world's packs replace it atomically.
+        // A later /reload keeps this session's synchronized registries.
+        lan::open_world_sync_data(
+            &self.options.resources,
+            &pack_files(&self.world_tables),
+            &self.health_resources.damage,
+        )
+        .map_err(|e| format!("world registries: {e}"))?;
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
         let _ = horizon_client::structure_blocks::world_loot_data(
@@ -12786,6 +12794,10 @@ impl Game<'_> {
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {
+        if self.native_window() && !self.native_client_stopped {
+            self.native_client_stopped = true;
+            self.native_client_stopping();
+        }
         // Native application termination can bypass CloseRequested. Finish any
         // save screen synchronously here, before the process can go away.
         while self.pending_save.is_some() {
@@ -12993,15 +13005,13 @@ impl Game<'_> {
         }
         let amount = ((damage / 4.0) as u32).max(1);
         let name = self
-            .motion
-            .health
+            .health_resources
             .damage
             .definition(source)
             .map(|d| d.name.clone())
             .unwrap_or_default();
         let fire = self
-            .motion
-            .health
+            .health_resources
             .damage
             .in_tag(source, "minecraft:is_fire");
         let mut broke = false;
@@ -16558,7 +16568,9 @@ impl Game<'_> {
                     || self.dialog_open()
                     || (self.screen == Screen::Win && self.win_screen_pauses())));
         let radius = self.settings.menu_blur as f32;
-        (blurred && radius >= 1.0).then_some(radius)
+        let mut radius = (blurred && radius >= 1.0).then_some(radius);
+        self.native_menu_background(&mut radius);
+        radius.filter(|r| r.is_finite() && (1.0..=64.0).contains(r))
     }
     /// `LevelExtractor` / `LevelRenderer`: the world border wall this frame.
     fn border_draw(
@@ -19109,7 +19121,7 @@ impl<'a> Game<'a> {
             &gui.atlas.sprites,
             &gui.atlas.translucent,
         );
-        Ok(Game {
+        let mut game = Game {
             world_biomes: None,
             world_biomes_base: None,
             res: res.clone(),
@@ -19128,6 +19140,8 @@ impl<'a> Game<'a> {
             world_renderer_ready: false,
             collision: res.collision(),
             motion: res.motion(),
+            health_resources: res.motion().health.clone(),
+            damage_tag_generation: 1,
             pack,
             gui,
             fog: Default::default(),
@@ -19540,6 +19554,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
+            native_client_stopped: false,
             pending_save: None,
             frame_drawn: true,
             world_icon: None,
@@ -19611,7 +19626,11 @@ impl<'a> Game<'a> {
             camera_type: Default::default(),
             fangs: Default::default(),
             player_model: None,
-        })
+        };
+        if game.native_window() {
+            game.native_client_start();
+        }
+        Ok(game)
     }
 }
 
@@ -19952,7 +19971,11 @@ impl Game<'_> {
     /// Load the world's data packs' content tables (`None`: the world has no
     /// packs, and `Resources.rest` stays in use). This re-reads the tables,
     /// so it runs once per world open and on `/reload`.
-    fn build_world_tables(&self) -> Option<WorldTables> {
+    fn build_world_tables(
+        &self,
+        reload: bool,
+        enabled_features: &[String],
+    ) -> Result<(Option<WorldTables>, horizon_client::health::HealthResources)> {
         // The ask of this load, both here and on `/reload`: a native mod
         // recomputes the pack files it contributes every time.
         let mut contributed = Vec::new();
@@ -19961,31 +19984,27 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
-            &self.level.enabled_features,
+            enabled_features,
             contributed,
         );
-        if files.is_empty() {
-            return None;
-        }
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let root = &self.options.resources;
-        let items = match Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay) {
-            Ok(items) => items,
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return None;
-            }
+        let base = if reload {
+            &self.health_resources
+        } else {
+            &self.motion.health
         };
+        let health = base.with_packs(root, &overlay, reload)?;
+        if files.is_empty() {
+            return Ok((None, health));
+        }
+        let mut items = Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay)?;
+        // Item damage predicates use the same frozen registry as player hurt.
+        Arc::make_mut(&mut items.enchantments).bind_damage_catalog(&health.damage);
         // The recipe tables, the stations and the recipe book read one folder:
         // hold its files so it is read once.
         let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
-        let recipes = match Recipes::load(root, &items, &overlay) {
-            Ok(recipes) => recipes,
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return None;
-            }
-        };
+        let recipes = Recipes::load(root, &items, &overlay)?;
         let stations = horizon_client::stations::StationData::load(root, &items, &overlay);
         let mut data_map_types = Vec::new();
         self.native_data_map_types(&mut data_map_types);
@@ -20002,24 +20021,21 @@ impl Game<'_> {
             .flatten()
             .cloned()
             .collect();
-        let suffocation = match horizon_client::mobs::suffocation::bind(
+        let suffocation = horizon_client::mobs::suffocation::bind(
             self.res.core.collision.clone(),
             &causes_suffocation,
-        ) {
-            Ok(binding) => binding,
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return None;
-            }
-        };
-        Some(WorldTables {
-            suffocation,
-            files,
-            items,
-            recipes,
-            stations,
-            data_maps,
-        })
+        )?;
+        Ok((
+            Some(WorldTables {
+                suffocation,
+                files,
+                items,
+                recipes,
+                stations,
+                data_maps,
+            }),
+            health,
+        ))
     }
     /// Reload the content tables with the world's packs, as
     /// `/reload` reloads a server's (`ReloadableServerResources`).
@@ -20027,7 +20043,17 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
-        self.world_tables = self.build_world_tables();
+        match self.build_world_tables(true, &self.level.enabled_features) {
+            Ok((tables, health)) => {
+                self.world_tables = tables;
+                self.health_resources = health;
+            }
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return;
+            }
+        }
+        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         self.recipe_tables.categories = None;
         horizon_client::structure_blocks::forget_loot_data();
         // Before the players are sent the reloaded data below.
@@ -20050,7 +20076,13 @@ impl Game<'_> {
                     }
                 }
             }
-            None => lan::forget_sync_data(),
+            None => {
+                if let Err(e) =
+                    lan::reload_cached_sync_data(&self.options.resources, &self.pack_files())
+                {
+                    log::warn!("Horizon: the cached world data is not reloaded: {e}");
+                }
+            }
         }
         let overlay = pack_files(&self.world_tables);
         self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(

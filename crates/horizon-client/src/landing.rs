@@ -655,7 +655,7 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
             source: self.source,
             amount,
         });
-        let resources = &self.world.resources.health;
+        let resources = self.world.health;
         self.world.player.hurt(
             resources,
             self.world.scene.health_rules,
@@ -668,6 +668,86 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both landing sources use the world's frozen definitions and current
+    /// damage tags, including a tag-only reload with no pack definitions left.
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_landing_uses_world_armor_tags_and_exhaustion() {
+        use crate::{assets::Assets, motion::MotionResources, world::World};
+        use horizon_world::loot::PackOverlay;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let files = vec![
+            (
+                "damage_type/minecraft:fall".into(),
+                vec![br#"{"message_id":"fall","scaling":"never","exhaustion":0.75}"#.to_vec()],
+            ),
+            (
+                "damage_type/minecraft:stalagmite".into(),
+                vec![br#"{"message_id":"stalagmite","scaling":"never","exhaustion":0.5}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:damage_type/bypasses_armor".into(),
+                vec![br#"{"replace":true,"values":[]}"#.to_vec()],
+            ),
+        ];
+        let open = resources
+            .health
+            .with_packs(&root, &PackOverlay { files: &files }, false)
+            .unwrap();
+        let reloaded = open.with_packs(&root, &PackOverlay::NONE, true).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        for (source, exhaustion, name) in [
+            (LandingDamage::Fall, 0.75, "minecraft:fall"),
+            (LandingDamage::Stalagmite, 0.5, "minecraft:stalagmite"),
+        ] {
+            for (health, bypass) in [(&resources.health, true), (&open, false), (&reloaded, true)] {
+                let mut player = crate::motion::PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+                let key = player.attributes.key("minecraft:armor").unwrap();
+                let armor = player.attributes.get_instance(Some(key)).unwrap().unwrap();
+                player
+                    .attributes
+                    .edit(&armor, |a, o| a.set_base_value(20.0, o))
+                    .unwrap();
+                BlockLandingWorld::cause_fall_damage(
+                    &mut MotionWorld {
+                        entities: &[],
+                        player: &mut player,
+                        scene: &mut scene,
+                        assets: &assets,
+                        collision_binding: &collision,
+                        resources: &resources,
+                        health,
+                    },
+                    7.0,
+                    1.0,
+                    source,
+                )
+                .unwrap();
+                if bypass {
+                    assert_eq!(player.health.health(), 16.0, "{name}");
+                } else {
+                    assert!(
+                        player.health.health() > 16.0 && player.health.health() < 20.0,
+                        "{name}"
+                    );
+                }
+                assert_eq!(player.hurt_log.last().unwrap().source, name);
+                let expected = if std::ptr::eq(health, &resources.health) {
+                    0.0
+                } else {
+                    exhaustion
+                };
+                assert_eq!(player.health.food.exhaustion, expected, "{name}");
+            }
+        }
+    }
 
     #[test]
     fn fall_sounds_map_to_player_events() {

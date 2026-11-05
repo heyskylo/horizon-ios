@@ -557,12 +557,15 @@ impl Game<'_> {
             );
         }
         if m.species() == Species::HappyGhast {
-            // The first passenger attachment (0, 4, 1.7) of the harnessed back.
-            let yaw = f64::from(m.yaw.to_radians());
+            // The attachment of the player's seat on the harnessed back.
+            let seat = self.remote.as_ref().map_or(0, |r| r.passenger_index);
+            let a = horizon_client::mobs::riders::happy_ghast_attachment(seat);
+            let turned = Vec3::new(a[0], a[1], a[2])
+                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
             at = Vec3::new(
-                m.position.x - 1.7 * yaw.sin(),
-                m.position.y + 4.0 - 0.6,
-                m.position.z + 1.7 * yaw.cos(),
+                m.position.x + turned.x,
+                m.position.y + turned.y - 0.6,
+                m.position.z + turned.z,
             );
         }
         if horizon_client::mobs::llama::is_llama(m.species()) {
@@ -776,6 +779,7 @@ impl Game<'_> {
             assets: &self.pack.assets,
             collision_binding: self.collision,
             resources: self.motion,
+            health: &self.health_resources,
         }
         .cause_mount_fall(distance, modifier);
     }

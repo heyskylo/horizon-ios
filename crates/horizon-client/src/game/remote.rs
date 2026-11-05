@@ -152,12 +152,12 @@ fn hurt_sound_for(
     damage: &horizon_world::damage_source::Catalog,
     source_type: i32,
 ) -> &'static str {
-    if let Some(Tag::String(effects)) = registries
-        .data("minecraft:damage_type", source_type)
-        .and_then(|t| t.get("effects"))
-        && let Ok(effects) = effects.to_string()
-    {
-        return horizon_client::health::hurt_sound(&effects);
+    if let Some(data) = registries.data("minecraft:damage_type", source_type) {
+        let effects = data.get("effects").and_then(|t| match t {
+            Tag::String(effects) => effects.to_string().ok(),
+            _ => None,
+        });
+        return horizon_client::health::hurt_sound(effects.as_deref().unwrap_or("hurt"));
     }
     registries
         .name("minecraft:damage_type", source_type)
@@ -575,6 +575,8 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// The player's place in its vehicle's `getPassengers`.
+    pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -802,7 +804,7 @@ impl Game<'_> {
     /// `hurt` default when the type is unknown.
     pub(super) fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
         match self.remote.as_ref() {
-            Some(r) => hurt_sound_for(&r.registries, &self.motion.health.damage, source_type),
+            Some(r) => hurt_sound_for(&r.registries, &self.health_resources.damage, source_type),
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
@@ -1085,6 +1087,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passenger_index: 0,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -1190,6 +1193,9 @@ impl Game<'_> {
         // Minecraft.disconnect: the client level goes.
         if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
             self.native_client_level_unload(&old);
+        }
+        if self.remote.is_some() {
+            self.native_client_disconnecting();
         }
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
@@ -6174,6 +6180,7 @@ impl Game<'_> {
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
+                health: &self.health_resources,
             }
             .controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;
         } else {
@@ -6190,6 +6197,7 @@ impl Game<'_> {
                     assets: &self.pack.assets,
                     collision_binding: self.collision,
                     resources: self.motion,
+                    health: &self.health_resources,
                 };
                 passenger.passenger_pose_tick()?;
                 // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
@@ -11347,6 +11355,25 @@ mod tests {
         assert_eq!(
             hurt_sound_for(&registries, &catalog, 0),
             "minecraft:entity.player.hurt_on_fire"
+        );
+    }
+    #[test]
+    fn synchronized_damage_defaults_override_a_different_local_definition() {
+        let local = horizon_world::damage_source::Catalog::from_json(&serde_json::json!({
+            "data_version": horizon_world::DATA_VERSION,
+            "types": [{"id":"demo:heat", "message_id":"heat", "exhaustion":"00000000", "scaling":"never", "effects":"burning", "death_message_type":"default"}]
+        }), &serde_json::json!({})).unwrap();
+        let mut registries = horizon_protocol::registry::Dynamic::default();
+        registries.add(horizon_protocol::packets::configuration::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![horizon_protocol::packets::configuration::RegistryEntry {
+                id: "demo:heat".into(),
+                data: Some(horizon_world::nbt::Tag::Compound(Default::default())),
+            }],
+        });
+        assert_eq!(
+            super::hurt_sound_for(&registries, &local, 0),
+            "minecraft:entity.player.hurt"
         );
     }
     /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it

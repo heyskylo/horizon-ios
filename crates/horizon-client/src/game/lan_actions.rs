@@ -1122,8 +1122,7 @@ impl Game<'_> {
         };
         let (id, at) = (g.entity_id, g.position);
         let kind = self
-            .motion
-            .health
+            .health_resources
             .damage
             .definition(source)
             .map_or("minecraft:generic", |d| d.name.as_str());
@@ -4124,8 +4123,8 @@ impl Game<'_> {
                 .is_some_and(|p| p.entity_id as u32 == id)
         {
             // `player_entity_for` takes `&mut self` (the compound for `nbt`);
-            // this view of the killer goes without it.
-            return Some(self.player_entity_looking(self.adv.tree.may_look(trigger)));
+            // this view of the killer has the player's records without it.
+            return Some(self.player_entity_for_any(&[trigger]));
         }
         host.hub
             .guests
@@ -4431,8 +4430,7 @@ impl Game<'_> {
         let mut soul = None;
         let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
-            let (rules, motion) = (game.world.health_rules, game.motion);
-            let health = &motion.health;
+            let rules = game.world.health_rules;
             let freeze_immune = game.wears_freeze_immune();
             let burn_immune = game.wears_burn_from_stepping_immunity();
             let boat = game.riding_boat_fluid_box();
@@ -4447,6 +4445,7 @@ impl Game<'_> {
                 assets: &game.pack.assets,
                 collision_binding: game.collision,
                 resources: game.motion,
+                health: &game.health_resources,
             };
             w.player.health.advance_clock();
             let _ = w.fluid_base_tick();
@@ -4573,7 +4572,7 @@ impl Game<'_> {
                 return (Vec::new(), None);
             };
             let _ = player.peaceful_regeneration(rules);
-            let _ = player.food_tick(health, rules);
+            let _ = player.food_tick(&game.health_resources, rules);
             events.append(&mut player.events);
             player.carry_client_movement(tick_movement);
             let _ = MotionWorld {
@@ -4583,6 +4582,7 @@ impl Game<'_> {
                 assets: &game.pack.assets,
                 collision_binding: game.collision,
                 resources: game.motion,
+                health: &game.health_resources,
             }
             .server_travel();
             // Landing damage from this travel reaches the tracker too.

@@ -192,6 +192,7 @@ impl Game<'_> {
             && let Some(r) = self.remote.as_mut()
         {
             r.first_passenger = passengers.first() == Some(&me);
+            r.passenger_index = passengers.iter().position(|&p| p == me).unwrap_or(0);
         }
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
