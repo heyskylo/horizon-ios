@@ -2619,9 +2619,21 @@ pub fn vulkan_start_crashed<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
 const GRAPHICS_FILE: &str = "horizon-graphics.txt";
 
-/// Sets `graphicsApi:dx12` in `home`'s graphics settings when it is unset or `auto`, keeping
-/// every other line. True when it changed; a player's own `vulkan` or `dx12` stays.
-pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
+/// The graphics API (the game's setting name, and its label) Auto switches to after a native
+/// crash at the Vulkan renderer's start: DirectX 12 on Windows (#746), OpenGL on Linux, where
+/// Auto also runs Mesa's hasvk on Ivy Bridge and Haswell, which Mesa itself calls incomplete
+/// there (#4293). `None` where the game has no other API (macOS: Metal only).
+pub fn vulkan_crash_fallback(os: &str) -> Option<(&'static str, &'static str)> {
+    match os {
+        "windows" => Some(("dx12", "DirectX 12")),
+        "macos" => None,
+        _ => Some(("opengl", "OpenGL")),
+    }
+}
+
+/// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto`, keeping
+/// every other line. True when it changed; a player's own choice stays.
+pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
     let path = home.join(GRAPHICS_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -2637,13 +2649,13 @@ pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
                     return Ok(false);
                 }
                 found = true;
-                lines.push("graphicsApi:dx12".to_owned());
+                lines.push(format!("graphicsApi:{api}"));
             }
             _ => lines.push(line.to_owned()),
         }
     }
     if !found {
-        lines.push("graphicsApi:dx12".to_owned());
+        lines.push(format!("graphicsApi:{api}"));
     }
     fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
     fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
@@ -5088,26 +5100,47 @@ pub fn {f}("
         let home = std::env::temp_dir().join(format!("horizon-dx12-switch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         // No settings file yet: one with the API alone.
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "graphicsApi:dx12\n"
         );
         // Already DirectX 12, or the player's own Vulkan: left alone.
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         fs::write(home.join(GRAPHICS_FILE), "sky:false\ngraphicsApi:vulkan\n").unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         // Auto becomes DirectX 12 and the other settings stay.
         fs::write(
             home.join(GRAPHICS_FILE),
             "sky:false\ngraphicsApi:auto\nfog:true\n",
         )
         .unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "sky:false\ngraphicsApi:dx12\nfog:true\n"
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// #4293: an Ivy Bridge on Linux whose Vulkan driver (Mesa's hasvk) crashes at the renderer's
+    /// start plays on OpenGL next time; Windows keeps DirectX 12 (#746), macOS has nothing else.
+    #[test]
+    fn a_vulkan_start_crash_on_linux_switches_auto_to_opengl() {
+        assert_eq!(vulkan_crash_fallback("windows").unwrap().0, "dx12");
+        assert_eq!(vulkan_crash_fallback("macos"), None);
+        let (api, _) = vulkan_crash_fallback("linux").unwrap();
+        let home = std::env::temp_dir().join(format!("horizon-gl-switch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(GRAPHICS_FILE), "graphicsApi:auto\nvsync:true\n").unwrap();
+        assert_eq!(switch_from_auto(&home, api), Ok(true));
+        assert_eq!(
+            fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
+            "graphicsApi:opengl\nvsync:true\n"
+        );
+        // The next crash (OpenGL had no GPU either and Vulkan ran again) leaves it: no loop.
+        assert_eq!(switch_from_auto(&home, api), Ok(false));
         let _ = fs::remove_dir_all(&home);
     }
 
