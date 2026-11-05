@@ -7,6 +7,7 @@
 pub mod eula;
 pub mod java_properties;
 pub mod json;
+pub mod private_file;
 pub mod profiles;
 pub mod properties;
 pub mod user_cache;
