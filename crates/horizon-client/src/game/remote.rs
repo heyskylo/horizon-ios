@@ -7206,7 +7206,8 @@ impl Game<'_> {
             self.particles.add(&options, p, v);
         }
     }
-    /// LocalPlayer.sendPosition plus input, sprint and held-slot updates.
+    /// LocalPlayer.sendChanges: input, sprint and the move. The held slot is not sent here:
+    /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
     fn remote_send_state(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
             return;
@@ -7217,7 +7218,7 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
+        let (yaw, pitch) = (self.yaw, self.pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
         let vehicle = self.remote_vehicle_packets();
@@ -7225,12 +7226,6 @@ impl Game<'_> {
             return;
         };
         let mut out = Vec::new();
-        if r.carried != Some(selected) {
-            r.carried = Some(selected);
-            out.push(S::SetCarriedItem(play::SetCarriedItem {
-                slot: selected as i16,
-            }));
-        }
         if input != r.last_input {
             r.last_input = input;
             out.push(S::PlayerInput(play::PlayerInput { flags: input }));
@@ -8899,6 +8894,10 @@ impl Game<'_> {
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
             && !self.dialog_open();
+        // MultiPlayerGameMode.tick, first in Minecraft.tick, screen or not: the slot
+        // chosen since the last tick (the wheel, the last tick's number keys, the
+        // server's SetHeldSlot) goes out before anything else of this tick.
+        self.remote_send_carried();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -8907,8 +8906,6 @@ impl Game<'_> {
             self.hotbar_presses.clear();
             return;
         }
-        // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
-        self.remote_send_carried();
         let (attack, use_item) = (self.left, self.right);
         // A tick that clicks, attacks or uses acts with the slot its number
         // keys select (`ensureHasSentCarriedItem` before the packets).
