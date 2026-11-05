@@ -22,7 +22,7 @@ use horizon_client::{
 };
 use horizon_core::position::BlockPos;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Vec3, trig},
     random::{LegacyRandom, RandomSource},
 };
 use horizon_protocol::entity_data::Value;
@@ -466,6 +466,15 @@ pub(super) enum Hurt {
     /// damage away (and set it alight for a second).
     Shrugged,
 }
+/// `Vec3.normalize`: zero under a length of `1.0E-5F`.
+fn vanilla_normalize(v: glam::DVec3) -> glam::DVec3 {
+    let len = v.length();
+    if len < f64::from(1.0e-5_f32) {
+        glam::DVec3::ZERO
+    } else {
+        v / len
+    }
+}
 /// `#minecraft:is_fire`, which the dragon's parts and the crystals refuse
 /// (`isInvulnerableToBase`: both types are fire immune).
 fn is_fire(kind: DamageKind) -> bool {
@@ -493,6 +502,9 @@ const ADJACENCY: [u32; 24] = [
     8257536,
 ];
 impl Dragon {
+    /// `EnderDragon`'s constructor: full health, hovering (`EnderDragonPhase.HOVERING`). Only
+    /// `EnderDragonFight.createNewDragon` sets the holding pattern; a dragon from `/summon`, a
+    /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.
     fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
         Self {
             id: 0,
@@ -512,11 +524,7 @@ impl Dragon {
             flap: 0.0,
             old_flap: 0.0,
             in_wall: false,
-            phase: Phase::Holding {
-                path: None,
-                target: None,
-                clockwise: false,
-            },
+            phase: Phase::Hover { target: None },
             flame_count: 0,
             sitting_damage: 0.0,
             growl: 100,
@@ -2241,52 +2249,53 @@ impl Game<'_> {
             let (xd, mut yd, zd) = (t.x - d.position.x, t.y - d.position.y, t.z - d.position.z);
             let dist2 = xd * xd + yd * yd + zd * zd;
             let max = f64::from(d.phase.fly_speed());
-            let horizontal = xd.hypot(zd);
+            let horizontal = (xd * xd + zd * zd).sqrt();
             if horizontal > 0.0 {
                 yd = (yd / horizontal).clamp(-max, max);
             }
             d.velocity.y += yd * 0.01;
             d.yaw = wrap(d.yaw);
-            let aim = glam::DVec3::new(xd, t.y - d.position.y, zd).normalize_or_zero();
-            let r = d.yaw.to_radians();
-            let dir = glam::DVec3::new(f64::from(r.sin()), d.velocity.y, f64::from(-r.cos()))
-                .normalize_or_zero();
+            // Mth.sin / Mth.cos (the table) and Mth.atan2, as vanilla computes them: a hovering
+            // dragon's target is a hair away, where the exact functions turn it another way.
+            let aim = vanilla_normalize(glam::DVec3::new(xd, t.y - d.position.y, zd));
+            let r = f64::from(d.yaw * trig::DEG_TO_RAD);
+            let dir = vanilla_normalize(glam::DVec3::new(
+                f64::from(trig::sin(r)),
+                d.velocity.y,
+                f64::from(-trig::cos(r)),
+            ));
             let dot = ((dir.dot(aim) as f32 + 0.5) / 1.5).max(0.0);
-            if xd.abs() > 1.0e-5 || zd.abs() > 1.0e-5 {
+            if xd.abs() > f64::from(1.0e-5_f32) || zd.abs() > f64::from(1.0e-5_f32) {
+                let rot =
+                    (d.velocity.x * d.velocity.x + d.velocity.z * d.velocity.z).sqrt() as f32 + 1.0;
                 let turn = match d.phase {
-                    Phase::Landing { .. } => {
-                        let rot = d.velocity.x.hypot(d.velocity.z) as f32 + 1.0;
-                        rot.min(40.0) / rot
-                    }
-                    _ => {
-                        let rot = d.velocity.x.hypot(d.velocity.z) as f32 + 1.0;
-                        0.7 / rot.min(40.0) / rot
-                    }
+                    Phase::Landing { .. } => rot.min(40.0) / rot,
+                    _ => 0.7 / rot.min(40.0) / rot,
                 };
-                let delta =
-                    wrap(180.0 - xd.atan2(zd).to_degrees() as f32 - d.yaw).clamp(-50.0, 50.0);
+                let delta = wrap(180.0 - trig::atan2(xd, zd) as f32 * trig::RAD_TO_DEG - d.yaw)
+                    .clamp(-50.0, 50.0);
                 d.yaw_accel *= 0.8;
                 d.yaw_accel += delta * turn;
                 d.yaw += d.yaw_accel * 0.1;
             }
             let span = (2.0 / (dist2 + 1.0)) as f32;
             let speed = 0.06 * (dot * span + (1.0 - span));
-            // moveRelative(speed, (0, 0, -1)).
-            let r = d.yaw.to_radians();
-            d.velocity.x += f64::from(speed * r.sin());
-            d.velocity.z += f64::from(-speed * r.cos());
-            let step = if d.in_wall { 0.8 } else { 1.0 };
+            // moveRelative(speed, (0, 0, -1)): getInputVector in doubles, Mth's sine.
+            let r = f64::from(d.yaw * trig::DEG_TO_RAD);
+            d.velocity.x += f64::from(speed) * f64::from(trig::sin(r));
+            d.velocity.z += -f64::from(speed) * f64::from(trig::cos(r));
+            let step = if d.in_wall { 0.800000011920929 } else { 1.0 };
             d.position = Vec3::new(
                 d.position.x + d.velocity.x * step,
                 d.position.y + d.velocity.y * step,
                 d.position.z + d.velocity.z * step,
             );
             let actual =
-                glam::DVec3::new(d.velocity.x, d.velocity.y, d.velocity.z).normalize_or_zero();
+                vanilla_normalize(glam::DVec3::new(d.velocity.x, d.velocity.y, d.velocity.z));
             let slide = 0.8 + 0.15 * (actual.dot(dir) + 1.0) / 2.0;
             d.velocity = Vec3::new(
                 d.velocity.x * slide,
-                d.velocity.y * 0.91,
+                d.velocity.y * 0.9100000262260437,
                 d.velocity.z * slide,
             );
         }
@@ -4008,6 +4017,12 @@ impl Game<'_> {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = self.world.random.next_long();
         let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // `dragon.getPhaseManager().setPhase(EnderDragonPhase.HOLDING_PATTERN)`.
+        d.phase = Phase::Holding {
+            path: None,
+            target: None,
+            clockwise: false,
+        };
         // EnderDragon's constructor takes its id and its parts' from the
         // entity counter.
         d.id = self.next_entity + 1;

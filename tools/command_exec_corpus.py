@@ -2370,6 +2370,22 @@ def ender_dragon():
     ]
 
 
+def summoned_dragon_hovers():
+    """EnderDragon's constructor sets EnderDragonPhase.HOVERING; only EnderDragonFight.createNewDragon
+    moves its dragon to the holding pattern. A dragon from /summon hovers where it was put: the
+    hover phase's target is its own position, and no fight takes it on outside the End."""
+    dragon = '@e[tag=hover_dragon,limit=1]'
+    ops = setup('/forceload add 0 0 31 31')
+    ops += [{'op': 'settle'}]
+    ops += setup('/summon ender_dragon 16.5 160 16.5 {Tags:["hover_dragon"]}')
+    ops += [cmd(f'/data get entity {dragon} DragonPhase', expect_result=10)]
+    for _ in range(6):
+        ops += [{'op': 'tick', 'n': 20},
+                cmd(f'/data get entity {dragon} DragonPhase'),
+                *[cmd(f'/data get entity {dragon} Pos[{i}] 100') for i in range(3)]]
+    return ops + setup('/kill @e[tag=hover_dragon]', '/forceload remove all')
+
+
 def place_structure():
     """`/place structure` (PlaceCommand.placeStructure): the id is resolved, a
     `StructureStart` is generated for the position's chunk with vanilla's
@@ -5681,6 +5697,7 @@ def groups():
         ('creative shulker drops', creative_shulker_drops()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
+        ('summoned dragon hovers', summoned_dragon_hovers()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
         ('experience orb fall', experience_orb_fall()),
