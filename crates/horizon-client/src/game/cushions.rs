@@ -387,6 +387,8 @@ impl Game<'_> {
         if self.riding == Some(c.id) {
             self.dismount_removed_vehicle(p.y);
         }
+        // BlockAttachedEntity.kill, before dropItem.
+        self.entity_killed_event([p.x, p.y, p.z], by_player);
         self.audio.play(
             "minecraft:entity.cushion.break",
             Some([p.x, p.y, p.z]),
