@@ -193,8 +193,21 @@ pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle) {
+    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle)
+        && m.extra.rider.is_none()
+    {
         m.extra.rider = Some(rider);
+    }
+}
+/// How many passengers can ride this vehicle. Camels carry two riders
+/// (unless a baby), happy ghasts carry four, and other mobs carry one.
+pub fn max_passengers(v: &Mob) -> usize {
+    if super::camel::is_camel(v.species()) {
+        if v.is_baby() { 0 } else { 2 }
+    } else if v.species() == Species::HappyGhast {
+        4
+    } else {
+        1
     }
 }
 /// `Piglin.getTopPassenger`: down the chain of first passengers from
@@ -246,7 +259,13 @@ pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
     let Some(v) = mobs.iter().find(|m| m.id == vehicle) else {
         return false;
     };
-    if r.extra.boarding_cooldown > 0 || v.extra.rider.is_some() || v.rider.is_some() {
+    let count = usize::from(v.rider.is_some())
+        + mobs
+            .iter()
+            .filter(|m| m.extra.mount == Some(vehicle))
+            .count()
+            .max(usize::from(v.extra.rider.is_some()));
+    if r.extra.boarding_cooldown > 0 || count >= max_passengers(v) {
         return false;
     }
     link(mobs, rider, vehicle);
@@ -635,6 +654,43 @@ mod tests {
         ];
         assert!(start_riding(&mut others, 1, 2));
         assert_eq!(others[0].extra.variant3, 4);
+
+        // A camel carries two riders: the first becomes extra.rider, the second
+        // mounts as a passenger without overwriting extra.rider, and a third is refused.
+        let mut camel_ride = [
+            mob(1, "minecraft:husk", Species::Husk, 0),
+            mob(2, "minecraft:parched", Species::Parched, 0),
+            mob(3, "minecraft:zombie", Species::Zombie, 0),
+            mob(10, "minecraft:camel_husk", Species::CamelHusk, 0),
+        ];
+        assert!(start_riding(&mut camel_ride, 1, 10), "first rider boards");
+        assert_eq!(camel_ride[0].extra.mount, Some(10));
+        assert_eq!(camel_ride[3].extra.rider, Some(1), "first rider is driver");
+
+        assert!(start_riding(&mut camel_ride, 2, 10), "second rider boards");
+        assert_eq!(camel_ride[1].extra.mount, Some(10));
+        assert_eq!(
+            camel_ride[3].extra.rider,
+            Some(1),
+            "driver remains first rider"
+        );
+
+        assert!(
+            !start_riding(&mut camel_ride, 3, 10),
+            "third rider is refused"
+        );
+        assert_eq!(camel_ride[2].extra.mount, None);
+
+        // A baby camel carries no riders.
+        let mut baby_camel = [
+            mob(1, "minecraft:husk", Species::Husk, 0),
+            mob(10, "minecraft:camel", Species::Camel, 0),
+        ];
+        baby_camel[1].extra.age = -1;
+        assert!(
+            !start_riding(&mut baby_camel, 1, 10),
+            "baby camel refuses riders"
+        );
     }
 }
 

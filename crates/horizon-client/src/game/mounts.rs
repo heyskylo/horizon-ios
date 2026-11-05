@@ -750,17 +750,18 @@ impl Game<'_> {
             }
             self.lan = Some(host);
         }
-        let rider = self
+        let riders: Vec<u32> = self
             .mobs
             .iter()
-            .find(|m| m.id == mob)
-            .and_then(|m| m.extra.rider);
-        if let Some(rider) = rider
-            && let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider)
-        {
-            let mut events = Vec::new();
-            r.cause_fall_damage_from(distance, modifier, &mut events);
-            let _ = self.handle_mob_events(events);
+            .filter(|m| m.extra.mount == Some(mob))
+            .map(|m| m.id)
+            .collect();
+        for rider in riders {
+            if let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider) {
+                let mut events = Vec::new();
+                r.cause_fall_damage_from(distance, modifier, &mut events);
+                let _ = self.handle_mob_events(events);
+            }
         }
     }
     /// The player this game runs (the local one, or the server player it acts
