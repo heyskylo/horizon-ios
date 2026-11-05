@@ -128,6 +128,9 @@ def main():
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
+    parser.add_argument('--piglin-anger-memory-fixture', action='store_true')
+    parser.add_argument('--piglin-anger-raw-diagnostic', action='store_true')
+    parser.add_argument('--piglin-anger-memory-diagnostic', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -250,6 +253,9 @@ def main():
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('crafting recipe fixtures require --only with one exact group')
+    if args.piglin_anger_memory_fixture:
+        from piglin_anger_memory_corpus import piglin_anger_memory
+        groups = [('setup', corpus_module.group_setup()), ('piglin live anger memory', piglin_anger_memory(args.piglin_anger_raw_diagnostic, args.piglin_anger_memory_diagnostic))]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -289,7 +295,7 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True))]
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True))]
         if len(recorded) != len(reference):
             sys.exit('reference-only record count differs')
         for op, row in zip(recorded, reference):
@@ -344,7 +350,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop', 'menu_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -369,7 +375,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'light', 'player_state', 'player_loop', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
