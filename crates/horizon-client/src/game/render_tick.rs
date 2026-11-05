@@ -109,7 +109,7 @@ impl Game<'_> {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
-        let (rain, thunder) = self.weather_levels(self.clock.fraction() as f32);
+        let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
             &title_fog
@@ -142,7 +142,9 @@ impl Game<'_> {
                 .darken_amount(self.clock.fraction() as f32),
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
             spectator: self.spectator(),
-            fire_resistance: self.potions.effects.get("fire_resistance").is_some(),
+            fire_resistance: self.potions.effects.get("fire_resistance").is_some()
+                || self.settings.extras.pvp.tweaks.clear_lava,
+            full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
@@ -361,6 +363,7 @@ impl Game<'_> {
             on_fire: self.camera_type.first_person()
                 && !self.spectator()
                 && self.player.as_ref().is_some_and(|p| p.fire_ticks > 0),
+            fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
             gui_overlays: &gui_overlays,
         })
     }
@@ -399,7 +402,7 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
-            let rain = self.weather_levels(1.0).0;
+            let rain = self.view_weather(1.0).0;
             let biome = self
                 .world
                 .chunks

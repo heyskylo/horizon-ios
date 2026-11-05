@@ -7574,13 +7574,9 @@ impl Renderer {
                 }
                 lights
             },
-            colored_count: [
-                frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
-                // PvP & HUD's hurt texel and enable flag, including zero-valued opaque black.
-                frame.pvp.hurt_texel,
-                u32::from(frame.pvp.custom_hit),
-                0,
-            ],
+            colored_count: frame
+                .pvp
+                .colour_uniform(frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32),
             emissive_layers: {
                 let mut layers = [[0; 4]; crate::native_emissive::MAX];
                 for (to, from) in layers.iter_mut().zip(frame.emissive_layers) {

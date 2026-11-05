@@ -7,35 +7,42 @@ fn custom_hit_colours_preserve_every_rgba_value() {
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-    let mut cases = Vec::<[u32; 4]>::new();
+    let mut cases = Vec::<[u32; 8]>::new();
     let mut expected = Vec::<[u32; 4]>::new();
     for custom in [false, true] {
         for colour in super::Colour::ALL {
             for opacity in [0, 30, 100] {
-                let pvp = super::Pvp {
-                    hit: super::Hit {
-                        custom,
-                        colour,
-                        opacity,
-                    },
-                    ..Default::default()
-                };
-                let frame = pvp.frame();
-                for overlay in [0, 1, 5, 8, 17, 31] {
-                    cases.push([frame.hurt_texel, u32::from(frame.custom_hit), overlay, 0]);
-                    expected.push(
-                        match overlay {
-                            1 | 8 if custom => {
-                                let [_, r, g, b] = colour.argb().to_be_bytes();
-                                [r, g, b, (255 - (u32::from(opacity) * 255 + 50) / 100) as u8]
+                for glint in [None, Some(super::Colour::Red), Some(super::Colour::Black)] {
+                    let pvp = super::Pvp {
+                        hit: super::Hit {
+                            custom,
+                            colour,
+                            opacity,
+                        },
+                        tweaks: super::Tweaks {
+                            glint,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let frame = pvp.frame();
+                    for overlay in [0, 1, 5, 8, 17, 31] {
+                        let [count, hurt, tint, enabled] = frame.colour_uniform(0);
+                        cases.push([count, hurt, tint, enabled, overlay, 0, 0, 0]);
+                        expected.push(
+                            match overlay {
+                                1 | 8 if custom => {
+                                    let [_, r, g, b] = colour.argb().to_be_bytes();
+                                    [r, g, b, (255 - (u32::from(opacity) * 255 + 50) / 100) as u8]
+                                }
+                                1 | 8 => crate::overlay::HURT_TEXEL,
+                                5 | 31 => [255, 255, 255, crate::overlay::white_alpha(15)],
+                                17 => [255, 255, 255, crate::overlay::white_alpha(1)],
+                                _ => [255; 4],
                             }
-                            1 | 8 => crate::overlay::HURT_TEXEL,
-                            5 | 31 => [255, 255, 255, crate::overlay::white_alpha(15)],
-                            17 => [255, 255, 255, crate::overlay::white_alpha(1)],
-                            _ => [255; 4],
-                        }
-                        .map(u32::from),
-                    );
+                            .map(u32::from),
+                        );
+                    }
                 }
             }
         }
@@ -50,13 +57,14 @@ fn custom_hit_colours_preserve_every_rgba_value() {
         r#"
 struct Globals { colored_count: vec4<u32> }
 var<private> globals: Globals;
-@group(0) @binding(0) var<storage, read> cases: array<vec4<u32>>;
+struct Case { colours: vec4<u32>, params: vec4<u32> }
+@group(0) @binding(0) var<storage, read> cases: array<Case>;
 @group(0) @binding(1) var<storage, read_write> results: array<vec4<u32>>;
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= arrayLength(&cases) { return; }
     let c = cases[id.x];
-    globals.colored_count = vec4(0u, c.x, c.y, 0u);
-    results[id.x] = vec4<u32>(round(overlay_texel(c.z) * 255.0));
+    globals.colored_count = c.colours;
+    results[id.x] = vec4<u32>(round(overlay_texel(c.params.x) * 255.0));
 }"#
     );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
