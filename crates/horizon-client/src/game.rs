@@ -5180,15 +5180,19 @@ impl Game<'_> {
         let sent = self.lan_broadcast_changes();
         self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
-            b.tick_block_entities(level, ticks);
         });
-        // `PistonMovingBlockEntity.tick` pushes what its block just ran into,
-        // with the progress it is about to take.
+        self.process_level_events()?;
+        self.sync_moving_pistons();
+        Ok(sent)
+    }
+    /// `ServerLevel.tick`: moving block entities push after entity travel.
+    fn tick_moving_pistons(&mut self) -> Result<()> {
+        self.with_level(|b, level, ticks| b.tick_block_entities(level, ticks));
         let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
         self.push_piston_entities(pushes);
         self.process_level_events()?;
         self.sync_moving_pistons();
-        Ok(sent)
+        Ok(())
     }
     /// Copies the moving-piston block entities into the world, where the
     /// collision queries and the renderer read them.
@@ -7892,6 +7896,7 @@ impl Game<'_> {
             self.apply_late_wind_pushes();
         }
         if running {
+            horizon_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
             horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
             horizon_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
             horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
