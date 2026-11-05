@@ -220,6 +220,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RandomSwimming" => "RandomSwimmingGoal",
         "LookAtPlayer" => "LookAtPlayerGoal",
         "RandomLookAround" => "RandomLookAroundGoal",
+        "SpearUse" => "SpearUseGoal",
         "HurtByTarget" => "HurtByTargetGoal",
         "NearestTarget" => "NearestAttackableTargetGoal",
         "Panic" => "PanicGoal",

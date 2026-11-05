@@ -655,11 +655,38 @@ impl Mob {
         self.ai.seen_cache.push((who, v));
         v
     }
-    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6.
+    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6, or
+    /// for an active item with `attack_range` (the spears) by its
+    /// `effectiveMaxRange` for a mob (`max_reach * mob_factor`), and not
+    /// within its `effectiveMinRange` (`min_reach * mob_factor`).
     pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
-        let reach = 2.04f32.sqrt() as f64 - 0.6;
-        let b = self.bounds().inflate(Vec3::new(reach, 0.0, reach));
-        b.intersects(t.bounds)
+        let (max, min) = match self
+            .active_item()
+            .filter(|i| crate::spear::Kinetic::of(i).is_some())
+        {
+            Some(_) => {
+                let r = &crate::spear::REACH;
+                (
+                    f64::from(r.max * r.mob_factor),
+                    f64::from(r.min * r.mob_factor),
+                )
+            }
+            None => (2.04f32.sqrt() as f64 - 0.6, 0.0),
+        };
+        let reaches = |range: f64| {
+            self.bounds()
+                .inflate(Vec3::new(range, 0.0, range))
+                .intersects(t.bounds)
+        };
+        reaches(max) && (min <= 0.0 || !reaches(min))
+    }
+    /// `LivingEntity.getActiveItem`: the item being used, else the main hand's.
+    pub fn active_item(&self) -> Option<&str> {
+        if super::spear_use::is_using_item(self) && self.extra.using_off_hand {
+            self.extra.off_hand.as_deref()
+        } else {
+            self.extra.main_hand.as_deref()
+        }
     }
     /// Whether the species is a `TamableAnimal` (not the horses and llamas,
     /// which are tamed another way).
