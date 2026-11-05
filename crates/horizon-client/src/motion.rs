@@ -3046,6 +3046,37 @@ mod tests {
     }
 
     #[test]
+    fn a_glide_that_just_ended_moves_slowly_until_the_pose_changes() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped glide exit regression: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        p.set_pose(crate::pose::Pose::FallFlying).unwrap();
+        // Gliding: LivingEntity.isVisuallySwimming is false.
+        p.fall_flying = true;
+        assert!(!p.moving_slowly());
+        // The glide ended, the pose not yet: visually crawling.
+        p.fall_flying = false;
+        assert!(p.moving_slowly());
+        // Not in water (Entity.isVisuallyCrawling).
+        p.fluids.was_touching_water = true;
+        assert!(!p.moving_slowly());
+        p.fluids.was_touching_water = false;
+        p.set_pose(crate::pose::Pose::Standing).unwrap();
+        assert!(!p.moving_slowly());
+    }
+
+    #[test]
     fn sword_sweep_requires_charge_ground_and_slow_horizontal_movement() {
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(std::path::PathBuf::from)

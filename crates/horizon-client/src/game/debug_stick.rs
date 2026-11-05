@@ -67,7 +67,7 @@ impl Game<'_> {
             return Ok(false);
         };
         if state.properties.is_empty() {
-            self.debug_stick_message(text(
+            self.send_overlay_message(text(
                 "item.minecraft.debug_stick.empty",
                 &[state.name.as_str()],
             ));
@@ -121,7 +121,7 @@ impl Game<'_> {
                 );
             });
             self.process_level_events()?;
-            self.debug_stick_message(text(
+            self.send_overlay_message(text(
                 "item.minecraft.debug_stick.update",
                 &[property.as_str(), value.as_str()],
             ));
@@ -135,7 +135,7 @@ impl Game<'_> {
             let property = keys[relative_index(keys.len(), current, backward)].clone();
             let value = state.properties.get(&property).cloned().unwrap_or_default();
             self.set_debug_stick_property(&state.name, &property);
-            self.debug_stick_message(text(
+            self.send_overlay_message(text(
                 "item.minecraft.debug_stick.select",
                 &[property.as_str(), value.as_str()],
             ));
@@ -150,22 +150,6 @@ impl Game<'_> {
         };
         stack.data_mut().set_debug_stick_property(block, property);
         stack.tidy();
-    }
-
-    /// `ServerPlayer.sendOverlayMessage`: the steady player sees it on this
-    /// game's HUD; a server client receives it as a packet.
-    fn debug_stick_message(&mut self, message: Text) {
-        if self.lan_acting.is_some() {
-            self.guest_packets
-                .push(horizon_protocol::packets::play::Clientbound::SystemChat(
-                    horizon_protocol::packets::play::SystemChat {
-                        content: horizon_client::lan::data::component_nbt(&message.component()),
-                        overlay: true,
-                    },
-                ));
-        } else if self.options.dedicated.is_none() {
-            self.titles.set_overlay(message, false);
-        }
     }
 }
 

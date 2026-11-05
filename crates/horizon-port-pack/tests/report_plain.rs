@@ -28,6 +28,7 @@ fn row(class: &str, tier: &str, status: Status) -> Row {
         status,
         reason: String::new(),
         plain: String::new(),
+        waiting: 0,
     }
 }
 
@@ -156,7 +157,9 @@ fn every_reason_has_a_plain_sentence_and_the_technical_reason_is_kept() {
     assert!(said("machine").contains("block entities, menus"));
     assert!(said("deep").contains("mobs, custom rendering"));
     assert!(
-        said("deep").ends_with("It also waits for 2 mods it depends on that are not ported yet."),
+        by["deep"]
+            .plain_text()
+            .ends_with("It also waits for 2 mods it depends on that are not ported yet."),
         "{}",
         said("deep")
     );
@@ -164,7 +167,9 @@ fn every_reason_has_a_plain_sentence_and_the_technical_reason_is_kept() {
     assert!(said("odd").contains("has not worked out"));
     assert!(said("addon").starts_with("It joins other mods together"));
     assert!(
-        said("addon").ends_with("waits for 1 mod it depends on that is not ported yet."),
+        by["addon"]
+            .plain_text()
+            .ends_with("waits for 1 mod it depends on that is not ported yet."),
         "{}",
         said("addon")
     );
@@ -239,5 +244,25 @@ fn a_coverage_json_from_before_the_plain_column_still_reads() {
         "license_kind":"permissive","status":"partial","reason":"harness not run"}"#;
     let row: Row = serde_json::from_str(old).unwrap();
     assert_eq!(row.plain, "");
+    assert_eq!(row.waiting, 0);
     assert_eq!(row.reason, "harness not run");
+}
+
+#[test]
+fn dependency_counts_are_separate_from_the_translatable_sentence() {
+    let records = [
+        record("base", "content", "machines", &[]),
+        record("addon", "integration", "logic", &["base"]),
+    ];
+    let rows = build(&records, &std::env::temp_dir());
+    let addon = &rows[1];
+    assert_eq!(
+        addon.plain,
+        "It joins other mods together, so it waits until those are ported."
+    );
+    assert_eq!(serde_json::to_value(addon).unwrap()["waiting"], 1);
+    assert!(
+        markdown("test", &rows)
+            .contains("It also waits for 1 mod it depends on that is not ported yet.")
+    );
 }

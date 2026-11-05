@@ -3113,6 +3113,9 @@ pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = base.tag(raw);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
     put(&mut tag, "color", string(c.color_name()));
+    if let Some(name) = &c.custom_name {
+        put(&mut tag, "CustomName", name.clone());
+    }
     tag
 }
 /// The position, block position, yaw and colour of a saved cushion.
@@ -3142,6 +3145,7 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
         yaw,
         color,
         check_interval: 0,
+        custom_name: tag.get("CustomName").cloned(),
     })
 }
 
@@ -3158,6 +3162,7 @@ mod cushion_tests {
             yaw: 270.0,
             color: 14,
             check_interval: 55,
+            custom_name: None,
         };
         let raw = Tag::compound([("CustomName", string("Seat"))]);
         let tag = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));

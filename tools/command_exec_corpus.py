@@ -11,6 +11,10 @@ depend on world generation.
 """
 
 
+# This fixture establishes its own live clock before spawning actors.
+ISOLATED_WOLF_ANGER = frozenset({'wolf anger live writes'})
+
+
 def cmd(command, record=True, expect_result=None, comparison=None):
     op = {'op': 'cmd', 'cmd': command}
     if not record:
@@ -1817,6 +1821,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if any(name.startswith('wolf anger ') for name in group_names):
+        try:
+            from .wolf_anger_corpus import functions as anger_functions
+        except ImportError:
+            from wolf_anger_corpus import functions as anger_functions
+        functions.update(anger_functions())
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -5510,13 +5520,14 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_FRAME_MAPS
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
 
 
 def groups():
     try:
         from .frame_map_corpus import frame_maps
         from .allay_damage_corpus import allay_player_damage
+        from .wolf_anger_corpus import groups as wolf_anger_groups
         from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
@@ -5527,6 +5538,7 @@ def groups():
     except ImportError:
         from frame_map_corpus import frame_maps
         from allay_damage_corpus import allay_player_damage
+        from wolf_anger_corpus import groups as wolf_anger_groups
         from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
@@ -5538,6 +5550,7 @@ def groups():
         ('setup', group_setup()),
         ('frame live map detachment', frame_maps(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
+        *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
 

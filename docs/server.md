@@ -446,8 +446,9 @@ horizon-server prepare --server-jar PATH
 
 - Every command takes `--dir` (the server folder; default: the current folder).
 - While the server runs, management commands go through the control API, so the engine applies them as
-  vanilla's console would and its lists stay right. While it's stopped, they edit the vanilla files directly
-  with the same code the engine uses (`horizon_server_files::user_lists`).
+  vanilla's console would and its lists stay right. While it's stopped, `op`, `deop`, `whitelist`, `ban`,
+  `pardon`, `ban-ip` and `pardon-ip` edit the vanilla files directly with the same code the engine uses
+  (`horizon_server_files::user_lists`).
 - **The TUI** is `horizon-server console` (built, `console.rs`): the recent log and then the live one (the
   control API's event stream), a one-line header (TPS, MSPT, players, RAM) that updates
   every second, and a command line. It uses plain ANSI with no TUI framework, and falls back to plain lines

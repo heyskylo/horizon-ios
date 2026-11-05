@@ -376,16 +376,24 @@ pub struct MobEffect {
 /// the vanilla entity types a mod's type may copy: thrown item
 /// projectiles (`ThrowableItemProjectile`), then living mobs
 /// ([`LIVING_TEMPLATES`]).
-pub const ENTITY_TEMPLATES: [&str; 3] = [
+pub const ENTITY_TEMPLATES: [&str; 4] = [
     "minecraft:snowball",
     "minecraft:villager",
+    "minecraft:wandering_trader",
     "minecraft:zombie",
 ];
 
 /// the [`ENTITY_TEMPLATES`] that are living mobs: a type copying one is a mob
 /// of its template's class (NeoForge's `EntityType.Builder.of(Zombie::new,
 /// ...)`), with its own default attributes (`EntityAttributeCreationEvent`).
-pub const LIVING_TEMPLATES: [&str; 2] = ["minecraft:villager", "minecraft:zombie"];
+/// The wandering trader is the neutral one whose behaviour is all goals,
+/// which a native mod can replace (`register_goals`); a villager's is its
+/// brain.
+pub const LIVING_TEMPLATES: [&str; 3] = [
+    "minecraft:villager",
+    "minecraft:wandering_trader",
+    "minecraft:zombie",
+];
 
 /// an entity type the mod adds: a copy of a vanilla template's. A thrown one
 /// is thrown from `item` and drawn as it; a living one is its template's mob
@@ -1677,6 +1685,10 @@ capabilities = ["registries"]
                 "data/ruby/horizon/entity_type/settler.json",
                 br#"{"template": "minecraft:villager"}"#,
             ),
+            (
+                "data/ruby/horizon/entity_type/merchant.json",
+                br#"{"template": "minecraft:wandering_trader"}"#,
+            ),
         ];
         let content = hmod("living", MANIFEST_TEXT, files).unwrap();
         let types: Vec<_> = content
@@ -1705,6 +1717,7 @@ capabilities = ["registries"]
                         ("minecraft:movement_speed", 0.3)
                     ]
                 ),
+                ("ruby:merchant", "minecraft:wandering_trader", true, vec![]),
                 ("ruby:settler", "minecraft:villager", true, vec![]),
             ]
         );

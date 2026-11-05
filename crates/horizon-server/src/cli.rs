@@ -247,7 +247,7 @@ pub fn players(dir: &Path, as_json: bool) -> Result<(), String> {
 }
 
 /// `kick NAME [REASON]`, `ban NAME [REASON]`, `pardon NAME`, `ban-ip ADDRESS|NAME [REASON]`, `pardon-ip
-/// ADDRESS`: the vanilla command on the running server, through the control API.
+/// ADDRESS`: the vanilla command on a running server, or a file-backed edit while it is stopped.
 pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), String> {
     let Some(target) = words.first() else {
         return Err(format!(
@@ -259,6 +259,11 @@ pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), Strin
             }
         ));
     };
+    // File-backed moderation uses the same stopped-server path as `op` and `whitelist`; while a
+    // supervisor is running, lists::run falls through to the game's vanilla console command.
+    if command != "kick" {
+        return crate::lists::run(dir, command, words);
+    }
     let mut body = json!({});
     let key = if target.parse::<std::net::IpAddr>().is_ok() {
         "ip"
