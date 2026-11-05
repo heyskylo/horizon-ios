@@ -2,15 +2,34 @@
 //! does nothing while it is off.
 use super::Game;
 use horizon_client::{
+    extras::Corner,
+    extras_hud::Corners,
     hud::{HudBatch, rgba},
     mesher::Vertex,
     pvp::{Colour, CrosshairCache},
+    pvp_hud::{self, Durability, Icon, Line, Widget},
 };
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct PvpState {
     crosshair: CrosshairCache,
+    /// Each armour slot's item, damage and maximum damage, and whether durability is in percent.
+    armour: Widget<([Option<(Arc<str>, u32, u32)>; 4], bool)>,
+    /// Each effect: id, amplifier, whole seconds left (-1 infinite).
+    effects: Widget<Vec<(&'static str, i32, i32)>>,
+    /// The counted item's slot and the total.
+    held: Widget<Option<(usize, Arc<str>, u32)>>,
 }
+/// `GuiGraphicsExtractor`'s grey for a detail line (an effect's time left).
+const DETAIL: u32 = 0xFF7F_7F7F;
+/// The extras' box colour.
+const BACKGROUND: u32 = 0x7800_0000;
+const ARROWS: [&str; 3] = [
+    "minecraft:arrow",
+    "minecraft:spectral_arrow",
+    "minecraft:tipped_arrow",
+];
 
 impl Game<'_> {
     /// Whether the custom crosshair replaces vanilla's sprite.
@@ -110,6 +129,204 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+    }
+    /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
+    pub(super) fn pvp_effects_shown(&self) -> bool {
+        self.settings.extras.pvp.hud.effects
+    }
+    /// The HUD widgets that are on, after the minimap and before mods' boxes. Each rebuilds its
+    /// lines only when what it shows changed.
+    pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
+        let hud = self.settings.extras.pvp.hud;
+        if self.player.is_none() {
+            return;
+        }
+        // What each widget shows, read before its cache is borrowed.
+        let armour: [Option<(Arc<str>, u32, u32)>; 4] = std::array::from_fn(|i| {
+            let s = self.armor[i].as_ref()?;
+            let max = self.items().get(&s.item).map_or(0, |i| i.max_damage);
+            Some((s.item.clone(), s.damage, max))
+        });
+        let held = if hud.held { self.held_count() } else { None };
+        let atlas = &self.gui.atlas;
+        let width = |s: &str| HudBatch::text_width(atlas, s);
+        let state = &mut self.pvp;
+        if hud.armour {
+            let w = &mut state.armour;
+            w.next = (armour, hud.armour_percent);
+            w.refresh(|(pieces, percent), lines| {
+                let mode = if *percent {
+                    Durability::Percent
+                } else {
+                    Durability::Number
+                };
+                // `Game::armor` holds the head first: it is drawn at the top.
+                for (i, piece) in pieces.iter().enumerate() {
+                    let Some((_, damage, max)) = piece else {
+                        continue;
+                    };
+                    let text = pvp_hud::durability(*damage, *max, mode).unwrap_or_default();
+                    let mut line = Line::new(Icon::Armour(i as u8), text, &width);
+                    line.colour = pvp_hud::durability_colour(*damage, *max);
+                    lines.push(line);
+                }
+            });
+        } else {
+            state.armour.clear();
+        }
+        if hud.effects {
+            let w = &mut state.effects;
+            let rate = self.clock.rate();
+            w.next.clear();
+            w.next.extend(self.potions.effects.list.iter().map(|e| {
+                let secs = if e.duration == -1 {
+                    -1
+                } else {
+                    (e.duration as f32 / rate) as i32
+                };
+                (e.id, e.amplifier, secs)
+            }));
+            let names = &self.pack.names;
+            w.refresh(|effects, lines| {
+                for &(id, amplifier, secs) in effects {
+                    let key = horizon_client_core::potions::description_id(id);
+                    let mut name = names.display_get(&key).unwrap_or_else(|| id.to_owned());
+                    // EffectsInInventory.getEffectName: the level from II to X.
+                    if (1..=9).contains(&amplifier) {
+                        let level = amplifier + 1;
+                        let suffix = names
+                            .display_get(&format!("enchantment.level.{level}"))
+                            .unwrap_or_else(|| horizon_client::enchant::level_name(level as u32));
+                        name = format!("{name} {suffix}");
+                    }
+                    let time = if secs == -1 {
+                        names
+                            .display_get("effect.duration.infinite")
+                            .unwrap_or_else(|| "∞".into())
+                    } else {
+                        horizon_client::brewing::format_tick_duration(secs, 1.0)
+                    };
+                    let sprite = match id.split_once(':') {
+                        Some((ns, path)) => format!("{ns}:mob_effect/{path}"),
+                        None => format!("mob_effect/{id}"),
+                    };
+                    let line = Line::new(Icon::Sprite(sprite), name, &width);
+                    lines.push(line.with_detail(time, &width));
+                }
+            });
+        } else {
+            state.effects.clear();
+        }
+        if hud.held {
+            let w = &mut state.held;
+            w.next = held;
+            w.refresh(|held, lines| {
+                if let Some((slot, _, total)) = held {
+                    lines.push(Line::new(Icon::Slot(*slot), total.to_string(), &width));
+                }
+            });
+        } else {
+            state.held.clear();
+        }
+        let background = hud.background;
+        let widgets = [
+            (
+                hud.armour,
+                hud.armour_corner,
+                &self.pvp.armour.lines,
+                self.pvp.armour.size,
+            ),
+            (
+                hud.effects,
+                hud.effects_corner,
+                &self.pvp.effects.lines,
+                self.pvp.effects.size,
+            ),
+            (
+                hud.held,
+                hud.held_corner,
+                &self.pvp.held.lines,
+                self.pvp.held.size,
+            ),
+        ];
+        for (on, corner, lines, size) in widgets {
+            if on && !lines.is_empty() && self.native_corner_shown(corner) {
+                self.paint_widget(batch, corners, corner, lines, size, background);
+            }
+        }
+    }
+    /// The held item count: the first slot holding what is counted, its item, and the total in
+    /// the inventory and off hand (arrows for a bow or crossbow). None for a single item.
+    fn held_count(&self) -> Option<(usize, Arc<str>, u32)> {
+        let held = self.held()?;
+        let ranged = matches!(&*held.item, "minecraft:bow" | "minecraft:crossbow");
+        let counts = |s: &horizon_client::items::ItemStack| match ranged {
+            true => ARROWS.contains(&&*s.item),
+            false => s.item == held.item,
+        };
+        let slots = self.inventory.iter().map(Option::as_ref).enumerate();
+        let offhand = std::iter::once((super::shield::OFFHAND_SLOT, self.offhand.as_ref()));
+        let mut found = slots
+            .chain(offhand)
+            .filter_map(|(i, s)| Some((i, s?)))
+            .filter(|(_, s)| counts(s));
+        let (first, stack) = found.next()?;
+        let total = stack.count + found.map(|(_, s)| s.count).sum::<u32>();
+        (ranged || total > 1).then(|| (first, stack.item.clone(), total))
+    }
+    /// One widget's box in `corner`: icons in a column, texts beside them.
+    fn paint_widget(
+        &self,
+        batch: &mut HudBatch,
+        corners: &mut Corners,
+        corner: Corner,
+        lines: &[Line],
+        (w, h): (f32, f32),
+        background: bool,
+    ) {
+        let atlas = &self.gui.atlas;
+        let (x, y) = corners.place(corner, w, h);
+        if background {
+            let [a, r, g, b] = BACKGROUND.to_be_bytes();
+            batch.fill(atlas, x, y, w, h, rgba(r, g, b, a));
+        }
+        let icons = pvp_hud::icon_column(lines);
+        let mut top = y + pvp_hud::PAD;
+        for line in lines {
+            let inner = line.height() - 2.0;
+            let size = line.icon.size();
+            let (ix, iy) = (x + pvp_hud::PAD, top + (inner - size) / 2.0);
+            match &line.icon {
+                Icon::None => {}
+                Icon::Armour(i) => {
+                    if let Some(stack) = &self.armor[usize::from(*i)] {
+                        self.draw_item(batch, stack, ix, iy);
+                    }
+                }
+                Icon::Slot(slot) => {
+                    if let Some(stack) = self.stack_in(*slot) {
+                        self.draw_item_model(batch, stack, ix, iy);
+                    }
+                }
+                Icon::Sprite(name) => {
+                    if let Some(r) = atlas.sprite_or_missing(name) {
+                        batch.rect_uv(ix, iy, size, size, r, u32::MAX);
+                    }
+                }
+            }
+            let text_h = if line.detail.is_some() { 18.0 } else { 8.0 };
+            let tx = x + pvp_hud::PAD + line.text_x(icons);
+            let ty = top + (inner - text_h) / 2.0;
+            let argb = |c: u32| {
+                let [a, r, g, b] = c.to_be_bytes();
+                rgba(r, g, b, a)
+            };
+            batch.text_styled(atlas, &line.text, tx, ty, argb(line.colour), true);
+            if let Some(detail) = &line.detail {
+                batch.text_styled(atlas, detail, tx, ty + 10.0, argb(DETAIL), true);
+            }
+            top += line.height();
         }
     }
 }

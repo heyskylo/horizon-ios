@@ -259,13 +259,14 @@ impl Game<'_> {
             };
             extras_hud::draw_minimap(batch, atlas, &mut corners, &look);
         }
+        self.draw_pvp_hud(batch, &mut corners);
         self.native_hud(batch, &mut corners);
     }
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {
         let effects = &self.potions.effects.list;
-        if effects.is_empty() || self.screen != Screen::Playing {
+        if effects.is_empty() || self.screen != Screen::Playing || self.pvp_effects_shown() {
             return 0.0;
         }
         let harmful = effects.iter().any(|e| {
