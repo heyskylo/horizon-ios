@@ -4587,7 +4587,7 @@ mod tests {
     fn hub_with_sync(sync: SyncData) -> (Hub, std::sync::mpsc::Receiver<crate::lan::Out>) {
         let config = crate::lan::NetConfig {
             announce: false,
-            ..crate::lan::NetConfig::lan(0, "EffectSyncTest".into(), 2)
+            ..crate::lan::NetConfig::loopback(0, "EffectSyncTest".into(), 2)
         };
         let sync = std::sync::Arc::new(sync);
         let lan = Lan::start_with(sync.clone(), config).unwrap();

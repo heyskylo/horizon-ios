@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 try:
     from . import lab
@@ -96,10 +97,15 @@ def main():
     else:
         subprocess.run(['cargo', 'build', '--locked', '--profile', 'dev', '-p', 'horizon-client', '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
         binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
-    with (args.output / 'run.log').open('w') as log:
-        run_game([str(binary), '--headless', '--resources', str(lab.RESOURCES)], cwd=lab.ROOT,
-                 env=lab.game_env(HORIZON_AVATAR_EQUIPMENT_FIXTURE=args.output.resolve()),
-                 stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
+    # HORIZON_HOME holds logs; saves/options/caches belong to --game-dir.
+    # Keep both the process CWD and that game directory private for this run.
+    with tempfile.TemporaryDirectory(prefix='horizon-avatar-geometry-') as scratch:
+        game_dir = Path(scratch).resolve()
+        with (args.output / 'run.log').open('w') as log:
+            run_game([str(binary), '--headless', '--game-dir', str(game_dir),
+                      '--resources', str(lab.RESOURCES)], cwd=game_dir,
+                     env=lab.game_env(HORIZON_AVATAR_EQUIPMENT_FIXTURE=args.output.resolve()),
+                     stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
     rows = json.loads((args.output / 'rust.json').read_text())
     if args.capture_only:
         print(f'Captured {len(rows)} actual Game geometry cases; this is not a regression pass')

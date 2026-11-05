@@ -1559,6 +1559,8 @@ pub struct Cushion {
     pub color: u8,
     /// BlockAttachedEntity.ticksSinceLastCheck.
     pub check_interval: u32,
+    /// `Entity.getCustomName` (`CustomName`), copied onto the dropped cushion.
+    pub custom_name: Option<horizon_world::nbt::Tag>,
 }
 impl Cushion {
     /// `Entity.makeBoundingBox`: x and z half a block out, y to y + 0.25.
@@ -1576,6 +1578,16 @@ impl Cushion {
     /// `Cushion.getCushionItemStackWithData`: the matching coloured item.
     pub fn item(&self) -> String {
         format!("minecraft:{}_cushion", self.color_name())
+    }
+    /// `Cushion.getCushionItemStackWithData`: the coloured item with
+    /// `DataComponents.CUSTOM_NAME` from `getCustomName`, as the item frame
+    /// beside it does.
+    pub fn item_stack_with_data(&self) -> ItemStack {
+        let mut stack = ItemStack::new(&self.item(), 1);
+        if let Some(name) = &self.custom_name {
+            stack.data_mut().custom_name = Some(name.clone());
+        }
+        stack
     }
     /// `Cushion.interact`'s seat: the vehicle's PASSENGER attachment
     /// `(0, 0.25, 0)` less the player's `(0, 0.6, 0)`.

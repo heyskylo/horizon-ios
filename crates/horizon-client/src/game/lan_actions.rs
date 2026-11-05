@@ -7,7 +7,7 @@
 //! block log, the level events and the entity tracker.
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
-    respawn_anchor::RespawnConfig,
+    lan_crafting::MenuRemoval, respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
     command::vanilla,
@@ -1492,9 +1492,25 @@ impl Game<'_> {
     /// whose server is closing. The guest must be in `host.hub.guests` and the
     /// level they are in must be the one in place.
     pub(super) fn guest_close_all(&mut self, host: &mut LanHost, conn: u32) {
+        self.guest_remove_menus(host, conn, MenuRemoval::Live);
+    }
+
+    /// `AbstractContainerMenu.removed` after the player has disconnected.
+    /// Only HostEvent::Left selects this policy; ordinary closes and shutdown
+    /// keep their existing return-to-inventory behavior.
+    pub(super) fn guest_disconnected(&mut self, host: &mut LanHost, conn: u32) {
+        self.guest_remove_menus(host, conn, MenuRemoval::Disconnected);
+    }
+
+    /// `AbstractContainerMenu.removed`: close the guest's active menu using
+    /// its live or disconnected disposition for cursor and crafting inputs.
+    fn guest_remove_menus(&mut self, host: &mut LanHost, conn: u32, removal: MenuRemoval) {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        if removal == MenuRemoval::Disconnected {
+            self.guest_drop_carried(host, gi);
+        }
         if let Some((window, slots)) = host.hub.guests[gi]
             .menu
             .as_ref()
@@ -1509,10 +1525,17 @@ impl Game<'_> {
             host.hub.container_closed(conn, window);
         }
         self.lan_merchant_closed(host, conn, None);
-        self.lan_crafting_closed(host, conn, None);
+        self.lan_crafting_removed(host, conn, None, removal);
+        if removal == MenuRemoval::Disconnected {
+            // The inventory grid is separate from an open table. Empty both
+            // before lan_crafting_left saves the guest; never drop result slots.
+            self.lan_crafting_removed(host, conn, Some(0), removal);
+        }
         self.lan_station_closed(host, conn, None);
         self.lan_mount_closed(host, conn, None);
-        self.guest_carried_back(host, gi);
+        if removal == MenuRemoval::Live {
+            self.guest_carried_back(host, gi);
+        }
         // `PlayerContainerEvent.Close`, after the menu's `removed`.
         self.player_menu_closing(host, conn);
     }

@@ -1367,7 +1367,41 @@ fn bindings(
             }
             None => {
                 let mut src = source(&s.name, group.shadow(), shadow.is_some(), watershadow);
-                if matches!(src, Source::Dummy | Source::Shadow) {
+                // A sampler the game gives no texture reads texture unit 0, as do the atlas's
+                // names: the atlas in gbuffers programs, `colortex0` in deferred, composite and
+                // final (OptiFine's shaders.txt). Iris 1.11.7 read the atlas through a name of
+                // ours in gbuffers_terrain, and the scene in `colortex0` through such a name and
+                // through `gtexture`, `tex` and `texture` in those three, with or without
+                // `colortex0` declared (probe packs of ours, #9307). Translucent programs and
+                // the other groups weren't measured and keep the stand-in.
+                let unit_0 = match group {
+                    Group::Gbuffers => Some(Source::Atlas),
+                    Group::Deferred | Group::Composite | Group::Final => Some(Source::Color(0)),
+                    _ => None,
+                };
+                // A name of the game's with no texture here (a shadow sampler without a
+                // shadow pass), non-2D samplers and a `texture.<stage>.<name>` left unbound
+                // must not alias unit 0. Keep the unavailable-resource guard for those cases
+                // (#9064's probe read an undiagnosed 16-texel-wide texture in final).
+                let unknown = src == Source::Dummy
+                    && source(&s.name, false, true, false) == Source::Dummy
+                    && s.ty == "sampler2D"
+                    && !textures.iter().any(|t| t.name == s.name);
+                // colortex0 to colortex3 (gcolor, gdepth, gnormal, composite) are no gbuffers
+                // samplers in shaders.txt's table: Iris 1.11.7 read the atlas through each of
+                // colortex0-3 and gnormal in gbuffers_terrain (our probe, #9307).
+                let not_gbuffers =
+                    group == Group::Gbuffers && matches!(src, Source::Color(n) if n < 4);
+                if let Some(unit_0) = unit_0
+                    && (src == Source::Atlas || unknown || not_gbuffers)
+                {
+                    src = unit_0;
+                }
+                // Unknown 2D uniforms remain valid in the other groups too. Keep their
+                // typed stand-in where unit 0's contents have not been measured, including
+                // gbuffers_water falling back to gbuffers_terrain. A missing known resource,
+                // authored texture, or unsupported sampler type must still refuse the pass.
+                if matches!(src, Source::Dummy | Source::Shadow) && !unknown {
                     notes.push(format!(
                         "{name}: texture {} is unavailable; pack disabled",
                         s.name
@@ -6021,3 +6055,9 @@ mod const_offset_tests;
 
 #[cfg(test)]
 mod integer_colortex0_tests;
+
+#[cfg(test)]
+mod atlas_name_post_tests;
+
+#[cfg(test)]
+mod unknown_sampler_terrain_tests;

@@ -54,6 +54,7 @@ mod hud;
 pub(super) mod launcher;
 mod pads;
 mod players;
+mod retired;
 mod setup;
 mod windows;
 
@@ -107,6 +108,9 @@ struct Guest<'a> {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
+    /// Departed clients keep their worker owners until shutdown can join without waiting.
+    #[allow(clippy::vec_box)] // Game stays boxed: moving it can exhaust the iOS stack.
+    retired_guests: Vec<Box<Game<'a>>>,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
     /// `HORIZON_SPLIT` is set: splitscreen is on for this run, without touching the saved switch.
@@ -176,6 +180,7 @@ impl<'a> Split<'a> {
         Self {
             host,
             guests: Vec::new(),
+            retired_guests: Vec::new(),
             test_players,
             forced: split.is_some(),
             surfaces: Vec::new(),
@@ -218,32 +223,12 @@ impl<'a> Split<'a> {
     /// Polling keeps UIKit responsive; once ready, no guest keeps game resources or a
     /// controller/compositor alive after the host is replaced by the launcher.
     pub(super) fn stop_guests(&mut self) -> bool {
-        fn workers_stopped(game: &mut Game<'_>) -> bool {
-            game.audio.stop_all();
-            let mut stopped = game.shutdown_server_pack_worker();
-            stopped &= game.shutdown_culling_workers();
-            stopped &= game.shutdown_far_terrain();
-            stopped &= game.shutdown_skin_workers();
-            stopped &= game.shutdown_recording_workers();
-            if let Some(renderer) = &mut game.renderer {
-                stopped &= renderer.shutdown_pack_compiler();
-            }
-            stopped &= game
-                .rest_loader
-                .as_ref()
-                .is_none_or(|l| l.handle.is_finished());
-            stopped &= game.shutdown_integrated_workers();
-            if stopped && let Some(loader) = game.rest_loader.take() {
-                let _ = loader.finish();
-            }
-            stopped
-        }
-        let mut stopped = true;
+        let mut stopped = self.poll_retired_guests();
         for guest in &mut self.guests {
-            stopped &= workers_stopped(&mut guest.game);
+            stopped &= retired::workers_stopped(&mut guest.game);
         }
         if let Some(guest) = &mut self.host.splitscreen_guest {
-            stopped &= workers_stopped(guest);
+            stopped &= retired::workers_stopped(guest);
         }
         if !stopped {
             return false;
@@ -474,6 +459,8 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
+        // The new atlas has no downloaded skins: queue them again, as after device loss.
+        self.host.skin_slots.forget();
         self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -549,6 +536,7 @@ impl<'a> Split<'a> {
         };
         drop(old);
         self.host.renderer = Some(renderer);
+        self.host.skin_slots.forget();
         self.host.options.offscreen = false;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;
@@ -798,6 +786,7 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_retired_guests();
         let on = self.desktop_split_available()
             && (self.host.settings.extras.splitscreen || self.forced);
         // Only splitscreen places windows on monitors. Listing them is a round trip to the

@@ -100,6 +100,28 @@ fn server_gate(
     }
 }
 
+/// Load the selected profile before applying the joining controller's policy.
+fn profile_settings(
+    profile: &Path,
+    inherited: &horizon_client::settings::Settings,
+    controller_join: bool,
+) -> Result<horizon_client::settings::Settings> {
+    let options = profile.join("options.txt");
+    let mut settings = if options.exists() {
+        horizon_client::settings::Settings::load(&options)
+    } else {
+        std::fs::create_dir_all(profile)?;
+        inherited.save(&options);
+        inherited.clone()
+    };
+    // A selected profile may have inherited P1's Controller: Off setting.
+    // The pad that joined this seat must keep working after the picker closes.
+    if controller_join {
+        settings.controller.enabled = true;
+    }
+    Ok(settings)
+}
+
 impl Split<'_> {
     /// The first seat free (2 to `MAX_PLAYERS`).
     pub(super) fn free_seat(&self) -> Option<usize> {
@@ -122,7 +144,14 @@ impl Split<'_> {
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
         OPTIONS.set(Some(options.clone()));
-        let game = self.start_guest(seat, &options, self.host.settings.clone());
+        let mut settings = self.host.settings.clone();
+        if pad.is_some() {
+            // The Controller setting is P1's own: a player who pressed a pad to join plays
+            // with it even when P1 turned controllers off, or its pad would be dead on the
+            // profile screen it joins into.
+            settings.controller.enabled = true;
+        }
+        let game = self.start_guest(seat, &options, settings);
         OPTIONS.set(None);
         let mut game = game?;
         if let Some(pad) = pad {
@@ -288,13 +317,8 @@ impl Split<'_> {
         }
         let profile = profiles.join(&name);
         let options = profile.join("options.txt");
-        let mut settings = if options.exists() {
-            horizon_client::settings::Settings::load(&options)
-        } else {
-            std::fs::create_dir_all(&profile)?;
-            self.host.settings.save(&options);
-            self.host.settings.clone()
-        };
+        let mut settings =
+            profile_settings(&profile, &self.host.settings, self.guests[i].pad.is_some())?;
         // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
         let via = match &self.host.integrated {
             Some(server) => Ok(server
@@ -556,6 +580,7 @@ impl Split<'_> {
         if let (Some(server), Some(name)) = (&self.host.integrated, &guest.name) {
             server.leave_split(name);
         }
+        self.retire_guest(guest.game);
     }
 }
 
@@ -574,6 +599,64 @@ mod tests {
         for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
             assert!(!folder_name(bad), "{bad:?}");
         }
+    }
+
+    struct ProfileFolder(std::path::PathBuf);
+    impl ProfileFolder {
+        fn new(label: &str) -> Self {
+            static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-split-profile-{label}-{}-{call}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for ProfileFolder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn controller_join_survives_loading_an_existing_disabled_profile() {
+        let folder = ProfileFolder::new("existing");
+        let mut p1 = horizon_client::settings::Settings::default();
+        p1.controller.enabled = false;
+        p1.save(&folder.0.join("options.txt"));
+        let guest = super::profile_settings(&folder.0, &p1, true).unwrap();
+        assert!(
+            guest.controller.enabled,
+            "selecting a profile must not disable its joining pad"
+        );
+        assert!(
+            !p1.controller.enabled,
+            "P1's controller preference is independent"
+        );
+    }
+
+    #[test]
+    fn controller_join_survives_creating_a_profile_from_p1s_disabled_settings() {
+        let folder = ProfileFolder::new("new");
+        let profile = folder.0.join("NewProfile");
+        let mut p1 = horizon_client::settings::Settings::default();
+        p1.controller.enabled = false;
+        let guest = super::profile_settings(&profile, &p1, true).unwrap();
+        assert!(profile.join("options.txt").is_file());
+        assert!(guest.controller.enabled);
+        assert!(!p1.controller.enabled);
+    }
+
+    #[test]
+    fn a_padless_profile_keeps_its_own_controller_preference() {
+        let folder = ProfileFolder::new("padless");
+        let mut disabled = horizon_client::settings::Settings::default();
+        disabled.controller.enabled = false;
+        disabled.save(&folder.0.join("options.txt"));
+        let guest = super::profile_settings(&folder.0, &disabled, false).unwrap();
+        assert!(!guest.controller.enabled);
     }
 
     #[test]

@@ -28,6 +28,8 @@ pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 mod native;
 pub use native::{ParticleController, ParticleUpdate};
+mod resources;
+pub use resources::PreparedParticles;
 
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
@@ -1470,130 +1472,56 @@ impl ParticleEngine {
         engine.reload(root, atlas, translucent);
         engine
     }
-    /// `onResourceManagerReload`: sprite rects and sets come from the
-    /// reloaded atlas and pack; a live particle keeps drawing its sprite by
-    /// name or index.
+    /// `ParticleResources` calls `ParticleEngine.clearParticles` before
+    /// rebinding the reloaded sprite sets.
     pub fn reload(
         &mut self,
         root: &Path,
         atlas: &HashMap<String, Rect>,
         translucent: &HashSet<String>,
     ) {
-        // Controllers' numeric sprite-set handles belong to this resource
-        // generation. Discard them rather than selecting another set after reload.
-        self.particles.retain(|p| p.controller.is_none());
-        self.pending.retain(|p| p.controller.is_none());
+        let prepared = PreparedParticles::load(root);
+        self.reload_prepared(&prepared, atlas, translucent);
+    }
+    /// Apply a CPU-prepared resource generation without filesystem or JSON IO.
+    pub fn reload_prepared(
+        &mut self,
+        prepared: &PreparedParticles,
+        atlas: &HashMap<String, Rect>,
+        translucent: &HashSet<String>,
+    ) {
+        // Minecraft registers ParticleEngine::clearParticles as the resources'
+        // onReload callback, before MutableSpriteSet.rebind. Old ordinary and
+        // native-controlled particles must not keep handles into the new sets.
+        self.clear();
         self.atlas = atlas
             .iter()
             .map(|(name, &rect)| (name.clone(), (rect, translucent.contains(name))))
             .collect();
-        self.rects = self
-            .names
-            .iter()
-            .map(|name| self.atlas.get(name).map(|&(rect, _)| rect))
-            .collect();
+        // No live particle survives the callback. Drop obsolete interned names
+        // as well, rather than accumulating every pack's sprite names forever.
+        self.names.clear();
+        self.rects.clear();
         self.sets.clear();
         self.mod_sets.clear();
         self.set_sprites.clear();
         self.item_sprites.clear();
-        self.load_sprites(root);
-    }
-    /// The sprite sets of every `particles/*.json` under `root`: vanilla's own
-    /// and a native mod's (`assets/<namespace>/particles/<name>.json`).
-    fn load_sprites(&mut self, root: &Path) {
-        let assets = root.join("assets");
-        if let Ok(namespaces) = std::fs::read_dir(&assets) {
-            for namespace in namespaces.flatten() {
-                let ns = namespace.file_name().to_string_lossy().into_owned();
-                if ns == "minecraft" || !namespace.path().is_dir() {
-                    continue;
-                }
-                self.load_mod_sprites(&ns, &namespace.path().join("particles"));
-            }
+        for definition in &prepared.mods {
+            let sprites = definition
+                .textures
+                .iter()
+                .map(|name| self.intern(name))
+                .collect();
+            self.mod_sets.insert(
+                definition.key.clone(),
+                (self.set_sprites.len() as u32, definition.behaviour),
+            );
+            self.set_sprites.push(sprites);
         }
-        let dir = root.join("assets/minecraft/particles");
-        for &ty in ParticleType::ALL {
-            let Ok(bytes) =
-                horizon_core::prepared_files::read(&dir.join(format!("{}.json", ty.name())))
-            else {
-                continue;
-            };
-            let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            let sprites: Vec<u32> = json["textures"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|t| t.as_str())
-                        .map(|t| {
-                            self.intern(&format!("particle/{}", t.trim_start_matches("minecraft:")))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !sprites.is_empty() {
-                self.sets.insert(ty, self.set_sprites.len() as u32);
-                self.set_sprites.push(sprites);
-            }
-        }
-    }
-    /// A namespace's particle JSONs that vanilla has no type for: each becomes
-    /// one sprite set under `<ns>:<file name>`.
-    fn load_mod_sprites(&mut self, ns: &str, dir: &Path) {
-        let Ok(files) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for file in files.flatten() {
-            let path = file.path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-                continue;
-            };
-            let key = format!("{ns}:{stem}");
-            if ParticleType::from_name(&key).is_some() {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            let behaviour = json.get("horizon:behaviour").and_then(|value| {
-                let behaviour = ModBehaviour::parse(value);
-                if behaviour.is_none() {
-                    log::warn!("Invalid particle behaviour in {}", path.display());
-                }
-                behaviour
-            });
-            let sprites: Vec<u32> = json["textures"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|t| t.as_str())
-                        .map(|t| {
-                            // A texture is `<ns>:<path>` (bare means
-                            // `minecraft:`), and the atlas names a sprite
-                            // `<ns>:particle/<path>` — `minecraft`'s own
-                            // without its namespace.
-                            let name = match t.split_once(':') {
-                                Some(("minecraft", path)) => format!("particle/{path}"),
-                                Some((ns, path)) => format!("{ns}:particle/{path}"),
-                                None => format!("particle/{t}"),
-                            };
-                            self.intern(&name)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !sprites.is_empty() {
-                self.mod_sets
-                    .insert(key, (self.set_sprites.len() as u32, behaviour));
-                self.set_sprites.push(sprites);
-            }
+        for (ty, textures) in &prepared.vanilla {
+            let sprites = textures.iter().map(|name| self.intern(name)).collect();
+            self.sets.insert(*ty, self.set_sprites.len() as u32);
+            self.set_sprites.push(sprites);
         }
     }
     fn intern(&mut self, name: &str) -> u32 {
@@ -1612,6 +1540,9 @@ impl ParticleEngine {
     }
     pub fn clear(&mut self) {
         self.emitters.clear();
+        // FireworkParticles.Starter is a NoRenderParticle in vanilla and is
+        // cleared with the ordinary particle groups, despite living separately here.
+        self.starters.clear();
         self.particles.clear();
         self.pending.clear();
     }
@@ -5752,3 +5683,6 @@ mod tests {
         assert!(engine.tracked_explosions.is_empty());
     }
 }
+
+#[cfg(test)]
+mod resource_tests;

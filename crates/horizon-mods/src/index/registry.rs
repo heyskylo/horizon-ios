@@ -7,9 +7,14 @@
 //! What an entry can't say for itself (a mod's API, side and capabilities,
 //! a modpack's mods, a file's size) is read from the file, never typed.
 pub use super::open;
-use super::{File, Index, Kind, Project, Revoked, SCHEMA, Version, hex64, inspect, valid_id};
+use super::{
+    File, Index, Kind, Project, Revoked, SCHEMA, Version, hex64, inspect, page as rules, valid_id,
+};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 /// The folder of entries in the registry repository.
 pub const ENTRIES: &str = "mods";
@@ -57,6 +62,16 @@ pub struct Entry {
     /// `icons/<id>.png` in the registry repository, or an `https://` address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// 1 to 3 of the kind's categories ([`rules::categories`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    /// Free-form, lowercase, at most 10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// At most 8, in order: `screenshots/<id>/<name>.png|.jpg` in the registry repository, or
+    /// `https://` addresses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
     /// The author's minisign public key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -197,6 +212,19 @@ impl Entry {
         if self.summary.chars().count() > 160 {
             errors.push(format!("{id}: the summary is over 160 characters"));
         }
+        for e in rules::check(&self.kind, &self.description, &self.categories, &self.tags) {
+            errors.push(format!("{id}: {e}"));
+        }
+        if rules::REQUIRED && self.icon.is_none() {
+            errors.push(format!("{id}: has no icon (icons/{id}.png, a square PNG)"));
+        }
+        if self.screenshots.len() > rules::MAX_SCREENSHOTS {
+            errors.push(format!(
+                "{id}: {} screenshots, at most {}",
+                self.screenshots.len(),
+                rules::MAX_SCREENSHOTS
+            ));
+        }
         errors
     }
 }
@@ -336,33 +364,15 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
     if !valid_id(id) || RESERVED.contains(&id.as_str()) {
         return Err(errors);
     }
-    let icon = match entry.icon.as_deref() {
-        None => None,
-        Some(url) if url.starts_with("https://") => Some(url.to_owned()),
-        Some(path) => {
-            let ok = path
-                .strip_prefix("icons/")
-                .is_some_and(|name| super::plain_name(name) && name.ends_with(".png"));
-            let size = std::fs::metadata(src.registry.join(path)).map(|m| m.len());
-            match (ok, size) {
-                (true, Ok(n)) if n <= MAX_ICON => Some(format!("{}{path}", src.site)),
-                (true, Ok(_)) => {
-                    errors.push(format!("{id}: {path} is over {} KiB", MAX_ICON >> 10));
-                    None
-                }
-                (true, Err(e)) => {
-                    errors.push(format!("{id}: {path}: {e}"));
-                    None
-                }
-                (false, _) => {
-                    errors.push(format!(
-                        "{id}: icon {path:?} is neither icons/<name>.png nor https://"
-                    ));
-                    None
-                }
-            }
-        }
-    };
+    let icon = entry
+        .icon
+        .as_deref()
+        .and_then(|icon| image(src, id, icon, "icons/", &mut errors));
+    let screenshots: Vec<String> = entry
+        .screenshots
+        .iter()
+        .filter_map(|s| image(src, id, s, &format!("screenshots/{id}/"), &mut errors))
+        .collect();
     if entry.versions.is_empty() && cache.versions.is_empty() {
         errors.push(format!("{id}: has no version"));
     }
@@ -394,10 +404,86 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
         license: entry.license.clone(),
         source: entry.source.clone(),
         icon,
+        categories: entry.categories.clone(),
+        tags: entry.tags.clone(),
+        screenshots,
         key: entry.key.as_ref().map(|k| k.trim().to_owned()),
         versions,
         downloads: 0,
     })
+}
+
+/// An icon (`folder` = `icons/`) or a screenshot (`screenshots/<id>/`) as the index lists it: an
+/// `https://` address as it is, or a file in the registry repository checked and served from the
+/// registry's site.
+fn image(
+    src: &Sources,
+    id: &str,
+    path: &str,
+    folder: &str,
+    errors: &mut Vec<String>,
+) -> Option<String> {
+    if path.starts_with("https://") {
+        return Some(path.to_owned());
+    }
+    let icon = folder == "icons/";
+    let name = path.strip_prefix(folder).filter(|n| super::plain_name(n));
+    let Some(name) = name else {
+        errors.push(format!(
+            "{id}: {path:?} is neither {folder}<name> nor https://"
+        ));
+        return None;
+    };
+    let max = if icon {
+        MAX_ICON
+    } else {
+        rules::MAX_SCREENSHOT
+    };
+    let checked = image_bytes(src.registry, path, max).and_then(|bytes| {
+        if icon {
+            rules::check_icon(&bytes).map_err(|e| format!("{path}: {e}"))
+        } else {
+            rules::check_screenshot(name, &bytes)
+        }
+    });
+    match checked {
+        Ok(()) => Some(format!("{}{path}", src.site)),
+        Err(e) => {
+            errors.push(format!("{id}: {e}"));
+            None
+        }
+    }
+}
+
+/// A local image must be a regular file inside the checkout, including
+/// symlink targets. Bound the actual read too: the file may grow after stat.
+fn image_bytes(root: &Path, path: &str, max: u64) -> Result<Vec<u8>, String> {
+    let root = std::fs::canonicalize(root).map_err(|e| format!("{path}: {e}"))?;
+    let source = std::fs::canonicalize(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+    if !source.starts_with(&root) {
+        return Err(format!("{path} is outside the registry checkout"));
+    }
+    let metadata = std::fs::metadata(&source).map_err(|e| format!("{path}: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("{path} is not a regular image file"));
+    }
+    if metadata.len() > max {
+        return Err(format!("{path} is over {} KiB", max >> 10));
+    }
+    let file = std::fs::File::open(source).map_err(|e| format!("{path}: {e}"))?;
+    bounded_image_bytes(file, path, max)
+}
+
+fn bounded_image_bytes(reader: impl Read, path: &str, max: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() as u64 > max {
+        return Err(format!("{path} is over {} KiB", max >> 10));
+    }
+    Ok(bytes)
 }
 
 /// The kind of a version's file at `path`: the project's, but a `.hmod` without native code of a

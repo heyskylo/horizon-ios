@@ -367,6 +367,9 @@ impl Game<'_> {
             textures,
             cem,
             equipment,
+            particle_definitions,
+            waypoint_styles,
+            villager_hats,
             block_entity_shapes,
             sounds,
             ui_metadata,
@@ -412,7 +415,7 @@ impl Game<'_> {
             }
         };
         // Everything loaded: switch over.
-        self.waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(&root);
+        self.waypoint_styles = waypoint_styles;
         self.armor_stand_assets.apply_resources(equipment);
         self.random_tick_sections.clear();
         self.portals.sections.clear();
@@ -431,8 +434,11 @@ impl Game<'_> {
         self.kept_block_entities.get_mut().clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
-        self.particles
-            .reload(&root, &self.gui.atlas.sprites, &self.gui.atlas.translucent);
+        self.particles.reload_prepared(
+            &particle_definitions,
+            &self.gui.atlas.sprites,
+            &self.gui.atlas.translucent,
+        );
         horizon_client::ui_theme::reset_atlas();
         // Villager hats come from the pack's texture metadata (shared data, swapped in place).
         *self
@@ -440,8 +446,7 @@ impl Game<'_> {
             .mob_data()
             .villager_hats
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            horizon_client::mobs::villager_hats::VillagerHats::load(&root);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = villager_hats;
         *self
             .res
             .mob_data()
@@ -589,6 +594,9 @@ pub(super) fn stage_pack(
     // Equipment and trim JSON must describe the same staged resource generation
     // as the atlas, and must not be reopened during render-thread application.
     let equipment = super::armor_stands::ArmorStandAssets::load(&root, None);
+    let particle_definitions = horizon_client::particles::PreparedParticles::load(&root);
+    let waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(&root);
+    let villager_hats = horizon_client::mobs::villager_hats::VillagerHats::load(&root);
     progress.set(3);
     Ok(StagedPack {
         home_access: None,
@@ -598,6 +606,9 @@ pub(super) fn stage_pack(
         textures,
         cem,
         equipment,
+        particle_definitions,
+        waypoint_styles,
+        villager_hats,
         block_entity_shapes,
         sounds,
         ui_metadata,
@@ -618,6 +629,10 @@ pub(super) struct StagedPack {
     pub cem: Arc<horizon_client::mobs::cem::CemModels>,
     /// Parsed on the CPU worker; application retains the Game's prepared models.
     pub equipment: super::armor_stands::ArmorStandAssets,
+    /// CPU-prepared descriptors; application only binds the new atlas and state.
+    pub particle_definitions: horizon_client::particles::PreparedParticles,
+    pub waypoint_styles: horizon_client::locator_bar::WaypointStyles,
+    pub villager_hats: horizon_client::mobs::villager_hats::VillagerHats,
     /// The block entities' models, the packs' custom entity models over vanilla's.
     pub block_entity_shapes: Arc<horizon_client::block_entity_render::BlockEntityShapes>,
     /// The root's sound events, GUI sprite metadata and current language.
