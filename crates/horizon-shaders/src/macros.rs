@@ -84,6 +84,26 @@ pub const RENDER_STAGES: [&str; 24] = [
     "HAND_TRANSLUCENT",
 ];
 
+/// `DH_BLOCK_*`, each its index: Distant Horizons' block materials.
+pub const DH_BLOCK_MATERIALS: [&str; 16] = [
+    "UNKNOWN",
+    "LEAVES",
+    "STONE",
+    "WOOD",
+    "METAL",
+    "DIRT",
+    "LAVA",
+    "DEEPSLATE",
+    "SNOW",
+    "SAND",
+    "TERRACOTTA",
+    "NETHER_STONE",
+    "WATER",
+    "GRASS",
+    "AIR",
+    "ILLUMINATED",
+];
+
 /// The value of `MC_RENDER_STAGE_<name>` (OQ-7: its index in `RENDER_STAGES`).
 pub fn render_stage(name: &str) -> u32 {
     RENDER_STAGES
@@ -131,6 +151,12 @@ impl Macros {
         // (vanilla's `VertexSorting.byDistance`, `gfx/translucency.rs`).
         m.define("IRIS_VERSION", "11107");
         m.define("IRIS_HAS_TRANSLUCENCY_SORTING", "");
+        // Distant Horizons' block materials, which Iris defines with or without the mod (packs
+        // compare ids with them unguarded: Exposa's `blockID == DH_BLOCK_LEAVES`), numbered as
+        // the mod's `EDhApiBlockMaterial` numbers them.
+        for (i, material) in DH_BLOCK_MATERIALS.iter().enumerate() {
+            m.define(format!("DH_BLOCK_{material}"), i.to_string());
+        }
         m
     }
 
@@ -620,6 +646,16 @@ mod tests {
         assert_eq!(mc_version("26.3"), 260300);
         assert_eq!(MC_VERSION, 260300);
         assert_eq!(Macros::standard().get("MC_VERSION"), Some("260300"));
+    }
+
+    #[test]
+    fn distant_horizons_block_materials_are_defined_without_the_mod() {
+        let m = Macros::standard();
+        assert_eq!(m.get("DH_BLOCK_UNKNOWN"), Some("0"));
+        assert_eq!(m.get("DH_BLOCK_LEAVES"), Some("1"));
+        assert_eq!(m.get("DH_BLOCK_WATER"), Some("12"));
+        assert_eq!(m.get("DH_BLOCK_ILLUMINATED"), Some("15"));
+        assert_eq!(m.get("DISTANT_HORIZONS"), None);
     }
 
     #[test]
