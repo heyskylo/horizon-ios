@@ -70,7 +70,7 @@ below); where HDR's settings live (a later note).
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `hdr` | `u32` | 1 while the output is HDR, else 0. |
-| `headroom` | `f32` | The peak over paper white: the brightest value the display shows. 1 in SDR. |
+| `headroom` | `f32` | The peak over paper white: the brightest value the display shows (Apple's EDR headroom, Android's HDR/SDR ratio). 1 in SDR. It changes while the game runs (the system's SDR white, a calibration, another display), so read it every frame. |
 | `paper_white` | `f32` | Paper white in nits; 0 in SDR (unknown). |
 | `peak` | `f32` | The peak brightness in nits; 0 in SDR. |
 | `black_level` | `f32` | The display's black in nits (HDR's Black Level); 0 in SDR. |
@@ -192,7 +192,7 @@ With HDR on:
   white, weighted as vanilla weights the HUD over it, and doesn't dim with UI Brightness. Inverted pixels count as
   covered, so the crosshair's edges are exact where its texels are opaque.
 - **The menu blur keeps light above white.** It blurs the composite so far, instead of the clipped picture, writes the
-  result as the new kept world, and resets the HUD's target to it, clipped, with alpha 0. The menu's own darkening then
+  result as the new kept world, resets the HUD's target to it, clipped, with alpha 0, and clears coverage to 0. The menu's own darkening then
   layers over it as any HUD does: a bright sun behind a paused game stays bright, dimmed with the rest, so pausing
   doesn't change the picture's brightness.
 - `shows_world` and the hand's mark go.
@@ -265,5 +265,7 @@ Later, each its own note or pull request: HDR's light-source lift as a built-in 
   and a committed digest?
 - **`[tonemap]` as its own stage**, or the last post pass with a flag?
 - **`paper_white` and `peak` in SDR**: 0, or a nominal 80 nits?
+- **A full-screen peak**: many displays dim large bright areas below `peak`; Windows reports that level (DXGI's
+  `MaxFullFrameLuminance`), other systems mostly don't. Worth an optional field?
 - **`shaders/` packs in HDR today**: what the loader does with the frame's alpha, so the change above is stated
   against it.
