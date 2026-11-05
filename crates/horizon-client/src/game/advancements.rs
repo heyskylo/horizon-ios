@@ -678,6 +678,16 @@ impl Game<'_> {
             baby: m.is_baby(),
             on_ground: m.on_ground,
             equipment,
+            // LivingEntity.getActiveEffectsMap supplies the active predicate instances.
+            effects: m
+                .extra
+                .effects
+                .iter()
+                .map(|&(id, duration, amplifier)| {
+                    let id = horizon_client::brewing::namespaced(id);
+                    (id.to_owned(), amplifier, duration)
+                })
+                .collect(),
             components: horizon_client::mobs::finalize::variant_component(m)
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
@@ -2315,6 +2325,99 @@ pub(super) fn text_of(v: &Value) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mob_predicate_view_reads_active_effect_instances() {
+        use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types()["minecraft:zombie"].clone();
+        let actor = |id| {
+            let mut mob =
+                horizon_client::mobs::Mob::new(id, kind.clone(), Vec3::new(4.5, 200.0, 4.5), 0.0);
+            mob.no_ai = true;
+            mob.no_gravity = true;
+            mob
+        };
+        game.mobs.push(actor(32300));
+        let matches = |game: &Game<'_>, id, effects: Value| {
+            let view = game.entity_view_of(Target::Mob(id));
+            assert_eq!(view.kind, "minecraft:zombie");
+            adv::entity(
+                &serde_json::json!({"minecraft:effects": effects}),
+                &view,
+                &View(game),
+                [4.5, 200.0, 4.5],
+            )
+        };
+        let speed_two = serde_json::json!({"minecraft:speed": {"amplifier": 2}});
+        assert!(!matches(&game, 32300, speed_two.clone()));
+        game.mobs[0].add_effect_with("minecraft:speed", -1, 2, false, false);
+        assert_eq!(game.mobs[0].extra.effects, vec![("minecraft:speed", -1, 2)]);
+        assert_eq!(
+            game.entity_view_of(Target::Mob(32300)).effects,
+            vec![("minecraft:speed".to_owned(), 2, -1)]
+        );
+        assert!(matches(&game, 32300, speed_two));
+        assert!(!matches(
+            &game,
+            32300,
+            serde_json::json!({"minecraft:speed": {"amplifier": 5}})
+        ));
+        game.mobs[0].add_effect("minecraft:fire_resistance", 400, 0);
+        assert!(matches(
+            &game,
+            32300,
+            serde_json::json!({
+                "minecraft:speed": {"amplifier": 2},
+                "minecraft:fire_resistance": {"amplifier": 0, "duration": 400}
+            })
+        ));
+        let mut finite = actor(32301);
+        finite.add_effect("minecraft:speed", 400, 0);
+        game.mobs.push(finite);
+        assert!(matches(
+            &game,
+            32301,
+            serde_json::json!({
+                "minecraft:speed": {"amplifier": 0, "duration": 400}
+            })
+        ));
+        assert!(!matches(
+            &game,
+            32301,
+            serde_json::json!({
+                "minecraft:speed": {"amplifier": 0, "duration": {"max": 399}}
+            })
+        ));
+    }
 
     #[test]
     fn looking_at_triggers_are_the_ones_that_ask() {

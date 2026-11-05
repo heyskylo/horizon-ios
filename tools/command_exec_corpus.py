@@ -49,6 +49,12 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'mob effect predicate view' in group_names:
+        try:
+            from .mob_effect_predicate_corpus import predicates as effect_predicates
+        except ImportError:
+            from mob_effect_predicate_corpus import predicates as effect_predicates
+        fixtures.update(effect_predicates())
     if 'named smoke predicates' in group_names:
         always = {'type': 'minecraft:all_of', 'terms': []}
         fixtures['command_smoke:always'] = always
@@ -5514,6 +5520,10 @@ ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES
 
 def groups():
     try:
+        from .mob_effect_predicate_corpus import cases as mob_effect_predicates
+    except ImportError:
+        from mob_effect_predicate_corpus import cases as mob_effect_predicates
+    try:
         from .allay_damage_corpus import allay_player_damage
         from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
@@ -5533,6 +5543,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
