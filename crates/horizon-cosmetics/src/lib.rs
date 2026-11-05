@@ -15,6 +15,7 @@ pub mod mark;
 mod pose;
 pub mod prefs;
 pub mod preview;
+pub mod viewer;
 
 pub use fetch::{BATCH, Clock, Cosmetics, Frame, Http, Local, Transport, Worn};
 pub use item::{

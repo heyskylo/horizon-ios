@@ -176,12 +176,30 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   does no cosmetics work beyond that. The bench scene `stress_avatars` (300 mannequins, 20×15)
   measures the cost with `HORIZON_COSMETICS=1 HORIZON_COSMETICS_LOCAL=…` against the same run off.
 
-## A still picture (`horizon_cosmetics::preview`)
+## The live view (`horizon_cosmetics::preview`, `horizon_cosmetics::viewer`)
 
 The launcher shows items on the player's own skin without the game: `preview::render` draws the
-player model at rest (vanilla's `PlayerModel` boxes on a 64×64 skin, wide or slim arms, the outer
-layers included) and each item on its bone on the CPU, with a depth buffer and cutout alpha, seen
-from any angle.
+player model (vanilla's `PlayerModel` boxes on a 64×64 skin, wide or slim arms, the outer layers
+included) and each item on its bone on the CPU, with a depth buffer and cutout alpha, as the game's
+entity cutout draws them, seen from a `preview::Camera` (turn, tilt, zoom).
+
+- **Camera**: dragging turns the player as if held (0.6° a point; the tilt stays within −30° to
+  60°), the wheel comes up to 3 times closer (×1.15 a step), closing in on the head; *Reset view*
+  goes back to `Camera::HOME` (30° turned, 10° from above, the whole player).
+- **Animations** play on the game's clock (20 ticks a second, the same `Item::animate` as the
+  game), only while the window is in front and not under reduced motion (`HORIZON_LAUNCHER_MOTION`,
+  the system's setting); in the background the clock stops and they go on from there.
+- **Cost**: `viewer::Stage` says when to draw again. Nothing changed (camera, outfit, scale, the
+  clock), nothing is drawn and no timer runs: an unchanged page, an idle view or a window in the
+  background does no work. At most 20 pictures a second while something animates (one a game
+  tick), 60 while dragging or zooming. A picture is drawn at the view's size in points (240×330,
+  each pixel a block of device pixels, as the launcher's pixel art), about 2 ms on the CPU on any
+  screen. The view is its own GPUI view: a new picture rebuilds it alone, the
+  page around it is drawn from the last frame.
+- **Emotes**: `viewer::BodyMotion` is a body animation played once (the parts' poses over its
+  length, on the same clock); `preview::Draw::item_posed` keeps each item on its bone as posed. The
+  launcher's `Viewer::play` takes one: the emote format implements `BodyMotion` and the Wardrobe
+  calls it.
 
 ## The Wardrobe's account check (`launcher/src/wardrobe.rs`)
 
@@ -222,10 +240,12 @@ its last visit, does (a claim, or a preview the service grants that account). Wi
 page stays hidden.
 
 - **A row per slot** (head, back, shirt, shoulder pet, name tag) with what it wears,
-  "Nothing equipped" or "None owned yet"; **your player** in the middle, on your own skin, wearing
-  it, with your name tag over the head as others see it (Horizon's mark unless the game's *Show me
-  as Horizon* is off, your style's badge after the name) (`horizon_cosmetics::preview`); **what you own for the
-  chosen slot**, "Nothing" first. Equipping shows at once.
+  "Nothing equipped" or "None owned yet"; **your player** in the middle, in 3D on your own skin,
+  wearing it, with your name tag over the head as others see it (Horizon's mark unless the game's
+  *Show me as Horizon* is off, your style's badge after the name): drag to turn, scroll to zoom,
+  *Reset view* (the live view above, `launcher/src/wardrobe_page/viewer.rs`); **what you own for
+  the chosen slot**, "Nothing" first. Hovering a card tries its item on the player (or, for
+  "Nothing", takes the slot's item off) until the pointer leaves; equipping shows at once.
 - **One way to the Shop tab**: a plain button by the page's title, *Get more cosmetics on
   playhorizon.dev*, opens the launcher's Shop tab (below; paying happens on the website); no badge,
   reminder or pop-up points to it. An account that owns nothing yet sees "You don't own any
@@ -259,7 +279,8 @@ for it. No countdowns, scarcity, buyer counts, "limited" wording or loot boxes.
   (`COSMETICS_ON_SALE`) show up by themselves. The currency is guessed from the system locale
   (francs in CH/LI, pounds in GB, euros in the euro area, else dollars) and can be switched.
 - **Cards** per collection (sets first), the founder set while it can be claimed, the Supporter badge.
-  Choosing a card tries it on the account's own skin, over what it wears (`shop::try_on`).
+  Choosing a card tries it on the account's own skin, over what it wears (`shop::try_on`), in the
+  Wardrobe's 3D view (the live view above, a camera of its own): drag to turn, scroll to zoom.
 - **The founder set**: *Claim for free* where Paddle doesn't sell (`Claim::here`), else Paddle's free
   checkout in the browser (`POST /v1/web/checkout` with `founder_set`).
 - **A catalogue that doesn't load** shows "The shop didn't load." with *Retry*; nothing else changes.
