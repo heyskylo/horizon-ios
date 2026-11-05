@@ -150,6 +150,7 @@ impl PackedStorage {
     /// Reads `index` without a bounds check. Callers use this once they hold a
     /// slice length or a section index they have already validated.
     /// `index` must be less than `len`.
+    #[inline]
     pub fn read(&self, index: usize) -> u32 {
         debug_assert!(index < self.len);
         let (word, shift) = self.slot(index);
@@ -159,6 +160,7 @@ impl PackedStorage {
     /// Writes `value` at `index` without revalidating either. `index` must be
     /// less than `len` and `value` must fit `bits`, which holds for a section
     /// palette index from the same container. Returns the previous value.
+    #[inline]
     pub fn write(&mut self, index: usize, value: u32) -> u32 {
         debug_assert!(index < self.len && u64::from(value) <= self.mask);
         let (word, shift) = self.slot(index);

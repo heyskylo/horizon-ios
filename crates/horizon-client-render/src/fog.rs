@@ -212,8 +212,11 @@ pub struct FogInputs<'a> {
     pub boss_world_fog: bool,
     /// The camera entity is a spectator (`LavaFogEnvironment`).
     pub spectator: bool,
-    /// The camera entity has Fire Resistance (`LavaFogEnvironment`).
+    /// The camera entity has Fire Resistance (`LavaFogEnvironment`), or PvP & HUD's clear lava
+    /// asks for its fog.
     pub fire_resistance: bool,
+    /// PvP & HUD's clear water: the water vision `FogState` reaches after 600 ticks under water.
+    pub full_water_vision: bool,
     /// `GameRenderer.nightVisionScale` while Night Vision is on without
     /// Darkness, else 0 (`FogRenderer.computeFogColor`'s brightenFactor).
     pub night_vision: f32,
@@ -224,7 +227,11 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
     let rd = input.render_distance_chunks as f32 * 16.0;
     let sky = input.sky;
     let eye_in_water = input.fog_type == FogType::Water;
-    let water_vision = state.water_vision(eye_in_water);
+    let water_vision = if input.full_water_vision && eye_in_water {
+        1.0
+    } else {
+        state.water_vision(eye_in_water)
+    };
     // Base colour of the applicable environment.
     let mut color = match input.fog_type {
         FogType::Lava => rgb(0x99_1A00),
@@ -451,6 +458,7 @@ mod tests {
             boss_world_fog: false,
             spectator: false,
             fire_resistance: false,
+            full_water_vision: false,
             night_vision: 0.0,
         }
     }
@@ -671,6 +679,31 @@ mod tests {
         }
         assert_eq!(s.water_vision(true), 1.0);
         assert_eq!(s.water_vision(false), 0.0);
+    }
+    #[test]
+    fn clear_water_sees_as_far_as_after_thirty_seconds_under_water() {
+        let sky = Sky::default();
+        let tables = FogTables {
+            water_fog_end: vec![1.0],
+        };
+        let mut input = inputs(&sky);
+        input.fog_type = FogType::Water;
+        // Just in: vanilla's water vision is 0, so the fog ends at a quarter of 96 blocks.
+        let mut state = FogState::default();
+        state.tick(true);
+        let first = setup_fog(&tables, &state, &input);
+        assert_eq!(first.environmental_end, 24.0);
+        for _ in 0..600 {
+            state.tick(true);
+        }
+        let settled = setup_fog(&tables, &state, &input);
+        assert_eq!(settled.environmental_end, 96.0);
+        input.full_water_vision = true;
+        let mut fresh = FogState::default();
+        fresh.tick(true);
+        let clear = setup_fog(&tables, &fresh, &input);
+        assert_eq!(clear.environmental_end, settled.environmental_end);
+        assert_eq!(clear.color, settled.color);
     }
     #[test]
     fn rain_fog_pulls_fog_in() {

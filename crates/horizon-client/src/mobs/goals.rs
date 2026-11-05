@@ -1038,7 +1038,11 @@ impl Goal for Stroll {
     fn flags(&self) -> u8 {
         MOVE
     }
+    /// RandomStrollGoal.canUse.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if super::riders::mob_controlled(m, cx.w) {
+            return false;
+        }
         if self.gate.is_some_and(|gate| !gate(m, cx.w)) {
             return false;
         }
@@ -1088,8 +1092,9 @@ impl Goal for Stroll {
         self.force = false;
         true
     }
-    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.ai.nav.is_done()
+    /// RandomStrollGoal.canContinueToUse.
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        !m.ai.nav.is_done() && !super::riders::mob_controlled(m, cx.w)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, self.speed);
