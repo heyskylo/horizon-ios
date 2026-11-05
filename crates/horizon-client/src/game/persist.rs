@@ -1128,9 +1128,12 @@ impl Game<'_> {
             -1
         };
         self.mobs[i].extra.angry_at = if anger > 0 {
-            // A wolf keeps its anger's target itself, also once the target
-            // is gone (`tame::update_persistent_anger`).
-            if self.mobs[i].species() == horizon_client::mobs::Species::Wolf {
+            // A wolf and an iron golem keep their anger's target themselves,
+            // also once the target is gone (`tame::update_persistent_anger`).
+            if matches!(
+                self.mobs[i].species(),
+                horizon_client::mobs::Species::Wolf | horizon_client::mobs::Species::IronGolem
+            ) {
                 self.mobs[i].extra.angry_at
             } else {
                 self.mobs[i].ai.target
@@ -1150,6 +1153,14 @@ impl Game<'_> {
             let tick =
                 horizon_client::mobs::camel::synced_pose_tick(&self.mobs[i], self.world.game_time);
             c.insert("LastPoseTick".into(), Tag::Long(tick));
+        }
+        // NeutralMob.addPersistentAngerSaveData: anger at a mob names it.
+        if let Some(horizon_client::mobs::Who::Mob(target)) = self.mobs[i].extra.angry_at
+            && target != 0
+            && let Tag::Compound(c) = &mut tag
+        {
+            let uuid = self.uuid_for(target);
+            c.insert("angry_at".into(), Tag::IntArray(uuid.to_vec()));
         }
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);

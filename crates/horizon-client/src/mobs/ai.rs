@@ -2767,16 +2767,9 @@ pub fn forgive_dead_player(m: &mut Mob) {
                 m.ai.target = None;
             }
         }
-        // The iron golem keeps a timer and its target (the hurt-by goal
-        // after a player's hit).
-        Species::IronGolem => {
-            if m.extra.anger > 0 && m.ai.target == Some(Who::Player) {
-                m.ai.last_hurt_by = None;
-                m.ai.last_hurt_by_time = m.age as i32;
-                m.extra.anger = 0;
-                m.ai.target = None;
-            }
-        }
+        // The iron golem keeps its anger's target as a wolf does
+        // (`tame::update_persistent_anger`): `playerDied` ends the anger at
+        // that player whether or not it is the golem's target now.
         _ => super::tame::forgive_dead_player(m),
     }
 }
@@ -4031,20 +4024,26 @@ mod forgiveness_tests {
     }
 
     /// The iron golem's anger is a timer and its target: the dying player
-    /// they were hurt by ends both, and anger at another mob stays.
+    /// it is angry at ends both (`NeutralMob.playerDied`), even once the golem
+    /// has lost sight of them, and anger at another mob stays.
     #[test]
     fn an_iron_golems_timer_and_target_end_together() {
-        let mut golem = mob(Species::IronGolem);
-        golem.extra.anger = 300;
-        golem.ai.target = Some(Who::Player);
-        golem.ai.last_hurt_by = Some(Who::Player);
-        forgive_dead_player(&mut golem);
-        assert_eq!(golem.extra.anger, 0);
-        assert_eq!(golem.ai.target, None);
-        assert_eq!(golem.ai.last_hurt_by, None);
+        for target in [Some(Who::Player), None] {
+            let mut golem = mob(Species::IronGolem);
+            golem.extra.anger = 300;
+            golem.extra.angry_at = Some(Who::Player);
+            golem.ai.target = target;
+            golem.ai.last_hurt_by = Some(Who::Player);
+            forgive_dead_player(&mut golem);
+            assert_eq!(golem.extra.anger, 0, "{target:?}");
+            assert_eq!(golem.extra.angry_at, None, "{target:?}");
+            assert_eq!(golem.ai.target, None, "{target:?}");
+            assert_eq!(golem.ai.last_hurt_by, None, "{target:?}");
+        }
 
         let mut golem = mob(Species::IronGolem);
         golem.extra.anger = 300;
+        golem.extra.angry_at = Some(Who::Mob(7));
         golem.ai.target = Some(Who::Mob(7));
         forgive_dead_player(&mut golem);
         assert_eq!(golem.extra.anger, 300, "anger at another mob stays");
