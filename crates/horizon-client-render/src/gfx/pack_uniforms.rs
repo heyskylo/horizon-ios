@@ -392,6 +392,25 @@ fn body(angle: f32, tilt: f32) -> Vec3 {
     .transform_vector3(Vec3::new(0.0, 100.0, 0.0))
 }
 
+/// `sunPosition` and `moonPosition` (`angle`: the body's sky angle in degrees) and `upPosition`
+/// (`angle` none) to the last bit, as Iris 1.11.7 gives them: our probes' readings (50: 25 ticks
+/// of day and night, `sunPathRotation` 0 and 30, four view directions) fit `(0, 100, 0, 0)`
+/// times `gbufferModelView` turned by JOML quaternions, in floats: `rotate(rotationY(-90°))`,
+/// then for a body `rotate(rotationZ(sunPathRotation))` and `rotate(rotationX(angle))`. Turned
+/// by matrices instead, as `body` and vanilla 26.3's sky do, 4e-6 stands where Iris has an exact
+/// 0, and the rest differs by 1 to 2 ulps (#8464).
+fn celestial(view: Mat4, tilt: f32, angle: Option<f32>) -> Vec3 {
+    use crate::camera::joml::{Mat4 as Joml, Quat};
+    use horizon_core::geometry::trig::DEG_TO_RAD;
+    let mut m = Joml::affine(view);
+    m.rotate_affine(Quat::rotation_y(-90.0 * DEG_TO_RAD));
+    if let Some(angle) = angle {
+        m.rotate_affine(Quat::rotation_z(tilt * DEG_TO_RAD));
+        m.rotate_affine(Quat::rotation_x(angle * DEG_TO_RAD));
+    }
+    Vec3::from_array(m.transform_affine([0.0, 100.0, 0.0, 0.0]))
+}
+
 /// `sunPathRotation`'s turn of the sky's bodies: `tilt` degrees about the world's X axis, so a
 /// positive angle moves the noon sun toward -Z (north), as Iris does.
 pub fn tilt_matrix(tilt: f32) -> Mat4 {
@@ -708,8 +727,8 @@ impl FrameUniforms {
         let sun_angle = day_fraction(frame.sky.sun_angle);
         let day = sun_angle < 0.5;
         let tilt = self.shadow.sun_path_rotation;
-        let sun = to_view(body(frame.sky.sun_angle, tilt));
-        let moon = to_view(body(frame.sky.moon_angle, tilt));
+        let sun = celestial(view, tilt, Some(frame.sky.sun_angle));
+        let moon = celestial(view, tilt, Some(frame.sky.moon_angle));
         // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26), at
         // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
         // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
@@ -796,7 +815,7 @@ impl FrameUniforms {
                 "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
                 "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
-                "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
+                "upPosition" => v3(celestial(view, tilt, None)),
                 "sunPosition" => v3(sun),
                 "endFlashPosition" => v3(to_view(inputs.end_flash_direction)),
                 "centerDepthSmooth" => Value::f(&[center_depth]),
@@ -1417,6 +1436,105 @@ mod initial_history_tests {
             ]
         );
         assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3eb134f4);
+    }
+
+    /// `sunPosition`, `moonPosition`, `upPosition` and `shadowLightPosition` to the last bit, as
+    /// a probe pack of ours read them back in Iris 1.11.7: noon looking west, just after sunset
+    /// looking south (where Iris's sun is exactly 0 in z), and with `sunPathRotation = 30` at
+    /// 1000 ticks, at 13000 looking down 45° and at 12786 with yaw 200, pitch -30. The sky
+    /// angles are vanilla's timeline at those ticks.
+    #[test]
+    fn the_sun_moon_and_up_are_iris_s_to_the_last_bit() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        let o = 0;
+        type Case = (f32, f32, f32, u32, u32, [[u32; 3]; 3], bool);
+        let cases: [Case; 5] = [
+            (
+                0.0,
+                90.0,
+                0.0,
+                0,
+                0x43340000,
+                [[o, 0x42c7fffe, o], [o, 0xc2c7fffe, o], [o, 0x42c7fffe, o]],
+                true,
+            ),
+            (
+                0.0,
+                0.0,
+                0.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0x42c7fff7, 0xbde43dae, o],
+                    [0xc2c7fff7, 0x3de4376e, o],
+                    [o, 0x42c7ffff, o],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                90.0,
+                0.0,
+                0x4394c5da,
+                0x43eec5da,
+                [
+                    [0x41b8fb81, 0x42203312, 0x42b15411],
+                    [0xc1b8fb8c, 0xc220331b, 0xc2b1540f],
+                    [o, 0x42c7fffe, o],
+                ],
+                true,
+            ),
+            (
+                30.0,
+                0.0,
+                45.0,
+                0x42bb0aec,
+                0x4388c2bb,
+                [
+                    [0x42c79f54, 0xbfcb7a52, 0xc0bdd8f1],
+                    [0xc2c79f54, 0x3fcb7a25, 0x40bdd8c7],
+                    [o, 0x428d6bdc, 0x428d6bde],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                200.0,
+                -30.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0xc2bbe678, 0x41885944, 0x41edb502],
+                    [0x42bbe677, 0xc1885947, 0xc1edb4fc],
+                    [o, 0x42ad347e, 0xc247fffe],
+                ],
+                false,
+            ),
+        ];
+        for (tilt, yaw, pitch, sun, moon, [sun_at, moon_at, up], day) in cases {
+            f.yaw = yaw;
+            f.pitch = pitch;
+            f.sky.sun_angle = f32::from_bits(sun);
+            f.sky.moon_angle = f32::from_bits(moon);
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    sun_path_rotation: tilt,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            let vector = |name: &str| -> [u32; 3] {
+                let v = bits(&u, name);
+                [v[0], v[1], v[2]]
+            };
+            assert_eq!(vector("sunPosition"), sun_at, "{sun:x}");
+            assert_eq!(vector("moonPosition"), moon_at, "{sun:x}");
+            assert_eq!(vector("upPosition"), up, "{sun:x}");
+            let light = if day { sun_at } else { moon_at };
+            assert_eq!(vector("shadowLightPosition"), light, "{sun:x}");
+        }
     }
 
     /// At night the moon casts the shadows, here with `sunPathRotation = 30`: Iris 1.11.7 at
