@@ -3055,6 +3055,7 @@ impl Game<'_> {
     /// The caller reports the level change to the mods.
     fn give_points(&mut self, amount: i32) {
         let e = &mut self.experience;
+        let mut sound_level = None;
         e.progress += amount as f32 / horizon_client::entities::Experience::needed(e.level) as f32;
         e.total = e.total.saturating_add(amount).clamp(0, i32::MAX);
         while e.progress < 0.0 {
@@ -3071,7 +3072,13 @@ impl Game<'_> {
             e.progress =
                 (e.progress - 1.0) * horizon_client::entities::Experience::needed(e.level) as f32;
             e.level += 1;
+            if e.level % 5 == 0 {
+                sound_level.get_or_insert(e.level);
+            }
             e.progress /= horizon_client::entities::Experience::needed(e.level) as f32;
+        }
+        if let Some(level) = sound_level {
+            self.play_level_up(1, level);
         }
     }
     /// AdvancementCommands.perform / performCriterion.

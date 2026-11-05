@@ -859,6 +859,9 @@ impl Game<'_> {
         let board = &self.score.board;
         let objective = board.display_objective(sb::SLOT_LIST);
         let up = |id: u128| upside_down.contains(&id);
+        // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
+        let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
+        let marked = |id: u128| horizon.contains(&id);
         let inputs = TabInputs {
             players: &players,
             board,
@@ -872,6 +875,7 @@ impl Game<'_> {
                 f64::from(self.settings.text_background_opacity),
             ),
             upside_down: &up,
+            horizon: &marked,
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);

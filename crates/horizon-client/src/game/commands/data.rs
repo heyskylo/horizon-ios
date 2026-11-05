@@ -400,9 +400,23 @@ impl Game<'_> {
                 }
             }
             Target::Frame(id) => {
-                let new = entity_nbt::item_frame_from_nbt(&tag, id).ok_or_else(stale)?;
-                if let Some(slot) = self.item_frames.iter_mut().find(|f| f.id == id) {
-                    *slot = new;
+                let mut new = entity_nbt::item_frame_from_nbt(&tag, id).ok_or_else(stale)?;
+                if let Some(i) = self.item_frames.iter().position(|f| f.id == id) {
+                    let old = &self.item_frames[i];
+                    // Entity.load cannot change the runtime type; saveWithoutId
+                    // deliberately omitted the decoder's type discriminator.
+                    new.glow = old.glow;
+                    // ItemFrame.readAdditionalSaveData: ItemStack.matches includes
+                    // count, item and components, before adopting the new stack.
+                    if old.item.as_ref().is_some_and(|a| {
+                        new.item
+                            .as_ref()
+                            .is_none_or(|b| a.count != b.count || !a.same_item_same_components(b))
+                    }) {
+                        let old = old.clone();
+                        self.remove_framed_map(&old);
+                    }
+                    self.item_frames[i] = new;
                 }
             }
             Target::Boat(id) => {

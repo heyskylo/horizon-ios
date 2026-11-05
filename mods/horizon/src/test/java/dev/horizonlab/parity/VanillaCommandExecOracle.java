@@ -451,6 +451,62 @@ public final class VanillaCommandExecOracle {
                                 0, 0, (byte) 4, true, false, level.dimension()));
                         level.getServer().getDataStorage().saveAndJoin();
                     }
+                    case "frame_map_state" -> {
+                        int id = op.get("id").getAsInt();
+                        var entity = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.decoration.ItemFrame frame)
+                            || !net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(frame.getType())
+                                .toString().equals(op.get("kind").getAsString()))
+                            throw new IllegalStateException("frame map: missing/wrong live frame");
+                        var map = net.minecraft.world.item.MapItem.getSavedData(
+                            new net.minecraft.world.level.saveddata.maps.MapId(id), frame.level());
+                        if (map == null) throw new IllegalStateException("frame map: no backed map");
+                        var saved = (net.minecraft.nbt.CompoundTag)
+                            net.minecraft.world.level.saveddata.maps.MapItemSavedData.CODEC
+                                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, map).getOrThrow();
+                        var frames = saved.getList("frames").orElseGet(net.minecraft.nbt.ListTag::new);
+                        net.minecraft.nbt.CompoundTag found = null;
+                        for (var entry : frames) {
+                            if (!(entry instanceof net.minecraft.nbt.CompoundTag tag))
+                                throw new IllegalStateException("frame map: invalid saved frame");
+                            if (tag.getInt("entity_id").orElseThrow() == frame.getId()) found = tag;
+                        }
+                        try {
+                            var field = map.getClass().getDeclaredField("decorations");
+                            field.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            var decorations = (java.util.Map<String, net.minecraft.world.level.saveddata.maps.MapDecoration>)field.get(map);
+                            var key = map.getClass().getDeclaredMethod("getFrameKey", int.class);
+                            key.setAccessible(true);
+                            var state = new JsonObject();
+                            state.addProperty("id", id);
+                            state.add("uuid", gson.toJsonTree(UUIDUtil.uuidToIntArray(frame.getUUID())));
+                            state.addProperty("kind", op.get("kind").getAsString());
+                            var p = frame.getPos();
+                            state.add("pos", gson.toJsonTree(new int[]{p.getX(), p.getY(), p.getZ()}));
+                            state.add("center", gson.toJsonTree(new int[]{map.centerX, map.centerZ}));
+                            state.addProperty("scale", map.scale);
+                            state.addProperty("dimension", map.dimension.identifier().toString());
+                            state.addProperty("saved", found != null);
+                            state.add("saved_pos", found == null ? com.google.gson.JsonNull.INSTANCE
+                                : gson.toJsonTree(found.getIntArray("pos").orElseThrow()));
+                            state.add("saved_rotation", found == null ? com.google.gson.JsonNull.INSTANCE
+                                : gson.toJsonTree(found.getInt("rotation").orElseThrow()));
+                            state.addProperty("decoration", decorations.containsKey((String)key.invoke(null, frame.getId())));
+                            state.addProperty("frame_records", frames.size());
+                            state.addProperty("frame_decorations", decorations.values().stream()
+                                .filter(d -> d.type().equals(net.minecraft.world.level.saveddata.maps.MapDecorationTypes.FRAME)).count());
+                            var record = new JsonObject();
+                            record.addProperty("cmd", "#frame_map " + op.get("label").getAsString());
+                            record.add("messages", new JsonArray());
+                            record.add("results", new JsonArray());
+                            record.add("state", state);
+                            out.append(new com.google.gson.GsonBuilder().serializeNulls().create()
+                                .toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
                     case "map_state" -> {
                         int id = op.get("id").getAsInt();
                         var map = net.minecraft.world.item.MapItem.getSavedData(
@@ -480,6 +536,14 @@ public final class VanillaCommandExecOracle {
                             results.add(value);
                         }
                         record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "close_menu" -> player.closeContainer();
+                    case "menu_state" -> {
+                        int slots = player.containerMenu == player.inventoryMenu ? 0 : player.containerMenu.slots.size() - 36;
+                        JsonObject state = new JsonObject();state.addProperty("own_slots", slots);
+                        JsonObject record = new JsonObject();record.addProperty("cmd", "#menu_state " + op.get("label").getAsString());
+                        record.add("messages", new JsonArray());record.add("results", new JsonArray());record.add("state", state);
                         out.append(gson.toJson(record)).append('\n');
                     }
                     case "use_block" -> {

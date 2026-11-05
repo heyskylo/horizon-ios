@@ -353,6 +353,32 @@ def scenario_switch():
         g.quit()
 
 
+def scenario_controller_profiles():
+    print('controller_profiles: P2 sees and changes its own controller settings, not P1\'s')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+
+        def labels(n):
+            return [w.get('label') or '' for w in g.ctl(n, 'ui')['widgets']]
+
+        g.ctl(2, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P2' in l for l in labels(2)), 'P2 named on its screen')
+        g.ctl(2, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(2)), 'the Device page')
+        g.ctl(2, 'click-button', next(l for l in labels(2) if l.startswith('Vibration')))
+        saved = lambda: [p for p in g.home.rglob('horizon-controller.txt') if 'vibration:false' in p.read_text()]
+        g.wait(saved, 'P2 saved its vibration')
+        check('only P2 has it', [p.parent.name for p in saved()], ['P2'])
+        g.ctl(1, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P1' in l for l in labels(1)), 'P1 named on its screen')
+        g.ctl(1, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(1)), 'P1\'s Device page')
+        check('P1 keeps its own', next(l for l in labels(1) if l.startswith('Vibration')).endswith('ON'), True)
+    finally:
+        g.quit()
+
+
 def scenario_bumpers():
     print('bumpers: reorder views, move into a new window, return and join there')
     g = Game(2, HORIZON_SPLIT_PICK='1')
@@ -626,6 +652,37 @@ def scenario_live():
         check('on again: P1 still renders the whole window', tuple(status['renderer']['size']),
               (2 * half[0], half[1]))
         check('on again: frames keep coming', status['fps'] > 10, True)
+    finally:
+        g.quit()
+
+
+def scenario_pause():
+    print('pause: the game runs on while one player sits behind a pause menu')
+    g = Game(2)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)  # let the frames settle on the new pause state before measuring
+        before = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        time.sleep(1.0)
+        after = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        # The world runs for the other player, so P1's own client must tick too: its
+        # ticks counter keeps advancing behind the menu (issue #9718 stopped it).
+        check('P1 behind its menu: its client keeps ticking', after[0] - before[0] > 10, True)
+        check('P2: ticks on as ever', after[1] - before[1] > 10, True)
+        g.close_page(1)
+    finally:
+        g.quit()
+    # Alone the same menu does stop the game: the splitscreen exemption must not leak.
+    g = Game(1)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)
+        before = g.ctl(1, 'status')['ticks']
+        time.sleep(1.0)
+        check('alone: the pause menu still stops the ticks',
+              g.ctl(1, 'status')['ticks'] - before < 5, True)
     finally:
         g.quit()
 
@@ -1298,6 +1355,7 @@ def scenario_custom_skin():
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
+    'controller_profiles': scenario_controller_profiles,
     'custom_skin': scenario_custom_skin,
     'four': scenario_four,
     'windows': scenario_windows,
@@ -1311,6 +1369,7 @@ SCENARIOS = {
     'controls': scenario_controls,
     'three': scenario_three,
     'live': scenario_live,
+    'pause': scenario_pause,
     'profile_availability': scenario_profile_availability,
     'gui_scales': scenario_gui_scales,
     'fullscreen': scenario_fullscreen,
