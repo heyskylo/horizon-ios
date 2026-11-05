@@ -205,18 +205,25 @@ impl adv::World for View<'_, '_> {
         let l = self.0.world.light(p[0], p[1], p[2]);
         i32::from((l >> 4).max(l & 15))
     }
+    /// `CampfireBlock.isSmokeyPos`: share the beehive smoke test.
     fn smokey(&self, p: [i32; 3]) -> bool {
-        (1..=5).any(|d| {
-            self.0
-                .res
-                .facts()
-                .get(self.0.world.block(p[0], p[1] - d, p[2]))
-                .name
-                .ends_with("campfire")
-        })
+        horizon_client::beehive::smokey(&self.0.mob_world_base(&[]), p)
+    }
+    fn block_entity_nbt(&self, p: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        self.0.block_entity_nbt(p)
     }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
-        let items = &self.0.res.items();
+        // The world's packs' tags over the game's own, as the server's
+        // registries bind them (`TagLoader.loadTagsForExistingRegistries`).
+        if let Some(tags) = self
+            .0
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get(registry))
+        {
+            return tags.get(tag).is_some_and(|t| t.contains(id));
+        }
+        let items = self.0.items();
         match registry {
             "item" => items.item_in_tag(tag, id),
             "block" => items.block_in_tag(tag, id),
@@ -224,12 +231,10 @@ impl adv::World for View<'_, '_> {
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
             "damage_type" => self
                 .0
-                .res
-                .stations()
-                .enchantments
-                .damage_tags
-                .get(tag)
-                .is_some_and(|t| t.contains(id)),
+                .health_resources
+                .damage
+                .id(id)
+                .is_some_and(|source| self.0.health_resources.damage.in_tag(source, tag)),
             _ => false,
         }
     }
@@ -448,11 +453,94 @@ impl Game<'_> {
     pub(super) fn player_entity(&self) -> EntityView {
         self.player_entity_looking(true)
     }
+    /// [`Self::entity_view_of`] for testing `predicate` (a predicate, a list
+    /// of conditions or an item modifier): the player with the level,
+    /// statistics, advancements and recipes it may ask for, and nothing
+    /// copied when it asks for none.
+    pub(super) fn entity_view_asked(
+        &self,
+        t: super::commands::Target,
+        predicate: &Value,
+    ) -> EntityView {
+        self.entity_view_asking(t, adv::facts_asked_in(predicate))
+    }
+    /// [`Self::entity_view_of`] with the player's records `asked` names.
+    pub(super) fn entity_view_asking(
+        &self,
+        t: super::commands::Target,
+        asked: adv::FactsAsked,
+    ) -> EntityView {
+        use super::commands::Target;
+        let mut view = self.entity_view_of(t);
+        match t {
+            Target::Player => view.player_facts = self.player_facts(asked),
+            Target::Guest(conn) => view.player_facts = self.guest_facts(conn, asked),
+            _ => {}
+        }
+        view
+    }
+    /// [`Self::player_facts`] of a server's player who is not in place
+    /// (selectors leave out the one in place): its own records, kept on the
+    /// hub while another acts.
+    fn guest_facts(&self, conn: u32, asked: adv::FactsAsked) -> adv::PlayerFacts {
+        let Some(host) = self.lan.as_ref() else {
+            return adv::PlayerFacts::default();
+        };
+        let Some(g) = host
+            .hub
+            .guest(conn)
+            .filter(|_| self.lan_acting != Some(conn))
+        else {
+            return adv::PlayerFacts::default();
+        };
+        let stats = (host.play.get(&conn).map(|p| &p.stats)).filter(|s| s.loaded);
+        adv::PlayerFacts {
+            level: asked.level.then_some(g.xp_level),
+            stats: stats.filter(|_| asked.stats).map(|s| s.values.clone()),
+            advancements: asked
+                .advancements
+                .then(|| (self.adv.tree.clone(), g.advancements.clone())),
+            recipes: asked.recipes.then(|| g.recipe_book.recipes.clone()),
+        }
+    }
     /// [`Self::player_entity`] for `trigger`'s criteria: what the player
-    /// looks at only when one of them may ask (a ray against every entity
-    /// otherwise).
-    pub(super) fn player_entity_for(&self, trigger: &str) -> EntityView {
-        self.player_entity_looking(self.adv.tree.may_look(trigger))
+    /// looks at, and its level, statistics, advancements and recipes, only
+    /// when one of them may ask (a ray against every entity and copies of
+    /// the player's records otherwise), and its compound only when one of
+    /// them may test `nbt`.
+    pub(super) fn player_entity_for(&mut self, trigger: &str) -> EntityView {
+        let mut me = self.player_entity_for_any(&[trigger]);
+        if self.adv.tree.may_test_nbt(trigger) {
+            me.nbt = self.player_nbt();
+        }
+        me
+    }
+    /// [`Self::player_entity_for`] for the criteria of several triggers,
+    /// without the player's compound (building it needs `&mut self`).
+    pub(super) fn player_entity_for_any(&self, triggers: &[&str]) -> EntityView {
+        let tree = &self.adv.tree;
+        let mut me = self.player_entity_looking(triggers.iter().any(|t| tree.may_look(t)));
+        let asked = (triggers.iter()).fold(adv::FactsAsked::default(), |all, t| {
+            all.or(tree.player_facts_asked(t))
+        });
+        me.player_facts = self.player_facts(asked);
+        me
+    }
+    /// The player's level, statistics, advancements and recipes that
+    /// `asked` names, for `PlayerPredicate`; records not loaded stay `None`.
+    fn player_facts(&self, asked: adv::FactsAsked) -> adv::PlayerFacts {
+        if self.player.is_none() {
+            return adv::PlayerFacts::default();
+        }
+        adv::PlayerFacts {
+            level: asked.level.then_some(self.experience.level),
+            stats: (asked.stats && self.stats.loaded).then(|| self.stats.values.clone()),
+            advancements: (asked.advancements && self.adv.loaded)
+                .then(|| (self.adv.tree.clone(), self.adv.progress.clone())),
+            recipes: asked
+                .recipes
+                .then(|| self.level.recipe_book.recipes.clone()),
+        }
     }
     /// The player as predicates see it, with what it looks at when `looking`.
     pub(super) fn player_entity_looking(&self, looking: bool) -> EntityView {
@@ -565,6 +653,24 @@ impl Game<'_> {
             armor.damage = m.extra.body_damage.max(0) as u32;
             item_view(&armor)
         });
+        let passengers: Vec<EntityView> = self
+            .mobs
+            .iter()
+            .filter(|r| r.extra.mount == Some(m.id))
+            .map(|r| self.mob_entity(r))
+            .chain(self.rider_entity(m.id))
+            .collect();
+        // `NbtPredicate.getEntityTagToCompare`: the mob as saved, with the
+        // mobs riding it under `Passengers`, when a criterion may ask.
+        let nbt = self.adv.tree.tests_nbt().then(|| {
+            let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
+            let raw = self.persist.raw.get(&m.id);
+            let registry = Some(self.pack.assets.registry);
+            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry);
+            let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
+            super::persist::add_passengers(&mut tag, riders);
+            tag
+        });
         EntityView {
             kind: m.kind.id.clone(),
             position: [m.position.x, m.position.y, m.position.z],
@@ -576,13 +682,8 @@ impl Game<'_> {
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
-            passengers: self
-                .mobs
-                .iter()
-                .filter(|r| r.extra.mount == Some(m.id))
-                .map(|r| self.mob_entity(r))
-                .chain(self.rider_entity(m.id))
-                .collect(),
+            passengers,
+            nbt,
             ..Default::default()
         }
     }
@@ -783,10 +884,7 @@ impl Game<'_> {
             .recipe_book
             .add_recipes(&world_stations!(self).recipe_index, &rewards);
         for table in &a.rewards.loot {
-            let items = self
-                .res
-                .items()
-                .loot_table(table, false, None, &mut self.world.random);
+            let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
             for s in items {
                 if let Some(rest) = self.give(s)
                     && let Some(eye) = self.eye_position()
@@ -897,6 +995,10 @@ impl Game<'_> {
         let tree = self.adv.tree.clone();
         let index = self.inventory_index();
         let list = index.candidates(stacks.iter().map(|s| s.id.as_str()));
+        if list.is_empty() {
+            return;
+        }
+        let me = self.player_entity_for("minecraft:inventory_changed");
         self.trigger_criteria(&tree, &list, move |c, w| {
             let slots = &c["slots"];
             let range = |k: &str, v: f64| {
@@ -917,7 +1019,19 @@ impl Game<'_> {
             for s in &stacks {
                 wanted.retain(|p| !adv::item(p, s, w));
             }
+            // `InventoryChangeTrigger.TriggerInstance`'s `player`
+            // (`ContextAwarePredicate`), tested by `SimpleCriterionTrigger.trigger`.
             wanted.is_empty()
+                && adv::conditions(
+                    &c["player"],
+                    &adv::Entities {
+                        this: Some(&me),
+                        origin: me.position,
+                        tool: None,
+                        block_pos: None,
+                    },
+                    w,
+                )
         });
     }
     /// `PlayerTrigger.LOCATION` every second, and the other per-tick checks.
@@ -1012,23 +1126,7 @@ impl Game<'_> {
         let target = target.clone();
         let blow = blow.cloned();
         self.trigger(name, move |c, w| {
-            let pctx = adv::Entities {
-                this: Some(&me),
-                origin: me.position,
-                tool: None,
-                block_pos: None,
-            };
-            let ectx = adv::Entities {
-                this: Some(&target),
-                ..pctx
-            };
-            let blow_ok = c["killing_blow"].is_null()
-                || blow
-                    .as_ref()
-                    .is_some_and(|d| adv::damage_source(&c["killing_blow"], d, w, me.position));
-            adv::conditions(&c["player"], &pctx, w)
-                && adv::conditions(&c["entity"], &ectx, w)
-                && blow_ok
+            adv::killed(c, &me, &target, blow.as_ref(), w)
         });
     }
     /// `KilledByArrowTrigger`: what the arrow killed and the weapon it came from.
@@ -1414,11 +1512,10 @@ impl Game<'_> {
     ) {
         let target = if thrower == self.acting_uuid() {
             // The player is the entity of both triggers.
-            let tree = &self.adv.tree;
-            let me = self.player_entity_looking(
-                tree.may_look("minecraft:thrown_item_picked_up_by_entity")
-                    || tree.may_look("minecraft:thrown_item_picked_up_by_player"),
-            );
+            let me = self.player_entity_for_any(&[
+                "minecraft:thrown_item_picked_up_by_entity",
+                "minecraft:thrown_item_picked_up_by_player",
+            ]);
             self.trigger_item_entity("minecraft:thrown_item_picked_up_by_entity", stack, &me);
             me
         } else if let Some(id) = self.mob_by_uuid(thrower) {
@@ -1732,6 +1829,18 @@ impl Game<'_> {
                 && adv::item(&c["item"], &tool, w)
                 && adv::range_i(&c["num_bees_inside"], bees)
                 && adv::conditions(&c["player"], &pctx, w)
+        });
+    }
+    /// `Entity.startRiding`'s `sendEventAndTriggers`: `START_RIDING_TRIGGER`
+    /// for every `ServerPlayer` in `entityToRide.getIndirectPassengersStream()`.
+    pub(super) fn trigger_started_riding(&mut self, vehicle: u32) {
+        let mounts: Vec<(u32, Option<u32>)> =
+            self.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+        let aboard = super::boarding::passenger_vehicles(vehicle, &mounts);
+        self.for_each_player(|g| {
+            if g.riding.is_some_and(|v| aboard.contains(&v)) {
+                g.trigger_player("minecraft:started_riding");
+            }
         });
     }
     /// A trigger with only the player condition (slept_in_bed, started_riding).
@@ -2238,6 +2347,41 @@ mod tests {
         assert!(tree.may_look("minecraft:using_item"));
         assert!(tree.may_look("minecraft:location"));
         assert!(!tree.may_look("minecraft:tick"));
+    }
+
+    #[test]
+    fn nbt_triggers_are_the_ones_that_ask() {
+        let criterion = |trigger: &str, conditions: serde_json::Value| adv::Criterion {
+            name: "c".into(),
+            trigger: trigger.into(),
+            conditions: horizon_world::lazy_json::LazyJson::new(&conditions),
+        };
+        let nbt = serde_json::json!({"entity": [{"condition": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:nbt": "{Variant:1}"}}]});
+        let reference = serde_json::json!({"player": [{"condition": "minecraft:reference",
+            "name": "pack:saved"}]});
+        let plain = serde_json::json!({"entity": [{"condition": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:flags": {"is_baby": true}}}]});
+        let mut tree = Tree::default();
+        tree.index_nbt();
+        assert!(!tree.tests_nbt());
+        tree.list.push(adv::Advancement {
+            id: "pack:a".into(),
+            parent: None,
+            display: None,
+            criteria: vec![
+                criterion("minecraft:player_interacted_with_entity", nbt),
+                criterion("minecraft:location", reference),
+                criterion("minecraft:tame_animal", plain),
+            ],
+            requirements: Vec::new(),
+            rewards: Default::default(),
+        });
+        tree.index_nbt();
+        assert!(tree.tests_nbt());
+        assert!(tree.may_test_nbt("minecraft:player_interacted_with_entity"));
+        assert!(tree.may_test_nbt("minecraft:location"));
+        assert!(!tree.may_test_nbt("minecraft:tame_animal"));
     }
 
     #[test]

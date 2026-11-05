@@ -207,9 +207,11 @@ fn style_flag(v: Option<&Value>) -> Option<bool> {
     }
 }
 
-fn untrusted_http_url(url: &str) -> bool {
-    // ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
-    // https only, scheme case-insensitive.
+/// ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
+/// https only, scheme case-insensitive. Every `open_url` a server sends must
+/// pass it: anything else (`file:`, a UNC path, a custom protocol handler)
+/// could start a program through the system's URL handler.
+pub fn untrusted_http_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
     })

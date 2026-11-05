@@ -801,9 +801,15 @@ impl RecipeIndex {
                 insert(id, &v);
             }
         }
-        // RecipeManager keeps its recipes sorted by id and numbers the displays in that order.
+        // RecipeManager.unpackRecipeInfo numbers the displays in registration
+        // order (path, then namespace), not in the order of the ids' text.
+        let mut order: Vec<_> = recipes
+            .iter_mut()
+            .map(|(id, r)| (crate::crafting::registration_key(id), r))
+            .collect();
+        order.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let mut next = 0;
-        for r in recipes.values_mut() {
+        for (_, r) in order {
             r.first_display = next;
             next += r.displays as i32;
         }
@@ -1345,5 +1351,36 @@ mod tests {
             Err(None)
         );
         assert_eq!(hand, None);
+    }
+
+    /// `RecipeManager.unpackRecipeInfo` numbers the displays in registration
+    /// order: the file's path (with `.json`) first, then its namespace.
+    #[test]
+    fn display_ids_follow_registration_order() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-display-order-{}", std::process::id()));
+        let dir = root.join("data/minecraft/recipe");
+        std::fs::create_dir_all(&dir).unwrap();
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","result":{"id":"minecraft:stick"}}"#;
+        for name in ["z_pick", "prefix", "prefix-early"] {
+            std::fs::write(dir.join(format!("{name}.json")), recipe).unwrap();
+        }
+        let packs = [(
+            "recipe/parity:a_pick".to_owned(),
+            vec![recipe.as_bytes().to_vec()],
+        )];
+        let index = RecipeIndex::load(&root, &PackOverlay { files: &packs });
+        std::fs::remove_dir_all(&root).unwrap();
+        let ids = [
+            "parity:a_pick",
+            "minecraft:prefix-early",
+            "minecraft:prefix",
+            "minecraft:z_pick",
+        ];
+        assert_eq!(
+            ids.map(|id| index.first_display(id)),
+            [Some(0), Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(index.recipe_of_display(0), Some("parity:a_pick"));
     }
 }

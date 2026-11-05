@@ -480,6 +480,10 @@ impl Game<'_> {
                 let Some((ty, i)) = tab_type(n) else { continue };
                 let (x, y) = tab_pos(ty, i);
                 let sprite = tab_sprite(ty, i, ty.3, Some(t) == tab);
+                horizon_client::widgets::target_as(
+                    [left + x, top + y, ty.1, ty.2],
+                    horizon_client::widgets::Kind::Tab(Some(t) == tab),
+                );
                 batch.sprite_scaled(
                     &self.gui.atlas,
                     &sprite,
@@ -518,9 +522,10 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (bx, by) = ((w / 2.0 - 100.0).floor(), h - FOOTER + 6.0);
         let hover = ui::hovered(self.cursor, bx, by, 200.0, 20.0);
-        ui::button(
+        ui::action_button(
             batch,
             atlas,
+            horizon_client::widgets::Action::Done,
             bx,
             by,
             200.0,

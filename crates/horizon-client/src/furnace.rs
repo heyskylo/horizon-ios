@@ -214,15 +214,12 @@ mod tests {
         assert!(!furnace(stack("minecraft:iron_ore"), None, 0, 5).idle());
     }
 
-    /// A furnace with `fuel` x `count` burning `test:ore` into `test:ingot`, over a
-    /// data root holding that one recipe and an item table with two fuels: `test:coal`
-    /// (no remainder) and `test:cell` (a content mod's item that leaves `test:husk`).
-    fn burn(fuel: &str, count: u32) -> (Furnace, Vec<ItemStack>) {
-        let root = std::env::temp_dir().join(format!(
-            "horizon-furnace-remainder-{}-{}-{count}",
-            std::process::id(),
-            fuel.replace(':', "-")
-        ));
+    /// A data root holding one recipe, `test:ore` into `test:ingot`, and an item table
+    /// with two fuels: `test:coal` (no remainder) and `test:cell` (a content mod's item
+    /// that leaves `test:husk`). The folder is gone when this returns.
+    fn data(name: &str) -> (Items, Recipes, Providers) {
+        let root =
+            std::env::temp_dir().join(format!("horizon-furnace-{name}-{}", std::process::id(),));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
         fs::write(
@@ -248,6 +245,57 @@ mod tests {
         let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
         let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
         let providers = Providers::load(&root);
+        let _ = fs::remove_dir_all(&root);
+        (items, recipes, providers)
+    }
+
+    /// The furnace sleeps while `idle`, so its tick must change nothing then: run the
+    /// real tick on every idle case and compare, and check a furnace that can smelt
+    /// isn't idle and does change.
+    #[test]
+    fn an_idle_furnace_tick_changes_nothing() {
+        let (items, recipes, providers) = data("idle");
+        let stack = |id: &str| Some(ItemStack::new(id, 1));
+        let furnace = |input, fuel, output| Furnace {
+            kind: FurnaceKind::Furnace,
+            items: [input, fuel, output],
+            lit_remaining: 0,
+            lit_total: 0,
+            cooking_timer: 0,
+            cooking_total: 200,
+            speed: 1.0,
+            recipes_used: HashMap::new(),
+        };
+        let idle = [
+            furnace(None, None, None),
+            furnace(stack("test:ore"), None, None),
+            furnace(None, stack("test:coal"), None),
+            furnace(None, None, stack("test:ingot")),
+            furnace(stack("test:ingot"), None, stack("test:ingot")),
+        ];
+        for before in idle {
+            assert!(before.idle(), "{before:?}");
+            let mut after = before.clone();
+            let mut drops = Vec::new();
+            let lit = after.tick(&recipes, &items, &providers, &mut drops);
+            assert_eq!(lit, None, "{before:?}");
+            assert!(drops.is_empty(), "{before:?}");
+            assert_eq!(format!("{after:?}"), format!("{before:?}"));
+        }
+        let mut busy = furnace(stack("test:ore"), stack("test:coal"), None);
+        assert!(!busy.idle());
+        let before = format!("{busy:?}");
+        assert_eq!(
+            busy.tick(&recipes, &items, &providers, &mut Vec::new()),
+            Some(true)
+        );
+        assert_ne!(format!("{busy:?}"), before);
+    }
+
+    /// A furnace with `fuel` x `count` burning `test:ore` into `test:ingot` ([`data`]).
+    fn burn(fuel: &str, count: u32) -> (Furnace, Vec<ItemStack>) {
+        let (items, recipes, providers) =
+            data(&format!("remainder-{}-{count}", fuel.replace(':', "-")));
         let mut furnace = Furnace {
             kind: FurnaceKind::Furnace,
             items: [
@@ -264,7 +312,6 @@ mod tests {
         };
         let mut drops = Vec::new();
         let lit = furnace.tick(&recipes, &items, &providers, &mut drops);
-        let _ = fs::remove_dir_all(&root);
         assert_eq!(lit, Some(true), "the fuel lit the furnace");
         (furnace, drops)
     }

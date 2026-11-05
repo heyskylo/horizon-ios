@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "네이티브 빌드 또는 캐시 정리가 진행 중입니다. 완료된 후 다시 시도하세요.",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "상점 열기",
   "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "자동은 이 런처의 아키텍처를 따릅니다. Windows ARM에서는 x64 또는 ARM64를 선택할 수 있습니다. ARM64가 없는 릴리스는 서명된 x64 빌드를 사용합니다.",
+  "Game architecture": "게임 아키텍처",
+  "Install selected build": "선택한 빌드 설치",
+  "Manual game architectures are available on Windows ARM only.": "게임 아키텍처를 직접 선택하는 기능은 Windows ARM에서만 사용할 수 있습니다.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Windows ARM64 런처는 아직 네이티브 모드를 지원하지 않습니다. 관리되는 컴파일러를 사용할 수 없습니다.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "선택한 ARM64 게임용 네이티브 모드는 아직 빌드할 수 없습니다. 사용 가능한 컴파일러는 x64만 빌드합니다.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "선택한 x64 게임용 네이티브 모드는 빌드할 수 없습니다. 이 ARM64 런처에는 맞는 컴파일러가 없습니다.",
+  "Say auto, x64 or arm64 for the game architecture.": "게임 아키텍처에는 auto, x64 또는 arm64를 입력하세요.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "이 버전의 게임은 {installed}이지만 설정에서는 {selected}를 선택했습니다. 실행하기 전에 버전에서 선택한 빌드를 설치하세요.",
+  "Automatic": "자동",
+  "{tag} has no build for the selected game architecture.": "{tag}에는 선택한 게임 아키텍처용 빌드가 없습니다.",
+  "Unknown": "알 수 없음",
   "Claim for free": "무료로 받기",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "상점의 결제 서비스가 회원님의 국가를 지원하지 않으므로 창립자 세트를 여기에서 무료로 받을 수 있습니다.",
-  "The Founder Set is yours.": "창립자 세트를 받았습니다."
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "창립자 세트를 받았습니다.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

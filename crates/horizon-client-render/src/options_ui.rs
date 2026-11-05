@@ -1280,6 +1280,8 @@ pub enum Page {
     /// Horizon Settings: every page Horizon adds, as a mod's settings
     /// screen hangs off vanilla's Options.
     Horizon,
+    /// Replay Studio: saved recordings browser and 3D video editor launcher.
+    Studio,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
     /// SkinCustomizationScreen: the skin layers and Main Hand.
@@ -1309,6 +1311,8 @@ enum Act {
     ResetPadKey(&'static str),
     ResetPadKeys,
     ToggleMod(usize),
+    /// PvP & HUD's PvP preset (`pvp::apply_preset`).
+    PvpPreset,
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
@@ -1505,6 +1509,8 @@ pub enum Event {
     ListMusicTracks,
     /// A Music page row: play this track of this event now.
     PlayMusicTrack(String, String),
+    /// Open the recordings folder in the system file browser.
+    OpenStudioFolder,
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1566,6 +1572,9 @@ pub struct OptionsUi {
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
+    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
+    /// Nintendo's: each part shows the letter of the button playing it.
+    pub pad_by_letter: bool,
     pub languages: Vec<LanguageInfo>,
     language_choice: Option<String>,
     language_search: ui::EditBox,
@@ -1603,6 +1612,7 @@ pub struct OptionsUi {
     /// Whether the window was fullscreen before calibration made it so (the game keeps it).
     pub calibration_fullscreen: Option<bool>,
     pub split_setup: crate::split_ui::SplitUi,
+    pub studio: crate::studio_ui::StudioUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
     /// A repro recording is running: the AI Agent page's button says stop.
@@ -1647,6 +1657,7 @@ impl Default for OptionsUi {
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
+            pad_by_letter: false,
             languages: Vec::new(),
             language_choice: None,
             language_search: search,
@@ -1669,6 +1680,7 @@ impl Default for OptionsUi {
             calibration: None,
             calibration_fullscreen: None,
             split_setup: Default::default(),
+            studio: Default::default(),
             agent_status: Vec::new(),
             agent_recording: false,
             music_groups: Vec::new(),
@@ -1734,6 +1746,7 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
         Page::Horizon => "horizon.pages.settings.tooltip",
+        Page::Studio => "horizon.pages.studio.tooltip",
         Page::Graphics => "horizon.pages.graphics.tooltip",
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
@@ -1939,6 +1952,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
         Act::Cycle(opt) => Some(opt.tooltip_key(s)),
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
+        Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
         _ => None,
     };
     if let Some(key) = key.filter(|key| lang::has(key)) {
@@ -2279,6 +2293,9 @@ impl OptionsUi {
         if page == Page::SplitProfiles {
             self.split_profiles.reset();
         }
+        if page == Page::Studio {
+            self.studio.refresh();
+        }
     }
     /// What the graphics screen's actions do to these options.
     fn graphics_events(
@@ -2348,6 +2365,7 @@ impl OptionsUi {
             Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
+            Page::Studio => "horizon.pages.studio",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
             Page::SplitSetup => "horizon.pages.split_setup",
@@ -2469,7 +2487,20 @@ impl OptionsUi {
                         widget
                     }
                 };
-                let mut rows = Vec::new();
+                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
+                let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
+                let mut rows = vec![Row::Buttons(
+                    preset,
+                    (self.page() == Page::Extras).then(|| {
+                        button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            tr("horizon.pages.open.pvp"),
+                            Act::Push(Page::Pvp),
+                        )
+                    }),
+                )];
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     rows.extend(
@@ -2530,6 +2561,7 @@ impl OptionsUi {
                         ),
                         Some(open("horizon.pages.open.pvp", Page::Pvp)),
                     ),
+                    Row::Buttons(open("horizon.pages.open.studio", Page::Studio), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -3244,6 +3276,7 @@ impl OptionsUi {
                     });
                     let mut message = match pad.binding(action) {
                         Some(b) => {
+                            let b = if self.pad_by_letter { b.by_letter() } else { b };
                             let [r, g, bl] = b.color(self.pad_style);
                             Text::literal(b.label(self.pad_style))
                                 .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
@@ -3603,9 +3636,10 @@ impl OptionsUi {
                     true,
                 );
             }
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                crate::widgets::Action::Done,
                 w / 2.0 - 100.0,
                 h - 28.0,
                 200.0,
@@ -3645,6 +3679,10 @@ impl OptionsUi {
         if self.page() == Page::SplitProfiles {
             self.split_profiles
                 .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+            return;
+        }
+        if self.page() == Page::Studio {
+            self.studio.draw(batch, atlas, cursor, self.in_world);
             return;
         }
         if self.page() == Page::Packs {
@@ -3759,9 +3797,24 @@ impl OptionsUi {
                 tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
             }
             match &wd.kind {
-                WKind::Button { label, active, .. } => {
+                WKind::Button { label, active, act } => {
                     let label = fitted.as_ref().map_or(label, |f| &f.0);
-                    ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    if matches!(act, Act::Done) {
+                        ui::action_button(
+                            batch,
+                            atlas,
+                            crate::widgets::Action::Done,
+                            wd.x,
+                            wd.y,
+                            wd.w,
+                            wd.h,
+                            label,
+                            *active,
+                            hover,
+                        );
+                    } else {
+                        ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
+                    }
                     crate::widgets::last_narratable(|n| {
                         narrate_widget(n, s, wd, hover, list_key, framebuffer);
                     });
@@ -4013,6 +4066,22 @@ impl OptionsUi {
                 Click::Nothing => Vec::new(),
                 Click::Pressed => vec![Event::ButtonClick],
                 Click::Done => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
+        }
+        if self.page() == Page::Studio {
+            if right || drag {
+                return Vec::new();
+            }
+            use crate::studio_ui::StudioAction;
+            return match self.studio.click((x, y), size) {
+                StudioAction::None => Vec::new(),
+                StudioAction::Refresh => vec![Event::ButtonClick],
+                StudioAction::OpenFolder => vec![Event::ButtonClick, Event::OpenStudioFolder],
+                StudioAction::Back => {
                     let mut events = vec![Event::ButtonClick];
                     events.extend(self.back(s));
                     events
@@ -4299,6 +4368,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -4514,6 +4587,10 @@ impl OptionsUi {
         if Self::graphics_page(self.page()).is_some() {
             let actions = self.graphics.wheel(s, size, cursor, framebuffer, amount);
             return self.graphics_events(s, actions);
+        }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
+            return Vec::new();
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
@@ -5240,6 +5317,10 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -7596,6 +7677,7 @@ mod tests {
                 Page::Mods,
                 Page::SplitSetup,
                 Page::Pvp,
+                Page::Studio,
                 Page::Agent,
             ]
         );

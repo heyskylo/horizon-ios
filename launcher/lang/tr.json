@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "Yerel derleme veya önbellek temizliği sürüyor. Bittikten sonra tekrar deneyin.",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Mağazayı aç",
   "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Otomatik, bu başlatıcının mimarisini izler. Windows ARM'de x64 veya ARM64 seçebilirsiniz. ARM64 bulunmayan sürümlerde imzalı x64 derlemesi kullanılır.",
+  "Game architecture": "Oyun mimarisi",
+  "Install selected build": "Seçili derlemeyi yükle",
+  "Manual game architectures are available on Windows ARM only.": "Elle oyun mimarisi seçimi yalnızca Windows ARM'de kullanılabilir.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Windows ARM64 başlatıcısı yerel modları henüz desteklemiyor; yönetilen derleyicisi kullanılamıyor.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "Seçili ARM64 oyunu için yerel modlar henüz derlenemiyor. Kullanılabilir derleyici yalnızca x64 derler.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "Seçili x64 oyunu için yerel modlar derlenemiyor. Bu ARM64 başlatıcısında eşleşen bir derleyici yok.",
+  "Say auto, x64 or arm64 for the game architecture.": "Oyun mimarisi için auto, x64 veya arm64 yazın.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Bu sürümde {installed} oyun derlemesi var ancak Ayarlar'da {selected} seçili. Başlatmadan önce Sürümler'den seçili derlemeyi yükleyin.",
+  "Automatic": "Otomatik",
+  "{tag} has no build for the selected game architecture.": "{tag} için seçili oyun mimarisine uygun bir derleme yok.",
+  "Unknown": "Bilinmiyor",
   "Claim for free": "Ücretsiz al",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Mağazanın ödeme sağlayıcısı ülkende hizmet vermiyor, bu yüzden Kurucu setini burada ücretsiz alabilirsin.",
-  "The Founder Set is yours.": "Kurucu seti artık senin."
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "Kurucu seti artık senin.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "Hay una compilación nativa o limpieza de caché en curso. Inténtalo de nuevo cuando termine.",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir la tienda",
   "You don't own any cosmetics yet.": "Aún no tienes ningún cosmético.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automático usa la arquitectura de este lanzador. En Windows ARM, elige x64 o ARM64. Las versiones sin ARM64 usan la compilación x64 firmada.",
+  "Game architecture": "Arquitectura del juego",
+  "Install selected build": "Instalar la compilación seleccionada",
+  "Manual game architectures are available on Windows ARM only.": "Las arquitecturas de juego manuales solo están disponibles en Windows ARM.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "El lanzador de Windows ARM64 aún no admite mods nativos; su compilador administrado no está disponible.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "Los mods nativos aún no se pueden compilar para el juego ARM64 seleccionado. El compilador disponible solo compila para x64.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "Los mods nativos no se pueden compilar para el juego x64 seleccionado. Este lanzador ARM64 no tiene un compilador compatible.",
+  "Say auto, x64 or arm64 for the game architecture.": "Indica auto, x64 o arm64 para la arquitectura del juego.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Esta versión tiene una compilación del juego {installed}, pero en Configuración está seleccionada {selected}. Instala la compilación seleccionada desde Versiones antes de iniciar.",
+  "Automatic": "Automático",
+  "{tag} has no build for the selected game architecture.": "{tag} no tiene una compilación para la arquitectura de juego seleccionada.",
+  "Unknown": "Desconocido",
   "Claim for free": "Conseguir gratis",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "El proveedor de pagos de la tienda no opera en tu país, así que puedes conseguir el Set fundador aquí gratis.",
-  "The Founder Set is yours.": "El Set fundador es tuyo."
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "El Set fundador es tuyo.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

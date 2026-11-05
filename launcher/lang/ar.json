@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "يجري بناء أصلي أو تنظيف لذاكرة التخزين المؤقت. أعد المحاولة بعد الانتهاء.",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "فتح المتجر",
   "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "يتبع الخيار التلقائي بنية هذا المشغّل. على Windows ARM، اختر x64 أو ARM64. تستخدم الإصدارات التي لا تتوفر لها ARM64 نسخة x64 الموقّعة.",
+  "Game architecture": "بنية اللعبة",
+  "Install selected build": "ثبّت النسخة المحددة",
+  "Manual game architectures are available on Windows ARM only.": "يتوفر اختيار بنية اللعبة يدويًا على Windows ARM فقط.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "لا يدعم مشغّل Windows ARM64 التعديلات الأصلية بعد؛ فالمترجم المُدار غير متوفر.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "لا يمكن حتى الآن إنشاء تعديلات أصلية للعبة ARM64 المحددة. المترجم المتاح ينشئ نسخ x64 فقط.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "لا يمكن إنشاء تعديلات أصلية للعبة x64 المحددة. لا يتوفر لهذا المشغّل ARM64 مترجم متوافق.",
+  "Say auto, x64 or arm64 for the game architecture.": "أدخل auto أو x64 أو arm64 لبنية اللعبة.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "تحتوي هذه النسخة على لعبة ببنية {installed}، لكن الإعدادات تحدد {selected}. ثبّت النسخة المحددة من صفحة الإصدارات قبل التشغيل.",
+  "Automatic": "تلقائي",
+  "{tag} has no build for the selected game architecture.": "لا تتوفر لـ {tag} نسخة متوافقة مع بنية اللعبة المحددة.",
+  "Unknown": "غير معروف",
   "Claim for free": "احصل عليه مجانًا",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "مزوّد الدفع في المتجر لا يخدم بلدك، لذا يمكنك الحصول على طقم المؤسسين هنا مجانًا.",
-  "The Founder Set is yours.": "طقم المؤسسين أصبح لك."
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "طقم المؤسسين أصبح لك.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

@@ -48,9 +48,13 @@ pub struct Ai {
     /// `Mob.homePosition` and `homeRadius`: where a restricted mob stays
     /// (a lead's holder, a happy ghast's float area).
     pub home: Option<([i32; 3], i32)>,
+    /// Mob keeps homePosition even when clearHome makes homeRadius -1.
+    /// Active homes still use `home`; this only retains its hidden position.
+    last_home_position: [i32; 3],
     pub goals: GoalSelector,
     pub targets: GoalSelector,
     pub nav: Navigation,
+    pub(super) navigation_redirect: Option<Box<super::nav::Redirect>>,
     pub mov: MoveControl,
     pub look: LookControl,
     pub body: BodyRotation,
@@ -83,6 +87,22 @@ pub struct Ai {
     pub swing_duration: i32,
     /// Walked distance and the next footstep.
     pub steps: super::living::Steps,
+}
+impl Ai {
+    /// `Mob.getHomePosition`, including the position retained by clearHome.
+    pub fn home_position(&self) -> [i32; 3] {
+        self.home.map_or(self.last_home_position, |(pos, _)| pos)
+    }
+    /// Adopt only the two persistent home fields after loading Mob data.
+    pub fn restore_home(&mut self, pos: [i32; 3], radius: i32) {
+        self.last_home_position = pos;
+        self.home = (radius != -1).then_some((pos, radius));
+    }
+    /// `Mob.clearHome`: clear the radius, retaining the position.
+    pub fn clear_home(&mut self) {
+        self.last_home_position = self.home_position();
+        self.home = None;
+    }
 }
 impl Mob {
     /// `LivingEntity.getCurrentSwingDuration`: 6 ticks unless a swing set its own.
@@ -408,6 +428,7 @@ pub fn register(m: &mut Mob) {
         Family::Panda => super::panda::register(m),
         Family::PolarBear => super::polar_bear::register(m),
     }
+    native_register_goals(m);
     // FloatGoal's constructor lets the navigation float, as do the
     // constructors of these brain-driven and flying mobs. A floater rises
     // 0.04 a tick in Mob.jumpInLiquid, the others 0.3 (the bounce of #542).
@@ -424,6 +445,21 @@ pub fn register(m: &mut Mob) {
     {
         m.ai.nav.can_float = true;
     }
+}
+/// A new mob's goals (`Mob.registerGoals`): `mob.ai.goals` (vanilla's
+/// `goalSelector`) and `mob.ai.targets` (`targetSelector`) hold the goals of
+/// its species, which for a mod's type is its template's. Clear them to
+/// replace them, as a class whose `registerGoals` skips `super`'s, or add
+/// yours with `GoalSelector::add(priority, goal)`. Each mob gets its own
+/// goals, so a goal's fields are that mob's state while it lives (for state
+/// that is saved, see attachments on `Holder::Entity(mob.id)`). Asked for
+/// every mob Horizon makes, a client's copies of a server's mobs included,
+/// before its saved data is read; goals tick only where the mob's AI runs.
+/// `goals::Float` keeps the navigation floating, as FloatGoal's
+/// constructor does. API @API:register_goals@.
+#[inline(never)]
+pub fn native_register_goals(mob: &mut Mob) {
+    crate::native_client_hooks::register_goals(mob);
 }
 /// Mob.tick additions that run before the entity tick (cube/creeper fuses, puffing).
 fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -668,6 +704,7 @@ pub fn tick(
             farm::chicken_egg_step(m, events);
         }
         if m.species() == Species::Allay {
+            super::allay::passive_heal(m);
             super::allay::update_duplication_cooldown(m);
         }
         if horse {
@@ -677,6 +714,10 @@ pub fn tick(
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
+        }
+        if m.species() == Species::Pufferfish {
+            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
+            aquatic::sting_touching_mobs(m, w, events);
         }
     } else {
         ai_step(m, w, level_random, events);
@@ -2433,11 +2474,26 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     }
     0.0
 }
+/// `Allay.hurtServer`'s liked-player guard for verified player sources.
+/// Other species and unresolved callers retain their existing filters.
+pub fn accepts_damage_from_player(
+    m: &mut Mob,
+    source: &Damage,
+    amount: f32,
+    uuid: [i32; 4],
+) -> bool {
+    if m.species() == Species::Allay {
+        !super::allay::is_liked_player(m, source.attacker, uuid)
+    } else {
+        accepts_damage(m, source, amount)
+    }
+}
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
         Species::Breeze => super::breeze::accepts_damage(m, source),
-        // Allay.hurtServer: its liked player cannot hurt it.
+        // Compatibility for unresolved player sources; verified UUID routes
+        // use accepts_damage_from_player instead (this is not UUID parity).
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
         Species::Wither => super::wither::accepts(m, source.kind, source.attacker, false),
@@ -2724,6 +2780,9 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
     }
     if m.species() == Species::Turtle {
         return super::turtle::travel(m, w, input, events);
+    }
+    if m.species() == Species::Frog {
+        return super::frog::travel(m, w, input, events);
     }
     match family(m.species()) {
         Family::Aquatic => aquatic::travel(m, w, input, events),
@@ -4755,6 +4814,51 @@ mod iron_golem_push_tests {
 }
 
 #[cfg(test)]
+mod allay_healing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn allays_heal_on_tenth_ticks_without_enabling_noai_work() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            for no_ai in [true, false] {
+                for initial in [10.0_f32, 19.5, 20.0] {
+                    let kind = Arc::new(types.types["minecraft:allay"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(16.5, 101.0, 16.5), 0.0);
+                    mob.no_ai = no_ai;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.health = initial;
+                    mob.extra.ints[2] = 37;
+                    mob.extra.ints[3] = 41;
+                    mob.extra.egg_time = 30;
+                    assert_eq!(mob.attrs.max_health, 20.0);
+                    assert_eq!(mob.age, 0);
+                    let mut random = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    for elapsed in 1..=20 {
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        assert_eq!(mob.age, elapsed);
+                        assert_eq!(
+                            mob.health,
+                            (initial + (elapsed / 10) as f32).min(20.0),
+                            "NoAI={no_ai}, initial={initial}, tick={elapsed}"
+                        );
+                        assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
+                        let skipped = if no_ai { 0 } else { elapsed as i32 };
+                        assert_eq!(mob.extra.ints[2], 37 - skipped);
+                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                    }
+                }
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Allay tick coverage did not run");
+        }
+    }
+}
+
+#[cfg(test)]
 mod ravager_noai_tests {
     use super::*;
     use std::sync::Arc;
@@ -4800,5 +4904,61 @@ mod ravager_noai_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+
+    /// A mob of `kind` in a pool, its eyes under, after `ticks` base ticks.
+    fn air_after(kind: &str, air: i32, ticks: u32) -> Option<i32> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let water = registry.default_state("minecraft:water").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    for y in 0..=8 {
+                        world.set(x, y, z, water).unwrap();
+                    }
+                }
+            }
+        };
+        let mut out = None;
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types[kind].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            m.air = air;
+            let mut events = Vec::new();
+            for _ in 0..ticks {
+                base_tick(&mut m, w, &mut events);
+            }
+            out = Some(m.air);
+        });
+        out
+    }
+
+    /// `Dolphin.handleAirSupply` is empty and the dolphin isn't in
+    /// `#can_breathe_under_water`: under water it loses a breath a tick from
+    /// its 4800, as `LivingEntity.baseTick` takes it, so it must surface.
+    #[test]
+    fn a_dolphin_holds_its_breath_under_water() {
+        let Some(air) = air_after("minecraft:dolphin", 4800, 10) else {
+            return;
+        };
+        assert_eq!(air, 4790);
+    }
+
+    /// A copper golem is in `#can_breathe_under_water`: its air stays full.
+    #[test]
+    fn a_copper_golem_breathes_under_water() {
+        let Some(air) = air_after("minecraft:copper_golem", 300, 10) else {
+            return;
+        };
+        assert_eq!(air, 300);
     }
 }

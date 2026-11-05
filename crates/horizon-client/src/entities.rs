@@ -1038,10 +1038,13 @@ pub fn merge_with_neighbours(
             (j, i)
         };
         // ItemEntity.merge(toStack, fromStack, 64).
-        let room = max_stack(&items[to].stack).min(64) - items[to].stack.count;
-        let moved = room.min(items[from].stack.count);
-        items[to].stack.count += moved;
-        items[from].stack.count -= moved;
+        // A component limit above 64 permits an overstacked target. Vanilla's
+        // signed room then moves the excess back into the source stack.
+        let room =
+            i64::from(max_stack(&items[to].stack).min(64)) - i64::from(items[to].stack.count);
+        let moved = room.min(i64::from(items[from].stack.count));
+        items[to].stack.count = (i64::from(items[to].stack.count) + moved) as u32;
+        items[from].stack.count = (i64::from(items[from].stack.count) - moved) as u32;
         let (delay, from_age, to_age) =
             (items[from].pickup_delay, age(items, from), age(items, to));
         let to_item = &mut items[to];
@@ -1187,6 +1190,15 @@ impl ExperienceOrb {
         let sky = light >> 4;
         (u32::try_from(sky).unwrap_or(0) * 16) | ((u32::try_from(block).unwrap_or(15) * 16) << 8)
     }
+    /// `ExperienceOrb.setUnderwaterMovement`: buoyancy and drag before moving.
+    fn set_underwater_movement(&mut self) {
+        // Vanilla widens float constants before applying double arithmetic.
+        self.velocity = Vec3::new(
+            self.velocity.x * f64::from(0.99_f32),
+            (self.velocity.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
+            self.velocity.z * f64::from(0.99_f32),
+        );
+    }
     pub fn tick(
         &mut self,
         world: &World,
@@ -1197,6 +1209,7 @@ impl ExperienceOrb {
         next_float: &mut dyn FnMut() -> f32,
         border: Option<&BorderGeometry>,
         fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
@@ -1216,11 +1229,7 @@ impl ExperienceOrb {
         // inside blocks takes no gravity until it is pushed out below.
         let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
         if facts.get(block).fluid == Fluid::Water {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                (self.velocity.y + 5.0e-4).min(0.06),
-                self.velocity.z * 0.99,
-            );
+            self.set_underwater_movement();
         } else if !colliding {
             self.velocity.y -= self.get_gravity();
         }
@@ -1285,6 +1294,9 @@ impl ExperienceOrb {
         if moved.y != wanted.y {
             self.velocity.y = 0.0;
         }
+        // ExperienceOrb.tick applies block effects after moving, before drag.
+        let discarded =
+            server && self.apply_lava_contact_damage(world, fluids, wanted, next_float, on_sound);
         // `float friction = getAirDrag()` (0.98F), the ground's block
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
@@ -1311,7 +1323,47 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        self.age < 6000
+        !discarded && self.age < 6000
+    }
+    /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
+    /// server, through the orb's existing hurt/discard policy, playing the generic
+    /// burn sound (`minecraft:entity.generic.burn`, volume 0.4, pitch 2.0 + random * 0.4)
+    /// on each hurt contact. This is separate from the lava impulse at the start of the tick.
+    pub fn apply_lava_contact_damage(
+        &mut self,
+        world: &World,
+        fluids: &crate::motion::FluidResources,
+        wanted: Vec3,
+        next_float: &mut dyn FnMut() -> f32,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+    ) -> bool {
+        if self.health <= 0 {
+            return true;
+        }
+        let contacts = orb_lava_contacts(self.previous, self.position, wanted, |p| {
+            let fluid = fluids.fluid(world.block(p.x, p.y, p.z));
+            if !fluid
+                .kind()
+                .same_family(horizon_world::fluid::FluidKind::Lava)
+            {
+                return None;
+            }
+            let above = fluids.fluid(world.block(p.x, p.y + 1, p.z));
+            Some(if fluid.kind().same_family(above.kind()) {
+                1.0
+            } else {
+                f64::from(fluid.own_height())
+            })
+        });
+        for _ in 0..contacts {
+            let dead = self.hurt(4.0);
+            let pitch = 2.0 + next_float() * 0.4;
+            on_sound([self.position.x, self.position.y, self.position.z], pitch);
+            if dead {
+                return true;
+            }
+        }
+        false
     }
     /// `Entity.moveTowardsClosestSpace` from the middle of the orb's box:
     /// towards the nearest side of its block (north, south, west, east or
@@ -1550,6 +1602,8 @@ pub struct ItemFrame {
     pub fixed: bool,
     pub invisible: bool,
     pub check_interval: u32,
+    /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
+    pub custom_name: Option<horizon_world::nbt::Tag>,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
@@ -1578,6 +1632,16 @@ impl ItemFrame {
             std::array::from_fn(|i| c[i] - size[i] / 2.0),
             std::array::from_fn(|i| c[i] + size[i] / 2.0),
         )
+    }
+    /// `ItemFrame.getFrameItemStackWithData`: `getFrameItemStack` (a glow
+    /// frame's own item), then `DataComponents.CUSTOM_NAME` from
+    /// `getCustomName`.
+    pub fn item_stack_with_data(&self) -> ItemStack {
+        let mut item_stack = ItemStack::new(self.kind(), 1);
+        if let Some(name) = &self.custom_name {
+            item_stack.data_mut().custom_name = Some(name.clone());
+        }
+        item_stack
     }
 }
 /// An armor stand (`ArmorStand`).
@@ -2459,6 +2523,35 @@ mod merge_tests {
         assert_eq!(items[0].age, 8, "age 7, plus the rest of this tick");
     }
 
+    /// ItemEntity.merge uses signed room, including zero and negative transfers.
+    #[test]
+    fn overstacked_items_transfer_back_without_losing_merge_metadata() {
+        for (counts, expected) in [([80, 10], [64, 26]), ([64, 26], [64, 26])] {
+            let mut items = [
+                item("minecraft:stone", counts[0], 0.5, 41),
+                item("minecraft:stone", counts[1], 0.6, 7),
+            ];
+            for item in &mut items {
+                item.stack.data_mut().set_other(
+                    "minecraft:max_stack_size",
+                    Some(horizon_world::nbt::Tag::Int(99)),
+                );
+            }
+            let before = [items[0].stack.clone(), items[1].stack.clone()];
+            items[1].pickup_delay = 30;
+            let mut removed = [false; 2];
+            let mut cells = ItemCells::new(&items);
+            merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &|_| 99);
+            assert_eq!([items[0].stack.count, items[1].stack.count], expected);
+            assert_eq!(removed, [false, false]);
+            assert_eq!(items[0].pickup_delay, 30);
+            assert_eq!(items[0].age, 8, "younger age 7, then this tick ends");
+            for (item, stack) in items.iter().zip(&before) {
+                assert!(item.stack.same_item_same_components(stack));
+            }
+        }
+    }
+
     #[test]
     fn items_merge_only_within_half_a_block_sideways() {
         // Boxes 0.25 wide grown by 0.5: centres closer than 0.75 meet.
@@ -2693,6 +2786,7 @@ mod world_border_tests {
                 &mut || 0.0,
                 border,
                 &fluids,
+                &mut |_, _| {},
             );
             for (what, east) in [
                 ("item", item.bounds().max_position().x),
@@ -3833,6 +3927,72 @@ mod item_destroyed_tests {
     }
 }
 #[cfg(test)]
+mod orb_underwater_tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_executed_java_private_method() {
+        // Actual 26.3 setUnderwaterMovement calls on server-level orbs,
+        // captured by test_orb_water_parity.py (orb-water-reference.json).
+        // Cover both horizontal signs, falling/rising, and the vertical cap.
+        let cases: [([f64; 3], [u64; 3]); 6] = [
+            (
+                [0.0, 0.0, 0.0],
+                [0x0000000000000000, 0x3f40624de0000000, 0x0000000000000000],
+            ),
+            (
+                [0.1, 0.01, -0.2],
+                [0x3fb9581066666667, 0x3f85810625ae147b, 0xbfc9581066666667],
+            ),
+            (
+                [-0.25, -0.03, 0.125],
+                [0xbfcfae1480000000, 0xbf9e353f7c851eb8, 0x3fbfae1480000000],
+            ),
+            (
+                [0.0, 0.059, 0.0],
+                [0x0000000000000000, 0x3fae76c8b46d9168, 0x0000000000000000],
+            ),
+            (
+                [0.5, 0.0595, -0.5],
+                [0x3fdfae1480000000, 0x3faeb851e0000000, 0xbfdfae1480000000],
+            ),
+            (
+                [-1.0, 0.2, 1.0],
+                [0xbfefae1480000000, 0x3faeb851e0000000, 0x3fefae1480000000],
+            ),
+        ];
+        let actual: Vec<_> = cases
+            .iter()
+            .map(|(v, _)| {
+                let mut orb = ExperienceOrb {
+                    rotation: [0.0, 0.0],
+                    join: Default::default(),
+                    no_gravity: false,
+                    id: 1,
+                    position: Vec3::ZERO,
+                    previous: Vec3::ZERO,
+                    velocity: Vec3::new(v[0], v[1], v[2]),
+                    value: 1,
+                    age: 0,
+                    on_ground: false,
+                    count: 1,
+                    ticks: 0,
+                    health: 5,
+                };
+                orb.set_underwater_movement();
+                [
+                    orb.velocity.x.to_bits(),
+                    orb.velocity.y.to_bits(),
+                    orb.velocity.z.to_bits(),
+                ]
+            })
+            .collect();
+        let expected: Vec<_> = cases.into_iter().map(|(_, bits)| bits).collect();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
 mod render_light_tests {
     use super::*;
 
@@ -3905,3 +4065,444 @@ mod render_light_tests {
     }
 }
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
+#[cfg(test)]
+mod orb_lava_tests {
+    use super::*;
+
+    fn with_fixture(
+        mut f: impl FnMut(
+            &mut World,
+            &BlockFacts,
+            &BlockCollisionRegistry<'_>,
+            &crate::motion::FluidResources,
+            &crate::assets::Assets,
+        ),
+    ) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("orb lava fixture unavailable: prepared resources missing");
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        f(&mut world, &facts, &collision, &fluids, &assets);
+    }
+
+    fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
+        ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health,
+        }
+    }
+
+    #[test]
+    fn a_server_orb_takes_lava_damage_after_moving_and_discards_at_zero() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut client = orb.clone();
+            for expected_age in 1..=2 {
+                assert!(client.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    false,
+                    &mut || 0.0,
+                    None,
+                    fluids,
+                    &mut |_, _| {}
+                ));
+                assert_eq!((client.health, client.age), (5, expected_age));
+            }
+            let mut sounds = Vec::new();
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.0,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!((orb.health, orb.age), (1, 1));
+            assert_eq!(sounds.len(), 1);
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.0,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!((orb.health, orb.age), (-3, 2));
+            assert_eq!(sounds.len(), 1);
+        });
+    }
+
+    #[test]
+    fn legacy_orb_in_air_or_water_or_non_lava_does_not_play_sound_or_consume_random() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            // Air scenario
+            {
+                let mut orb_air = sample_orb(Vec3::new(20.5, 6.0, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_air.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in air must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in air must not consume random float for lava"
+                );
+                assert_eq!(orb_air.health, 5);
+            }
+
+            // Water scenario
+            {
+                let water = assets.registry.default_state("minecraft:water").unwrap();
+                world.set(20, 4, 20, water).unwrap();
+                let mut orb_water = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_water.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in water must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in water must not consume random float for lava"
+                );
+                assert_eq!(orb_water.health, 5);
+            }
+        });
+    }
+
+    #[test]
+    fn negative_case_non_contact_or_client_orb_does_not_play_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // Distant orb (no contact)
+            let mut orb_away = sample_orb(Vec3::new(22.5, 4.1, 22.5), 5);
+            let mut draws = 0;
+            let mut next_float = || {
+                draws += 1;
+                0.5
+            };
+            let mut sounds = Vec::new();
+            assert!(orb_away.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut next_float,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "non-contact orb must not play burn sound"
+            );
+            assert_eq!(draws, 0, "non-contact orb must not consume random float");
+            assert_eq!(orb_away.health, 5);
+
+            // Client orb in lava (server = false)
+            let mut client_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            sounds.clear();
+            assert!(client_orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                false,
+                &mut || 0.5,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "client orb in lava must not play burn sound"
+            );
+            assert_eq!(client_orb.health, 5);
+
+            // Dead orb (health <= 0) takes no contact damage and emits no sound
+            let mut dead_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 0);
+            sounds.clear();
+            let mut dead_draws = 0;
+            let discarded = dead_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                Vec3::ZERO,
+                &mut || {
+                    dead_draws += 1;
+                    0.5
+                },
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "dead orb remains discarded");
+            assert!(sounds.is_empty(), "dead orb must not play burn sound");
+            assert_eq!(dead_draws, 0, "dead orb must not consume random float");
+        });
+    }
+
+    #[test]
+    fn positive_case_server_orb_in_lava_plays_generic_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut sounds = Vec::new();
+            let float_val = 0.35_f32;
+            let stays = orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || float_val,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(stays, "orb survives first contact with 1 HP");
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1, "exactly one burn sound played");
+            let expected_pitch = 2.0_f32 + float_val * 0.4_f32;
+            assert!((sounds[0].1 - expected_pitch).abs() < 1e-6);
+            assert_eq!(
+                sounds[0].0,
+                [orb.position.x, orb.position.y, orb.position.z]
+            );
+        });
+    }
+
+    #[test]
+    fn boundary_case_surviving_and_discarding_and_multi_contact_in_one_tick() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // 1. Surviving at 1 HP vs discarding at <= 0 HP
+            let mut orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            let mut sounds = Vec::new();
+
+            // Tick 1: 5 HP -> 1 HP (survives)
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.1,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.1 * 0.4)).abs() < 1e-6);
+
+            // Tick 2: 1 HP -> -3 HP (discarded)
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.9,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, -3);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.9 * 0.4)).abs() < 1e-6);
+
+            // 2. Multiple lava contacts in a single tick
+            world.set(21, 4, 20, lava).unwrap();
+            let mut multi_orb = sample_orb(Vec3::new(21.5, 4.1, 20.5), 5);
+            multi_orb.previous = Vec3::new(19.8, 4.1, 20.5);
+            let wanted = Vec3::new(1.7, 0.0, 0.0);
+            let mut float_draws = vec![0.2_f32, 0.8_f32];
+            let mut multi_sounds = Vec::new();
+            let discarded = multi_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                wanted,
+                &mut || float_draws.remove(0),
+                &mut |pos, pitch| multi_sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "orb is discarded after two contacts");
+            assert_eq!(multi_orb.health, -3);
+            assert_eq!(multi_sounds.len(), 2, "both contacts triggered burn sound");
+            assert!((multi_sounds[0].1 - (2.0 + 0.2 * 0.4)).abs() < 1e-6);
+            assert!((multi_sounds[1].1 - (2.0 + 0.8 * 0.4)).abs() < 1e-6);
+        });
+    }
+}
+
+/// `Entity.checkInsideBlocks` and `collidedWithFluid`: fluid AABB contacts
+/// along Entity.move's axis-ordered path, each block visited once.
+fn orb_lava_contacts(
+    from: Vec3,
+    to: Vec3,
+    wanted: Vec3,
+    mut lava_height: impl FnMut(BlockPos) -> Option<f64>,
+) -> usize {
+    let delta = to.subtract(from);
+    let mut visited = std::collections::HashSet::new();
+    let mut contacts = 0;
+    let mut remaining = 16;
+    let mut segment = |start: Vec3, end: Vec3, budget: i32| {
+        let mut iterations = 0;
+        let epsilon = f64::from(1.0e-5_f32);
+        let target = ExperienceOrb::box_at(end).deflate(Vec3::new(epsilon, epsilon, epsilon));
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            start,
+            end,
+            target,
+            1_000_000,
+            |p, step| {
+                if step >= budget {
+                    return false;
+                }
+                iterations = step;
+                if visited.contains(&p) {
+                    return true;
+                }
+                if let Some(height) = lava_height(p) {
+                    let min = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                    let fluid = Aabb::new(min, min.add_vector(Vec3::new(1.0, height, 1.0)));
+                    if ExperienceOrb::box_at(start)
+                        .collided_along_vector(end.subtract(start), &[fluid])
+                    {
+                        visited.insert(p);
+                        contacts += 1;
+                    }
+                }
+                true
+            },
+        );
+        iterations + 1
+    };
+    if delta.length_squared() > 0.0 {
+        // Direction.axisStepOrder uses the original, uncollided movement.
+        let order = if wanted.x.abs() < wanted.z.abs() {
+            [1, 2, 0]
+        } else {
+            [1, 0, 2]
+        };
+        let components = delta.components();
+        let mut start = from;
+        for axis in order {
+            if components[axis] != 0.0 {
+                let mut end = start.components();
+                end[axis] += components[axis];
+                let end = Vec3::new(end[0], end[1], end[2]);
+                remaining -= segment(start, end, remaining);
+                start = end;
+            }
+        }
+    } else {
+        remaining -= segment(from, to, remaining);
+    }
+    if remaining <= 0 {
+        segment(to, to, 1);
+    }
+    contacts
+}
+
+#[cfg(test)]
+mod orb_lava_shape_tests {
+    use super::*;
+
+    fn contacts(from: Vec3, to: Vec3) -> usize {
+        orb_lava_contacts(from, to, to.subtract(from), |p| {
+            (p == BlockPos::new(0, 0, 0)).then_some(f64::from(8.0_f32 / 9.0))
+        })
+    }
+
+    #[test]
+    fn lava_uses_the_swept_box_and_fluid_height_not_the_feet_block() {
+        let side = Vec3::new(-0.2, 0.1, 0.5);
+        assert_eq!(contacts(side, side), 1);
+        let above = Vec3::new(0.5, 0.95, 0.5);
+        assert_eq!(contacts(above, above), 0);
+        let through = Vec3::new(-1.0, 0.1, 0.5);
+        let end = Vec3::new(2.0, 0.1, 0.5);
+        assert_eq!(contacts(through, end), 1);
+        let away = Vec3::new(-1.0, 0.1, -1.0);
+        assert_eq!(contacts(away, away), 0);
+    }
+
+    #[test]
+    fn axis_segments_do_not_damage_twice_for_the_same_lava_cell() {
+        let from = Vec3::new(0.1, 0.1, 0.1);
+        let to = Vec3::new(0.7, 0.2, 0.7);
+        assert_eq!(contacts(from, to), 1);
+        assert_eq!(
+            orb_lava_contacts(from, to, Vec3::new(0.1, 0.1, 0.9), |p| {
+                (p == BlockPos::new(0, 0, 0)).then_some(1.0)
+            }),
+            1
+        );
+    }
+}

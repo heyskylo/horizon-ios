@@ -298,10 +298,10 @@ as vanilla's; without one it draws as the missing texture). It does nothing on i
 attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
 only with the same mods' effects, as with its blocks.
 
-A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type: for now only
-`minecraft:snowball`, a thrown item projectile. `item` is one of the mod's own items (one type per item), and `damage`
-(0 by default) is what a hit deals to anything it hits, as `thrown` damage from the thrower (the snowball's 3 to blazes
-is not copied):
+A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
+`minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own
+items (one type per item), and `damage` (0 by default) is what a hit deals to anything it hits, as `thrown` damage from
+the thrower (the snowball's 3 to blazes is not copied):
 
 ```json
 { "template": "minecraft:snowball", "item": "ruby:ember", "damage": 2.0 }
@@ -312,9 +312,29 @@ thrown: same speed, spread, sound and cooldown, and one item used outside creati
 what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
 `entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
 untested so far. Clients join a server only with the same mods' entity types, as with its blocks. It is saved with its
-chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`. A world opened without the
+chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`, with `template` naming
+it. A world opened without the
 mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
 server with it may be disconnected when one spawns.
+
+A living type copies a mob, `minecraft:zombie` or `minecraft:villager`, the way NeoForge's
+`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. It has no `item` or `damage`. `attributes`
+sets default attribute values that differ from its template's (`EntityAttributeCreationEvent`), by attribute id, and
+only for attributes the template has; one it lacks stops the content root's build:
+
+```json
+{ "template": "minecraft:zombie", "attributes": { "minecraft:max_health": 40.0, "minecraft:movement_speed": 0.3 } }
+```
+
+It is a mob of its template's class under its own id, `<id>:<name>`: the template's size, model, texture, sounds and
+behaviour, with its own attributes. It saves what its template's class saves under its own id (a zombie's `IsBaby`,
+`CanBreakDoors` and conversion times) and loads back as itself. Its entity data is its template's class's. Its loot
+table is its own, `<id>:entities/<name>` (vanilla's `EntityType.getDefaultLootTable`). It is not in vanilla's entity type
+tags (`#minecraft:undead`, `#minecraft:zombies`...) unless the mod adds it. Its row in `entity-types.json` is its
+template's, with `template` added and its attributes in place of the template's. Unit tests check all this; it has
+not yet been tried in a running game. Not yet as data: its own model or texture (a native mod draws one with
+`native_mob_submit`) and its own goals (a native mod gives it them with
+[`register_goals`](native-mods.md#mob-goals)).
 
 #### Menu types
 
@@ -377,6 +397,16 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 "mod towns replaces data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: vanilla's entries and those
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
+
+Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
+with required `message_id`, `scaling` and `exhaustion` fields, plus optional
+`effects` and `death_message_type`. Resource-root files and enabled world packs
+load when a world opens; an invalid definition refuses that load. Definitions
+remain frozen for that world session. `/reload` rebuilds
+`tags/damage_type/` against those definitions, so disabling a pack removes its
+tag additions but keeps its registered types until the world is reopened.
+Player damage, damage predicates and synchronized damage tags use that same
+world snapshot; local catalog indices and network registry IDs are separate.
 
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
 mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data

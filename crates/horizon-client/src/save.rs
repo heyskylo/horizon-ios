@@ -528,14 +528,15 @@ impl SaveTables {
 
 pub use crate::chunk::{ChunkExtras, RolledLoot, SavedProto};
 
-/// A container was opened: its eager roll is now the container's own inventory.
+/// A container was opened, or a command's tag dropped or replaced its roll: the
+/// table it was loaded with is no longer what it holds.
 pub fn consume_container_loot(extras: &mut ChunkExtras, pos: (i32, i32, i32)) {
     let before = extras.rolled_loot.len();
     extras.rolled_loot.retain(|r| r.pos != pos);
     if extras.rolled_loot.len() == before {
         return;
     }
-    // The source compound participates in the save overlay. Once opened,
+    // The source compound participates in the save overlay. From here on,
     // even an emptied chest must not inherit its old loot table from there.
     for (source_pos, source) in &mut extras.block_entity_sources {
         if *source_pos == pos
@@ -858,7 +859,9 @@ fn roll_loaded_loot(
     let crate::containers::BlockEntity::Chest(slots) = &mut be.1 else {
         return None;
     };
-    let table = text(tag.get("LootTable"))?;
+    // `tryLoadLootTable`: a key the codec rejects is no table at all.
+    let table = text(tag.get("LootTable"))
+        .and_then(|id| horizon_client_core::identifier::normalize_id(&id))?;
     if slots.iter().any(Option::is_some) {
         return None;
     }
@@ -6277,6 +6280,88 @@ mod tests {
         let item = chest.slots()[3].as_ref().expect("saved item");
         assert_eq!(item.item.as_ref(), "minecraft:diamond");
         assert_eq!(item.count, 7);
+    }
+
+    /// `tryLoadLootTable` in every `RandomizableContainer`'s `loadAdditional`
+    /// (barrel, shulker boxes, hopper, dispenser, dropper):
+    /// a valid table leaves the saved `Items` unread, as for the chest.
+    #[test]
+    fn every_randomizable_container_lets_its_loot_table_win_over_saved_items() {
+        for (id, size) in [
+            ("minecraft:barrel", 27),
+            ("minecraft:shulker_box", 27),
+            ("minecraft:white_shulker_box", 27),
+            ("minecraft:hopper", crate::containers::HOPPER_SLOTS),
+            ("minecraft:dispenser", 9),
+            ("minecraft:dropper", 9),
+        ] {
+            let mut saved = horizon_world::nbt::parse_snbt(&format!(
+                r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:3b,id:"minecraft:diamond",count:7}}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}}"#
+            ))
+            .unwrap()
+            .0;
+            let (_, mut container) = decode_block_entity(&saved).expect(id);
+            assert_eq!(container.slots().len(), size, "{id}");
+            assert!(
+                container.slots().iter().all(Option::is_none),
+                "{id}: loadAdditional ignores Items when a loot table loads"
+            );
+            let rolled = crate::structure_blocks::roll_container(
+                container.slots_mut(),
+                None,
+                "minecraft:chests/simple_dungeon".into(),
+                Some(42),
+                (1, 2, 3),
+                "minecraft:plains",
+            );
+            let mut stored = block_entity_data((1, 2, 3), &container, id, None);
+            let Tag::Compound(fields) = &mut stored else {
+                panic!("compound");
+            };
+            assert!(rolled.restore(fields), "{id}");
+            assert_eq!(stored.get("LootTable"), saved.get("LootTable"), "{id}");
+            assert_eq!(
+                stored.get("LootTableSeed"),
+                saved.get("LootTableSeed"),
+                "{id}"
+            );
+            assert!(stored.get("Items").is_none(), "{id}");
+            let Tag::Compound(fields) = &mut saved else {
+                panic!("compound");
+            };
+            fields.remove(&"LootTable".into());
+            let (_, container) = decode_block_entity(&saved).expect(id);
+            let item = container.slots()[3].as_ref().expect("saved item");
+            assert_eq!(item.item.as_ref(), "minecraft:diamond", "{id}");
+            assert_eq!(item.count, 7, "{id}");
+        }
+    }
+
+    #[test]
+    fn invalid_container_loot_tables_leave_saved_items_intact() {
+        for id in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:barrel",
+            "minecraft:shulker_box",
+            "minecraft:hopper",
+            "minecraft:dispenser",
+            "minecraft:dropper",
+        ] {
+            for invalid in ["INVALID TABLE", "bad:table/with spaces", "bad@id"] {
+                let saved = horizon_world::nbt::parse_snbt(&format!(
+                    r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:0b,id:"minecraft:diamond",count:3}}],LootTable:"{invalid}"}}"#
+                ))
+                .unwrap()
+                .0;
+                let (_, container) = decode_block_entity(&saved).expect(id);
+                let item = container.slots()[0]
+                    .as_ref()
+                    .expect("saved item with invalid table");
+                assert_eq!(item.item.as_ref(), "minecraft:diamond");
+                assert_eq!(item.count, 3);
+            }
+        }
     }
 
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`

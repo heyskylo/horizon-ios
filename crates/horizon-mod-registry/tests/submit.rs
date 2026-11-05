@@ -434,12 +434,31 @@ async fn a_submission_becomes_a_pull_request() {
     assert_eq!(mock.lock().unwrap().assets.len(), 1, "uploaded once");
 }
 
+/// The mock GitHub's account IDs: `alice` is 7, anyone else 8.
+const ALICE_ID: u64 = 7;
+
 /// `mods/coords_hud.toml` on main as `alice` owns it: what the form's page
-/// says, a dummy first version.
+/// says, a dummy first version. Its `owner_ids` is the account the mock
+/// signs in as `alice`.
 fn published(owner: &str, key: bool) -> String {
+    published_with_ids(owner, key, &[ALICE_ID])
+}
+
+/// [`published`] with the owner IDs given (none: an entry from before they were recorded).
+fn published_with_ids(owner: &str, key: bool, ids: &[u64]) -> String {
     let f = form();
+    let ids = match ids {
+        [] => String::new(),
+        ids => format!(
+            "owner_ids = [{}]\n",
+            ids.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
     let text = format!(
-        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\nlicense = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
+        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\n{ids}license = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
         if key {
             format!("key = {}\n", f["key"])
         } else {
@@ -482,7 +501,7 @@ async fn an_owners_update_is_signed_for_the_repository() {
     let trailer = body.split("<!-- owner-update\n").nth(1).expect(&body);
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(UPDATE_KEY).unwrap();
     mac.update(
-        format!("owner-update-v1\ncoords_hud\n0.1.0\n{HMOD_SHA}\ncoords_hud-0.1.0.hmod\nalice")
+        format!("owner-update-v2\ncoords_hud\n0.1.0\n{HMOD_SHA}\ncoords_hud-0.1.0.hmod\nalice\n{ALICE_ID}")
             .as_bytes(),
     );
     let hmac: String = mac
@@ -494,7 +513,7 @@ async fn an_owners_update_is_signed_for_the_repository() {
     assert_eq!(
         trailer,
         format!(
-            "id: coords_hud\nversion: 0.1.0\nsha256: {HMOD_SHA}\nfile: coords_hud-0.1.0.hmod\nsubmitter: alice\nhmac: {hmac}\n-->"
+            "format: v2\nid: coords_hud\nversion: 0.1.0\nsha256: {HMOD_SHA}\nfile: coords_hud-0.1.0.hmod\nsubmitter: alice\nsubmitter_id: {ALICE_ID}\nhmac: {hmac}\n-->"
         ),
     );
     assert_eq!(labels, [(1, json!(["owner-update"]))]);
@@ -541,6 +560,59 @@ async fn everything_else_waits_for_a_reviewer() {
     };
     let (body, _) = update(published("alice", false), unkeyed, Some(UPDATE_KEY)).await;
     assert!(body.contains("<!-- owner-update"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_match_alone_waits_for_a_reviewer() {
+    // An entry from before owner IDs were recorded: alice is matched by login, so the
+    // pull request opens, but without the owner-update trailer, and says why.
+    let (body, labels) = update(
+        published_with_ids("alice", true, &[]),
+        |_| {},
+        Some(UPDATE_KEY),
+    )
+    .await;
+    assert!(!body.contains("<!-- owner-update"), "{body}");
+    assert!(labels.is_empty());
+    assert!(body.contains("matched by login only"), "{body}");
+    assert!(
+        body.contains(&format!("owner_ids = [{ALICE_ID}]")),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reclaimed_login_is_not_the_owner() {
+    // The entry's alice was account 99; the account signing in as alice now is 7: someone who
+    // claimed the login after a rename. Refused, and nothing reaches GitHub.
+    let (mut client, mock) = setup_keyed(|_| {}, Some(UPDATE_KEY)).await;
+    mock.lock().unwrap().main.insert(
+        "mods/coords_hud.toml".into(),
+        published_with_ids("alice", true, &[99]),
+    );
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let csrf = client.sign_in().await;
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    assert!(
+        json["error"].as_str().unwrap().contains("only its owners"),
+        "{json}"
+    );
+    let m = mock.lock().unwrap();
+    assert!(m.pulls.is_empty() && m.assets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_renamed_owner_keeps_publishing_by_id() {
+    // The entry still lists the old login; the account (ID 7) signs in under its new one.
+    let (body, labels) = update(
+        published_with_ids("alice-old-name", true, &[ALICE_ID]),
+        |_| {},
+        Some(UPDATE_KEY),
+    )
+    .await;
+    assert!(body.contains("<!-- owner-update"), "{body}");
+    assert_eq!(labels, [(1, json!(["owner-update"]))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

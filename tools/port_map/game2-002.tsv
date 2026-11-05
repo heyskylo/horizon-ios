@@ -9,7 +9,7 @@ ItemFrame.getSlot	inline	crates/horizon-client/src/game/commands/items.rs::Game:
 ItemFrame.onSyncedDataUpdated	skip:other		network data-sync hook; the item is read from the frame field on demand
 ItemFrame.setRotation	inline	crates/horizon-client/src/game/frames.rs::Game::interact_frame	the rotate-by-one step; the neighbour update is in frame_output_changed
 ItemFrame.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::item_frame_from_nbt	gap: minor: Facing defaults to 2 where vanilla defaults to DOWN
-ItemFrame.getFrameItemStackWithData	missing		`game/frames.rs::drop_frame_items` builds a plain `item_frame` stack, so a broken frame never carries its custom name
+ItemFrame.getFrameItemStackWithData	port	crates/horizon-client/src/entities.rs::ItemFrame::item_stack_with_data	drop_frame_items spawns that stack, so a broken item frame or glow item frame keeps its custom name
 ItemFrame.getVisualRotationYInDegrees	inline	crates/horizon-client/src/game/frames.rs::Game::frame_geometry	the 45 degree step per rotation step is drawn in frame_geometry
 LeashFenceKnotEntity.recalculateBoundingBox	port	crates/horizon-client/src/mobs/leash.rs::knot_state	position and box from the block position
 LeashFenceKnotEntity.getOrCreateKnot	inline	crates/horizon-client/src/game/leads.rs::Game::interact_knot	knots are not entities in game; the knot is used when a lead is tied
@@ -105,7 +105,7 @@ Phantom.PhantomBodyRotationControl.clientTick	inline	crates/horizon-client/src/m
 Phantom.PhantomMoveTargetGoal.touchingTarget	inline	crates/horizon-client/src/mobs/phantom.rs::CircleAroundAnchor::tick	the squared distance under 4 check near the move target
 Phantom.PhantomSweepAttackGoal.canContinueToUse	port	crates/horizon-client/src/mobs/phantom.rs::SweepAttack::can_continue	the cat hiss and scare check
 Ravager.registerGoals	port	crates/horizon-client/src/mobs/ravager.rs::register	
-Ravager.updateControlFlags	missing		the goal set has no control flags, so a mob driving a boat does not switch off the ravager's own move, jump and look goals
+Ravager.updateControlFlags	inline	crates/horizon-client/src/mobs/riders.rs::drive	raider controllers permit MOVE/JUMP/LOOK/TARGET; other mob controllers disable them; gap: minor: a ravager in a boat keeps its JUMP goals
 Ravager.createAttributes	skip:data		attribute defaults come from data tables
 Ravager.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	AttackTick, StunTick and RoarTick are written there
 Ravager.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	the same three tick values are read there

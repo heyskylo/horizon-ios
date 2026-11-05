@@ -163,6 +163,11 @@ impl Game<'_> {
                     if owner_breeze && m.species() == Species::Breeze {
                         return;
                     }
+                    // Refused before the hurt, so the kill is not credited
+                    // either; the burst of `wind_charge_hit` still goes off.
+                    if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
+                        return;
+                    }
                     m.damage(1.0, source);
                 }
                 if p.owner == Some(Who::Player) {

@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "U tijeku je izvorna kompilacija ili čišćenje predmemorije. Pokušajte ponovno nakon završetka.",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Otvori trgovinu",
   "You don't own any cosmetics yet.": "Još nemaš nijednu kozmetiku.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatski prati arhitekturu ovog pokretača. Na Windows ARM-u odaberite x64 ili ARM64. Izdanja bez ARM64 koriste potpisanu x64 verziju.",
+  "Game architecture": "Arhitektura igre",
+  "Install selected build": "Instaliraj odabranu verziju",
+  "Manual game architectures are available on Windows ARM only.": "Ručni odabir arhitekture igre dostupan je samo na Windows ARM-u.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Windows ARM64 pokretač još ne podržava nativne modove; njegov upravljani prevoditelj nije dostupan.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "Još nije moguće izgraditi nativne modove za odabranu ARM64 igru. Dostupni prevoditelj izrađuje samo x64.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "Ne mogu se izgraditi nativni modovi za odabranu x64 igru. Ovaj ARM64 pokretač nema odgovarajući prevoditelj.",
+  "Say auto, x64 or arm64 for the game architecture.": "Unesite auto, x64 ili arm64 za arhitekturu igre.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Ova verzija sadrži igru {installed}, ali je u Postavkama odabrano {selected}. Prije pokretanja instalirajte odabranu verziju na stranici Verzije.",
+  "Automatic": "Automatski",
+  "{tag} has no build for the selected game architecture.": "{tag} nema verziju za odabranu arhitekturu igre.",
+  "Unknown": "Nepoznato",
   "Claim for free": "Preuzmi besplatno",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Pružatelj plaćanja trgovine ne posluje u vašoj zemlji, pa Osnivački set možete preuzeti ovdje besplatno.",
-  "The Founder Set is yours.": "Osnivački set je vaš."
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "Osnivački set je vaš.",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

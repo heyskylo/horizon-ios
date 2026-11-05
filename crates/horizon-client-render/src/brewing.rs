@@ -487,6 +487,63 @@ mod tests {
         assert!(!stand.idle());
     }
 
+    /// The stand sleeps while `idle`, so its tick must change nothing then: run the real
+    /// tick on idle stands and compare, and check a stand with fuel to take wakes.
+    #[test]
+    fn an_idle_brewing_stand_tick_changes_nothing() {
+        let items = Items::for_tests(std::collections::HashMap::new());
+        let brewing = Brewing {
+            reagents: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+            inputs: HashSet::new(),
+            recipes: vec![BrewingRecipe {
+                id: "awkward".into(),
+                input: PotionIngredient {
+                    items: ["minecraft:potion".to_owned()].into_iter().collect(),
+                    potions: Some(["minecraft:water".to_owned()].into_iter().collect()),
+                },
+                reagent: PotionIngredient {
+                    items: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+                    potions: None,
+                },
+                output: ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward"),
+            }],
+        };
+        let providers = Providers::empty();
+        let water = || Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"));
+        let stand = |bottle: bool, fuel: i32, powder: bool| {
+            let mut s = BrewingStand::new();
+            s.fuel = fuel;
+            if bottle {
+                s.items[1] = water();
+            }
+            if powder {
+                s.items[4] = Some(ItemStack::new("minecraft:blaze_powder", 1));
+            }
+            s.last_bottles = Some([false, bottle, false]);
+            s
+        };
+        for before in [
+            stand(false, 0, false),
+            stand(true, 0, false),
+            stand(true, 5, false),
+            stand(true, 5, true),
+        ] {
+            assert!(before.idle(), "{before:?}");
+            let mut after = before.clone();
+            assert_eq!(
+                after.tick(&brewing, &items, &providers),
+                BrewTick::default()
+            );
+            assert_eq!(format!("{after:?}"), format!("{before:?}"));
+        }
+        // A brewable ingredient starts the brew: not idle, and the tick changes it.
+        let mut brewing_now = stand(true, 5, false);
+        brewing_now.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        assert!(!brewing_now.idle());
+        brewing_now.tick(&brewing, &items, &providers);
+        assert_eq!(brewing_now.brew_time, 400);
+    }
+
     /// #3312: `PotionContents.getPotionDescription` names the effects with
     /// translatable components, so a Russian game reads them from ru_ru.json
     /// (the prepared one; skipped without it), as the tooltip's other lines.

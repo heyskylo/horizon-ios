@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "原生构建或缓存清理正在进行中。请在完成后重试。",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "无法打开数据文件夹：{error}",
   "Open the shop": "打开商店",
   "You don't own any cosmetics yet.": "你还没有任何装饰。",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "自动使用此启动器的架构。在 Windows ARM 上可选择 x64 或 ARM64。没有 ARM64 版本的发行版将使用已签名的 x64 版本。",
+  "Game architecture": "游戏架构",
+  "Install selected build": "安装所选版本",
+  "Manual game architectures are available on Windows ARM only.": "仅 Windows ARM 支持手动选择游戏架构。",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Windows ARM64 启动器暂不支持原生模组；目前没有可用的托管编译器。",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "目前无法为所选 ARM64 游戏构建原生模组。现有编译器仅构建 x64 版本。",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "无法为所选 x64 游戏构建原生模组。此 ARM64 启动器没有匹配的编译器。",
+  "Say auto, x64 or arm64 for the game architecture.": "游戏架构请输入 auto、x64 或 arm64。",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "此版本的游戏为 {installed} 架构，但设置中选择了 {selected}。启动前请在“版本”中安装所选版本。",
+  "Automatic": "自动",
+  "{tag} has no build for the selected game architecture.": "{tag} 没有适用于所选游戏架构的版本。",
+  "Unknown": "未知",
   "Claim for free": "免费领取",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "商店的支付服务商不在你所在的国家提供服务，因此你可以在这里免费领取创始者套装。",
-  "The Founder Set is yours.": "创始者套装已归你所有。"
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "创始者套装已归你所有。",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }

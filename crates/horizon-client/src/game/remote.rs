@@ -152,12 +152,12 @@ fn hurt_sound_for(
     damage: &horizon_world::damage_source::Catalog,
     source_type: i32,
 ) -> &'static str {
-    if let Some(Tag::String(effects)) = registries
-        .data("minecraft:damage_type", source_type)
-        .and_then(|t| t.get("effects"))
-        && let Ok(effects) = effects.to_string()
-    {
-        return horizon_client::health::hurt_sound(&effects);
+    if let Some(data) = registries.data("minecraft:damage_type", source_type) {
+        let effects = data.get("effects").and_then(|t| match t {
+            Tag::String(effects) => effects.to_string().ok(),
+            _ => None,
+        });
+        return horizon_client::health::hurt_sound(effects.as_deref().unwrap_or("hurt"));
     }
     registries
         .name("minecraft:damage_type", source_type)
@@ -171,8 +171,9 @@ fn hurt_sound_for(
 fn entity_sound_state(
     id: i32,
     player: Option<(i32, [f64; 3], bool)>,
-    mobs: &[Mob],
+    mob: Option<horizon_client::sound_engine::SoundEntityState>,
     tracked: &HashMap<i32, Tracked>,
+    dragon: Option<(i32, [f64; 3])>,
 ) -> Option<horizon_client::sound_engine::SoundEntityState> {
     use horizon_client::sound_engine::SoundEntityState;
     if let Some((player_id, position, silent)) = player
@@ -184,18 +185,20 @@ fn entity_sound_state(
             removed: false,
         });
     }
-    if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
-        return Some(SoundEntityState {
-            position: [m.position.x, m.position.y, m.position.z],
-            silent: m.silent,
-            removed: m.removed,
-        });
+    let mut state = mob.or_else(|| {
+        tracked.get(&id).map(|t| SoundEntityState {
+            position: t.position,
+            silent: t.silent,
+            removed: false,
+        })
+    })?;
+    // The dragon's Mob is metadata storage; only Dragon follows its movement.
+    if let Some((dragon_id, position)) = dragon
+        && dragon_id == id
+    {
+        state.position = position;
     }
-    tracked.get(&id).map(|t| SoundEntityState {
-        position: t.position,
-        silent: t.silent,
-        removed: false,
-    })
+    Some(state)
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -489,6 +492,9 @@ pub(super) struct Remote {
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
+    /// The game's enchantments and the server's that it lacks (a data
+    /// pack's), from their synced data; `None` when the server has none.
+    pub(super) enchantments: Option<Arc<horizon_client::enchant::Enchantments>>,
     pub(super) joined: bool,
     /// `ServerReconfigScreen` is up since this tick.
     pub(super) reconfiguring: Option<u64>,
@@ -533,6 +539,10 @@ pub(super) struct Remote {
     /// The dimension of the client level the mods heard made
     /// (`native_client_level_load`), to be told dropped once.
     heard_level: Option<String>,
+    /// The epoch native mods' entity handles carry on this client
+    /// (`native_entity_refs.rs`): a fresh one for each client level, so a
+    /// handle of the level before reads as None. None before the first.
+    native_epoch: Option<horizon_client::mod_api::NativeWorldEpoch>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
     /// or respawn, until the player's section is shown.
     pub(super) level_load: horizon_client::level_loading::LevelLoadTracker,
@@ -571,6 +581,8 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// The player's place in its vehicle's `getPassengers`.
+    pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -770,7 +782,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn remote_sound_entity_state(
-        &self,
+        &mut self,
         id: i32,
     ) -> Option<horizon_client::sound_engine::SoundEntityState> {
         let r = self.remote.as_ref()?;
@@ -781,9 +793,29 @@ impl Game<'_> {
                 r.local_entity_silent,
             )
         });
-        let mut state = entity_sound_state(id, player, &self.mobs, &r.entities)?;
-        // Vehicles, projectiles and other simulated objects may have moved since
-        // the last tracking packet, just as the mob interpolation has.
+        // The local player is not in mobs, so avoid a guaranteed index miss.
+        if player.is_some_and(|p| p.0 == id) {
+            return entity_sound_state(id, player, None, &r.entities, None);
+        }
+        let mob = self.mob_index.get(&self.mobs, id as u32).map(|m| {
+            horizon_client::sound_engine::SoundEntityState {
+                position: [m.position.x, m.position.y, m.position.z],
+                silent: m.silent,
+                removed: m.removed,
+            }
+        });
+        let dragon = self
+            .dragon
+            .as_ref()
+            .map(|d| (d.id as i32, [d.position.x, d.position.y, d.position.z]));
+        let mut state = entity_sound_state(id, player, mob, &r.entities, dragon)?;
+        // Mob states already use the live position. In particular,
+        // level_entity would find the dragon's stale Mob before its Dragon.
+        if mob.is_some() || dragon.is_some_and(|d| d.0 == id) {
+            return Some(state);
+        }
+        // Vehicles, projectiles and other simulated objects may have moved
+        // since the last tracking packet.
         if let Some(position) = self
             .level_entity(id)
             .and_then(|target| self.target_position(target))
@@ -798,7 +830,7 @@ impl Game<'_> {
     /// `hurt` default when the type is unknown.
     pub(super) fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
         match self.remote.as_ref() {
-            Some(r) => hurt_sound_for(&r.registries, &self.motion.health.damage, source_type),
+            Some(r) => hurt_sound_for(&r.registries, &self.health_resources.damage, source_type),
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
@@ -1038,6 +1070,7 @@ impl Game<'_> {
                 .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
+            enchantments: None,
             joined: false,
             reconfiguring: None,
             logged_in: false,
@@ -1064,6 +1097,7 @@ impl Game<'_> {
             abilities: None,
             loaded_sent: false,
             heard_level: None,
+            native_epoch: None,
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
@@ -1080,6 +1114,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passenger_index: 0,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -1185,6 +1220,9 @@ impl Game<'_> {
         // Minecraft.disconnect: the client level goes.
         if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
             self.native_client_level_unload(&old);
+        }
+        if self.remote.is_some() {
+            self.native_client_disconnecting();
         }
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
@@ -1445,7 +1483,7 @@ impl Game<'_> {
                 content,
                 signature,
                 trust.tag(),
-                self.ticks,
+                self.visual_ticks(),
                 focused,
             );
         } else {
@@ -1457,7 +1495,7 @@ impl Game<'_> {
                 content,
                 indicator,
                 source,
-                self.ticks,
+                self.visual_ticks(),
                 focused,
             );
         }
@@ -1583,9 +1621,10 @@ impl Game<'_> {
         r.chat_queue
             .retain(|chat| chat.signature.as_ref() != Some(&signature));
         if r.chat_queue.len() == queued {
+            let ticks = self.visual_ticks();
             self.ui
                 .chat
-                .delete_message(&self.gui.atlas, &signature, self.ticks);
+                .delete_message(&self.gui.atlas, &signature, ticks);
         }
         Ok(())
     }
@@ -2140,7 +2179,25 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        let entries: Vec<(&str, serde_json::Value)> = registries
+            .registries
+            .get("minecraft:enchantment")
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, data)| {
+                Some((
+                    name.as_str(),
+                    horizon_client::scoreboard::tag_to_json(data.as_ref()?),
+                ))
+            })
+            .collect();
+        let enchantments = self
+            .stations()
+            .enchantments
+            .with_entries(entries.iter().map(|(n, v)| (*n, v)))
+            .map(Arc::new);
         if let Some(r) = self.remote.as_mut() {
+            r.enchantments = enchantments;
             let bits = ceil_log2(biomes.len());
             let column = r.chunk_format.layout();
             r.chunk_format =
@@ -2258,10 +2315,10 @@ impl Game<'_> {
                 renderer.clear_sections(self.world.layout());
             }
             // The new ClientLevel is told before setLevel drops the old one.
-            let old = self
-                .remote
-                .as_mut()
-                .and_then(|r| r.heard_level.replace(spawn.dimension.clone()));
+            let old = self.remote.as_mut().and_then(|r| {
+                r.native_epoch = Some(super::native_lifecycle::fresh_epoch());
+                r.heard_level.replace(spawn.dimension.clone())
+            });
             self.native_client_level_load(&spawn.dimension);
             if let Some(old) = old {
                 self.native_client_level_unload(&old);
@@ -2912,7 +2969,7 @@ impl Game<'_> {
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.
-    fn menu_slot(menu: &str, slot: i32) -> Option<usize> {
+    pub(super) fn menu_slot(menu: &str, slot: i32) -> Option<usize> {
         let s = usize::try_from(slot).ok()?;
         // A container of `n` slots, then the inventory and the hotbar.
         let slots = |n: usize| -> Option<usize> {
@@ -3118,7 +3175,7 @@ impl Game<'_> {
         }
     }
 
-    fn handle_packet(&mut self, packet: C) -> Result<()> {
+    pub(super) fn handle_packet(&mut self, packet: C) -> Result<()> {
         self.native_client_packet(&packet);
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
@@ -3194,13 +3251,9 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
-                let info = self
-                    .settings
-                    .client_information(client_view_distance(self.settings.render_distance));
-                if let Some(r) = self.remote.as_mut() {
-                    r.sent_info = info.clone();
-                }
-                self.send(S::ClientInformation(info));
+                // No ClientInformation here: the configuration phase sent it,
+                // and ClientPacketListener.broadcastClientInformation sends it
+                // again only when an option changes it.
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
@@ -4045,7 +4098,10 @@ impl Game<'_> {
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
-                if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
+                let me = self.remote.as_ref().map(|r| r.entity_id);
+                let own = me == Some(p.id);
+                self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
+                if own {
                     let at = self
                         .player
                         .as_ref()
@@ -4227,11 +4283,11 @@ impl Game<'_> {
                 if p.event == 20 && self.mobs.iter().any(|m| m.id == p.id as u32) {
                     self.poof_particles(p.id as u32);
                 }
-                // Villager 12, 13 and 14, TamableAnimal and AbstractHorse 6 and
-                // 7, Animal and Allay 18: the particles about the mob.
-                if matches!(p.event, 6 | 7 | 12 | 13 | 14 | 18 | 40 | 41) {
-                    self.entity_event_particles(p.id as u32, p.event);
-                }
+                // The particle bursts of Villager 12 to 14 and 42, TamableAnimal
+                // and AbstractHorse 6 and 7, Animal and Allay 18, Ocelot 40 and
+                // 41, Dolphin 38: the table in `entity_event_burst` is the one
+                // list of them; any other event draws nothing here.
+                self.entity_event_particles(p.id as u32, p.event);
                 // Snowball and ThrownEgg.handleEntityEvent 3: the crumbs where
                 // the projectile is (the server removes it right after).
                 if p.event == 3 {
@@ -4258,9 +4314,10 @@ impl Game<'_> {
                 if p.event == super::combat::DROWN_EVENT {
                     self.remote_drown(p.id);
                 }
-                // Entity event 53: the honey slide particles of a player
-                // sliding down a honey block (HoneyBlock.showSlideParticles).
-                if p.event == 53 {
+                // Entity events 53 and 54: honey crumbs while sliding, and the
+                // ten from a landing (`HoneyBlock.showSlideParticles` /
+                // `showJumpParticles`).
+                if horizon_client::landing::honey_particle_count(p.event).is_some() {
                     let at = if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
                         self.player
                             .as_ref()
@@ -4272,7 +4329,7 @@ impl Game<'_> {
                             .map(|m| [m.position.x, m.position.y, m.position.z])
                     };
                     if let Some(at) = at {
-                        self.honey_slide_particles(at);
+                        self.honey_entity_particles(at, p.event);
                     }
                 }
                 if p.event == super::consume::USE_ITEM_COMPLETE_EVENT
@@ -5619,7 +5676,10 @@ impl Game<'_> {
             return;
         };
         let at = Vec3::new(p[0], p[1], p[2]);
-        let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
+        // ItemEntity's constructor draws bobOffs from the item's own random.
+        let bob_offset = horizon_client::mobs::entity_random(id as u32, at).next_float()
+            * std::f32::consts::PI
+            * 2.0;
         self.dropped.push(ItemEntity {
             rotation: [0.0, 0.0],
             join: Default::default(),
@@ -5915,7 +5975,7 @@ impl Game<'_> {
         self.tick_chat_session();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
-        if self.remote.as_ref().is_some_and(|r| r.joined) {
+        if self.remote.as_ref().is_some_and(Remote::has_level) {
             self.send(S::ClientTickEnd(Empty));
         }
         Ok(())
@@ -5925,7 +5985,8 @@ impl Game<'_> {
         self.ticks += 1;
         self.repro_tick();
         // Hud.tick ends with ChatComponent.tick.
-        self.ui.chat.tick(&self.gui.atlas, self.ticks);
+        let chat_ticks = self.visual_ticks();
+        self.ui.chat.tick(&self.gui.atlas, chat_ticks);
         self.tick_sign_editor();
         self.track_experience_display();
         self.tick_enchanting_book();
@@ -5947,7 +6008,13 @@ impl Game<'_> {
         // the time only while the level runs normally.
         let running = self.clock.world_runs();
         self.boss_overlay.tick_darken(running);
-        self.tick_item_activation();
+        // Under `HORIZON_STILL` the frame's countdowns (this one, the hotbar's pop, the HUD's
+        // below) wait for the world, as the border's size change does in any frozen level: a
+        // frozen client keeps ticking, as many ticks as the run took.
+        let hold = !running && self.clock.still();
+        if !hold {
+            self.tick_item_activation();
+        }
         if running {
             self.world.game_time += 1;
             self.remote_clock_tick();
@@ -5972,11 +6039,15 @@ impl Game<'_> {
         // trying again a tick before the server's entry ends.
         self.cooldowns.tick();
         // Inventory.tick's ItemStack.inventoryTick: the pop time runs down.
-        for pop in &mut self.hotbar_pop {
-            *pop = pop.saturating_sub(1);
+        if !hold {
+            for pop in &mut self.hotbar_pop {
+                *pop = pop.saturating_sub(1);
+            }
         }
-        // ClientLevel.tick: the border's size change.
-        self.border.tick();
+        // ClientLevel.tick: the border's size change, while the level runs.
+        if running {
+            self.border.tick();
+        }
         self.player_border();
         self.tick_remote_entities(running);
         self.tick_random_textures();
@@ -6004,12 +6075,23 @@ impl Game<'_> {
         if running {
             self.tick_particles();
         }
-        self.tick_client_ambient();
-        self.tick_client_effects();
+        self.tick_frame_visuals(running);
+        // Under `HORIZON_STILL` they wait for the world too: endermen's and blazes' particles
+        // draw on the particles' random, and effects count down, on every tick a frozen
+        // client runs, as many as the run took to get there.
+        if !hold {
+            self.tick_client_ambient();
+            self.tick_client_effects();
+        }
         // Player.tick's sleep counter (the darkening and the wake-up fade).
         self.sleep_timer = super::tick_sleep_timer(self.sleep_timer, self.sleeping.is_some());
         // Gui.tick: the titles, the action bar and the held item's name.
-        self.tick_hud();
+        if !hold {
+            self.tick_hud();
+        } else {
+            // Only its countdowns wait: lying down still opens the bed's chat, waking closes it.
+            self.tick_in_bed_chat();
+        }
         self.tick_subtitles();
         self.tick_client_load();
         let entity_collisions = self.player_entity_collisions();
@@ -6166,6 +6248,7 @@ impl Game<'_> {
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
+                health: &self.health_resources,
             }
             .controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;
         } else {
@@ -6182,6 +6265,7 @@ impl Game<'_> {
                     assets: &self.pack.assets,
                     collision_binding: self.collision,
                     resources: self.motion,
+                    health: &self.health_resources,
                 };
                 passenger.passenger_pose_tick()?;
                 // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
@@ -6275,9 +6359,10 @@ impl Game<'_> {
                     self.audio
                         .play("minecraft:block.honey_block.slide", Some(feet), 1.0, 1.0);
                 }
-                // LivingEntity.causeFallDamage on the client's own level: the
-                // fall sound is heard here (LocalPlayer.playSound); the
-                // server's copy skips this player (Player.playSound).
+                // LivingEntity.causeFallDamage and HoneyBlock.fallOn on the
+                // client's own level: the fall and honey sounds are heard here
+                // (LocalPlayer.playSound); the server's copy skips this player
+                // (Player.playSound).
                 horizon_client::motion::MotionEvent::Fall(
                     horizon_client::landing::FallEvent::Sound {
                         sound,
@@ -6286,7 +6371,10 @@ impl Game<'_> {
                         ..
                     },
                 ) => {
-                    if let Some(name) = sound.player_fall_sound() {
+                    if let Some(name) = sound
+                        .player_fall_sound()
+                        .or_else(|| sound.honey_landing_sound())
+                    {
                         self.audio.play(name, Some(feet), volume, pitch);
                     }
                 }
@@ -6907,6 +6995,7 @@ impl Game<'_> {
                     &mut next_float,
                     border,
                     &self.res.motion().fluids,
+                    &mut |_, _| {},
                 );
                 // `tick` set `previous` to the stepped position: keep the
                 // pre-step one, as `xo` is in vanilla.
@@ -6960,6 +7049,8 @@ impl Game<'_> {
         for (item, ticks, at, eye, pitch, yaw) in using {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
         }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.flash = self.flash.saturating_sub(1);
         if running {
             self.guardian_bubbles();
             // The dragon: LivingEntity's interpolation, inside its aiStep.
@@ -7023,8 +7114,7 @@ impl Game<'_> {
                 },
             );
             self.tick_remote_projectiles(&mut step);
-            // LightningBolt.tick on a client, and the sky flash fading.
-            self.flash = self.flash.saturating_sub(1);
+            // LightningBolt.tick on a client.
             self.tick_bolts();
         }
         lerps.retain(|_, l| l.steps > 0);
@@ -7640,7 +7730,11 @@ impl Game<'_> {
                 .is_some_and(|r| r.level_players.contains_key(&id));
             if !player && self.remote_mob_takes(i, hand) {
                 self.remote_feed_particles(i, hand);
-                self.with_hand(hand, Game::swing_arm);
+                // As for the objects above, only SUCCESS swings the hand: a
+                // CONSUME ends the click without one.
+                if self.remote_mob_swings(i, hand) {
+                    self.with_hand(hand, Game::swing_arm);
+                }
                 return true;
             }
         }
@@ -8515,8 +8609,8 @@ impl Game<'_> {
             }
             // TridentItem.use: not about to break, Riptide only in water or rain.
             "minecraft:trident" => {
-                self.use_trident(held);
-                return true;
+                // FAIL: no dip, and the off hand gets its turn.
+                return self.use_trident(held);
             }
             // SpyglassItem.use (its sound is the server's).
             "minecraft:spyglass" => true,
@@ -8553,12 +8647,7 @@ impl Game<'_> {
             return;
         }
         self.start_using_item();
-        let at = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio
-            .play(&instrument.sound, at, instrument.range / 16.0, 1.0);
+        self.play_player_bound_sound(&instrument.sound, 2, instrument.range / 16.0, 1.0, true);
         if instrument.use_duration > 0.0 {
             self.add_cooldown(group, instrument.use_ticks());
         }
@@ -8952,6 +9041,7 @@ impl Game<'_> {
                 self.send(S::Attack(play::Attack {
                     id: self.mobs[i].id as i32,
                 }));
+                self.pvp_attacked(self.mobs[i].id as i32);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
@@ -9021,6 +9111,14 @@ impl Game<'_> {
             );
         }
         self.stop_sprint_after_extra_knockback();
+    }
+    /// The latency the server's player list gives this player
+    /// (`PlayerInfo.getLatency`). A new entry reads 0 until the server's first
+    /// latency update (every 600 ticks), so 0 shows nothing rather than `0 ms`.
+    pub(super) fn own_latency(&self) -> Option<i32> {
+        let r = self.remote.as_ref()?;
+        let me = r.tab_players.get(&r.profile)?;
+        (me.latency > 0).then_some(me.latency)
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
@@ -9209,6 +9307,9 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
+            if self.studio_command(command) {
+                return;
+            }
             self.send_command(command);
         } else {
             self.send_signed_chat(message);
@@ -10615,6 +10716,33 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// `Minecraft.level != null`: from `handleLogin` until the next
+    /// `handleConfigurationStart` (`clearClientLevel`). Minecraft.tick sends
+    /// CLIENT_TICK_END only then, so a client waiting for the server's Login
+    /// (a busy server takes seconds to place a new player) sends nothing.
+    pub(super) fn has_level(&self) -> bool {
+        client_has_level(self.logged_in, self.reconfiguring)
+    }
+    /// The epoch of this client level's entity handles (`native_epoch`).
+    pub(super) fn native_epoch(&self) -> Option<horizon_client::mod_api::NativeWorldEpoch> {
+        self.native_epoch
+    }
+    /// An entity the server added to this client level: its type
+    /// (`minecraft:text_display`) and its position as last sent.
+    pub(super) fn tracked_entity(&self, id: i32) -> Option<(&str, [f64; 3])> {
+        self.entities
+            .get(&id)
+            .map(|t| (t.kind.as_str(), t.position))
+    }
+    /// The profile of the player entity `id`: this window's own player, or
+    /// another one by the UUID it was added with and its profile name.
+    pub(super) fn level_player(&self, id: i32) -> Option<(u128, Option<&str>)> {
+        if id == self.entity_id {
+            return Some((self.profile, Some(self.profile_name.as_str())));
+        }
+        let uuid = *self.level_players.get(&id)?;
+        Some((uuid, self.level_player_names.get(&id).map(String::as_str)))
+    }
     /// `PlayerInfo.getMessageValidator().updateAndValidate(message)` for `message.sender`.
     fn validate_chat(
         &mut self,
@@ -10770,11 +10898,18 @@ fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
     }
 }
 
+/// [`Remote::has_level`]: logged in (a Login arrived) and no reconfiguration
+/// since (`reconfiguring` is set by StartConfiguration, cleared by the next
+/// Login).
+fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
+    logged_in && reconfiguring.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        boat_interact_passes, hold_server_fire, item_frame_interact_passes, keep_client_state,
-        remote_object_swings, remote_use_swings, synced_local_use,
+        boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
+        keep_client_state, remote_object_swings, remote_use_swings, synced_local_use,
     };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
@@ -10913,6 +11048,16 @@ mod tests {
         assert!(!remote_use_swings(&stack("minecraft:iron_spear"), false));
         // A consumable (food, a drink) starts its use without a swing.
         assert!(!remote_use_swings(&stack("minecraft:apple"), true));
+    }
+
+    /// Minecraft.tick: CLIENT_TICK_END only while a level exists. None before
+    /// the first Login (configuration has finished, the server has not placed
+    /// the player yet), and none from StartConfiguration until the next Login.
+    #[test]
+    fn tick_ends_need_the_level_the_login_makes() {
+        assert!(!client_has_level(false, None), "joined, waiting for Login");
+        assert!(client_has_level(true, None), "after Login");
+        assert!(!client_has_level(true, Some(40)), "reconfiguring");
     }
 
     /// The server's on-fire flag keeps the predicted countdown (which
@@ -11317,6 +11462,25 @@ mod tests {
             "minecraft:entity.player.hurt_on_fire"
         );
     }
+    #[test]
+    fn synchronized_damage_defaults_override_a_different_local_definition() {
+        let local = horizon_world::damage_source::Catalog::from_json(&serde_json::json!({
+            "data_version": horizon_world::DATA_VERSION,
+            "types": [{"id":"demo:heat", "message_id":"heat", "exhaustion":"00000000", "scaling":"never", "effects":"burning", "death_message_type":"default"}]
+        }), &serde_json::json!({})).unwrap();
+        let mut registries = horizon_protocol::registry::Dynamic::default();
+        registries.add(horizon_protocol::packets::configuration::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![horizon_protocol::packets::configuration::RegistryEntry {
+                id: "demo:heat".into(),
+                data: Some(horizon_world::nbt::Tag::Compound(Default::default())),
+            }],
+        });
+        assert_eq!(
+            super::hurt_sound_for(&registries, &local, 0),
+            "minecraft:entity.player.hurt"
+        );
+    }
     /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it
     /// names is — the local player included, which is no tracked entity — and
     /// an id this level doesn't have plays nothing at all.
@@ -11334,28 +11498,28 @@ mod tests {
         );
         let player = Some((2, [0.5, 70.0, 0.5], false));
         assert_eq!(
-            super::entity_sound_state(2, player, &[], &tracked)
+            super::entity_sound_state(2, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             Some([0.5, 70.0, 0.5]),
             "the local player is named by Remote.entity_id"
         );
         assert_eq!(
-            super::entity_sound_state(7, player, &[], &tracked)
+            super::entity_sound_state(7, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             Some([8.5, 64.0, -3.5]),
             "another entity the server spawned"
         );
         assert_eq!(
-            super::entity_sound_state(9, player, &[], &tracked)
+            super::entity_sound_state(9, player, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             None,
             "getEntity is null: handleSoundEntityEvent returns"
         );
         assert_eq!(
-            super::entity_sound_state(2, None, &[], &tracked)
+            super::entity_sound_state(2, None, None, &tracked, None)
                 .filter(|s| !s.silent)
                 .map(|s| s.position),
             None,
@@ -11374,15 +11538,40 @@ mod tests {
                 silent: true,
             },
         );
-        let state = super::entity_sound_state(7, None, &[], &tracked).unwrap();
+        let state = super::entity_sound_state(7, None, None, &tracked, None).unwrap();
         assert!(state.silent);
         assert!(!state.removed);
         assert_eq!(state.position, [8.5, 64.0, -3.5]);
         let player =
-            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), &[], &tracked).unwrap();
+            super::entity_sound_state(2, Some((2, [1.0, 2.0, 3.0], true)), None, &tracked, None)
+                .unwrap();
         assert!(player.silent);
-        assert!(super::entity_sound_state(9, None, &[], &tracked).is_none());
+        assert!(super::entity_sound_state(9, None, None, &tracked, None).is_none());
     }
+    #[test]
+    fn a_dragon_sound_uses_live_movement_without_losing_mob_metadata() {
+        use horizon_client::sound_engine::SoundEntityState;
+        let stale = SoundEntityState {
+            position: [0.0, 64.0, 0.0],
+            silent: true,
+            removed: false,
+        };
+        let tracked = std::collections::HashMap::new();
+        for position in [[24.0, 80.0, -16.0], [25.5, 81.0, -18.0]] {
+            let state =
+                super::entity_sound_state(7, None, Some(stale), &tracked, Some((7, position)))
+                    .unwrap();
+            assert_eq!(state.position, position);
+            assert!(state.silent);
+            assert!(!state.removed);
+        }
+        let unrelated =
+            super::entity_sound_state(7, None, Some(stale), &tracked, Some((8, [99.0; 3])))
+                .unwrap();
+        assert_eq!(unrelated.position, stale.position);
+        assert!(super::entity_sound_state(7, None, None, &tracked, Some((7, [99.0; 3]))).is_none());
+    }
+
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW
     /// drops the stack, so the player's hand swings, as `LivingEntity.drop`
     /// does for `Prediction.PREDICTED`; a plain pick up drops nothing.

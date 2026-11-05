@@ -1659,6 +1659,11 @@ impl Game<'_> {
                 if text.is_empty() {
                     return Err("command TEXT".into());
                 }
+                // A native mod's command first, as typed chat does; the
+                // server's console cannot run a client mod's command.
+                if self.client_mod_command(text) {
+                    return ok(json!({ "ok": true, "chat": self.ui.chat.recent_lines(5) }));
+                }
                 let command = format!("/{text}");
                 // Single player's console is its server thread's.
                 if let Some(server) = &self.integrated {

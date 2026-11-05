@@ -1,4 +1,7 @@
 {
+  "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.": "{carried} of {total} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+  "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).": "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {later} are not sorted yet (not identified, or waiting on other mods or other work).",
+  "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.": "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet.",
   "Performance mode": "Performance mode",
   "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "ネイティブビルドまたはキャッシュの削除が進行中です。完了後に再試行してください。",
@@ -1118,7 +1121,24 @@
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "ショップを開く",
   "You don't own any cosmetics yet.": "コスメをまだ持っていません。",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "自動ではこのランチャーのアーキテクチャを使用します。Windows ARM では x64 または ARM64 を選択できます。ARM64 がないリリースでは署名済みの x64 ビルドを使用します。",
+  "Game architecture": "ゲームのアーキテクチャ",
+  "Install selected build": "選択したビルドをインストール",
+  "Manual game architectures are available on Windows ARM only.": "ゲームのアーキテクチャを手動で選択できるのは Windows ARM のみです。",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Windows ARM64 ランチャーはネイティブ MOD にまだ対応していません。管理されたコンパイラーを利用できません。",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "選択した ARM64 ゲーム用のネイティブ MOD はまだビルドできません。利用できるコンパイラーは x64 のみをビルドします。",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "選択した x64 ゲーム用のネイティブ MOD はビルドできません。この ARM64 ランチャーには対応するコンパイラーがありません。",
+  "Say auto, x64 or arm64 for the game architecture.": "ゲームのアーキテクチャには auto、x64、arm64 のいずれかを指定してください。",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "このバージョンのゲームは {installed} ですが、設定では {selected} が選択されています。起動前に「バージョン」から選択したビルドをインストールしてください。",
+  "Automatic": "自動",
+  "{tag} has no build for the selected game architecture.": "{tag} には選択したゲームアーキテクチャ用のビルドがありません。",
+  "Unknown": "不明",
   "Claim for free": "無料で受け取る",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ショップの決済サービスはお住まいの国に対応していないため、ファウンダーセットをここで無料で受け取れます。",
-  "The Founder Set is yours.": "ファウンダーセットはあなたのものです。"
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
+  "The Founder Set is yours.": "ファウンダーセットはあなたのものです。",
+  "{file} unpacks to more than {limit}: it isn't imported.": "{file} unpacks to more than {limit}: it isn't imported."
 }
