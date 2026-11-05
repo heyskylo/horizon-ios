@@ -80,22 +80,34 @@ pub(crate) fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Resu
 fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
     use crate::prune;
     let settings = config.prune_chunks.clone();
-    if let Err(e) = config::update(dir, "prune_chunks", "mode", toml::Value::String("off".into())) {
+    if let Err(e) = config::update(
+        dir,
+        "prune_chunks",
+        "mode",
+        toml::Value::String("off".into()),
+    ) {
         return note(
             shared,
             "WARN",
-            &format!("Chunk prune not run: server.toml's prune_chunks.mode can't be set back to \"off\" ({e})"),
+            &format!(
+                "Chunk prune not run: server.toml's prune_chunks.mode can't be set back to \"off\" ({e})"
+            ),
         );
     }
     let world = dir.join(&config.world.name);
     let threads = thread::available_parallelism().map_or(2, |n| n.get());
-    let finish = |shared: &Shared, dir: &Path, result: Result<prune::Outcome, String>| match result {
+    let finish = |shared: &Shared, dir: &Path, result: Result<prune::Outcome, String>| match result
+    {
         Ok(outcome) => {
             let at = match prune::write_report(dir, &outcome) {
                 Ok(path) => path.display().to_string(),
                 Err(e) => format!("not written: {e}"),
             };
-            note(shared, "INFO", &format!("Chunk prune: {} (report: {at})", outcome.summary));
+            note(
+                shared,
+                "INFO",
+                &format!("Chunk prune: {} (report: {at})", outcome.summary),
+            );
         }
         Err(e) => note(
             shared,

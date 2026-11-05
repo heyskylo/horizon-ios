@@ -136,8 +136,8 @@ fn header(path: &Path) -> io::Result<Header> {
     table.resize(4096, 0);
     let mut sectors = [0; 1024];
     let mut oversized = false;
-    for (i, entry) in table.chunks_exact(4).enumerate() {
-        let entry = u32::from_be_bytes(entry.try_into().unwrap());
+    for (i, entry) in table.as_chunks::<4>().0.iter().enumerate() {
+        let entry = u32::from_be_bytes(*entry);
         let start = u64::from(entry >> 8);
         if start < 2 || entry & 255 == 0 || start * SECTOR > len {
             continue;
@@ -271,7 +271,10 @@ impl<'a> Cursor<'a> {
     }
     fn count(&mut self, width: usize) -> Result<usize, Skim> {
         let n = i32::from_be_bytes(self.take(4)?.try_into().unwrap());
-        usize::try_from(n).map_err(|_| Skim::Bad)?.checked_mul(width).ok_or(Skim::Bad)
+        usize::try_from(n)
+            .map_err(|_| Skim::Bad)?
+            .checked_mul(width)
+            .ok_or(Skim::Bad)
     }
     /// Skips a payload of type `id`.
     fn skip(&mut self, id: u8, depth: u32) -> Result<(), Skim> {
@@ -358,7 +361,11 @@ fn spawn_chunk(world: &Path) -> Chunk {
 }
 
 /// The chunks `keep_files` name, by dimension. Err when a file exists but can't be read.
-fn listed(world: &Path, files: &[String], notes: &mut Vec<String>) -> Result<HashSet<(String, i32, i32)>, String> {
+fn listed(
+    world: &Path,
+    files: &[String],
+    notes: &mut Vec<String>,
+) -> Result<HashSet<(String, i32, i32)>, String> {
     let mut out = HashSet::new();
     for name in files {
         let path = world.join(name);
@@ -401,7 +408,11 @@ fn collect(value: &serde_json::Value, out: &mut HashSet<(String, i32, i32)>) {
                 map.get("x").and_then(|v| v.as_f64()),
                 map.get("z").and_then(|v| v.as_f64()),
             ) {
-                out.insert((d.to_owned(), (x.floor() as i32) >> 4, (z.floor() as i32) >> 4));
+                out.insert((
+                    d.to_owned(),
+                    (x.floor() as i32) >> 4,
+                    (z.floor() as i32) >> 4,
+                ));
             }
             for (k, v) in map {
                 named(k, out);
@@ -416,7 +427,13 @@ fn collect(value: &serde_json::Value, out: &mut HashSet<(String, i32, i32)>) {
 /// `DIM-1/`, `DIM1/` if a world still has them.
 fn dimensions(world: &Path, spawn: Chunk) -> Vec<(String, PathBuf, Chunk)> {
     let mut out = Vec::new();
-    let center = |id: &str| if id == "minecraft:overworld" { spawn } else { (0, 0) };
+    let center = |id: &str| {
+        if id == "minecraft:overworld" {
+            spawn
+        } else {
+            (0, 0)
+        }
+    };
     for (id, folder) in [
         ("minecraft:overworld", world.to_owned()),
         ("minecraft:the_nether", world.join("DIM-1")),
@@ -433,7 +450,11 @@ fn dimensions(world: &Path, spawn: Chunk) -> Vec<(String, PathBuf, Chunk)> {
         .collect();
     namespaces.sort_by_key(|e| e.file_name());
     for ns in namespaces {
-        let mut paths: Vec<_> = fs::read_dir(ns.path()).into_iter().flatten().flatten().collect();
+        let mut paths: Vec<_> = fs::read_dir(ns.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
         paths.sort_by_key(|e| e.file_name());
         for p in paths {
             if p.path().join("region").is_dir() {
@@ -482,7 +503,10 @@ fn parallel<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R +
                 })
             })
             .collect();
-        workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect()
     });
     out.sort_by_key(|(i, _)| *i);
     out.into_iter().map(|(_, r)| r).collect()
@@ -531,7 +555,12 @@ pub struct Outcome {
 }
 
 /// Scans the world and, with `delete`, prunes it. The game must not be running when `delete` is set.
-pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> Result<Outcome, String> {
+pub fn run(
+    world: &Path,
+    settings: &Settings,
+    delete: bool,
+    threads: usize,
+) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let mut notes = Vec::new();
     let keep = listed(world, &settings.keep_files, &mut notes)?;
@@ -539,7 +568,9 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
     let mut dims: Vec<Dimension> = Vec::new();
     for (id, folder, center) in dimensions(world, spawn) {
         let files = region_files(&folder.join("region"));
-        let scans = parallel(&files, threads, |(_, p)| scan_region(p, settings.min_inhabited_ticks));
+        let scans = parallel(&files, threads, |(_, p)| {
+            scan_region(p, settings.min_inhabited_ticks)
+        });
         let regions = files.into_iter().map(|(at, _)| at).zip(scans).collect();
         dims.push(Dimension {
             id,
@@ -552,7 +583,8 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
     let mut tallies = Vec::new();
     let mut errors = Vec::new();
     for dim in &dims {
-        let near_spawn = |c: Chunk| (c.0 - dim.center.0).abs() <= r && (c.1 - dim.center.1).abs() <= r;
+        let near_spawn =
+            |c: Chunk| (c.0 - dim.center.0).abs() <= r && (c.1 - dim.center.1).abs() <= r;
         let mine: HashSet<Chunk> = keep
             .iter()
             .filter(|(d, _, _)| *d == dim.id)
@@ -603,7 +635,9 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
                     t.spawn += 1;
                 } else if busy.has(i) {
                     t.busy += 1;
-                } else if (-ring..=ring).any(|dx| (-ring..=ring).any(|dz| kept((c.0 + dx, c.1 + dz)))) {
+                } else if (-ring..=ring)
+                    .any(|dx| (-ring..=ring).any(|dz| kept((c.0 + dx, c.1 + dz))))
+                {
                     t.ring += 1;
                 } else {
                     gone.set(i);
@@ -622,7 +656,10 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
             let others = match others {
                 Ok(o) => o,
                 Err(e) => {
-                    errors.push(format!("{} {name}'s entities or poi: {e} (left as it is)", dim.id));
+                    errors.push(format!(
+                        "{} {name}'s entities or poi: {e} (left as it is)",
+                        dim.id
+                    ));
                     t.skipped += 1;
                     continue;
                 }
@@ -648,7 +685,9 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
                 let _ = fs::create_dir_all(dim.folder.join(kind).join(STAGING));
             }
             let failed = parallel(&work, threads, |(p, gone)| {
-                rewrite(p, gone).err().map(|e| format!("{}: {e}", p.display()))
+                rewrite(p, gone)
+                    .err()
+                    .map(|e| format!("{}: {e}", p.display()))
             });
             errors.extend(failed.into_iter().flatten());
             for kind in KINDS {
@@ -658,7 +697,9 @@ pub fn run(world: &Path, settings: &Settings, delete: bool, threads: usize) -> R
         tallies.push((dim.id.clone(), t));
     }
     let seconds = started.elapsed().as_secs();
-    Ok(report(settings, delete, spawn, &tallies, &notes, &errors, seconds))
+    Ok(report(
+        settings, delete, spawn, &tallies, &notes, &errors, seconds,
+    ))
 }
 
 fn mib(b: u64) -> String {
@@ -675,7 +716,11 @@ fn report(
     seconds: u64,
 ) -> Outcome {
     let mut text = String::new();
-    let verb = if delete { "Deleted" } else { "Would delete (dry run)" };
+    let verb = if delete {
+        "Deleted"
+    } else {
+        "Would delete (dry run)"
+    };
     let _ = writeln!(
         text,
         "Chunk prune, {}: chunks with InhabitedTime < {} ticks, except within {} chunks of the spawn \
@@ -693,8 +738,20 @@ fn report(
     let _ = writeln!(
         text,
         "\n{:<24} {:>9} {:>9} {:>8} {:>7} {:>9} {:>7} {:>6} {:>7} {:>7} {:>7} {:>11} {:>11} {:>11}",
-        "dimension", "chunks", "pruned", "listed", "spawn", "inhabited", "ring", "unread",
-        "files", "emptied", "skipped", "region MiB", "entity MiB", "poi MiB"
+        "dimension",
+        "chunks",
+        "pruned",
+        "listed",
+        "spawn",
+        "inhabited",
+        "ring",
+        "unread",
+        "files",
+        "emptied",
+        "skipped",
+        "region MiB",
+        "entity MiB",
+        "poi MiB"
     );
     let mut total = Tally::default();
     for (id, t) in tallies {
@@ -801,7 +858,9 @@ mod tests {
                 // Values that don't compress away, so a big chunk takes many sectors.
                 Tag::LongArray(
                     (0..filler as i64 / 8)
-                        .map(|i| (i ^ i64::from(c.0)).wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64))
+                        .map(|i| {
+                            (i ^ i64::from(c.0)).wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64)
+                        })
                         .collect(),
                 ),
             )])]),
@@ -836,7 +895,11 @@ mod tests {
         let mut out: Vec<_> = f.chunks().map(|(c, _)| (c.x, c.z)).collect();
         out.sort();
         for c in &out {
-            f.read(ChunkPos::new(c.0, c.1)).unwrap().unwrap().nbt(Limits::saved()).unwrap();
+            f.read(ChunkPos::new(c.0, c.1))
+                .unwrap()
+                .unwrap()
+                .nbt(Limits::saved())
+                .unwrap();
         }
         out
     }
@@ -892,7 +955,10 @@ mod tests {
         // The spawn region: never visited, kept by the spawn radius.
         write_region(
             &ow.join("region/r.0.0.mca"),
-            &[((0, 0), chunk((0, 0), Some(0), 64, false)), ((3, 3), chunk((3, 3), Some(0), 64, false))],
+            &[
+                ((0, 0), chunk((0, 0), Some(0), 64, false)),
+                ((3, 3), chunk((3, 3), Some(0), 64, false)),
+            ],
         );
         // A region nobody stayed in: emptied, so deleted.
         write_region(
@@ -906,7 +972,10 @@ mod tests {
             &[((70, 5), entities((70, 5))), ((80, 5), entities((80, 5)))],
         );
         write_region(&ow.join("poi/r.2.0.mca"), &[((85, 5), entities((85, 5)))]);
-        write_region(&ow.join("entities/r.5.5.mca"), &[((170, 170), entities((170, 170)))]);
+        write_region(
+            &ow.join("entities/r.5.5.mca"),
+            &[((170, 170), entities((170, 170)))],
+        );
         (dir, ow)
     }
 
@@ -917,17 +986,34 @@ mod tests {
         let before = fs::read(ow.join("region/r.2.0.mca")).unwrap();
 
         let dry = run(&world, &settings(4), false, 2).unwrap();
-        assert_eq!(fs::read(ow.join("region/r.2.0.mca")).unwrap(), before, "a dry run writes nothing");
+        assert_eq!(
+            fs::read(ow.join("region/r.2.0.mca")).unwrap(),
+            before,
+            "a dry run writes nothing"
+        );
         assert!(ow.join("region/r.5.5.mca").is_file());
-        assert!(dry.summary.contains("Would delete (dry run) 5 of 19 chunks"), "{}", dry.report);
+        assert!(
+            dry.summary
+                .contains("Would delete (dry run) 5 of 19 chunks"),
+            "{}",
+            dry.report
+        );
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(ow.join("region/r.2.0.mca"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(
+                ow.join("region/r.2.0.mca"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
         }
         let done = run(&world, &settings(4), true, 2).unwrap();
-        assert!(done.summary.starts_with("Deleted 5 of 19 chunks"), "{}", done.report);
+        assert!(
+            done.summary.starts_with("Deleted 5 of 19 chunks"),
+            "{}",
+            done.report
+        );
         let mut kept: Vec<Chunk> = vec![(65, 20), (90, 5), (91, 5)];
         for dx in -1..=1 {
             for dz in -1..=1 {
@@ -936,8 +1022,14 @@ mod tests {
         }
         kept.sort();
         assert_eq!(chunks_in(&ow.join("region/r.2.0.mca")), kept);
-        assert_eq!(chunks_in(&ow.join("region/r.0.0.mca")), vec![(0, 0), (3, 3)]);
-        assert!(!ow.join("region/r.5.5.mca").exists(), "an emptied region file is deleted");
+        assert_eq!(
+            chunks_in(&ow.join("region/r.0.0.mca")),
+            vec![(0, 0), (3, 3)]
+        );
+        assert!(
+            !ow.join("region/r.5.5.mca").exists(),
+            "an emptied region file is deleted"
+        );
         assert!(!ow.join("entities/r.5.5.mca").exists());
         assert_eq!(chunks_in(&ow.join("entities/r.2.0.mca")), vec![(70, 5)]);
         assert!(!ow.join("poi/r.2.0.mca").exists());
@@ -945,8 +1037,15 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(ow.join("region/r.2.0.mca")).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "a rewritten file keeps its permissions");
+            let mode = fs::metadata(ow.join("region/r.2.0.mca"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "a rewritten file keeps its permissions"
+            );
         }
 
         // Compacted: 2 header sectors plus one per kept chunk (each fits one), and the kept bytes as they were.
@@ -960,7 +1059,11 @@ mod tests {
 
         // A second run finds nothing more to do.
         let again = run(&world, &settings(4), true, 2).unwrap();
-        assert!(again.summary.starts_with("Deleted 0 of 14 chunks"), "{}", again.report);
+        assert!(
+            again.summary.starts_with("Deleted 0 of 14 chunks"),
+            "{}",
+            again.report
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -985,9 +1088,18 @@ mod tests {
         run(&world, &s, true, 1).unwrap();
         let left = chunks_in(&ow.join("region/r.2.0.mca"));
         assert!(left.contains(&(80, 5)), "a claimed chunk stays");
-        assert!(!left.contains(&(85, 5)), "a claim in another dimension keeps nothing here");
-        assert!(ow.join("region/r.5.5.mca").is_file(), "a home's chunk stays");
-        assert_eq!(chunks_in(&ow.join("entities/r.2.0.mca")), vec![(70, 5), (80, 5)]);
+        assert!(
+            !left.contains(&(85, 5)),
+            "a claim in another dimension keeps nothing here"
+        );
+        assert!(
+            ow.join("region/r.5.5.mca").is_file(),
+            "a home's chunk stays"
+        );
+        assert_eq!(
+            chunks_in(&ow.join("entities/r.2.0.mca")),
+            vec![(70, 5), (80, 5)]
+        );
 
         // The spawn radius reaches region r.2.0 (64 chunks out): everything there stays.
         s.spawn_radius = 100;
@@ -1003,16 +1115,42 @@ mod tests {
     #[test]
     fn server_toml_turns_it_on_and_the_supervisor_turns_it_off() {
         let dir = temp("toml");
-        let text = format!("{}\n[prune_chunks]\nmode = \"delete\"\nring = 2\n", crate::config::TEMPLATE);
+        let text = format!(
+            "{}\n[prune_chunks]\nmode = \"delete\"\nring = 2\n",
+            crate::config::TEMPLATE
+        );
         fs::write(dir.join("server.toml"), text).unwrap();
         let config = crate::config::Config::load(&dir).unwrap();
-        assert_eq!((config.prune_chunks.mode, config.prune_chunks.ring), (Mode::Delete, 2));
-        crate::config::update(&dir, "prune_chunks", "mode", toml::Value::String("off".into())).unwrap();
+        assert_eq!(
+            (config.prune_chunks.mode, config.prune_chunks.ring),
+            (Mode::Delete, 2)
+        );
+        crate::config::update(
+            &dir,
+            "prune_chunks",
+            "mode",
+            toml::Value::String("off".into()),
+        )
+        .unwrap();
         let config = crate::config::Config::load(&dir).unwrap();
-        assert_eq!((config.prune_chunks.mode, config.prune_chunks.ring), (Mode::Off, 2));
-        assert!(fs::read_to_string(dir.join("server.toml")).unwrap().contains("[discord]"));
-        fs::write(dir.join("server.toml"), "[prune_chunks]\nkeep_files = [\"../ops.json\"]\n").unwrap();
-        assert!(crate::config::Config::load(&dir).is_err(), "keep_files stay inside the world");
+        assert_eq!(
+            (config.prune_chunks.mode, config.prune_chunks.ring),
+            (Mode::Off, 2)
+        );
+        assert!(
+            fs::read_to_string(dir.join("server.toml"))
+                .unwrap()
+                .contains("[discord]")
+        );
+        fs::write(
+            dir.join("server.toml"),
+            "[prune_chunks]\nkeep_files = [\"../ops.json\"]\n",
+        )
+        .unwrap();
+        assert!(
+            crate::config::Config::load(&dir).is_err(),
+            "keep_files stay inside the world"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1023,11 +1161,18 @@ mod tests {
             name: Default::default(),
             tag: Tag::compound([(
                 "Data",
-                Tag::compound([("spawn", Tag::compound([("pos", Tag::IntArray(vec![1300, 64, -40]))]))]),
+                Tag::compound([(
+                    "spawn",
+                    Tag::compound([("pos", Tag::IntArray(vec![1300, 64, -40]))]),
+                )]),
             )]),
         };
         let bytes = nbt::write_named(&root, Limits::saved()).unwrap();
-        fs::write(dir.join("level.dat"), Compression::Gzip.encode(&bytes).unwrap()).unwrap();
+        fs::write(
+            dir.join("level.dat"),
+            Compression::Gzip.encode(&bytes).unwrap(),
+        )
+        .unwrap();
         assert_eq!(spawn_chunk(&dir), (81, -3));
         assert_eq!(spawn_chunk(&dir.join("missing")), (0, 0));
         let _ = fs::remove_dir_all(dir);
