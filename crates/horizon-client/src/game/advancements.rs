@@ -2042,10 +2042,8 @@ impl Game<'_> {
     }
     /// `ToastManager.addToast`'s `ToastAddEvent`: whether a new toast of
     /// `kind` (`id` within it) may be queued; false when a mod cancelled it.
+    /// Always asked: a bundle injected at the hook point is not in `mods()`.
     pub(super) fn toast_allowed(&mut self, kind: &str, id: &str) -> bool {
-        if horizon_client::mod_api::mods().is_empty() {
-            return true;
-        }
         let mut cancel = false;
         self.native_toast_add(kind, id, &mut cancel);
         !cancel
