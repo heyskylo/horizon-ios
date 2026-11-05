@@ -12,7 +12,7 @@
 //!
 //! Only what an instance holds is taken from a shared zip ([`crate::export::FILES`],
 //! [`crate::export::FOLDERS`], `saves/`), and every path is checked to stay inside its folder.
-use crate::browser::{download, FileRef};
+use crate::browser::{download, installed, FileRef};
 use crate::export::{FILES, FOLDERS};
 use crate::instances::{self, Instance};
 use crate::packs;
@@ -144,6 +144,11 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
 fn target(home: &Path, relative: &str, java: bool) -> Option<PathBuf> {
     let path = Path::new(relative);
     if relative.ends_with('/') || !path.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    // The browser's list of what it installed is the launcher's, never a pack's: it names the
+    // files Update and Remove delete.
+    if relative.eq_ignore_ascii_case(installed::MANIFEST) {
         return None;
     }
     if java {
