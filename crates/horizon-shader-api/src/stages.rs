@@ -132,7 +132,7 @@ const TONEMAP_RESOURCES: [Resource; 4] = [
 
 /// 0.2's colour boundary, in every 0.2 prelude: vanilla's 2.2 power both ways.
 const COLOR_HELPERS: &str = "\
-// 🤖 Agent: Negatives and NaN made 0 (a comparison with NaN is false), so no `pow` sees them.
+// Negatives and NaN made 0 (a comparison with NaN is false), so no `pow` sees them.
 fn horizon_sanitize(c: vec3<f32>) -> vec3<f32> {
     return select(vec3<f32>(0.0), c, c > vec3<f32>(0.0));
 }
@@ -142,7 +142,7 @@ fn horizon_decode(c: vec3<f32>) -> vec3<f32> {
 fn horizon_encode(c: vec3<f32>) -> vec3<f32> {
     return pow(horizon_sanitize(c), vec3<f32>(1.0 / 2.2));
 }
-// 🤖 Agent: Alpha is coverage: it stays as it is.
+// Alpha is coverage: it stays as it is.
 fn horizon_decode_rgba(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(horizon_decode(c.rgb), c.a);
 }
@@ -781,7 +781,7 @@ impl StageKind {
             (Api::V0_2, StageKind::Vertex) => VERTEX_ENTRIES_0_2,
             (Api::V0_2, StageKind::Weather) => WEATHER_ENTRIES_0_2,
             (Api::V0_2, StageKind::Post) => POST_ENTRIES_0_2,
-            // 🤖 Agent: 0.1 has no tonemap stage: a manifest with one is refused before it is built.
+            // 0.1 has no tonemap stage: a manifest with one is refused before it is built.
             (_, StageKind::Tonemap) => TONEMAP_ENTRIES,
         }
     }

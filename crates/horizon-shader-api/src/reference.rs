@@ -108,7 +108,7 @@ pub fn markdown(api: Api) -> String {
         out += &table(kind.input(), None);
         if kind == StageKind::Material {
             let surface = table(&SURFACE, None);
-            // 🤖 Agent: 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
+            // 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
             out += &match api {
                 Api::V0_1 => surface,
                 Api::V0_2 => surface.replace(
