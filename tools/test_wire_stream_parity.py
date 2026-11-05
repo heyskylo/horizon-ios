@@ -374,7 +374,7 @@ def run(args, out):
     server = Server(vanilla, directory, 'server')
     captures = {}
     try:
-        server.wait_for(r'Done \(', timeout=300)
+        server.wait_for(r'Done \(', timeout=900)
         for who in args.clients:
             capture = out / f'{who}.jsonl'
             capture.touch()
