@@ -521,6 +521,7 @@ mod render_bounds_tests {
             fixed: false,
             invisible: false,
             check_interval: 0,
+            custom_name: None,
         };
         let bounds = frame.render_bounds(1.0);
         assert!(bounds.min_position().x <= -0.71875);
