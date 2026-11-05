@@ -455,8 +455,13 @@ pub(super) fn living_mod_types()
         "ruby:settler":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}},"template":"minecraft:villager"}},
         "ruby:bolt":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false,"template":"minecraft:snowball"}}}}"#
     );
-    let root =
-        std::env::temp_dir().join(format!("horizon-living-mod-types-{}", std::process::id()));
+    // A folder per call: tests run in parallel in one process, and each removes its own.
+    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "horizon-living-mod-types-{}-{call}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("entity-types.json"), table).unwrap();
     let types = horizon_client::mobs::MobTypes::load_for_server(&root).unwrap();
