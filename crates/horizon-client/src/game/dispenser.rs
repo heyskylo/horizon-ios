@@ -821,7 +821,18 @@ impl Game<'_> {
         // Ender Dragons are simulated separately from `Mob` and therefore do
         // not have a mob-type registry entry for the generic dispenser path.
         if name == "minecraft:ender_dragon" {
-            let at = [f64::from(p.0) + 0.5, f64::from(p.1), f64::from(p.2) + 0.5];
+            // `EntityType.getYOffset` uses the created entity's full 16 by 8
+            // bounding box when the dispenser asks to move it down.
+            let y_off = if try_move_down {
+                self.drop_offset(16.0, 8.0, p)
+            } else {
+                0.0
+            };
+            let at = [
+                f64::from(p.0) + 0.5,
+                f64::from(p.1) + y_off,
+                f64::from(p.2) + 0.5,
+            ];
             return self.spawn_dragon_spawned(at);
         }
         let t = self.res.mob_types().get(&name)?.clone();
@@ -962,6 +973,9 @@ impl Game<'_> {
     }
     /// After `EntityType.spawn` / `MobBucketItem.spawn`: `mob.playAmbientSound()`.
     fn mob_ambient(&mut self, id: u32) -> Result<()> {
+        if self.dragon_spawn_ambient(id) {
+            return Ok(());
+        }
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return Ok(());
         };

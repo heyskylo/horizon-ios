@@ -4161,6 +4161,22 @@ impl Game<'_> {
 /// sends its moves, health and phase; the client flaps its wings, keeps
 /// its flight history and places its parts, so it can be drawn and hit.
 impl Game<'_> {
+    /// `Mob.playAmbientSound` when EntityType.spawn places a dragon.
+    pub(super) fn dragon_spawn_ambient(&mut self, id: u32) -> bool {
+        let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+            return false;
+        };
+        let at = [d.position.x, d.position.y, d.position.z];
+        let pitch = (d.random.next_float() - d.random.next_float()) * 0.2 + 1.0;
+        self.audio.play(
+            "minecraft:entity.ender_dragon.ambient",
+            Some(at),
+            5.0,
+            pitch,
+        );
+        true
+    }
+
     /// Create an Ender Dragon for a scripted spawn such as a spawn egg or a
     /// dispenser.  Unlike the End fight's dragon, this one is not assigned to
     /// the fight UUID and can therefore be summoned in any dimension.

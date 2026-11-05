@@ -156,6 +156,7 @@ impl Game<'_> {
         self.tick_chunks.clear();
         self.sync_tick_chunks();
         self.mobs.clear();
+        self.dragon = None;
         self.dropped.clear();
         self.creatures.projectiles.clear();
         self.tnts.clear();
@@ -1110,6 +1111,15 @@ impl Game<'_> {
         for m in self.mobs.iter().filter(|m| !old_mobs.contains(&m.id)) {
             let (p, v) = (m.position, m.velocity);
             out.push(line(&m.kind.id, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
+        }
+        if let Some(d) = &self.dragon {
+            let p = d.position;
+            out.push(line(
+                "minecraft:ender_dragon",
+                [p.x, p.y, p.z],
+                [0.0; 3],
+                "",
+            ));
         }
         for s in self
             .armor_stands
