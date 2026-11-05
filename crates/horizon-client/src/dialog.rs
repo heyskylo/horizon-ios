@@ -227,7 +227,10 @@ impl Click {
     pub fn parse(t: &Tag, kind: &str) -> Option<Self> {
         let s = |key| string(t.get(key));
         Some(match path(kind) {
-            "open_url" => Self::OpenUrl(s("url")?),
+            // ClickEvent.OpenUrl's url is an ExtraCodecs.UNTRUSTED_URI.
+            "open_url" => {
+                Self::OpenUrl(s("url").filter(|url| crate::component::untrusted_http_url(url))?)
+            }
             "run_command" => Self::RunCommand(s("command")?),
             "suggest_command" => Self::SuggestCommand(s("command")?),
             "show_dialog" => Self::ShowDialog(t.get("dialog")?.clone()),
@@ -827,6 +830,28 @@ mod tests {
             panic!("{:?}", d.inputs)
         };
         assert_eq!(key, "password");
+    }
+
+    #[test]
+    fn open_url_actions_take_only_web_links() {
+        let open = |url: &str| {
+            let action = Tag::compound([("type", s("minecraft:open_url")), ("url", s(url))]);
+            Action::parse(&action).and_then(|a| a.click(&[], &[]))
+        };
+        assert_eq!(
+            open("https://example.com/a"),
+            Some(Click::OpenUrl("https://example.com/a".into()))
+        );
+        assert!(open("HTTP://example.com").is_some());
+        for url in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "\\\\attacker\\share\\x.exe",
+            "search-ms:query=x&crumb=location:\\\\attacker\\share",
+            "javascript:alert(1)",
+            "/usr/bin/xterm",
+        ] {
+            assert_eq!(open(url), None, "{url}");
+        }
     }
 
     #[test]
