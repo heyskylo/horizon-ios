@@ -105,6 +105,8 @@ enum SamplerKind {
     Nearest,
     Repeat,
     NearestRepeat,
+    /// The block atlas: nearest texels, blended between the two nearest levels.
+    Atlas,
     Comparison,
 }
 
@@ -122,7 +124,10 @@ impl SamplerKind {
             }
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
-            // Blocks look as the game draws them: nearest texels.
+            // Blocks look as the game draws them: nearest texels. Between levels, Iris 1.11.7
+            // blends `gtexture`'s two nearest (our probe packs, #9307: a read at level 1.25 is
+            // levels 1 and 2 mixed 3:1).
+            Source::Atlas if filtering => Self::Atlas,
             Source::Atlas | Source::Normals | Source::Specular => Self::NearestRepeat,
             Source::Image(_) if filtering => Self::Linear,
             Source::Image(_) => Self::Nearest,
@@ -140,7 +145,7 @@ impl SamplerKind {
 
     fn binding_type(self) -> wgpu::SamplerBindingType {
         match self {
-            Self::Linear | Self::Repeat => wgpu::SamplerBindingType::Filtering,
+            Self::Linear | Self::Repeat | Self::Atlas => wgpu::SamplerBindingType::Filtering,
             Self::Nearest | Self::NearestRepeat => wgpu::SamplerBindingType::NonFiltering,
             Self::Comparison => wgpu::SamplerBindingType::Comparison,
         }
@@ -639,6 +644,7 @@ pub struct PackPost {
     nearest: wgpu::Sampler,
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
+    atlas_sampler: wgpu::Sampler,
     /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
     /// nor buffer to clear.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
@@ -2875,6 +2881,13 @@ impl PackPost {
             ),
             repeat: sampler(device, wgpu::FilterMode::Linear, wgpu::AddressMode::Repeat),
             nearest_repeat: sampler(device, wgpu::FilterMode::Nearest, wgpu::AddressMode::Repeat),
+            atlas_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Shader pack atlas"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
             blit,
             copy,
             uniforms: {
@@ -3078,6 +3091,7 @@ impl PackPost {
                     SamplerKind::Nearest => &self.nearest,
                     SamplerKind::Repeat => &self.repeat,
                     SamplerKind::NearestRepeat => &self.nearest_repeat,
+                    SamplerKind::Atlas => &self.atlas_sampler,
                     SamplerKind::Comparison => shadow.map_or(&self.shadow.1, |t| &t.comparison),
                 };
                 entries.push(wgpu::BindGroupEntry {
@@ -5490,3 +5504,6 @@ mod const_offset_tests;
 
 #[cfg(test)]
 mod integer_colortex0_tests;
+
+#[cfg(test)]
+mod atlas_mip_tests;
