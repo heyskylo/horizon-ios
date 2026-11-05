@@ -10292,6 +10292,14 @@ impl Game<'_> {
             menu.stone = state;
             menu.set_slot(&env, 1, before[1].clone());
         }
+        if anvil_open && let Some(s) = self.station.as_ref() {
+            // The same: the cost, material cost and rename flag between clicks, as
+            // the station's createResult and the mods' anvil_update left them (the
+            // result came with the slots), so a take is predicted as the server makes it.
+            menu.data[0] = s.anvil.cost;
+            menu.anvil.repair_count = s.anvil.repair_item_count_cost;
+            menu.anvil.only_renaming = s.anvil.only_renaming;
+        }
         if kind == Kind::Enchanting
             && let Some(s) = self.station.as_ref()
         {

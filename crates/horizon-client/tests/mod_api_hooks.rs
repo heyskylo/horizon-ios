@@ -229,3 +229,84 @@ fn a_tank_hook_can_refuse_a_fluid() {
     );
     assert!(!cancel, "the water tank takes water");
 }
+
+/// `AnvilUpdateEvent`: each mod changes the result after the one before it,
+/// vanilla's stays readable, and a cancel stops the mods after it.
+#[test]
+fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{AnvilUpdateEvent, Flow, dispatch_anvil_update};
+    struct TestHost;
+    impl Host for TestHost {}
+    // An anvil recipe of its own: iron and an emerald give a diamond.
+    struct Recipe;
+    impl Hooks for Recipe {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            if event.item_name == Some("void") {
+                return Flow::Cancel;
+            }
+            if &*event.left.item == "minecraft:iron_ingot"
+                && event.right.is_some_and(|r| &*r.item == "minecraft:emerald")
+            {
+                *event.output = Some(ItemStack::new("minecraft:diamond", 1));
+                event.xp_cost = 5;
+                event.material_cost = 1;
+            }
+            Flow::Continue
+        }
+    }
+    // A level off whatever the mods before it charge.
+    struct Discount;
+    impl Hooks for Discount {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            assert_eq!(event.vanilla_xp_cost, 3, "vanilla's cost stays readable");
+            event.xp_cost -= 1;
+            Flow::Continue
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Recipe), Box::new(Discount)];
+    let update = |left: &str, right: Option<&str>, item_name: Option<&str>| {
+        let (left, right) = (ItemStack::new(left, 1), right.map(|r| ItemStack::new(r, 4)));
+        let vanilla = ItemStack::new("minecraft:iron_sword", 1);
+        let mut output = Some(vanilla.clone());
+        let (mut xp_cost, mut material_cost, mut canceled) = (3, 0, false);
+        dispatch_anvil_update(
+            &mut TestHost,
+            &mods,
+            7,
+            "Steve",
+            &left,
+            right.as_ref(),
+            item_name,
+            Some(&vanilla),
+            3,
+            0,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        (
+            output.map(|o| o.item.to_string()),
+            xp_cost,
+            material_cost,
+            canceled,
+        )
+    };
+    let diamond = Some("minecraft:diamond".to_owned());
+    let sword = Some("minecraft:iron_sword".to_owned());
+    assert_eq!(
+        update("minecraft:iron_ingot", Some("minecraft:emerald"), None),
+        (diamond, 4, 1, false)
+    );
+    // Other inputs keep vanilla's result, less the discount.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("")),
+        (sword.clone(), 2, 0, false)
+    );
+    // A cancel: the discount never ran, and the caller empties the result.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("void")),
+        (sword, 3, 0, true)
+    );
+}
