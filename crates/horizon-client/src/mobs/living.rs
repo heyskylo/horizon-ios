@@ -564,8 +564,13 @@ impl Mob {
     pub fn height(&self) -> f32 {
         self.dims().1 as f32
     }
+    /// `AgeableMob.isBaby`: `canBeABaby() && getAge() < 0`. The age alone is
+    /// not enough — a frog, a parrot, a zombie nautilus, a camel husk, a slime,
+    /// a magma cube, a piglin brute, a tadpole, or anything that is not an
+    /// `AgeableMob` at all is an adult whatever `Age` says, so its box, voice,
+    /// breeding, growth, drops and goals stay an adult's.
     pub fn is_baby(&self) -> bool {
-        self.extra.age < 0
+        self.extra.age < 0 && super::species::can_be_a_baby(self.kind.species)
     }
     pub fn fluid_jump_threshold(&self) -> f64 {
         // Breeze.getFluidJumpThreshold: its eye height.

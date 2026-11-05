@@ -94,8 +94,8 @@ impl Base<'_> {
 
 /// The mobs that save `Age` and `AgeLocked`.
 fn saves_age(s: crate::mobs::Species) -> bool {
-    use crate::mobs::{Species, drops::can_be_baby, finalize::ageable};
-    s == Species::Tadpole || (ageable(s) && can_be_baby(s))
+    use crate::mobs::{Species, finalize::ageable, species::can_be_a_baby};
+    s == Species::Tadpole || (ageable(s) && can_be_a_baby(s))
 }
 /// `LivingEntity` + `Mob` (+ `AgeableMob`, creeper and skeleton specifics).
 /// The mobs whose class extends vanilla's `Animal` (and so save `InLove`):
@@ -548,15 +548,11 @@ pub fn mob_to_nbt(
         if species != crate::mobs::Species::Tadpole {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
-    } else if matches!(
-        species,
-        crate::mobs::Species::Parrot
-            | crate::mobs::Species::Slime
-            | crate::mobs::Species::MagmaCube
-            | crate::mobs::Species::ZombieNautilus
-    ) {
+    } else if crate::mobs::finalize::ageable(species) {
         // AgeableMob.addAdditionalSaveData writes nothing when canBeABaby is
-        // false: drop the ignored values a raw input compound carried.
+        // false — the frog, the parrot, the zombie nautilus, the camel husk,
+        // the slime and the magma cube: drop the ignored values a raw input
+        // compound carried rather than writing them back out.
         for key in ["Age", "ForcedAge", "AgeLocked"] {
             map.remove(&key.into());
         }
