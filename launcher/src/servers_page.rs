@@ -1482,7 +1482,11 @@ impl Launcher {
                 if !dir.join("server.toml").is_file() {
                     servers::run(&dir, &["init", "--yes"])?;
                 }
-                let entry = Entry { name, dir };
+                let entry = Entry {
+                    name,
+                    dir,
+                    host: None,
+                };
                 servers::add(entry.clone()).map_err(Problem::plain)?;
                 Ok(entry)
             })();
