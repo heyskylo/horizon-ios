@@ -172,12 +172,16 @@ impl Game<'_> {
             menu_blur: self.settings.menu_blur as f32,
             screen: NativeScreenKind::of(
                 self.screen,
-                self.title.is_some() || self.screen_over_playing() || self.remote_screen_up(),
+                self.title.is_some()
+                    || self.screen_over_playing()
+                    || self.remote_screen_up()
+                    || self.pack_reload.is_some(),
             ),
             debug_screen: self.debug,
             world: self
                 .remote
                 .as_ref()
+                .filter(|r| r.logged_in)
                 .map(|r| NativeWorldId::of(r.save_folder.as_deref(), &r.session.address)),
             sleeping_pos: self.sleeping,
         })
