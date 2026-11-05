@@ -4852,13 +4852,16 @@ def groups():
         from .carpet_farm_corpus import carpet_farms
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
+        from .item_merge_corpus import stack_limit_merges
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
         from carpet_farm_corpus import carpet_farms
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
+        from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('item stack-size override merges', stack_limit_merges(cmd, setup)),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),
