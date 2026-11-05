@@ -671,6 +671,9 @@ pub struct Injection {
     pub id: String,
     /// Where it injects: a native hook point by name, or a raw function path.
     pub site: InjectionSite,
+    /// A named hook point's `hook_version`: with the name, what the revision's
+    /// `native-hooks.json` must list for horizon-mixins to find it.
+    pub hook_version: Option<u32>,
     /// Its `kind` (`HEAD`, `RETURN`, …) as written.
     pub kind: Option<String>,
     /// Its `selector` and `ordinal`, which with the kind tell two interior
@@ -700,6 +703,19 @@ impl InjectionSite {
             Self::Hook(name) => format!("hook `{name}`"),
             Self::Target(path) => format!("`{path}`"),
         }
+    }
+}
+
+impl Bundle {
+    /// The named hook points it injects at, with their versions: each must be in the
+    /// `native-hooks.json` of the revision it builds on.
+    fn named_hooks(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.injections
+            .iter()
+            .filter_map(|i| match (&i.site, i.hook_version) {
+                (InjectionSite::Hook(name), Some(version)) => Some((name.as_str(), version)),
+                _ => None,
+            })
     }
 }
 
@@ -834,6 +850,10 @@ fn bundle(dir: &Path, mixins: Option<String>) -> Result<Bundle, String> {
             Some(Injection {
                 id,
                 site,
+                hook_version: entry
+                    .get("hook_version")
+                    .and_then(|v| v.as_integer())
+                    .and_then(|v| u32::try_from(v).ok()),
                 kind: text("kind"),
                 selector: text("selector"),
                 ordinal: entry.get("ordinal").and_then(|v| v.as_integer()),
@@ -1139,7 +1159,7 @@ fn hooks_in(source: &str) -> Option<u32> {
 }
 
 /// The native hook points' version of Horizon at `revision`, from GitHub (None: it has none).
-fn hooks_at(revision: &str) -> Option<u32> {
+pub(crate) fn hooks_at(revision: &str) -> Option<u32> {
     let url = format!(
         "https://raw.githubusercontent.com/{}/{revision}/{HOOKS_FILE}",
         backend::REPO
@@ -1148,9 +1168,39 @@ fn hooks_at(revision: &str) -> Option<u32> {
     hooks_in(&text)
 }
 
+/// The named hook points (name, version) a `native-hooks.json` lists; None when it isn't one.
+fn catalog_in(text: &str) -> Option<HookCatalog> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value["hooks"]
+        .as_array()?
+        .iter()
+        .map(|h| {
+            let version = u32::try_from(h["version"].as_u64()?).ok()?;
+            Some((h["name"].as_str()?.to_owned(), version))
+        })
+        .collect()
+}
+
+/// The named hook points of Horizon at `revision`, from GitHub (None: it has no catalog, as
+/// revisions from before d3e0774 that already had hook points v2).
+fn catalog_at(revision: &str) -> Option<HookCatalog> {
+    let url = format!(
+        "https://raw.githubusercontent.com/{}/{revision}/{CATALOG}",
+        backend::REPO
+    );
+    let text = backend::get(&url).ok()?.into_string().ok()?;
+    catalog_in(&text)
+}
+
+/// Where Horizon lists its named hook points, at the workspace root (horizon-mixins reads it there).
+const CATALOG: &str = "native-hooks.json";
+type HookCatalog = std::collections::BTreeSet<(String, u32)>;
+
 /// The revision to build `mods` on: `pinned` (the pins' agreement, else the installed version's)
 /// when every mod naming a hook points' version finds it or a later one there (`at` reads a
-/// revision's). Else, when nothing pins it, the revision those mods were tested on. Else the
+/// revision's), and finds each named hook point it injects at in that revision's catalog
+/// (`catalog`): hook points v2 came before `native-hooks.json`, so a pin on such a revision
+/// would fail in horizon-mixins (E_HOOK_CATALOG). Else, when nothing pins it, the revision those mods were tested on. Else the
 /// revision of the release or Nightly the build starts from (`game`), when they find theirs
 /// there: a rebuild that stayed on an older Horizon, or mods pinning one, then move to the game
 /// the player installed, and pinned mods wait for the player's Build anyway ([`mismatch`]).
@@ -1160,11 +1210,24 @@ fn with_hooks(
     free: bool,
     game: impl FnOnce() -> Option<String>,
     at: impl Fn(&str) -> Option<u32>,
+    catalog: impl Fn(&str) -> Option<HookCatalog>,
 ) -> Result<String, String> {
     let hooked: Vec<&Bundle> = mods.iter().filter(|b| b.hooks.is_some()).collect();
+    let named = hooked.iter().any(|b| b.named_hooks().next().is_some());
+    // The revision's hook points' version, and its catalog when a mod names hook points.
+    let points = |revision: &str| (at(revision), named.then(|| catalog(revision)).flatten());
+    let fits_one = |b: &Bundle, (found, listed): &(Option<u32>, Option<HookCatalog>)| {
+        found.is_some()
+            && b.hooks <= *found
+            && b.named_hooks().all(|(name, version)| {
+                listed
+                    .as_ref()
+                    .is_some_and(|l| l.contains(&(name.to_owned(), version)))
+            })
+    };
     let fits = |revision: &str| {
-        let found = at(revision);
-        hooked.iter().all(|b| found.is_some() && b.hooks <= found)
+        let found = points(revision);
+        hooked.iter().all(|b| fits_one(b, &found))
     };
     if hooked.is_empty() || fits(&pinned) {
         return Ok(pinned);
@@ -1185,10 +1248,10 @@ fn with_hooks(
         return Ok(revision);
     }
     // Only the mods that need more than `pinned` has: the others would build there.
-    let found = at(&pinned);
+    let found = points(&pinned);
     let list: Vec<String> = hooked
         .iter()
-        .filter(|b| found.is_none() || b.hooks > found)
+        .filter(|b| !fits_one(b, &found))
         .map(|b| format!("{} (hook points v{})", b.id, b.hooks.unwrap_or_default()))
         .collect();
     Err(format!(
@@ -2128,7 +2191,7 @@ fn pipeline(
         false => base_revision().ok(),
     };
     let game = || revision_of(origin).ok();
-    let revision = with_hooks(&mods, pinned.clone(), free, game, hooks_at)?;
+    let revision = with_hooks(&mods, pinned.clone(), free, game, hooks_at, catalog_at)?;
     // Nothing to say when the pin is the base's own commit, or the hook points moved the build.
     if base_horizon.as_ref() == Some(&revision) || revision != pinned {
         pinned_by.clear();
@@ -3474,37 +3537,38 @@ mod tests {
             _ => None,
         };
         let none = || None;
+        let listed = |_: &str| None;
         let zoom = [mod_("zoom", B, Some(1)), mod_("minimap", &c, Some(1))];
         assert_eq!(
-            with_hooks(&zoom, A.into(), true, none, at).unwrap(),
+            with_hooks(&zoom, A.into(), true, none, at, listed).unwrap(),
             A,
             "the game's own"
         );
         let tested = [mod_("zoom", A, Some(1))];
         assert_eq!(
-            with_hooks(&tested, c.clone(), true, none, at).unwrap(),
+            with_hooks(&tested, c.clone(), true, none, at, listed).unwrap(),
             A,
             "an older game"
         );
         assert_eq!(
-            with_hooks(&tested, B.into(), false, none, at).unwrap(),
+            with_hooks(&tested, B.into(), false, none, at, listed).unwrap(),
             B,
             "v1 mods on v2"
         );
         let newer = [mod_("recipes", B, Some(2))];
-        let err = with_hooks(&newer, A.into(), false, none, at).unwrap_err();
+        let err = with_hooks(&newer, A.into(), false, none, at, listed).unwrap_err();
         assert!(
             err.contains("aaaaaaa") && err.contains("recipes (hook points v2)"),
             "{err}"
         );
         assert_eq!(
-            with_hooks(&newer, A.into(), true, none, at).unwrap(),
+            with_hooks(&newer, A.into(), true, none, at, listed).unwrap(),
             B,
             "its tested commit"
         );
         let pinned_only = [mod_("veinminer", B, None)];
         assert_eq!(
-            with_hooks(&pinned_only, B.into(), false, none, at).unwrap(),
+            with_hooks(&pinned_only, B.into(), false, none, at, listed).unwrap(),
             B
         );
     }
@@ -3533,18 +3597,19 @@ mod tests {
             _ => None,
         };
         let game = || Some(B.to_owned());
+        let listed = |_: &str| None;
         let hooked = [
             mod_("zoom", &c, Some(1)),
             mod_("recipes", &d, Some(2)),
             mod_("xtoxray", B, Some(7)),
         ];
         assert_eq!(
-            with_hooks(&hooked, A.into(), true, game, at).unwrap(),
+            with_hooks(&hooked, A.into(), true, game, at, listed).unwrap(),
             B,
             "a rebuild that stayed on an older Horizon moves to the game"
         );
         let with_pin = [mod_("carryblock", A, None), mod_("recipes", &d, Some(2))];
-        let revision = with_hooks(&with_pin, A.into(), false, game, at).unwrap();
+        let revision = with_hooks(&with_pin, A.into(), false, game, at, listed).unwrap();
         assert_eq!(revision, B, "a pinned mod no longer blocks the build");
         let asked = mismatch(&with_pin, &revision).expect("the pinned mod waits for Build anyway");
         assert!(
@@ -3552,10 +3617,82 @@ mod tests {
             "{asked}"
         );
         // A game without them still refuses, naming only the mods that don't fit.
-        let err = with_hooks(&hooked, A.into(), true, || Some(c.clone()), at).unwrap_err();
+        let err = with_hooks(&hooked, A.into(), true, || Some(c.clone()), at, listed).unwrap_err();
         assert!(err.contains("recipes (hook points v2)"), "{err}");
         assert!(err.contains("xtoxray (hook points v7)"), "{err}");
         assert!(!err.contains("zoom"), "zoom builds on A: {err}");
+    }
+
+    /// likeluca_ on Discord (11-04, Windows, launchers 0.2.38 to 0.2.40): blockscope (hook points
+    /// v2, all named) beside shulker_peek, which pins 5e391eb, a commit that had hook points v2 but
+    /// no `native-hooks.json` yet (it came in d3e0774, still v2). The build stayed on the pin and
+    /// horizon-mixins stopped: "E_HOOK_CATALOG: a named hook needs native-hooks.json at the
+    /// workspace root". The build now moves to the game, whose catalog lists them.
+    #[test]
+    fn named_hook_points_need_the_revisions_catalog() {
+        let d = dir("named-hooks");
+        fs::write(
+            d.join(MANIFEST),
+            "[mod]\nid = \"blockscope\"\nversion = \"0.3.1\"\n\
+             [[injection]]\nid = \"hud\"\nkind = \"HEAD\"\nhook = \"hud\"\nhook_version = 1\n\
+             [[injection]]\nid = \"raw\"\nkind = \"HEAD\"\ntarget = \"horizon_client::game::tick\"\n",
+        )
+        .unwrap();
+        let c = "c".repeat(40);
+        let blockscope = Bundle {
+            horizon: Some(c.clone()),
+            hooks: Some(2),
+            ..bundle(&d, None).unwrap()
+        };
+        let shulker_peek = Bundle {
+            id: "shulker_peek".into(),
+            version: "0.1.0".into(),
+            dir: PathBuf::new(),
+            horizon: Some(A.into()),
+            mixins: None,
+            hooks: None,
+            injections: Vec::new(),
+            api: None,
+            mixins_content: true,
+        };
+        // A (the pin) has hook points v2 and no catalog; B (the game) v359 and one.
+        let at = |r: &str| match r.as_bytes()[0] {
+            b'a' => Some(2),
+            b'b' => Some(359),
+            _ => None,
+        };
+        let catalog = |text: &str| catalog_in(text);
+        let game_catalog = r#"{"hooks": [{"name": "hud", "version": 1, "target": "x"}]}"#;
+        let listed = |r: &str| match r.as_bytes()[0] {
+            b'b' => catalog(game_catalog),
+            _ => None,
+        };
+        let mods = [shulker_peek.clone(), blockscope.clone()];
+        let revision = with_hooks(&mods, A.into(), false, || Some(B.into()), at, listed).unwrap();
+        assert_eq!(
+            revision, B,
+            "the pin has no catalog: the game's revision has one"
+        );
+        let asked = mismatch(&mods, &revision).expect("the pinned mod waits for Build anyway");
+        assert!(asked.contains("shulker_peek"), "{asked}");
+        // A game without the catalog either refuses, naming the mod that needs it.
+        let err = with_hooks(&mods, A.into(), false, || Some(c.clone()), at, listed).unwrap_err();
+        assert!(err.contains("blockscope (hook points v2)"), "{err}");
+        // A catalog with only another version of the hook point doesn't do either.
+        let other =
+            |_: &str| catalog(r#"{"hooks": [{"name": "hud", "version": 2, "target": "x"}]}"#);
+        assert!(with_hooks(&mods, A.into(), false, || Some(B.into()), at, other).is_err());
+        // A mod with only raw targets still builds on the pin, without asking for a catalog.
+        let raw = Bundle {
+            injections: blockscope.injections[1..].to_vec(),
+            ..blockscope
+        };
+        let asks = |_: &str| -> Option<HookCatalog> { panic!("no named hook point to look up") };
+        assert_eq!(
+            with_hooks(&[shulker_peek, raw], A.into(), false, || None, at, asks).unwrap(),
+            A
+        );
+        assert_eq!(catalog_in("not json"), None);
     }
 
     #[test]

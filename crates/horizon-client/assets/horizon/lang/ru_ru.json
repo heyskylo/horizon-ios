@@ -226,5 +226,6 @@
   "How frames reach the screen, and the performance overlay.": "Как кадры попадают на экран, и оверлей производительности.",
   "Brighter-than-white output on an HDR display.": "Вывод ярче белого на HDR-дисплее.",
   "Results for \"%s\"": "Результаты для «%s»",
-  "No settings match.": "Нет подходящих настроек."
+  "No settings match.": "Нет подходящих настроек.",
+  "Shader Packs...": "Шейдерпаки..."
 }

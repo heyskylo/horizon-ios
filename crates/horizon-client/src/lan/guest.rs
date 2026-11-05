@@ -346,6 +346,13 @@ pub struct Guest {
     /// Its login started while a proxy said it would arrive from another
     /// server, and used that expectation up (`player-expect`).
     pub expected: bool,
+    /// Leaving for another server (`player-release moved`) without the "left the
+    /// game" line.
+    pub quiet_leave: bool,
+    /// Taken out of the world because a proxy moved it to another server: the game
+    /// saves neither its player file nor its records, since the other server has the
+    /// player now.
+    pub released: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -522,6 +529,8 @@ impl Guest {
             placed: false,
             handover: None,
             expected: j.expected,
+            quiet_leave: false,
+            released: false,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

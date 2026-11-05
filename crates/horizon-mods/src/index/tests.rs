@@ -90,6 +90,11 @@ fn a_changed_file_key_or_manifest_is_refused() {
     let mut no_level = index.clone();
     no_level.projects[0].versions[0].api_level = None;
     assert_eq!(check(&no_level, "coords_hud", &hmod), Ok(Trust::Verified));
+    // A native mod's hook points version is listed too: a file naming another is refused.
+    let mut other_hooks = index.clone();
+    other_hooks.projects[0].versions[0].hooks = Some(3);
+    let e = check(&other_hooks, "coords_hud", &hmod).unwrap_err();
+    assert!(e.contains("isn't what the index lists"), "{e}");
 
     let mut revoked = index.clone();
     revoked.revoked.push(Revoked {

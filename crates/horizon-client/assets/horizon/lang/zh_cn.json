@@ -333,6 +333,7 @@
   "Frame Generation": "帧生成",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "在每两个真实帧之间插入一个生成帧：更流畅，延迟略增。",
   "Shadow Cache": "阴影缓存",
+  "Shader Packs...": "光影包…",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "太阳、视角和世界不变时重复使用资源包的阴影贴图。默认关闭。",
   "Synchronous": "同步",
   "Asynchronous": "异步",

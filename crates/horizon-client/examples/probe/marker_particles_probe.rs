@@ -15,8 +15,11 @@ use horizon_client::{
     particles::{ParticleEngine, ParticleOptions, ParticleType},
     world::World,
 };
-use horizon_core::random::RandomSource;
-use horizon_world::chunk::BlockState;
+use horizon_core::{
+    position::BlockPos,
+    random::{RandomSource, position_seed},
+};
+use horizon_world::{chunk::BlockState, registry::BlockStateId};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -44,6 +47,20 @@ fn parse_state(spec: &str) -> BlockState {
 /// A position as the oracle prints it: exact double bits.
 fn d(v: f64) -> String {
     format!("{:016x}", v.to_bits())
+}
+
+/// The per-column offset the client jitters a model with: an `XZ` offset type's
+/// two nibbles of `Mth.getSeed(x, 0, z)`, 0.25 either way.
+fn column_offset(x: i32, z: i32) -> [f64; 3] {
+    let seed = position_seed(BlockPos::new(x, 0, z));
+    // The division is single precision, as the offset itself is: only the
+    // centring and the 0.25 scale are double.
+    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
+    [
+        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-0.25, 0.25),
+        0.0,
+        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-0.25, 0.25),
+    ]
 }
 
 pub fn main() -> Result<()> {
@@ -106,6 +123,13 @@ pub fn main() -> Result<()> {
                 tick_worlds.insert(spec.clone(), world);
             }
             let world = &tick_worlds[&spec];
+            // A block whose model is jittered per column: the offset the client
+            // gives its model, so the oracle's shape moves exactly as the game
+            // moves it.
+            let jitter = case["offset"].as_str() == Some("xz");
+            let model_offset = move |_: BlockStateId, x: i32, z: i32| -> Option<[f64; 3]> {
+                jitter.then(|| column_offset(x, z))
+            };
             let ctx = AnimateContext {
                 world,
                 facts: &facts,
@@ -118,7 +142,7 @@ pub fn main() -> Result<()> {
                 creaking_active: false,
                 sky_darken: 0,
                 marker: None,
-                model_offset: &|_, _, _| None,
+                model_offset: &model_offset,
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,

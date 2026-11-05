@@ -412,6 +412,7 @@
   "Frame Generation": "Fireemu Iran",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Ṣe afihan fireemu ti a ṣe laarin ọkọọkan awọn gidi meji: didan, aisun diẹ sii.",
   "Shadow Cache": "Kaṣe ojiji",
+  "Shader Packs...": "Awọn akopọ Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Tun lo maapu ojiji idii nigbati oorun, wiwo ati ibaamu agbaye. Paa nipa aiyipada.",
   "Find BlueMap": "Wa BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Lori awọn olupin, rii maapu wẹẹbu BlueMap wọn fun ilẹ jijin. Next da.",

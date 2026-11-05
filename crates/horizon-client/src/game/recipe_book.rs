@@ -224,6 +224,7 @@ impl Game<'_> {
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
         let mut random = super::dispenser::entity_random();
         let mut items = Vec::new();
+        let mut first = None;
         for id in recipes {
             let Some(station) = index.toast_station(id) else {
                 continue;
@@ -251,19 +252,22 @@ impl Game<'_> {
                         )
                     });
                 if let Some(result) = result {
+                    first.get_or_insert(id);
                     items.push((station.to_owned(), result));
                 }
             }
         }
-        if items.is_empty() {
+        let Some(first) = first else {
             return;
-        }
+        };
         match self.adv.toasts.iter_mut().find(|t| t.is_recipe()) {
             Some(toast) => toast.add_recipes(items),
-            None => self
-                .adv
-                .toasts
-                .push_back(super::advancements::Toast::recipe(items)),
+            None => {
+                if self.toast_allowed("recipe", first) {
+                    let toast = super::advancements::Toast::recipe(items);
+                    self.adv.toasts.push_back(toast);
+                }
+            }
         }
     }
 

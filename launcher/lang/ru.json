@@ -1144,7 +1144,7 @@
   "Move…": "Перенести…",
   "Move and restart": "Перенести и перезапустить",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Открыть магазин",
+  "Get more cosmetics on playhorizon.dev": "Больше косметики на playhorizon.dev",
   "You don't own any cosmetics yet.": "У вас пока нет косметики.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Автоматически использует архитектуру этого лаунчера. В Windows на ARM можно выбрать x64 или ARM64. В выпусках без ARM64 используется подписанная сборка x64.",
   "Game architecture": "Архитектура игры",
@@ -1169,5 +1169,14 @@
   "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.": "Horizon's Vulkan renderer crashed while starting on this graphics card, so the game now uses {api}. Press Play to start it again. Video Settings > Graphics API switches back.",
   "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.": "This Nightly's title ({title}) doesn't name its date and commit as Horizon signs them, so it can't be checked: it was not installed.",
   "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.": "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection only moves to it when you pick it.",
-  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Для нативных модов требуются совпадающие поддерживаемые архитектуры Windows. Игра: {game_arch}; набор инструментов сборки: {toolchain_arch}."
+  "Native mods require supported Windows architectures that match. Game: {game_arch}; build toolchain: {toolchain_arch}.": "Для нативных модов требуются совпадающие поддерживаемые архитектуры Windows. Игра: {game_arch}; набор инструментов сборки: {toolchain_arch}.",
+  "Update registry mods automatically": "Update registry mods automatically",
+  "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
+  "Updated automatically: {list}.": "Updated automatically: {list}.",
+  "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
+  "Builds on the Horizon you play": "Собирается на вашей версии Horizon",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Нужны нативные точки подключения v{needs}, в вашей версии Horizon есть v{has}: сначала обновите Horizon",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Сделан для Horizon {pin}, но {mods} привязаны к другому коммиту: сборка попросит «Всё равно собрать» и может не скомпилироваться",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Сделан для Horizon {pin}, вы играете на {yours}: лаунчер соберёт игру на {pin}",
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
 }
