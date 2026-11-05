@@ -199,6 +199,9 @@ impl Combo {
                 .is_some_and(|(t, at)| t == id && now - at <= Self::CONFIRM),
         };
         if confirmed {
+            // Network events continue while the widget is disabled. Expiry
+            // must not depend on a previous frame having queried count().
+            self.count(now);
             self.target = None;
             self.count += 1;
             self.last_hit = now;
@@ -316,6 +319,24 @@ mod tests {
         c.attacked(7, 8.5);
         c.hurt(7, Some(false), 8.6);
         assert_eq!(c.count(8.7), 1);
+    }
+
+    #[test]
+    fn combo_timeout_does_not_require_the_widget_to_be_drawn() {
+        let mut c = Combo::default();
+        c.hurt(7, Some(true), 0.0);
+        // No count() call while the widget is off, or while frames are suspended.
+        c.hurt(7, Some(true), 10.0);
+        assert_eq!(c.count(10.0), 1, "the old combo expired before this hit");
+        c.hurt(7, Some(true), 11.0);
+        assert_eq!(c.count(11.0), 2);
+        c.attacked(7, 20.0);
+        c.hurt(7, None, 20.0);
+        assert_eq!(
+            c.count(20.0),
+            1,
+            "the untagged confirmation path expires too"
+        );
     }
 
     #[test]
