@@ -1154,7 +1154,7 @@ impl MotionWorld<'_, '_, '_> {
         {
             self.player.fall_flying = true;
         }
-        // LivingEntity.tick fallFlyTicks, then updateFallFlying.
+        // LivingEntity.updateFallFlying (fallFlyTicks is counted after the move).
         if self.player.fall_flying {
             // Entity.checkFallDistanceAccumulation: a glide that isn't diving
             // (falling slower than 0.5 a tick) keeps the fall distance at 1, so
@@ -1162,7 +1162,6 @@ impl MotionWorld<'_, '_, '_> {
             if self.player.velocity.y > -0.5 && self.player.fall_distance > 1.0 {
                 self.player.fall_distance = 1.0;
             }
-            self.player.fall_fly_ticks += 1;
             // canGlide alone: water and lava don't end a glide, levitation does.
             let still = self.player.glider
                 && !self.player.ground.on_ground
@@ -1179,8 +1178,6 @@ impl MotionWorld<'_, '_, '_> {
             {
                 self.player.glider_wear += 1;
             }
-        } else {
-            self.player.fall_fly_ticks = 0;
         }
         // LocalPlayer.goDownInWater, before LivingEntity.aiStep's velocity cleanup.
         if self.player.fluids.was_touching_water
@@ -1208,6 +1205,12 @@ impl MotionWorld<'_, '_, '_> {
             direction,
             jumping: jumping && !self.player.flying,
         })?;
+        // LivingEntity.tick counts fallFlyTicks after aiStep.
+        if self.player.fall_flying {
+            self.player.fall_fly_ticks += 1;
+        } else {
+            self.player.fall_fly_ticks = 0;
+        }
         if self.player.spectator {
             self.player.ground.on_ground = false;
         }
@@ -5803,5 +5806,45 @@ mod tests {
             0.1,
             "the flight speed follows the sprint state, not the sprint key"
         );
+    }
+    /// #9858: `LivingEntity.tick` counts `fallFlyTicks` after `aiStep`, so
+    /// `updateFallFlying` sees last tick's count plus one: the glider wears
+    /// on the 20th glide tick, not the 19th.
+    #[test]
+    fn a_glider_wears_on_the_twentieth_glide_tick() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 100.0, 20.5)).unwrap();
+        player.glider = true;
+        player.fall_flying = true;
+        let mut w = MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+            health: &resources.health,
+        };
+        for tick in 1..=19 {
+            w.player_movement_tick([0.0, 0.0], false).unwrap();
+            assert!(w.player.fall_flying, "still gliding on tick {tick}");
+            assert_eq!(w.player.glider_wear, 0, "no wear by tick {tick}");
+        }
+        w.player_movement_tick([0.0, 0.0], false).unwrap();
+        assert_eq!(
+            w.player.glider_wear, 1,
+            "the 20th glide tick wears the glider"
+        );
+        assert_eq!(w.player.fall_fly_ticks, 20);
     }
 }

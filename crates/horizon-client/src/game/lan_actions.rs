@@ -4853,8 +4853,10 @@ impl Game<'_> {
             let Some(p) = game.player.as_mut() else {
                 return;
             };
-            p.fall_fly_ticks += 1;
+            // updateFallFlying: last tick's count plus one; LivingEntity.tick
+            // counts this tick after aiStep.
             let next = p.fall_fly_ticks + 1;
+            p.fall_fly_ticks += 1;
             let at = [p.position.x, p.position.y, p.position.z];
             if next % 10 != 0 {
                 return;
