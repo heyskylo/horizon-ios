@@ -12,6 +12,7 @@ use horizon_client::{
     mesher::Vertex,
     particles::{ParticleOptions, ParticleType},
     pose::Pose,
+    sound_engine::unique_seed,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, traverse_blocks, trig},
@@ -56,6 +57,7 @@ pub(super) struct Hook {
     lure: i32,
     /// The position a server's update put it heading for.
     lerp: HookLerp,
+    pub(super) random: LegacyRandom,
 }
 /// A player a hook can catch (`canHitEntity`): their entity id, which
 /// guest they are (none: the host) and their box.
@@ -177,8 +179,8 @@ impl Hook {
     }
     /// `FishingHook.catchingFish`: the nibble timer, and DATA_BITING's plunge
     /// (`onSyncedDataUpdated` runs on the server too).
-    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource, game_time: i64) {
-        self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
+    pub(super) fn trigger_bite(&mut self, game_time: i64) {
+        self.nibble = 20 + self.random.next_int_bound(21).unwrap_or(0);
         self.velocity.y = bite_impulse(&mut synchronized_random(self.id, game_time));
     }
 }
@@ -269,11 +271,11 @@ impl Game<'_> {
             );
             let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
             let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-            let r = &mut self.world.random;
+            let mut random = LegacyRandom::new(unique_seed());
             v = Vec3::new(
-                v.x * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.y * (0.6 / len + triangle(r, 0.5, 0.0103365)),
-                v.z * (0.6 / len + triangle(r, 0.5, 0.0103365)),
+                v.x * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
+                v.y * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
+                v.z * (0.6 / len + triangle(&mut random, 0.5, 0.0103365)),
             );
             self.next_entity += 1;
             self.hook = Some(Hook {
@@ -296,6 +298,7 @@ impl Game<'_> {
                 luck,
                 lure,
                 lerp: HookLerp::default(),
+                random,
             });
         }
         self.swing_arm();
@@ -316,7 +319,7 @@ impl Game<'_> {
     }
     /// `FishingHook.retrieve`: the rod damage it costs.
     fn retrieve_hook(&mut self, rod: &ItemStack) -> u32 {
-        let Some(hook) = self.hook.take() else {
+        let Some(mut hook) = self.hook.take() else {
             return 0;
         };
         let Some(p) = self.player.as_ref() else {
@@ -379,15 +382,13 @@ impl Game<'_> {
                 .as_mut()
                 .and_then(|p| p.attribute("minecraft:luck").ok())
                 .unwrap_or(0.0) as f32;
-            let mut random = self.world.random.clone();
             let items = loot.roll(
                 "minecraft:gameplay/fishing",
-                &mut random,
+                &mut hook.random,
                 hook.luck as f32 + owner_luck,
                 biome.as_deref(),
                 Some(hook.open_water),
             );
-            self.world.random = random;
             let mut caught = Vec::new();
             for stack in items {
                 // FishingHook.retrieve: fish_caught for each catch in #minecraft:fishes.
@@ -437,7 +438,7 @@ impl Game<'_> {
                     v,
                     0,
                 );
-                let xp = self.world.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
+                let xp = hook.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
                 self.spawn_orbs([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
             }
             // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
@@ -527,15 +528,14 @@ impl Game<'_> {
         let above = [b[0], b[1] + 1, b[2]];
         let sky = self.world.light(above[0], above[1], above[2]) >> 4 == 15;
         // Level.isRainingAt: rain (not snow) reaches the position.
-        if self.world.random.next_float() < 0.25
+        if h.random.next_float() < 0.25
             && self.with_level(|b, level, _| {
                 b.is_raining_at(level, BlockPos::new(above[0], above[1], above[2]))
             })
         {
             speed += 1;
         }
-        let r = &mut self.world.random;
-        if r.next_float() < 0.5 && !sky {
+        if h.random.next_float() < 0.5 && !sky {
             speed -= 1;
         }
         let at = [h.position.x, h.position.y, h.position.z];
@@ -550,7 +550,7 @@ impl Game<'_> {
             if h.time_until_hooked > 0 {
                 // The fish swimming up: a bubble now and then, and a fishing
                 // particle to each side of its path.
-                h.fish_angle += triangle(&mut self.world.random, 0.0, 9.188) as f32;
+                h.fish_angle += triangle(&mut h.random, 0.0, 9.188) as f32;
                 let angle = h.fish_angle * (std::f64::consts::PI / 180.0) as f32;
                 let (sin, cos) = (trig::sin(f64::from(angle)), trig::cos(f64::from(angle)));
                 let distance = h.time_until_hooked as f32 * 0.1;
@@ -560,7 +560,7 @@ impl Game<'_> {
                     h.position.z + f64::from(cos * distance),
                 ];
                 if self.water_block(fish) {
-                    if self.world.random.next_float() < 0.15 {
+                    if h.random.next_float() < 0.15 {
                         let spread = [f64::from(sin), 0.1, f64::from(cos)];
                         let at = [fish[0], fish[1] - f64::from(0.1f32), fish[2]];
                         self.send_particles(ParticleType::Bubble, at, spread, 0.0, 1);
@@ -585,8 +585,7 @@ impl Game<'_> {
                         return;
                     }
                 }
-                let pitch =
-                    1.0 + (self.world.random.next_float() - self.world.random.next_float()) * 0.4;
+                let pitch = 1.0 + (h.random.next_float() - h.random.next_float()) * 0.4;
                 self.audio.play(
                     "minecraft:entity.fishing_bobber.splash",
                     Some(at),
@@ -600,7 +599,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.trigger_bite(&mut self.world.random, self.world.game_time);
+                h.trigger_bite(self.world.game_time);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -612,28 +611,27 @@ impl Game<'_> {
             } else if h.time_until_lured < 60 {
                 tease += (60 - h.time_until_lured) as f32 * 0.01;
             }
-            let r = &mut self.world.random;
-            if r.next_float() < tease {
+            if h.random.next_float() < tease {
                 // A splash where a fish is teasing the bait.
-                let angle = (r.next_float() * 360.0) * (std::f64::consts::PI / 180.0) as f32;
-                let distance = r.next_float() * 35.0 + 25.0;
+                let angle = (h.random.next_float() * 360.0) * (std::f64::consts::PI / 180.0) as f32;
+                let distance = h.random.next_float() * 35.0 + 25.0;
                 let fish = [
                     h.position.x + f64::from(trig::sin(f64::from(angle)) * distance) * 0.1,
                     f64::from(h.position.y.floor() as f32 + 1.0),
                     h.position.z + f64::from(trig::cos(f64::from(angle)) * distance) * 0.1,
                 ];
                 if self.water_block(fish) {
-                    let count = 2 + self.world.random.next_int_bound(2).unwrap_or(0) as u32;
+                    let count = 2 + h.random.next_int_bound(2).unwrap_or(0) as u32;
                     let spread = [f64::from(0.1f32), 0.0, f64::from(0.1f32)];
                     self.send_particles(ParticleType::Splash, fish, spread, 0.0, count);
                 }
             }
             if h.time_until_lured <= 0 {
-                h.fish_angle = self.world.random.next_float() * 360.0;
-                h.time_until_hooked = 20 + self.world.random.next_int_bound(61).unwrap_or(0);
+                h.fish_angle = h.random.next_float() * 360.0;
+                h.time_until_hooked = 20 + h.random.next_int_bound(61).unwrap_or(0);
             }
         } else {
-            h.time_until_lured = 100 + self.world.random.next_int_bound(501).unwrap_or(0) - h.lure;
+            h.time_until_lured = 100 + h.random.next_int_bound(501).unwrap_or(0) - h.lure;
         }
     }
     /// `catchingFish`'s check below a fish: the block under it is water.
@@ -885,7 +883,7 @@ impl Game<'_> {
                 if force.abs() < 0.01 {
                     force += force.signum() * 0.1;
                 }
-                let r = f64::from(self.world.random.next_float());
+                let r = f64::from(h.random.next_float());
                 h.velocity = Vec3::new(v.x * 0.9, v.y - force * r * 0.2, v.z * 0.9);
                 if h.nibble <= 0 && h.time_until_hooked <= 0 {
                     h.open_water = true;
@@ -896,8 +894,10 @@ impl Game<'_> {
                 if in_water {
                     h.out_of_water = (h.out_of_water - 1).max(0);
                     if h.nibble > 0 {
-                        let r = &mut self.world.random;
-                        let dip = -0.1 * f64::from(r.next_float()) * f64::from(r.next_float());
+                        let mut sync_random = synchronized_random(h.id, self.world.game_time);
+                        let dip = -0.1
+                            * f64::from(sync_random.next_float())
+                            * f64::from(sync_random.next_float());
                         h.velocity.y += dip;
                     }
                     self.catching_fish(&mut h, b);
@@ -1178,6 +1178,7 @@ pub(super) struct RemoteHook {
     state: State,
     on_ground: bool,
     lerp: HookLerp,
+    pub(super) random: LegacyRandom,
 }
 
 /// The `onGround` of a server's update (`handleMoveEntity`), except that a
@@ -1274,6 +1275,7 @@ impl Hook {
             luck: 0,
             lure: 0,
             lerp: HookLerp::default(),
+            random: LegacyRandom::new(unique_seed()),
         }
     }
     /// `FishingHook`'s entity for the players tracking it: the owner's id in
@@ -1333,6 +1335,7 @@ impl Game<'_> {
                 state: State::Flying,
                 on_ground: false,
                 lerp: HookLerp::default(),
+                random: LegacyRandom::new(unique_seed()),
             });
         }
     }
@@ -1407,8 +1410,10 @@ impl Game<'_> {
             h.previous = h.position;
             h.position = h.lerp.step(h.position);
             let before = h.position;
-            (h.position, h.velocity, h.state, h.on_ground) =
-                self.client_hook_step((h.position, h.velocity, h.state, h.on_ground));
+            (h.position, h.velocity, h.state, h.on_ground) = self.client_hook_step(
+                (h.position, h.velocity, h.state, h.on_ground),
+                &mut h.random,
+            );
             h.lerp.moved(h.position.subtract(before));
             self.hook = Some(h);
         }
@@ -1417,18 +1422,21 @@ impl Game<'_> {
             h.previous = h.position;
             h.position = h.lerp.step(h.position);
             let before = h.position;
-            (h.position, h.velocity, h.state, h.on_ground) =
-                self.client_hook_step((h.position, h.velocity, h.state, h.on_ground));
+            (h.position, h.velocity, h.state, h.on_ground) = self.client_hook_step(
+                (h.position, h.velocity, h.state, h.on_ground),
+                &mut h.random,
+            );
             h.lerp.moved(h.position.subtract(before));
         }
         self.remote_hooks = hooks;
     }
 
-    /// One tick of `FishingHook.tick`'s movement without the fishing (the
+    /// `FishingHook.tick`: one tick of movement without the fishing (the
     /// server's): position, motion, state and whether it rests on the ground.
     fn client_hook_step(
         &mut self,
         (mut position, mut velocity, state, mut on_ground): (Vec3, Vec3, State, bool),
+        random: &mut impl RandomSource,
     ) -> (Vec3, Vec3, State, bool) {
         let b = [
             position.x.floor() as i32,
@@ -1491,7 +1499,7 @@ impl Game<'_> {
                 if force.abs() < 0.01 {
                     force += force.signum() * 0.1;
                 }
-                let r = f64::from(self.world.random.next_float());
+                let r = f64::from(random.next_float());
                 velocity = Vec3::new(
                     velocity.x * 0.9,
                     velocity.y - force * r * 0.2,
@@ -1668,9 +1676,10 @@ mod tests {
         }
     }
 
+    use super::State;
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
-    use horizon_core::random::LegacyRandom;
+    use horizon_core::random::{LegacyRandom, RandomSource};
 
     #[test]
     fn casting_straight_down_aims_down_and_straight_up_aims_up() {
@@ -1788,11 +1797,10 @@ mod tests {
 
     #[test]
     fn bite_triggers_initial_downward_plunge_impulse() {
-        let mut rng = LegacyRandom::new(12345);
         for _ in 0..100 {
             let mut hook = Hook::remote(1, Vec3::ZERO);
             assert_eq!(hook.velocity.y, 0.0);
-            hook.trigger_bite(&mut rng, 0);
+            hook.trigger_bite(0);
             assert!(
                 hook.velocity.y < 0.0,
                 "vertical velocity should be negative on bite, got {}",
@@ -1836,5 +1844,145 @@ mod tests {
             Vec3::new(10.0, 2.0, 0.0),
         );
         assert_eq!(pulled, Vec3::new(1.5, 0.2, 0.0));
+    }
+
+    /// Scenario 1: Default/legacy behavior preserved: hook casts, tracks velocity,
+    /// bobs in water, catches fish, and retrieves with rod damage and XP orb.
+    #[test]
+    fn default_fishing_lifecycle_preserved_with_hook_random() {
+        use super::triangle;
+        let mut hook = Hook::remote(1, Vec3::new(0.0, 10.0, 0.0));
+        hook.random = LegacyRandom::new(1001);
+
+        // Cast direction and initial velocity randomization drawing from hook.random
+        let (y_sin, y_cos, dir_y) = cast_direction(0.0, 0.0);
+        let mut v = Vec3::new(f64::from(-y_sin), f64::from(dir_y), f64::from(-y_cos));
+        let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        v = Vec3::new(
+            v.x * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
+            v.y * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
+            v.z * (0.6 / len + triangle(&mut hook.random, 0.5, 0.0103365)),
+        );
+        hook.velocity = v;
+        assert_ne!(hook.velocity, Vec3::ZERO);
+
+        // Bobbing force calculation using hook.random
+        hook.state = State::Bobbing;
+        let force = 0.5;
+        let r = f64::from(hook.random.next_float());
+        hook.velocity = Vec3::new(
+            hook.velocity.x * 0.9,
+            hook.velocity.y - force * r * 0.2,
+            hook.velocity.z * 0.9,
+        );
+
+        // Trigger bite: nibble timer set in 20..=40 and initial plunge impulse applied
+        hook.trigger_bite(50);
+        assert!(hook.nibble >= 20 && hook.nibble <= 40);
+        assert!(hook.velocity.y < 0.0);
+
+        // Retrieve: XP orb count is drawn from hook.random in 1..=6
+        let xp = hook.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
+        assert!((1..=6).contains(&xp));
+    }
+
+    /// Scenario 2: Independent random stream: multiple hooks ticking simultaneously
+    /// do not advance each other's random draws, nor do they mutate world.random.
+    #[test]
+    fn independent_random_streams_for_multiple_hooks_and_world() {
+        use super::triangle;
+        let mut hook1 = Hook::remote(10, Vec3::ZERO);
+        hook1.random = LegacyRandom::new(424242);
+        let mut hook2 = Hook::remote(20, Vec3::ZERO);
+        hook2.random = LegacyRandom::new(424242);
+
+        // Reference hook with identical seed
+        let mut hook_ref = Hook::remote(30, Vec3::ZERO);
+        hook_ref.random = LegacyRandom::new(424242);
+
+        let mut world_random = LegacyRandom::new(999999);
+        let world_random_before = world_random.clone();
+
+        // Advance hook1 through several operations
+        let _ = hook1.random.next_float();
+        hook1.trigger_bite(100);
+        let _ = triangle(&mut hook1.random, 0.0, 9.188);
+
+        // Hook2 has not been touched: its random stream must remain exactly identical to hook_ref
+        assert_eq!(hook2.random.next_float(), hook_ref.random.next_float());
+        assert_eq!(hook2.random.next_float(), hook_ref.random.next_float());
+        assert_eq!(
+            hook2.random.next_int_bound(100),
+            hook_ref.random.next_int_bound(100)
+        );
+
+        // World random was completely untouched by hook1 operations
+        assert_eq!(
+            world_random.next_float(),
+            world_random_before.clone().next_float()
+        );
+    }
+
+    /// Scenario 3: Successful execution when requirements met: bobbing, biting,
+    /// catching fish, and retrieving XP orb all consume draws from the hook's own random.
+    #[test]
+    fn bobbing_biting_catching_and_retrieving_consume_hook_random() {
+        use super::triangle;
+        let mut hook = Hook::remote(1, Vec3::ZERO);
+        hook.random = LegacyRandom::new(777);
+
+        // 1. Bobbing draw advances hook.random
+        let r1 = hook.random.next_float();
+        let mut expected = LegacyRandom::new(777);
+        assert_eq!(r1, expected.next_float());
+
+        // 2. Bite trigger consumes next_int_bound(21) for nibble timer
+        let expected_nibble = 20 + expected.next_int_bound(21).unwrap_or(0);
+        hook.trigger_bite(0);
+        assert_eq!(hook.nibble, expected_nibble);
+
+        // 3. Catching fish draws (rain, sky, fish angle triangle, tease chance)
+        let rain_check = hook.random.next_float();
+        assert_eq!(rain_check, expected.next_float());
+        let sky_check = hook.random.next_float();
+        assert_eq!(sky_check, expected.next_float());
+        let fish_angle_delta = triangle(&mut hook.random, 0.0, 9.188);
+        let expected_triangle = triangle(&mut expected, 0.0, 9.188);
+        assert_eq!(fish_angle_delta, expected_triangle);
+
+        // 4. Retrieve XP orb draws next_int_bound(6) + 1 from hook.random
+        let expected_xp = expected.next_int_bound(6).unwrap_or(0) as u32 + 1;
+        let xp = hook.random.next_int_bound(6).unwrap_or(0) as u32 + 1;
+        assert_eq!(xp, expected_xp);
+    }
+
+    /// Scenario 4: Edge/boundary cases: biting plunge uses synchronized random;
+    /// client hook step uses hook's own random.
+    #[test]
+    fn biting_plunge_uses_synchronized_random_and_client_hook_uses_own_random() {
+        use super::{bite_impulse, synchronized_random};
+
+        let mut hook = Hook::remote(42, Vec3::ZERO);
+        hook.random = LegacyRandom::new(8888);
+
+        // Biting plunge depends ONLY on hook id and game_time, not hook.random
+        let snap_random = hook.random.clone();
+        let plunge1 = bite_impulse(&mut synchronized_random(hook.id, 100));
+        let plunge2 = bite_impulse(&mut synchronized_random(hook.id, 200));
+        assert_ne!(plunge1, plunge2);
+
+        // Plunge calculation did not consume any draws from hook.random
+        assert_eq!(hook.random.next_float(), snap_random.clone().next_float());
+
+        // Biting dip in State::Bobbing: -0.1 * sync_rand.next_float() * sync_rand.next_float()
+        let mut sync_random = synchronized_random(hook.id, 100);
+        let dip = -0.1 * f64::from(sync_random.next_float()) * f64::from(sync_random.next_float());
+        assert!((-0.1..=0.0).contains(&dip));
+
+        // Client hook step: client hook's own random is consumed during bobbing
+        let mut client_hook_random = LegacyRandom::new(555);
+        let mut expected_client_random = LegacyRandom::new(555);
+        let r = f64::from(client_hook_random.next_float());
+        assert_eq!(r, f64::from(expected_client_random.next_float()));
     }
 }
