@@ -12355,6 +12355,11 @@ impl Game<'_> {
         };
         self.server_explode(center, radius, interaction, fire)
     }
+    /// `ServerLevel.explode` with `ExplosionInteraction.TNT` and the caller's fire flag.
+    pub(super) fn explode_tnt(&mut self, center: [f64; 3], radius: f32, fire: bool) -> Result<()> {
+        let interaction = self.destroy_type("tnt_explosion_drop_decay");
+        self.server_explode(center, radius, interaction, fire)
+    }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
         &self,

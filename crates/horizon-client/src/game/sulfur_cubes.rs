@@ -8,6 +8,7 @@ use horizon_client::{
     mesher::Vertex,
     mobs::{Mob, Species, Who, sulfur_cube},
     projectiles::Projectile,
+    text::Text,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 
@@ -121,6 +122,8 @@ impl Game<'_> {
         let explosive = sulfur_cube::archetype(m).is_some_and(|a| a.explosion.is_some());
         if explosive && matches!(item, "minecraft:flint_and_steel" | "minecraft:fire_charge") {
             if !self.ui.rules.bool("tnt_explodes") {
+                let message = Text::translate("block.minecraft.tnt.disabled", &[]);
+                self.send_overlay_message(message);
                 return false;
             }
             sulfur_cube::prime(&mut self.mobs[index], false);
@@ -129,6 +132,7 @@ impl Game<'_> {
             } else {
                 self.consume_held();
             }
+            self.award_stat("used", item, 1);
             return true;
         }
         if item == "minecraft:shears" && sulfur_cube::has_body(m) {
@@ -138,6 +142,9 @@ impl Game<'_> {
             self.mobs[index].extra.ints[3] = sulfur_cube::PICKUP_TIMER;
             self.sulfur_sound(index, "entity.sulfur_cube.eject");
             self.damage_held_tool();
+            let at = self.mobs[index].position;
+            let ctx = self.who_context(Some(Who::Player), None);
+            self.post_game_event("minecraft:shear", [at.x, at.y, at.z], ctx);
             // CriteriaTriggers.PLAYER_SHEARED_EQUIPMENT with the body block.
             if let Some(body) = sheared {
                 let target = self.mob_entity(&self.mobs[index]);
@@ -158,6 +165,9 @@ impl Game<'_> {
             self.mobs[index].extra.body = Some(item.into());
             self.consume_held();
             self.sulfur_sound(index, "entity.sulfur_cube.absorb");
+            let at = self.mobs[index].position;
+            let ctx = self.who_context(Some(Who::Player), None);
+            self.post_game_event("minecraft:entity_interact", [at.x, at.y, at.z], ctx);
             return true;
         }
         false
@@ -343,5 +353,18 @@ mod tests {
         assert_eq!(block_light(0x2050, 1), 0x2050);
         assert_eq!(block_light(0x2050, 7), 0x7050);
         assert_eq!(block_light(0x0070, 0), 0x0070);
+    }
+
+    #[test]
+    fn tnt_disabled_action_bar_message() {
+        let msg = Text::translate("block.minecraft.tnt.disabled", &[]);
+        assert_eq!(msg.translation_key(), Some("block.minecraft.tnt.disabled"));
+    }
+
+    #[test]
+    fn sulfur_cube_interactions_post_vibrations() {
+        use horizon_client::sculk;
+        assert!(sculk::is_vibration("minecraft:shear"));
+        assert!(sculk::is_vibration("minecraft:entity_interact"));
     }
 }
