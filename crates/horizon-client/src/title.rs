@@ -3562,6 +3562,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     lan: false,
                 },
                 crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
+                crate::realms::Outcome::Copy(text) => Action::CopyText(text),
                 crate::realms::Outcome::None => Action::None,
             },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
