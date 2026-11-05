@@ -216,7 +216,7 @@ impl Game<'_> {
         let mut children = Vec::new();
         for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(root)) {
             let offset = riders::vehicle_attachment(m, width);
-            m.seated(offset, vehicle_box);
+            m.seated(root, offset, vehicle_box);
             m.position = riders::seat(attachment, offset, position, yaw);
             m.previous = m.position;
             children.push(m.id);

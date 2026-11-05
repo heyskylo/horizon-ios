@@ -1766,7 +1766,7 @@ impl Game<'_> {
                 .collect();
             for (j, offset) in seats {
                 let m = &mut self.mobs[j];
-                m.seated(offset, cart_box);
+                m.seated(id, offset, cart_box);
                 m.position = cart_seat(pos, offset);
                 m.previous = cart_seat(prev, offset);
                 m.velocity = Vec3::ZERO;

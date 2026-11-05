@@ -398,7 +398,7 @@ impl Game<'_> {
                 .collect();
             for (j, offset, at, previous, facing) in seats {
                 let m = &mut self.mobs[j];
-                m.seated(offset, boat_box);
+                m.seated(id, offset, boat_box);
                 m.position = at;
                 m.previous = previous;
                 m.velocity = Vec3::ZERO;

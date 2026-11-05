@@ -149,7 +149,7 @@ impl Game<'_> {
                     let offset = riders::vehicle_attachment(m, 0.0);
                     // EntityType.TEXT_DISPLAY's box is a point at the seat.
                     let seat = Vec3::new(at.x, at.y, at.z);
-                    m.seated(offset, Aabb::new(seat, seat));
+                    m.seated(v, offset, Aabb::new(seat, seat));
                     m.position = Vec3::new(at.x, at.y - offset, at.z);
                     m.previous = Vec3::new(before.x, before.y - offset, before.z);
                     m.velocity = Vec3::ZERO;
@@ -192,7 +192,7 @@ impl Game<'_> {
                 let vehicle_box = vehicle.bounds();
                 let m = &mut self.mobs[i];
                 let offset = riders::vehicle_attachment(m, vehicle_width);
-                m.seated(offset, vehicle_box);
+                m.seated(v, offset, vehicle_box);
                 m.position = riders::seat(attach, offset, pos, yaw);
                 m.previous = riders::seat(attach, offset, prev, prev_yaw);
                 m.velocity = Vec3::ZERO;
