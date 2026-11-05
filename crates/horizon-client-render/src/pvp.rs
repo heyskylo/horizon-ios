@@ -439,12 +439,15 @@ pub struct Frame {
     pub outline: Option<(u32, f32)>,
     /// The hurt overlay texel ([`Hit::texel`]), 0 for vanilla's.
     pub hurt_texel: u32,
+    /// The glint's colour ([`Tweaks::glint_texel`]), 0 for vanilla's.
+    pub glint: u32,
 }
 impl Pvp {
     pub fn frame(&self) -> Frame {
         Frame {
             outline: self.outline.stroke(),
             hurt_texel: self.hit.texel(),
+            glint: self.tweaks.glint_texel(),
         }
     }
 }
@@ -506,10 +509,48 @@ fn corner_label(c: Corner) -> String {
 }
 
 /// Smaller changes to what vanilla shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tweaks {
     /// Enchantment levels as numbers in tooltips ("Sharpness 5").
     pub numeric_enchants: bool,
+    /// How far down the first-person fire overlay moves, in percent of its height (0: vanilla).
+    pub fire_lower: u8,
+    /// The first-person shield's size, in percent (100: vanilla).
+    pub shield_size: u8,
+    /// The totem animation's size, in percent (100: vanilla).
+    pub totem_size: u8,
+    /// The enchantment glint's colour; `None` is vanilla's purple.
+    pub glint: Option<Colour>,
+    /// Water fog as after 30 seconds under water (vanilla's clearest), from the first moment.
+    pub clear_water: bool,
+    /// Lava fog as with Fire Resistance (vanilla's clearest), without the effect.
+    pub clear_lava: bool,
+}
+impl Default for Tweaks {
+    fn default() -> Self {
+        Self {
+            numeric_enchants: false,
+            fire_lower: 0,
+            shield_size: 100,
+            totem_size: 100,
+            glint: None,
+            clear_water: false,
+            clear_lava: false,
+        }
+    }
+}
+pub const FIRE_LOWER: (u8, u8) = (0, 80);
+pub const SHIELD_SIZES: (u8, u8) = (50, 100);
+pub const TOTEM_SIZES: (u8, u8) = (25, 100);
+impl Tweaks {
+    /// `colour` as the glint shaders read it: `0` for vanilla's, else `0xFF` alpha over RGB in
+    /// little-endian bytes (`unpack4x8unorm`'s order).
+    pub fn glint_texel(&self) -> u32 {
+        self.glint.map_or(0, |c| {
+            let [_, r, g, b] = c.argb().to_be_bytes();
+            u32::from_le_bytes([r, g, b, 255])
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -581,6 +622,17 @@ impl Pvp {
             "hudCombo" => u.combo = flag(value, u.combo),
             "hudComboCorner" => u.combo_corner = Corner::parse(value, u.combo_corner),
             "numericEnchants" => t.numeric_enchants = flag(value, t.numeric_enchants),
+            "lowFire" => t.fire_lower = num(value, FIRE_LOWER, t.fire_lower),
+            "shieldSize" => t.shield_size = num(value, SHIELD_SIZES, t.shield_size),
+            "totemSize" => t.totem_size = num(value, TOTEM_SIZES, t.totem_size),
+            "glintColour" => {
+                t.glint = match value {
+                    "off" => None,
+                    v => Colour::parse(v).or(t.glint),
+                }
+            }
+            "clearWater" => t.clear_water = flag(value, t.clear_water),
+            "clearLava" => t.clear_lava = flag(value, t.clear_lava),
             _ => return false,
         }
         true
@@ -640,7 +692,18 @@ impl Pvp {
             u.combo,
             u.combo_corner.name(),
         );
-        let _ = writeln!(out, "numericEnchants:{}", self.tweaks.numeric_enchants);
+        let t = &self.tweaks;
+        let _ = write!(
+            out,
+            "numericEnchants:{}\nlowFire:{}\nshieldSize:{}\ntotemSize:{}\nglintColour:{}\nclearWater:{}\nclearLava:{}\n",
+            t.numeric_enchants,
+            t.fire_lower,
+            t.shield_size,
+            t.totem_size,
+            t.glint.map_or("off", Colour::name),
+            t.clear_water,
+            t.clear_lava,
+        );
     }
 }
 
@@ -714,6 +777,17 @@ opts! {
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
     NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
         "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
+    FireLower, "fire_lower", "Lower fire",
+        "Moves the flames you see while burning down, so they cover less of the screen.";
+    ShieldSize, "shield_size", "Shield size", "The size of the shield in your hand, in first person.";
+    TotemSize, "totem_size", "Totem animation size",
+        "The size of the totem that fills the screen when it saves you.";
+    GlintColour, "glint_colour", "Enchantment glint colour",
+        "The colour of the shimmer on enchanted items and armour. Off is vanilla's purple.";
+    ClearWater, "clear_water", "Clear water",
+        "Under water, see as far as vanilla lets you after 30 seconds there, from the start.";
+    ClearLava, "clear_lava", "Clear lava",
+        "In lava, see as far as vanilla's Fire Resistance lets you, without the effect.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -770,6 +844,9 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     );
     rows.push(Err("horizon.pvp.header.items"));
     rows.push(Ok(NumericEnchants));
+    rows.push(Ok(GlintColour));
+    rows.push(Err("horizon.pvp.header.visual"));
+    rows.extend([FireLower, ShieldSize, TotemSize, ClearWater, ClearLava].map(Ok));
     rows
 }
 impl Opt {
@@ -782,6 +859,7 @@ impl Opt {
             HitColour | HitOpacity => Some(Hit),
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
             | HudBackground | NumericEnchants => None,
+            FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -810,6 +888,8 @@ impl Opt {
             Opt::HudServer => p.hud.server,
             Opt::HudCombo => p.hud.combo,
             Opt::NumericEnchants => p.tweaks.numeric_enchants,
+            Opt::ClearWater => p.tweaks.clear_water,
+            Opt::ClearLava => p.tweaks.clear_lava,
             _ => return None,
         })
     }
@@ -842,6 +922,16 @@ impl Opt {
             Opt::HudCoordsCorner => corner_label(p.hud.coords_corner),
             Opt::HudServerCorner => corner_label(p.hud.server_corner),
             Opt::HudComboCorner => corner_label(p.hud.combo_corner),
+            Opt::FireLower => match p.tweaks.fire_lower {
+                0 => crate::lang::get_or("Off", "Off"),
+                v => format!("{v}%"),
+            },
+            Opt::ShieldSize => format!("{}%", p.tweaks.shield_size),
+            Opt::TotemSize => format!("{}%", p.tweaks.totem_size),
+            Opt::GlintColour => match p.tweaks.glint {
+                Some(colour) => colour.label(),
+                None => crate::lang::get_or("Off", "Off"),
+            },
             _ => return None,
         })
     }
@@ -849,6 +939,7 @@ impl Opt {
     pub fn cycle(self, p: &mut Pvp, back: bool) {
         let c = &mut p.crosshair;
         let (o, h, u) = (&mut p.outline, &mut p.hit, &mut p.hud);
+        let t = &mut p.tweaks;
         let corner = |c: Corner| step(&Corner::ALL, c, back);
         // Off, then every solid colour.
         let solid_or_off = |v: Option<Colour>| {
@@ -902,6 +993,12 @@ impl Opt {
             Opt::HudCombo => u.combo = !u.combo,
             Opt::HudComboCorner => u.combo_corner = corner(u.combo_corner),
             Opt::NumericEnchants => p.tweaks.numeric_enchants = !p.tweaks.numeric_enchants,
+            Opt::FireLower => t.fire_lower = step_by(t.fire_lower, FIRE_LOWER, 10, back),
+            Opt::ShieldSize => t.shield_size = step_by(t.shield_size, SHIELD_SIZES, 10, back),
+            Opt::TotemSize => t.totem_size = step_by(t.totem_size, TOTEM_SIZES, 25, back),
+            Opt::GlintColour => t.glint = solid_or_off(t.glint),
+            Opt::ClearWater => t.clear_water = !t.clear_water,
+            Opt::ClearLava => t.clear_lava = !t.clear_lava,
         }
     }
 }
@@ -1039,6 +1136,11 @@ mod tests {
         assert_eq!(p.crosshair.shape, Shape::T);
         assert_eq!(p.crosshair.size, 8);
         assert_eq!(p.crosshair.hover, Some(Colour::Inverted));
+        // From vanilla's values, one click: the overlays' sizes wrap to their smallest.
+        let t = p.tweaks;
+        assert_eq!((t.fire_lower, t.shield_size, t.totem_size), (10, 50, 25));
+        assert_eq!(t.glint, Some(Colour::White));
+        assert!(t.clear_water && t.clear_lava);
         let mut text = String::new();
         p.serialize(&mut text);
         let mut read = Pvp::default();
@@ -1056,6 +1158,16 @@ mod tests {
         assert!(p.parse_line("crosshairSize", "99") && p.crosshair.size == SIZES.1);
         assert!(p.parse_line("crosshairColour", "plaid") && p.crosshair.colour == Colour::White);
         assert!(!p.parse_line("fullbright", "true"));
+        assert!(p.parse_line("totemSize", "5") && p.tweaks.totem_size == TOTEM_SIZES.0);
+    }
+
+    #[test]
+    fn the_glint_colour_reaches_the_shaders_as_rgb_bytes() {
+        let mut t = Tweaks::default();
+        assert_eq!(t.glint_texel(), 0, "vanilla's glint");
+        t.glint = Some(Colour::Red);
+        // unpack4x8unorm reads the low byte first: r = 1, g = 0, b = 0, a = 1.
+        assert_eq!(t.glint_texel().to_le_bytes(), [255, 0, 0, 255]);
     }
 
     #[test]
