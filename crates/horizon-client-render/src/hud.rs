@@ -1465,8 +1465,9 @@ impl HudAtlas {
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
-        let font = crate::font::Font::load(
+        let font = crate::font::Font::load_over(
             root,
+            defaults,
             &sprites,
             &pixels,
             (width, height),
@@ -4009,6 +4010,52 @@ texture=wide",
             .write_image_data(&pixels)
             .unwrap();
         root
+    }
+    /// A pack layer that adds a font provider over the game's own resources:
+    /// its `font/default.json` names `minecraft:font/test.png`, which only the
+    /// game's root holds (`HudAtlas::build_over`'s `defaults`).
+    fn pack_font_over_defaults(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "horizon-font-fallback-{name}-{}",
+            std::process::id()
+        ));
+        let pack = base.join("pack");
+        let vanilla = base.join("vanilla");
+        fs::create_dir_all(pack.join("assets/minecraft/font")).unwrap();
+        fs::create_dir_all(vanilla.join("assets/minecraft/textures/font")).unwrap();
+        fs::write(
+            pack.join("assets/minecraft/font/default.json"),
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:font/test.png","ascent":7,"chars":["ab"]}]}"#,
+        )
+        .unwrap();
+        let mut pixels = vec![0u8; 16 * 8 * 4];
+        for y in 0..8 {
+            for x in (0..3).chain(8..13) {
+                pixels[(y * 16 + x) * 4 + 3] = 255;
+            }
+        }
+        let mut encoder = png::Encoder::new(
+            fs::File::create(vanilla.join("assets/minecraft/textures/font/test.png")).unwrap(),
+            16,
+            8,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        (pack, vanilla)
+    }
+    #[test]
+    fn a_pack_overlay_reads_font_sheets_from_the_game_below_it() {
+        let (pack, vanilla) = pack_font_over_defaults("sheets");
+        let atlas = HudAtlas::build_over(&pack, &vanilla).unwrap();
+        let glyph = atlas.font.glyph('a');
+        let _ = fs::remove_dir_all(pack.parent().unwrap());
+        assert!(glyph.rect.is_some(), "text draws, not the missing glyph");
+        assert!(glyph.advance > 0.0);
     }
     #[test]
     fn the_fonts_only_atlas_measures_text_like_the_full_one() {
