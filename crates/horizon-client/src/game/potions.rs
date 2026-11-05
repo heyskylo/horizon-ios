@@ -2179,6 +2179,84 @@ mod tests {
     use super::*;
     use horizon_client::screen_effects::nausea_blend_added;
 
+    /// `AreaEffectCloud.addAdditionalSaveData` with `readAdditionalSaveData`: a
+    /// lingering cloud written at a save reads back with its lifetime, radius,
+    /// use settings and the effects it sprays, with the hidden and ambient
+    /// flags it carried.
+    #[test]
+    fn a_lingering_cloud_survives_a_save() {
+        let cloud = Breath {
+            id: 7,
+            at: [1.5, 64.0, -2.5],
+            radius: 3.5,
+            age: 12,
+            duration: 400,
+            from_dragon: false,
+            victims: Vec::new(),
+            potion: Some(PotionCloud {
+                settings: CloudSettings {
+                    wait_time: 10,
+                    reapplication_delay: 25,
+                    radius_on_use: -0.5,
+                    duration_on_use: -5,
+                    duration_scale: 0.5,
+                },
+                effects: vec![("poison", 200, 1), ("slowness", 100, 0)],
+                hidden: vec!["slowness"],
+                ambient: vec!["poison"],
+                radius_per_tick: -0.008_750,
+                color: 0x0033_FF44,
+                victims: Vec::new(),
+                source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
+                owner: None,
+                guest: None,
+            }),
+        };
+        let tag = potion_cloud_to_nbt(&cloud, [1, 2, 3, 4], None);
+        let (at, back) = potion_cloud_from_nbt(&tag).expect("the cloud reads back");
+        assert_eq!(at, Vec3::new(1.5, 64.0, -2.5), "the position");
+        assert_eq!((back.age, back.duration), (12, 400));
+        assert!((back.radius - 3.5).abs() < 1.0e-6, "{}", back.radius);
+        let potion = back.potion.expect("a potion cloud");
+        assert_eq!(
+            (
+                potion.settings.wait_time,
+                potion.settings.reapplication_delay,
+                potion.settings.duration_on_use
+            ),
+            (10, 25, -5)
+        );
+        assert!((potion.settings.radius_on_use + 0.5).abs() < 1.0e-6);
+        assert!((potion.settings.duration_scale - 0.5).abs() < 1.0e-6);
+        assert!((potion.radius_per_tick + 0.008_750).abs() < 1.0e-6);
+        assert_eq!(
+            potion.effects,
+            vec![("poison", 200, 1), ("slowness", 100, 0)]
+        );
+        assert_eq!(potion.hidden, vec!["slowness"]);
+        assert_eq!(potion.ambient, vec!["poison"]);
+        assert_eq!(potion.color, 0x0033_FF44, "the colour it was drawn in");
+        // The vanilla field names the reader of another client would look for.
+        for key in [
+            "Age",
+            "Duration",
+            "Radius",
+            "RadiusPerTick",
+            "WaitTime",
+            "ReapplicationDelay",
+            "RadiusOnUse",
+            "DurationOnUse",
+            "potion_duration_scale",
+            "potion_contents",
+        ] {
+            assert!(tag.get(key).is_some(), "{key}");
+        }
+        assert_eq!(
+            horizon_client::entity_nbt::kind(&tag).as_deref(),
+            Some("minecraft:area_effect_cloud")
+        );
+    }
+
     /// `WitherBoss.canBeAffected` refuses only the wither effect: its `addEffect`
     /// refuses the rest, but a cloud of strength or healing still counts the boss
     /// as a victim (`AreaEffectCloud.serverTick` asks `canBeAffected`).
