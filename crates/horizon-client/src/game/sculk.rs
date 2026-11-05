@@ -4,6 +4,7 @@
 //! (`SculkShriekerBlockEntity`, `SpawnUtil`), catalysts feeding the sculk
 //! spreader from deaths, and the darkness wardens and shriekers cast.
 use super::{Game, Result};
+use horizon_client::actions::Action;
 use horizon_client::{
     containers::BlockEntity,
     effects::{EffectInstance, PlayerEffects},
@@ -20,7 +21,6 @@ use horizon_core::{
 use horizon_protocol::entity_data::PositionSource;
 use horizon_world::registry::BlockStateId;
 use std::collections::HashSet;
-use winit::keyboard::KeyCode;
 
 pub const HELP: &[&str] = &[
     "sculk                          sculk listeners, the warning level and the darkness blend",
@@ -542,7 +542,7 @@ impl Game<'_> {
             owner: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
-            stepping_carefully: self.keys.contains(&KeyCode::ShiftLeft),
+            stepping_carefully: self.keys.held(Action::Sneak),
             dampens: false,
             targetable: !dead && !creative && !self.spectator(),
             living: true,
@@ -816,12 +816,18 @@ impl Game<'_> {
     /// and moving over blocks.
     pub(super) fn tick_sculk_entities(&mut self) {
         self.sculk.ticks = self.sculk.ticks.wrapping_add(1);
+        // Its steps as spans for `horizon-report` (nothing is read while spans are off).
+        let mut laps = horizon_client::spans::laps();
         self.sculk_prepare();
+        laps.lap("sculk_prepare");
         self.load_warden_tracker();
         self.sculk.tracker.tick();
         self.tick_darkness_blend();
+        laps.lap("sculk_wardens");
         self.sculk_step_on();
+        laps.lap("sculk_step_on");
         self.tick_entity_events();
+        laps.lap("sculk_entity_events");
     }
     /// The block entity phase for sculk: vibration tickers and catalysts, in
     /// the order the block entities were added (`Level.tickBlockEntities`).
@@ -1738,7 +1744,7 @@ impl Game<'_> {
             )
         });
         if let Some((at, on_ground, health, flying)) = player {
-            let crouch = self.keys.contains(&KeyCode::ShiftLeft);
+            let crouch = self.keys.held(Action::Sneak);
             if on_ground && !self.spectator() {
                 self.step_on_redstone_ore(at, crouch, true);
             }

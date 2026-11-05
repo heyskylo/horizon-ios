@@ -1232,7 +1232,8 @@ impl HudAtlas {
                     .ok();
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
-            let frames = name.starts_with("block/") || name.starts_with("item/");
+            let frames =
+                animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
             let (w, h, pixels) = if frames {
                 first_frame(image, animation.as_ref())
             } else {
@@ -1313,12 +1314,13 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
-        images.push((
-            crate::pad_cursor::SPRITE.into(),
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::pixels(),
-        ));
+        // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
+        // textures are).
+        for image in crate::pad_glyph::images() {
+            if !images.iter().any(|i| i.0 == image.0) {
+                images.push(image);
+            }
+        }
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
@@ -3494,6 +3496,49 @@ mod tests {
         // A still texture there stays whole, as vanilla stitches it.
         let banner = atlas.sprites["custom/banner"];
         assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
+    }
+    #[test]
+    fn an_animated_gui_sprite_packs_its_first_frame_and_animates() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-gui-anim-{}", std::process::id()));
+        let sprites = root.join("assets/minecraft/textures/gui/sprites/icon");
+        fs::create_dir_all(&sprites).unwrap();
+        // A GUI sprite like icon/music_notes: 4 frames stacked vertically (16x64),
+        // with animation metadata, and a still 16x32 texture beside it.
+        write_strip(
+            &sprites.join("music_notes.png"),
+            16,
+            64,
+            &[
+                [10, 20, 30, 255],
+                [40, 50, 60, 255],
+                [70, 80, 90, 255],
+                [100, 110, 120, 255],
+            ],
+            Some(r#"{"animation": {"frametime": 2}}"#),
+        );
+        write_strip(
+            &sprites.join("static_badge.png"),
+            16,
+            32,
+            &[[9, 9, 9, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["gui/sprites/icon/music_notes"];
+        // One frame, not the whole 16x64 strip squeezed into a slot.
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [10, 20, 30, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the gui sprite animates");
+        assert_eq!(animation.frame_count(), 4);
+        // A still texture there stays whole.
+        let static_badge = atlas.sprites["gui/sprites/icon/static_badge"];
+        assert_eq!(static_badge.texels((atlas.width, atlas.height)), (16, 32));
     }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {

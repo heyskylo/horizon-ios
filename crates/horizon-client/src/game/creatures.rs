@@ -9,6 +9,7 @@ use super::{
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
+use horizon_client::actions::Action;
 use horizon_client::{
     Result,
     arrows::EntityHit,
@@ -322,7 +323,7 @@ impl Game<'_> {
             alive: !p.health.dead_or_dying(),
             // EntitySelector.NO_CREATIVE_OR_SPECTATOR.
             creative: self.creative || self.spectator(),
-            sneaking: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
+            sneaking: self.keys.held(Action::Sneak),
             swimming: p.swimming,
             look: view_vector(self.yaw, self.pitch),
             main_hand: self.held().map(|s| s.item.clone()),
@@ -994,6 +995,7 @@ impl Game<'_> {
             }
         }
         let uuid = self.level.player_uuid;
+        let level_id = self.dim.id();
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
@@ -1163,8 +1165,13 @@ impl Game<'_> {
                     ..base
                 };
                 w.controlling_player_movement = controlling_player_movement;
+                // `horizon-report`'s cost by mob type (tick_profile.rs).
+                let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
                 let kept =
                     horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
+                if let Some((started, kind)) = sampled {
+                    super::tick_profile::add(level_id, &kind, started);
+                }
                 let m = &mut mobs[i];
                 if seen_guest.is_none() {
                     base.player = w.player;
@@ -2329,11 +2336,13 @@ impl Game<'_> {
                     });
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
-                    // carries its kind.
-                    let result = if matches!(species, Species::Creeper | Species::Wither) {
-                        self.with_hive_emptying_blast(|g| g.explode(at, radius))
-                    } else {
-                        self.explode(at, radius)
+                    // carries its kind. A sulfur cube's blast is TNT's.
+                    let result = match species {
+                        Species::Creeper | Species::Wither => {
+                            self.with_hive_emptying_blast(|g| g.explode(at, radius))
+                        }
+                        Species::SulfurCube => self.explode_sulfur_cube(at, radius),
+                        _ => self.explode(at, radius),
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
@@ -5784,8 +5793,8 @@ impl Game<'_> {
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         let acting = self.acting_player_uuid();
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking =
+            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         let held_damage = held.as_ref().map_or(0, |h| h.damage as i32);
         let held_extra = held.as_ref().and_then(|h| h.extra.clone());
         let m = &mut self.mobs[index];
@@ -7259,9 +7268,16 @@ impl Game<'_> {
                 let mark = self.skin_frame.borrow().mark();
                 let base = horizon_client::mobs::render::base_transform(mob, alpha as f32, camera);
                 let gpu = skinning;
-                if let Some((lo, hi)) =
-                    self.cosmetics_geometry(mob, false, base, alpha as f32, packed, gpu, out)
-                {
+                if let Some((lo, hi)) = self.cosmetics_geometry(
+                    mob,
+                    false,
+                    base,
+                    Some(camera),
+                    alpha as f32,
+                    packed,
+                    gpu,
+                    out,
+                ) {
                     skinned = Some(match skinned {
                         Some((first, Some((l, h)))) => (first, Some((l.min(lo), h.max(hi)))),
                         Some((first, None)) => (first, Some((lo, hi))),

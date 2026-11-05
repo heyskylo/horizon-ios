@@ -186,13 +186,14 @@ and the container screen tests are unchanged).
 - `chatIndicator` off removes the coloured bar at the left of a line. It hides
   the bar only, never the message.
 
-### Scroll wheel changes settings (`wheelCyclesSettings`, default on)
-- On, the wheel works as in vanilla: over a button in the settings it changes the button's value
-  (`CycleButton.mouseScrolled`), and a button focused with the keyboard or a pad steps on the
-  wheel wherever the cursor is.
-- Off, the wheel only scrolls the list under the cursor, on every settings page, Video's included
-  (`OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling through a long page then can't change an
-  option that passes under the cursor (#5455). Client-only.
+### Scroll wheel changes settings (`wheelCyclesListSettings`, default off)
+- Off, as in vanilla, the wheel scrolls the list under the cursor, on every settings page, Video's
+  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling
+  through a long page can't change an option that passes under the cursor (#5455, #9633). A cycle
+  button outside a list, such as a world's Difficulty, still steps
+  (`CycleButton.mouseScrolled`).
+- On, the wheel over a button in a list changes the button's value too, and a button focused with
+  the keyboard or a pad steps on the wheel wherever the cursor is. Client-only.
 
 ### Splitscreen (`splitscreen`, default off)
 

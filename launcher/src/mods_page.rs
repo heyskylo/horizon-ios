@@ -557,6 +557,11 @@ impl Launcher {
     /// in a Java instance, renames its file.
     pub(super) fn mods_switch(&mut self, e: &installed::Entry) {
         let home = self.mods.home();
+        // An update holds the folder: the window doesn't wait for it.
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            self.mods.message = Some(Err(tr("Wait for the current operation to finish.").into()));
+            return;
+        };
         if self.mods.java.is_some() {
             let on = !java_instance::is_on(&home, e);
             self.mods.message = Some(java_instance::set_on(&home, e, on).map(|()| {
@@ -1019,6 +1024,12 @@ impl Launcher {
     /// The project `id` leaves the selected instance now; what happened, for the page's notice.
     pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
         let home = self.mods.home();
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            let busy: Result<String, String> =
+                Err(tr("Wait for the current operation to finish.").into());
+            self.mods.message = Some(busy.clone());
+            return busy;
+        };
         let removed = match self.mods.java {
             Some(_) => java_instance::remove(&home, id),
             None => installed::remove(&home, id),
