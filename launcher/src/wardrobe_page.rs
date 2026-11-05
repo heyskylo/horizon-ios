@@ -1,9 +1,10 @@
 //! The Wardrobe page (top bar, between Servers and Versions), in the glass look, shown when the
 //! cosmetics service has a founder set to show (`horizon_launcher::shop`, `watch_shop`), or with
 //! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items, a
-//! row per slot, what the account owns for the chosen slot, the purchase history, a button to the
-//! website's shop (buying and the founder claim happen there, except "Claim for free" where
-//! Paddle doesn't sell: `Claim::here`, decided by the service), and three switches:
+//! row per slot, what the account owns for the chosen slot, the purchase history, one plain link
+//! to the website's shop ("Get more cosmetics on playhorizon.dev"; browsing, prices, buying and
+//! the founder claim are all there, never in the launcher, except "Claim for free" where Paddle
+//! doesn't sell: `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
 //! other players' cosmetics and Show other players' auras and trails (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
@@ -216,9 +217,16 @@ fn tell_the_game(uuid: &str, saved: &Saved) {
     }
 }
 
-/// "Open the shop": the website's shop in the browser, where cosmetics are browsed and bought.
-fn open_shop(id: &'static str, kind: Kind, t: &Theme) -> Stateful<Div> {
-    button(id, "Open the shop", kind, t).on_click(|_: &ClickEvent, _, cx| cx.open_url(SHOP_URL))
+/// The website's shop in the browser, where cosmetics are browsed and bought: the launcher has no
+/// shop of its own (Ludovic, 2026-11-05), only this plain button.
+fn site_link(id: &'static str, t: &Theme) -> Stateful<Div> {
+    button(
+        id,
+        "Get more cosmetics on playhorizon.dev",
+        Kind::Secondary,
+        t,
+    )
+    .on_click(|_: &ClickEvent, _, cx| cx.open_url(SHOP_URL))
 }
 
 /// A day, in the player's time zone (Unix seconds).
@@ -717,7 +725,7 @@ impl Launcher {
         if !signed_out && (reload || self.wardrobe.is_none()) {
             self.open_wardrobe(cx);
         }
-        // An account that owns nothing finds the shop in the empty state instead of the header.
+        // An account that owns nothing finds the link in the empty state instead of the header.
         let owns_nothing = self
             .wardrobe
             .as_ref()
@@ -746,7 +754,7 @@ impl Launcher {
                         } else {
                             4.
                         }))
-                        .child(open_shop("wardrobe-shop", Kind::Secondary, &t)),
+                        .child(site_link("wardrobe-shop", &t)),
                 )
             });
         let page = div().flex().flex_col().gap(px(24.)).child(header);
@@ -875,6 +883,16 @@ impl Launcher {
                 .get_or_bake(id, hash, scale, || Self::wardrobe_mark(i, scale))
                 .clone()
         });
+        // As the game draws it: Horizon's mark before the name (unless the game's "Show me as a
+        // Horizon player" is off), the style's badge after it.
+        let horizon = prefs::listed(&backend::game_home()).then(|| {
+            let scale = self.scale;
+            self.wardrobe_marks
+                .get_or_bake("horizon", "mark", scale, || {
+                    art::bake(&horizon_cosmetics::mark::texels(), 8, 8, 2., scale)
+                })
+                .clone()
+        });
         let name_tag = div()
             .flex()
             .items_center()
@@ -882,7 +900,7 @@ impl Launcher {
             .px(px(8.))
             .py(px(3.))
             .bg(gpui::rgba(0x0000_0066))
-            .children(mark.map(|m| gpui::img(m).size(px(16.))))
+            .children(horizon.map(|m| gpui::img(m).size(px(16.))))
             .child(
                 div()
                     .font_family(theme::MONO)
@@ -890,6 +908,7 @@ impl Launcher {
                     .text_color(gpui::white())
                     .child(me.name.clone()),
             )
+            .children(mark.map(|m| gpui::img(m).size(px(16.))))
             .when_some(line, |d, c| d.border_b_2().border_color(c));
         let turn = button("wardrobe-turn", "Turn", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
@@ -1112,11 +1131,8 @@ impl Launcher {
         }
         // Nothing owned yet: the shop is on the website.
         me.owned.is_empty().then(|| {
-            row(tr("You don't own any cosmetics yet.").into()).child(open_shop(
-                "wardrobe-shop-empty",
-                Kind::Primary,
-                &t,
-            ))
+            row(tr("You don't own any cosmetics yet.").into())
+                .child(site_link("wardrobe-shop-empty", &t))
         })
     }
 

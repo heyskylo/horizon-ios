@@ -420,6 +420,7 @@
   "Frame Generation": "Tạo khung",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Hiển thị khung hình tạo sẵn giữa hai khung hình thực: mượt mà hơn, độ trễ hơn một chút.",
   "Shadow Cache": "Bộ nhớ đệm bóng tối",
+  "Shader Packs...": "Gói đổ bóng...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Tái sử dụng bản đồ bóng gói khi mặt trời, chế độ xem và thế giới khớp với nhau. Tắt theo mặc định.",
   "Find BlueMap": "Tìm BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Trên máy chủ, tìm bản đồ web BlueMap của họ cho địa hình xa. Tiếp theo tham gia.",

@@ -9,7 +9,7 @@
 //! is by kind (mods, modpacks, resource packs, shader packs, data packs), each with its sources,
 //! so the tabs are the kinds and the sources are a switch under the search: Horizon's registry
 //! or Modrinth, CurseForge beside them as coming soon, on the kinds both serve (`switches`):
-//! shader packs are Horizon's registry's only, data packs Modrinth's only, and a Java
+//! shader packs are Horizon's registry's only, and a Java
 //! instance's files always Modrinth's. Modrinth's Java mods are offered to a Horizon instance
 //! too, each marked Works, Partly or Doesn't run in Horizon. Not in the mockup, kept in its
 //! patterns: Show everything, the filters, which instance or world installs go to (under the
@@ -142,7 +142,7 @@ impl Launcher {
             .when(switches(self.mods.kind) && !java, |d| {
                 d.child(self.glass_source_switch(cx))
             })
-            .children((!registry).then(|| self.mods_filters(cx)))
+            .child(self.mods_filters(cx))
             .children(self.mods_target_line(cx));
         // The search, and the sort on its right.
         let search = div()
@@ -540,7 +540,9 @@ impl Launcher {
         if !p.author.is_empty() {
             by.push(trf("by {author}", &[("author", &p.author)]));
         }
-        by.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            by.push(trf("from {source}", &[("source", source)]));
+        }
         if !p.license.is_empty() {
             by.push(p.license.clone());
         }

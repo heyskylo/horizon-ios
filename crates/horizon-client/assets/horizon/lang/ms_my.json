@@ -405,6 +405,7 @@
   "Frame Generation": "Penjanaan Bingkai",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Menunjukkan bingkai yang dibuat antara setiap dua bingkai sebenar: lebih lancar, sedikit ketinggalan.",
   "Shadow Cache": "Cache Bayangan",
+  "Shader Packs...": "Pek Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Menggunakan semula peta bayangan pek apabila matahari, paparan dan dunia sepadan. Mati secara lalai.",
   "Find BlueMap": "Cari BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Pada pelayan, temui peta web BlueMap mereka untuk rupa bumi yang jauh. Sertai seterusnya.",

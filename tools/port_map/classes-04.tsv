@@ -128,6 +128,7 @@ WeatheringCopperDoorBlock.randomTick	port	crates/horizon-world/src/level/tick.rs
 WeightedPressurePlateBlock.getSignalStrength	port	crates/horizon-world/src/level/redstone.rs::Sim::plate_signal_strength	
 WetSpongeBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	wet sponge drip
 WetSpongeBlock.onPlace	port	crates/horizon-world/src/level/hooks.rs::Sim::on_place	wet sponge drying arm
+WitherRoseBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	three smoke puffs about the centre of the pick shape, moved by the flower's per-column model offset
 BannerPatternLayers.removeLast	inline	crates/horizon-client/src/cauldron.rs::interact	banner wash pops the last pattern in its arm
 BannerPatternLayers.Builder	skip:java		builder for banner pattern layers
 BannerPatterns	skip:data		registry bootstrap

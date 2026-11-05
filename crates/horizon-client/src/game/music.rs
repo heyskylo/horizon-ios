@@ -47,6 +47,10 @@ impl Game<'_> {
         // MusicManager's showNowPlayingToast and hideNowPlayingToast calls.
         let multiplier = f64::from(self.settings.notification_display_time);
         for show in std::mem::take(&mut self.music.toast_requests) {
+            // Each showing is a new toast to mods (`ToastAddEvent`).
+            if show && self.now_playing.is_some() && !self.toast_allowed("now_playing", "") {
+                continue;
+            }
             if let Some(toast) = &mut self.now_playing {
                 if show {
                     toast.show(multiplier);
@@ -77,7 +81,10 @@ impl Game<'_> {
             0 => None,
             _ => {
                 let mut toast = horizon_client::toasts::NowPlayingToast::default();
-                if state == 2 && self.final_music_volume() > 0.0 {
+                if state == 2
+                    && self.final_music_volume() > 0.0
+                    && self.toast_allowed("now_playing", "")
+                {
                     toast.show(f64::from(self.settings.notification_display_time));
                 }
                 Some(toast)

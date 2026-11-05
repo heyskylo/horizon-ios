@@ -467,5 +467,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Aures i rastres que porten altres jugadors. Desactivat per defecte.",
   "horizon.extras.cosmetics.shown": "Es mostra",
   "horizon.extras.cosmetics.hidden": "Ocult",
-  "horizon.extras.cosmetics.name_tags": "Només etiquetes de nom"
+  "horizon.extras.cosmetics.name_tags": "Només etiquetes de nom",
+  "Shader Packs...": "Paquets d'ombres..."
 }

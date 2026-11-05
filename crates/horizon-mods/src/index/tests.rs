@@ -42,6 +42,11 @@ fn reads_the_sample_and_keeps_unknown_kinds() {
     assert!(!text.contains("downloads"));
     let counted = text.replacen("\"versions\"", "\"downloads\":12345,\"versions\"", 1);
     assert_eq!(Index::parse(&counted).unwrap().projects[0].downloads, 12345);
+    // GitHub stars: the same, the source repository's.
+    assert_eq!(hud.stars, 0);
+    assert!(!text.contains("\"stars\""));
+    let starred = text.replacen("\"versions\"", "\"stars\":42,\"versions\"", 1);
+    assert_eq!(Index::parse(&starred).unwrap().projects[0].stars, 42);
 }
 
 #[test]
@@ -90,6 +95,11 @@ fn a_changed_file_key_or_manifest_is_refused() {
     let mut no_level = index.clone();
     no_level.projects[0].versions[0].api_level = None;
     assert_eq!(check(&no_level, "coords_hud", &hmod), Ok(Trust::Verified));
+    // A native mod's hook points version is listed too: a file naming another is refused.
+    let mut other_hooks = index.clone();
+    other_hooks.projects[0].versions[0].hooks = Some(3);
+    let e = check(&other_hooks, "coords_hud", &hmod).unwrap_err();
+    assert!(e.contains("isn't what the index lists"), "{e}");
 
     let mut revoked = index.clone();
     revoked.revoked.push(Revoked {

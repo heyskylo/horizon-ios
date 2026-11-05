@@ -14,6 +14,7 @@ mod players;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
+mod selector_bounds;
 mod terrain_cmds;
 mod test_locate;
 mod test_runs;
@@ -880,13 +881,20 @@ impl Game<'_> {
                 }
                 if s.delta.iter().any(Option::is_some) {
                     let d = s.delta.map(|v| v.unwrap_or(0.0));
-                    for i in 0..3 {
-                        let (a, b) = (
-                            origin[i].min(origin[i] + d[i]),
-                            origin[i].max(origin[i] + d[i]) + 1.0,
-                        );
-                        if p[i] < a || p[i] >= b {
+                    if let Some(bounds) = self.selector_target_bounds(t) {
+                        if !selector_bounds::selector_box(origin, d).intersects(bounds) {
                             return None;
+                        }
+                    } else {
+                        // Unmodeled boxes retain their previous point fallback.
+                        for i in 0..3 {
+                            let (a, b) = (
+                                origin[i].min(origin[i] + d[i]),
+                                origin[i].max(origin[i] + d[i]) + 1.0,
+                            );
+                            if p[i] < a || p[i] >= b {
+                                return None;
+                            }
                         }
                     }
                 }
@@ -1098,7 +1106,7 @@ impl Game<'_> {
             "seed" => {
                 let seed = self.level.seed.to_string();
                 let value = Text::copyable(seed);
-                self.system_message(Text::translate("commands.seed.success", &[value]));
+                self.feedback_unbroadcast(Text::translate("commands.seed.success", &[value]));
                 Ok(self.level.seed as i32)
             }
             "spawnpoint" => self.cmd_spawnpoint(ctx),
@@ -1197,7 +1205,7 @@ impl Game<'_> {
                 let usage = d.smart_usage(0, level);
                 let n = usage.len() as i32;
                 for (_, line) in usage {
-                    self.system_message(Text::literal(format!("/{line}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{line}")));
                 }
                 Ok(n)
             }
@@ -1210,10 +1218,10 @@ impl Game<'_> {
                 let usage = d.smart_usage(last, level);
                 let prefix = &command[..parse.context.range.1.min(command.len())];
                 for (_, line) in &usage {
-                    self.system_message(Text::literal(format!("/{prefix} {line}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{prefix} {line}")));
                 }
                 if usage.is_empty() {
-                    self.system_message(Text::literal(format!("/{prefix}")));
+                    self.feedback_unbroadcast(Text::literal(format!("/{prefix}")));
                 }
                 Ok(usage.len().max(1) as i32)
             }
@@ -2043,7 +2051,7 @@ impl Game<'_> {
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
         if id == "time.query.gametime" {
             let t = self.world.game_time;
-            self.system_message(Text::tr("commands.time.query.gametime", &[&t]));
+            self.feedback_unbroadcast(Text::tr("commands.time.query.gametime", &[&t]));
             return Ok((t % i64::from(i32::MAX)) as i32);
         }
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
@@ -2159,7 +2167,10 @@ impl Game<'_> {
                 Ok(1)
             }
             "time.query.time" => {
-                self.system_message(Text::tr("commands.time.query.absolute", &[&clock, &total]));
+                self.feedback_unbroadcast(Text::tr(
+                    "commands.time.query.absolute",
+                    &[&clock, &total],
+                ));
                 Ok((total % i64::from(i32::MAX)) as i32)
             }
             "time.query.timeline" | "time.query.repetition" => {
@@ -2177,14 +2188,14 @@ impl Game<'_> {
                 };
                 if id == "time.query.timeline" {
                     let ticks = period.map_or(total, |p| total.rem_euclid(p));
-                    self.system_message(Text::tr(
+                    self.feedback_unbroadcast(Text::tr(
                         "commands.time.query.timeline",
                         &[&timeline, &ticks],
                     ));
                     Ok(ticks as i32)
                 } else {
                     let reps = period.map_or(0, |p| total / p);
-                    self.system_message(Text::tr(
+                    self.feedback_unbroadcast(Text::tr(
                         "commands.time.query.timeline.repetitions",
                         &[&timeline, &reps],
                     ));
@@ -3055,6 +3066,7 @@ impl Game<'_> {
     /// The caller reports the level change to the mods.
     fn give_points(&mut self, amount: i32) {
         let e = &mut self.experience;
+        let mut sound_level = None;
         e.progress += amount as f32 / horizon_client::entities::Experience::needed(e.level) as f32;
         e.total = e.total.saturating_add(amount).clamp(0, i32::MAX);
         while e.progress < 0.0 {
@@ -3071,7 +3083,13 @@ impl Game<'_> {
             e.progress =
                 (e.progress - 1.0) * horizon_client::entities::Experience::needed(e.level) as f32;
             e.level += 1;
+            if e.level % 5 == 0 {
+                sound_level.get_or_insert(e.level);
+            }
             e.progress /= horizon_client::entities::Experience::needed(e.level) as f32;
+        }
+        if let Some(level) = sound_level {
+            self.play_level_up(1, level);
         }
     }
     /// AdvancementCommands.perform / performCriterion.
@@ -3090,8 +3108,6 @@ impl Game<'_> {
             ),
             _ => None,
         };
-        let player = Text::literal(self.acting_player_name());
-        let players = targets.len();
         if let (Some(i), Some(Arg::Str(criterion))) = (index, ctx.get("criterion")) {
             let a = &tree.list[i];
             let name = super::advancements::adv_name(a);
@@ -3101,19 +3117,18 @@ impl Game<'_> {
                     &[name, Text::literal(criterion.clone())],
                 )));
             }
-            let changed = if grant {
-                self.grant_advancement(i, Some(criterion))
-            } else {
-                self.revoke_advancement(i, Some(criterion))
-            };
-            let to = if players == 1 { "one" } else { "many" };
-            let who = if players == 1 {
-                player
-            } else {
-                Text::literal(players.to_string())
-            };
+            // AdvancementCommands.performCriterion: each selected player's own turn.
+            let results = self.advancement_turns(&targets, |g| {
+                i32::from(if grant {
+                    g.grant_advancement(i, Some(criterion))
+                } else {
+                    g.revoke_advancement(i, Some(criterion))
+                })
+            });
+            let (who, many) = self.advancement_subject(&results);
+            let to = if many { "many" } else { "one" };
             let args = [Text::literal(criterion.clone()), name, who];
-            if !changed {
+            if results.iter().map(|r| r.1).sum::<i32>() == 0 {
                 return Err(CommandError::new(Text::translate(
                     &format!("commands.advancement.{key}.criterion.to.{to}.failure"),
                     &args,
@@ -3123,7 +3138,7 @@ impl Game<'_> {
                 &format!("commands.advancement.{key}.criterion.to.{to}.success"),
                 &args,
             ));
-            return Ok(1);
+            return Ok(results.iter().map(|r| r.1).sum());
         }
         // getAdvancements: parents first (nearest up), the target, then
         // the subtree depth first.
@@ -3152,30 +3167,32 @@ impl Game<'_> {
                 out
             }
         };
-        self.adv.quiet = index.is_none();
-        let mut count = 0;
-        for &i in &list {
-            let changed = if grant {
-                self.grant_advancement(i, None)
-            } else {
-                self.revoke_advancement(i, None)
-            };
-            count += i32::from(changed);
-        }
-        self.adv.quiet = false;
-        let to = if players == 1 { "one" } else { "many" };
-        let who = if players == 1 {
-            player
-        } else {
-            Text::literal(players.to_string())
-        };
+        let quiet = index.is_none();
+        // AdvancementCommands.perform: Action.perform for each selected player.
+        let results = self.advancement_turns(&targets, |g| {
+            let was_quiet = std::mem::replace(&mut g.adv.quiet, quiet);
+            let mut count = 0;
+            for &i in &list {
+                let changed = if grant {
+                    g.grant_advancement(i, None)
+                } else {
+                    g.revoke_advancement(i, None)
+                };
+                count += i32::from(changed);
+            }
+            g.adv.quiet = was_quiet;
+            count
+        });
+        let total: i32 = results.iter().map(|r| r.1).sum();
+        let (who, many) = self.advancement_subject(&results);
+        let to = if many { "many" } else { "one" };
         let (what, first) = if list.len() == 1 {
             ("one", super::advancements::adv_name(&tree.list[list[0]]))
         } else {
             ("many", Text::literal(list.len().to_string()))
         };
         let args = [first, who];
-        if count == 0 {
+        if total == 0 {
             return Err(CommandError::new(Text::translate(
                 &format!("commands.advancement.{key}.{what}.to.{to}.failure"),
                 &args,
@@ -3185,7 +3202,34 @@ impl Game<'_> {
             &format!("commands.advancement.{key}.{what}.to.{to}.success"),
             &args,
         ));
-        Ok(count)
+        Ok(total)
+    }
+    /// Run `f` as each selected player's own turn and collect what it changed;
+    /// a target without a turn counts as unchanged, like in `cmd_clear`.
+    fn advancement_turns(
+        &mut self,
+        targets: &[Target],
+        f: impl Fn(&mut Self) -> i32,
+    ) -> Vec<(Target, i32)> {
+        targets
+            .iter()
+            .map(|&t| (t, self.for_player(t, &f).unwrap_or(0)))
+            .collect()
+    }
+    /// The player argument of the advancement feedback: with the tracker's
+    /// NON_ZERO elements on success and every element on failure, the one
+    /// player's name, else the count (CommandResponseTracker.dispatch).
+    fn advancement_subject(&self, results: &[(Target, i32)]) -> (Text, bool) {
+        let changed: Vec<Target> = results.iter().filter(|r| r.1 != 0).map(|r| r.0).collect();
+        let picked: Vec<Target> = if changed.is_empty() {
+            results.iter().map(|r| r.0).collect()
+        } else {
+            changed
+        };
+        match picked.as_slice() {
+            [t] => (self.target_name(*t), false),
+            _ => (Text::literal(picked.len().to_string()), true),
+        }
     }
     fn cmd_experience(&mut self, ctx: &Context) -> R<i32> {
         let levels = ctx.has("levels");
@@ -3204,7 +3248,7 @@ impl Game<'_> {
                     }
                 })
                 .unwrap_or(0);
-            self.system_message(Text::translate(
+            self.feedback_unbroadcast(Text::translate(
                 &format!("commands.experience.query.{unit}"),
                 &[self.target_name(target), Text::literal(value.to_string())],
             ));
@@ -3293,7 +3337,10 @@ impl Game<'_> {
             Some(Arg::Bool(b)) => Value::Bool(*b),
             Some(Arg::Int(i)) => Value::Int(*i),
             _ => {
-                self.system_message(Text::tr("commands.gamerule.query", &[&rule.name, &current]));
+                self.feedback_unbroadcast(Text::tr(
+                    "commands.gamerule.query",
+                    &[&rule.name, &current],
+                ));
                 return Ok(match current {
                     Value::Bool(b) => i32::from(b),
                     Value::Int(i) => i,
@@ -3319,7 +3366,7 @@ impl Game<'_> {
         };
         let Some(i) = DIFFICULTIES.iter().position(|d| ctx.has(d)) else {
             let current = self.ui.difficulty;
-            self.system_message(Text::translate(
+            self.feedback_unbroadcast(Text::translate(
                 "commands.difficulty.query",
                 &[name(current)],
             ));
@@ -3937,7 +3984,7 @@ impl Game<'_> {
             }
         }
         let count = players.len();
-        self.system_message(Text::translate(
+        self.feedback_unbroadcast(Text::translate(
             "commands.list.players",
             &[
                 Text::literal(count.to_string()),
@@ -4398,5 +4445,163 @@ mod teleport_rider_tests {
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod selector_bounds_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{entities::ArmorStand, mobs::Mob};
+    use horizon_core::geometry::Vec3;
+
+    #[test]
+    fn actual_selector_uses_body_overlap_but_distance_stays_at_the_origin() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            eprintln!("Prepared resources unavailable; Game selector coverage did not run");
+            return;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs
+            .push(Mob::new(30, kind, Vec3::new(10.5, 220.0, 10.5), 0.0));
+        let target = Target::Mob(30);
+        let mut selector = Selector {
+            kind: 'e',
+            include_entities: true,
+            limit: usize::MAX,
+            delta: [Some(0.0); 3],
+            ..Default::default()
+        };
+        let origin = [9.5, 220.0, 10.5];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, origin),
+            vec![(target, 1.0)]
+        );
+        selector.distance = Some((None, Some(0.9)));
+        assert!(
+            game.select_in_level(vec![target], &selector, origin)
+                .is_empty()
+        );
+        selector.distance = None;
+        assert!(
+            game.select_in_level(vec![target], &selector, [11.0, 220.0, 10.5])
+                .is_empty()
+        );
+        selector.delta = [Some(-1.0), None, None];
+        assert_eq!(
+            game.select_in_level(vec![target], &selector, [11.5, 220.0, 10.5])
+                .len(),
+            1
+        );
+        game.armor_stands
+            .push(ArmorStand::new(31, Vec3::new(30.5, 220.0, 10.5), 0.0));
+        selector.delta = [Some(0.0); 3];
+        for (x, count) in [(29.5, 1), (29.25, 0), (30.75, 0), (29.250000000000004, 1)] {
+            assert_eq!(
+                game.select_in_level(vec![Target::Stand(31)], &selector, [x, 220.0, 10.5])
+                    .len(),
+                count
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod query_feedback_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_silent_source_drops_query_results_but_still_stores_them() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("time set 1234"));
+        assert!(game.run_command("scoreboard objectives add q dummy"));
+        let queries = [
+            "time query time",
+            "time query day",
+            "time query day repetition",
+            "time query gametime",
+            "seed",
+            "gamerule keep_inventory",
+            "difficulty",
+            "list",
+            "help seed",
+        ];
+        // A function's source (silent, like `run_command_quietly`) is told nothing.
+        for command in queries {
+            game.chat_capture = Some(Vec::new());
+            assert!(game.run_command_quietly(command), "{command}");
+            let lines = game.chat_capture.take().unwrap();
+            assert!(lines.is_empty(), "{command}: {:?}", lines[0].plain());
+        }
+        // The player's own source still sees each result.
+        for command in queries {
+            game.chat_capture = Some(Vec::new());
+            assert!(game.run_command(command), "{command}");
+            assert_eq!(game.chat_capture.take().unwrap().len(), 1, "{command}");
+        }
+        // The result still reaches `execute store`.
+        assert!(game.run_command_quietly("execute store result score #t q run time query day"));
+        game.chat_capture = Some(Vec::new());
+        assert!(game.run_command("scoreboard players get #t q"));
+        let lines = game.chat_capture.take().unwrap();
+        assert!(lines[0].plain().contains("1234"), "{:?}", lines[0].plain());
     }
 }

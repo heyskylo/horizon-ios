@@ -111,6 +111,8 @@ enum SamplerKind {
     Nearest,
     Repeat,
     NearestRepeat,
+    /// The block atlas: nearest texels, blended between the two nearest levels.
+    Atlas,
     Comparison,
 }
 
@@ -120,15 +122,15 @@ impl SamplerKind {
             Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
                 Self::Nearest
             }
-            // shadowtex0/1 through a plain sampler: linear, as Iris 1.11.7 reads them, when the
-            // device filters their copies (`ShadowTargets::linear`).
-            Source::ShadowDepth(_, false) if filtering => Self::Linear,
             Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
                 Self::Nearest
             }
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
-            // Blocks look as the game draws them: nearest texels.
+            // Blocks look as the game draws them: nearest texels. Between levels, Iris 1.11.7
+            // blends `gtexture`'s two nearest (our probe packs, #9307: a read at level 1.25 is
+            // levels 1 and 2 mixed 3:1).
+            Source::Atlas if filtering => Self::Atlas,
             Source::Atlas | Source::Normals | Source::Specular => Self::NearestRepeat,
             Source::Image(_) if filtering => Self::Linear,
             Source::Image(_) => Self::Nearest,
@@ -146,7 +148,7 @@ impl SamplerKind {
 
     fn binding_type(self) -> wgpu::SamplerBindingType {
         match self {
-            Self::Linear | Self::Repeat => wgpu::SamplerBindingType::Filtering,
+            Self::Linear | Self::Repeat | Self::Atlas => wgpu::SamplerBindingType::Filtering,
             Self::Nearest | Self::NearestRepeat => wgpu::SamplerBindingType::NonFiltering,
             Self::Comparison => wgpu::SamplerBindingType::Comparison,
         }
@@ -369,6 +371,8 @@ struct Pass {
     writes: Vec<(u32, usize)>,
     /// Buffers flipped after the pass.
     flip: u16,
+    /// `hz_depth_linear`: which of the depth samplers a plain sampler reads filter.
+    depth_linear: [f32; 4],
     /// Buffers sampled, for the bind group cache key.
     reads: u16,
     /// shadowcolor buffers sampled by a program of the other buffers.
@@ -647,6 +651,7 @@ pub struct PackPost {
     nearest: wgpu::Sampler,
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
+    atlas_sampler: wgpu::Sampler,
     /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
     /// nor buffer to clear.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
@@ -775,6 +780,14 @@ fn fits(ty: &str, sample_type: wgpu::TextureSampleType) -> bool {
             T::Uint => ty.starts_with('u'),
             _ => ty.starts_with('s'),
         }
+}
+
+/// `hz_depth_linear` for a program: 1 for each of shadowtex0, shadowtex1, `shadow` and
+/// `watershadow` whose depth filters (`linear`, bit n: shadowtex n). `shadow` is shadowtex1 in a
+/// program that also declares `watershadow` (6.3).
+fn depth_linear(interface: &horizon_shaders::Interface, linear: u8) -> [f32; 4] {
+    let watershadow = interface.samplers.iter().any(|s| s.name == "watershadow");
+    [0, 1, usize::from(watershadow), 0].map(|n| f32::from(linear >> n & 1))
 }
 
 fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) -> Source {
@@ -1190,7 +1203,7 @@ struct Resources<'a> {
     /// The formats and dimensions of the images no `image.*` gives, for their stand-ins.
     stand_ins: &'a std::cell::RefCell<Vec<(wgpu::TextureFormat, wgpu::TextureViewDimension)>>,
     /// Bit n: shadowtex n read through a plain sampler filters linearly (`shadowtexNNearest`
-    /// unset, and the device filters `R32Float`).
+    /// unset): the translator's helpers blend a gather of it (`hz_depth_linear`).
     shadow_linear: u8,
 }
 
@@ -1355,7 +1368,6 @@ fn bindings(
                     Source::ShadowColor(n) => shadow
                         .and_then(|f| f[n].sample_type(None, Some(features)))
                         .unwrap_or(float),
-                    Source::ShadowDepth(n, false) if pack.shadow_linear & 1 << n != 0 => float,
                     Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(..) => {
                         wgpu::TextureSampleType::Float { filterable: false }
                     }
@@ -1817,6 +1829,7 @@ fn build_pass(
         samplers,
         writes,
         flip,
+        depth_linear: depth_linear(interface, pack.shadow_linear),
         shadow_reads,
         written,
         mipmaps: p.mipmaps,
@@ -1948,6 +1961,7 @@ fn build_compute(
         samplers,
         writes: Vec::new(),
         flip: 0,
+        depth_linear: depth_linear(interface, pack.shadow_linear),
         copies: written & reads | before_colors,
         reads: reads | written,
         shadow_reads,
@@ -2130,13 +2144,9 @@ impl PackPost {
             packed,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
-            shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
-                (0..2)
-                    .filter(|&n| !shadow_config.nearest[n])
-                    .fold(0, |m, n| m | 1 << n)
-            } else {
-                0
-            },
+            shadow_linear: (0..2)
+                .filter(|&n| !shadow_config.nearest[n])
+                .fold(0, |m, n| m | 1 << n),
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             let in_shadow = p.group.shadow();
@@ -2595,13 +2605,6 @@ impl PackPost {
             let depth1 = every_pass()
                 .flat_map(|p| &p.samplers)
                 .any(|s| matches!(s.source, Source::ShadowDepth(1, _)));
-            let linear = every_pass()
-                .flat_map(|p| &p.samplers)
-                .filter(|s| s.filtering)
-                .fold(0u8, |m, s| match s.source {
-                    Source::ShadowDepth(n, false) => m | 1 << n,
-                    _ => m,
-                });
             let t = super::pack_shadow::ShadowTargets::new(
                 device,
                 &shadow_config,
@@ -2609,7 +2612,6 @@ impl PackPost {
                 colors,
                 shadow_doubled & colors,
                 depth1,
-                linear,
             );
             notes.push(format!(
                 "shadow map {0}x{0} over {2} blocks, sunPathRotation {3}, shadowcolor buffers {colors:#b} (two textures: {4:#b}){1}",
@@ -2941,6 +2943,13 @@ impl PackPost {
             ),
             repeat: sampler(device, wgpu::FilterMode::Linear, wgpu::AddressMode::Repeat),
             nearest_repeat: sampler(device, wgpu::FilterMode::Nearest, wgpu::AddressMode::Repeat),
+            atlas_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Shader pack atlas"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
             blit,
             copy,
             uniforms: {
@@ -2985,7 +2994,8 @@ impl PackPost {
             }
         }
         let fog = self.uniforms.fog();
-        // Our block members first (`hz_target`, `hz_fog_color`, `hz_fog`), then the pack's.
+        // Our block members first (`hz_target`, `hz_fog_color`, `hz_fog`, `hz_depth_linear`),
+        // then the pack's.
         let ours = [
             [
                 out[0] as f32,
@@ -2995,12 +3005,21 @@ impl PackPost {
             ],
             fog[0].to_array(),
             fog[1].to_array(),
+            pass.depth_linear,
         ];
         let head: &[u8] = bytemuck::cast_slice(&ours);
         let n = head.len().min(pass.block.len());
         pass.block[..n].copy_from_slice(&head[..n]);
         for (index, ty, offset) in &pass.uniforms {
-            if let Some(v) = index.and_then(|i| self.uniforms.values.get(i)) {
+            let Some((i, v)) = index.and_then(|i| Some((i, self.uniforms.values.get(i)?))) else {
+                continue;
+            };
+            // A built-in of another type keeps its initial value (0); custom uniforms were
+            // checked when the pass was built.
+            if pack_uniforms::NAMES
+                .get(i)
+                .is_none_or(|name| v.read_as(name, ty))
+            {
                 v.write(ty, &mut pass.block, *offset as usize);
             }
         }
@@ -3037,12 +3056,6 @@ impl PackPost {
                     Source::ShadowColor(i) => {
                         shadow_color(i, usize::from(key & 1 << (32 + i) != 0))
                             .unwrap_or(&self.dummy)
-                    }
-                    Source::ShadowDepth(i, false) if s.filtering => {
-                        match shadow.and_then(|t| t.linear[i].as_ref()) {
-                            Some(v) => v,
-                            None => &self.dummy,
-                        }
                     }
                     Source::ShadowDepth(i, _) => match shadow {
                         Some(t) => match (i, &t.depth1) {
@@ -3144,6 +3157,7 @@ impl PackPost {
                     SamplerKind::Nearest => &self.nearest,
                     SamplerKind::Repeat => &self.repeat,
                     SamplerKind::NearestRepeat => &self.nearest_repeat,
+                    SamplerKind::Atlas => &self.atlas_sampler,
                     SamplerKind::Comparison => shadow.map_or(&self.shadow.1, |t| &t.comparison),
                 };
                 entries.push(wgpu::BindGroupEntry {
@@ -4302,9 +4316,6 @@ impl PackPost {
             TerrainList::ShadowTranslucent,
             terrain,
         );
-        if let Some(t) = &self.shadow_targets {
-            t.copy_linear(encoder);
-        }
         let mut comp = std::mem::take(&mut self.shadow_comp);
         for pass in &mut comp {
             let mut compute = std::mem::take(&mut pass.compute);
@@ -5570,7 +5581,16 @@ mod const_offset_tests;
 mod integer_colortex0_tests;
 
 #[cfg(test)]
+mod atlas_mip_tests;
+
+#[cfg(test)]
+mod wrong_type_uniform_tests;
+
+#[cfg(test)]
 mod atlas_name_post_tests;
 
 #[cfg(test)]
 mod unknown_sampler_terrain_tests;
+
+#[cfg(test)]
+mod mipmap_box_tests;
