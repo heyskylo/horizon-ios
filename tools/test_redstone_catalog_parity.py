@@ -71,8 +71,10 @@ def fetch_schematics(entries):
             request = urllib.request.Request(url, headers={'User-Agent': 'horizon/0.1'})
             with urllib.request.urlopen(request, timeout=120) as response:
                 data = response.read()
-            path.with_suffix('.part').write_bytes(data)
-            path.with_suffix('.part').replace(path)
+            # The shards download into the same folder at once: each writes its own part file.
+            part = path.with_name(f'{path.name}.{os.getpid()}.part')
+            part.write_bytes(data)
+            part.replace(path)
         sums[rel] = lab.digest(path, 'sha256')
     listing = ''.join(f'{rel} {sums[rel]}\n' for rel in sorted(sums))
     combined = hashlib.sha256(listing.encode()).hexdigest()
