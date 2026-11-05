@@ -106,6 +106,7 @@ mod sprite_cache;
 pub mod sprites;
 pub mod streaming;
 pub mod structure_block;
+pub mod studio_ui;
 pub mod tab_list;
 pub mod telemetry;
 pub mod test_block;
