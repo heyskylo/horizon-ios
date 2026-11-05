@@ -1443,6 +1443,22 @@ mod tests {
         }
     }
 
+    /// `CreativeModeInventoryScreen.keyPressed`: from a tab that is not the
+    /// search, the chat key selects `CreativeModeTabs.searchTab`, which focuses
+    /// the search box and empties the query the other tab left.
+    #[test]
+    fn the_chat_key_opens_the_search_tab() {
+        let mut c = creative(0);
+        c.search.set_value("anvil");
+        let tab = c.search_tab().expect("the fixture has a search tab");
+        assert!(c.tabs[tab].search);
+        assert!(!c.tab().search);
+        c.select(tab);
+        assert!(c.tab().search);
+        assert!(c.search.focused);
+        assert_eq!(c.search.value, "", "another tab empties the query");
+    }
+
     #[test]
     fn search_matches_vanilla_trees() {
         let c = creative(0);
