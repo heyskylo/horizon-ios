@@ -17023,6 +17023,9 @@ impl Game<'_> {
     }
     /// A mouse button while playing (window or control socket).
     fn play_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+        if pressed {
+            self.pvp_click(button);
+        }
         if self.sleeping.is_some() {
             return Ok(());
         }

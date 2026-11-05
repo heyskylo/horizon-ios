@@ -214,6 +214,153 @@ impl Combo {
     }
 }
 
+/// Clicks per second: the presses of the last second, kept for the widgets that are on.
+#[derive(Default)]
+pub struct Clicks {
+    /// Press times in seconds, oldest first; at most [`Clicks::KEEP`].
+    times: std::collections::VecDeque<f64>,
+}
+impl Clicks {
+    /// More than any hand clicks in a second: the ring never grows past it.
+    const KEEP: usize = 64;
+    pub fn press(&mut self, now: f64) {
+        if self.times.len() == Self::KEEP {
+            self.times.pop_front();
+        }
+        self.times.push_back(now);
+    }
+    /// The presses in the second up to `now`.
+    pub fn per_second(&mut self, now: f64) -> u32 {
+        while self.times.front().is_some_and(|&t| now - t >= 1.0) {
+            self.times.pop_front();
+        }
+        self.times.len() as u32
+    }
+}
+
+/// Horizontal speed in blocks per second, from the player's own position sampled at most
+/// every [`Speed::SAMPLE`] seconds (nothing is asked of the server).
+#[derive(Default)]
+pub struct Speed {
+    last: Option<([f64; 2], f64)>,
+    /// Tenths of a block per second.
+    tenths: u32,
+}
+impl Speed {
+    pub const SAMPLE: f64 = 0.25;
+    pub fn sample(&mut self, x: f64, z: f64, now: f64) -> u32 {
+        match self.last {
+            Some((_, at)) if now - at < Self::SAMPLE => {}
+            Some(([lx, lz], at)) => {
+                let d = ((x - lx).powi(2) + (z - lz).powi(2)).sqrt();
+                // A teleport or respawn isn't speed.
+                let v = d / (now - at);
+                self.tenths = if v > 200.0 {
+                    0
+                } else {
+                    (v * 10.0).round() as u32
+                };
+                self.last = Some(([x, z], now));
+            }
+            None => self.last = Some(([x, z], now)),
+        }
+        self.tenths
+    }
+}
+
+/// The reach display: how far the last hit this player made was, measured from the eyes to
+/// the point the crosshair's ray met the target's box. It measures what the client already
+/// computed for the attack and changes nothing about it.
+#[derive(Default)]
+pub struct Reach {
+    last: Option<(f64, f64)>,
+}
+impl Reach {
+    /// How long the last hit's distance stays shown.
+    pub const SHOWN: f64 = 3.0;
+    pub fn hit(&mut self, distance: f64, now: f64) {
+        self.last = Some((distance, now));
+    }
+    /// Hundredths of a block, while the last hit is recent.
+    pub fn hundredths(&self, now: f64) -> Option<u32> {
+        let (d, at) = self.last?;
+        (now - at <= Self::SHOWN).then(|| (d * 100.0).round() as u32)
+    }
+}
+/// `n` hundredths as "3.05".
+pub fn hundredths(n: u32) -> String {
+    format!("{}.{:02}", n / 100, n % 100)
+}
+/// `n` tenths as "4.3".
+pub fn tenths(n: u32) -> String {
+    format!("{}.{}", n / 10, n % 10)
+}
+/// The local time as "14:05".
+pub fn clock(hour: u8, minute: u8) -> String {
+    format!("{hour:02}:{minute:02}")
+}
+
+/// The keystrokes widget's keys, in drawing order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Forward,
+    Left,
+    Back,
+    Right,
+    Attack,
+    Use,
+    Jump,
+}
+impl Key {
+    pub const ALL: [Key; 7] = [
+        Key::Forward,
+        Key::Left,
+        Key::Back,
+        Key::Right,
+        Key::Attack,
+        Key::Use,
+        Key::Jump,
+    ];
+    /// The key mapping it shows.
+    pub fn mapping(self) -> &'static str {
+        match self {
+            Key::Forward => "key.forward",
+            Key::Left => "key.left",
+            Key::Back => "key.back",
+            Key::Right => "key.right",
+            Key::Attack => "key.attack",
+            Key::Use => "key.use",
+            Key::Jump => "key.jump",
+        }
+    }
+}
+/// The keystrokes' key size and the gap between keys, in GUI pixels.
+pub const KEY: f32 = 22.0;
+pub const KEY_GAP: f32 = 2.0;
+/// The space bar's height.
+pub const SPACE: f32 = 12.0;
+/// Where each key of the keystrokes widget sits in its box: W above A S D, the two mouse
+/// buttons under them, the space bar at the bottom, as `(x, y, w, h)`.
+pub fn key_rect(key: Key) -> (f32, f32, f32, f32) {
+    let step = KEY + KEY_GAP;
+    let full = 3.0 * KEY + 2.0 * KEY_GAP;
+    let half = (full - KEY_GAP) / 2.0;
+    match key {
+        Key::Forward => (step, 0.0, KEY, KEY),
+        Key::Left => (0.0, step, KEY, KEY),
+        Key::Back => (step, step, KEY, KEY),
+        Key::Right => (2.0 * step, step, KEY, KEY),
+        Key::Attack => (0.0, 2.0 * step, half, KEY),
+        Key::Use => (half + KEY_GAP, 2.0 * step, half, KEY),
+        Key::Jump => (0.0, 3.0 * step, full, SPACE),
+    }
+}
+/// The keystrokes widget's size.
+pub fn keys_size() -> (f32, f32) {
+    let (_, y, w, h) = key_rect(Key::Jump);
+    (w, y + h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +484,72 @@ mod tests {
         // 18 + 2 for the icon lines (the effect's two texts take 18), 8 + 2 for the text one.
         assert_eq!(h, 18.0 + 10.0 + 20.0 + 2.0 * PAD - 2.0);
         assert!(size(&[]) == (0.0, 0.0));
+    }
+
+    #[test]
+    fn clicks_count_the_presses_of_the_last_second() {
+        let mut c = Clicks::default();
+        for t in [0.0, 0.1, 0.5, 0.9] {
+            c.press(t);
+        }
+        assert_eq!(c.per_second(0.95), 4);
+        // 1.0 s after the first press it has left the window.
+        assert_eq!(c.per_second(1.0), 3);
+        assert_eq!(c.per_second(1.6), 1);
+        assert_eq!(c.per_second(5.0), 0);
+        // The ring never keeps more than 64 presses.
+        for i in 0..200 {
+            c.press(10.0 + f64::from(i) * 0.001);
+        }
+        assert_eq!(c.per_second(10.2), 64);
+    }
+
+    #[test]
+    fn speed_is_horizontal_blocks_per_second_between_samples() {
+        let mut s = Speed::default();
+        assert_eq!(s.sample(0.0, 0.0, 0.0), 0);
+        // Sprinting: 5.612 blocks per second along x, with a jump (y is ignored).
+        assert_eq!(s.sample(0.5, 0.0, 0.1), 0, "too soon for a new sample");
+        assert_eq!(s.sample(1.403, 0.0, 0.25), 56);
+        // 3 east and 4 south in a second: 5 blocks per second.
+        assert_eq!(s.sample(1.403 + 3.0, 4.0, 1.25), 50);
+        // A teleport reads as standing still.
+        assert_eq!(s.sample(1000.0, 4.0, 1.5), 0);
+        assert_eq!(tenths(56), "5.6");
+    }
+
+    #[test]
+    fn reach_shows_the_last_hit_for_three_seconds() {
+        let mut r = Reach::default();
+        assert_eq!(r.hundredths(0.0), None);
+        r.hit(2.954, 1.0);
+        assert_eq!(r.hundredths(1.5), Some(295));
+        assert_eq!(hundredths(295), "2.95");
+        assert_eq!(hundredths(300), "3.00");
+        assert_eq!(r.hundredths(4.1), None);
+    }
+
+    #[test]
+    fn the_clock_reads_hours_and_minutes() {
+        assert_eq!(clock(14, 5), "14:05");
+        assert_eq!(clock(0, 0), "00:00");
+    }
+
+    #[test]
+    fn keystrokes_keys_tile_their_box_without_overlap() {
+        let (w, h) = keys_size();
+        assert_eq!((w, h), (70.0, 3.0 * 24.0 + 12.0));
+        for (i, a) in Key::ALL.iter().enumerate() {
+            let (x, y, kw, kh) = key_rect(*a);
+            assert!(
+                x >= 0.0 && y >= 0.0 && x + kw <= w && y + kh <= h,
+                "{a:?} inside"
+            );
+            for b in &Key::ALL[i + 1..] {
+                let (bx, by, bw, bh) = key_rect(*b);
+                let apart = x + kw <= bx || bx + bw <= x || y + kh <= by || by + bh <= y;
+                assert!(apart, "{a:?} and {b:?} overlap");
+            }
+        }
     }
 }
