@@ -13238,8 +13238,16 @@ CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 def set_legacy_rules(game, on):
     """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
     game('options', page='pvp')
-    switch = next(w for w in game.raw('ui')['widgets']
-                  if w.get('label', '').startswith('1.8 combat in worlds you host'))
+    for _ in range(40):
+        ui = game.raw('ui')
+        switch = next((w for w in ui['widgets']
+                       if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
+        if switch:
+            break
+        # The switch sits at the end of the page: wheel down over the list.
+        width, height = ui['gui_size']
+        game.raw('scroll-at', f'{width / 2:.1f}', f'{height / 2:.1f}', -3)
+    assert switch, 'the PvP page has no "1.8 combat in worlds you host" switch'
     if switch['label'].endswith('On') != on:
         game('click', id=switch['id'])
     game('close')
