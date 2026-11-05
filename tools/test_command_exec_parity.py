@@ -131,6 +131,8 @@ def main():
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
+    parser.add_argument("--map-decoration-namespace-fixture", action="store_true")
+    parser.add_argument("--map-decoration-empty-diagnostic", action="store_true")
     parser.add_argument('--piglin-anger-memory-fixture', action='store_true')
     parser.add_argument('--piglin-anger-raw-diagnostic', action='store_true')
     parser.add_argument('--piglin-anger-memory-diagnostic', action='store_true')
@@ -209,6 +211,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.map_decoration_namespace_fixture:
+        try:
+            from .map_decoration_namespace_corpus import map_decoration_namespaces
+        except ImportError:
+            from map_decoration_namespace_corpus import map_decoration_namespaces
+        groups = [("setup", corpus_module.group_setup()), ("map decoration namespaces", map_decoration_namespaces(args.map_decoration_empty_diagnostic))]
     if args.armor_stand_honey_fixture:
         try:
             from .armor_stand_honey_corpus import armor_stand_honey
