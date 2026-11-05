@@ -161,7 +161,14 @@ fn names_stay_unique_and_packs_are_not_copied() {
     let (home, data) = (root.join("horizon"), root.join("launcher"));
     player_home(&home);
     create_in(&home, &data, "Survival", None, None).unwrap();
-    assert!(create_in(&home, &data, "survival", None, None).is_err());
+    assert_eq!(
+        create_in(&home, &data, "survival", None, None).unwrap_err(),
+        "There is already an instance called survival. Choose another name."
+    );
+    assert_eq!(
+        name_taken_with_flag("survival"),
+        "There is already an instance called survival. Choose another name. (`--as NAME`)"
+    );
     assert!(create_in(&home, &data, "  ", None, None).is_err());
     // Another name with the same folder name gets the next free folder.
     let second = create_in(&home, &data, "Survival!", None, None).unwrap();

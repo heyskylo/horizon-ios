@@ -1132,5 +1132,9 @@
   "Unknown": "Desconhecido",
   "Claim for free": "Resgatar grátis",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagamentos da loja não atende o seu país, então você pode resgatar o Conjunto fundador aqui de graça.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "O Conjunto fundador é seu."
 }

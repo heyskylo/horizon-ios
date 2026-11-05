@@ -1132,5 +1132,9 @@
   "Unknown": "Unknown",
   "Claim for free": "באַקום אומזיסט",
   "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "דער צאָלונג־סערוויס פֿון דעם קראָם אַרבעט נישט אין דײַן לאַנד, דערפֿאַר קענסטו דאָ באַקומען דעם גרינדער שטעלן אומזיסט.",
+  "Run `horizon-launcher install latest` to get one.": "Run `horizon-launcher install latest` to get one.",
+  "There is already an instance called {name}. Choose another name.": "There is already an instance called {name}. Choose another name.",
+  "Open Settings and sign in under Account.": "Open Settings and sign in under Account.",
+  "Sign in with `horizon-launcher account sign-in`.": "Sign in with `horizon-launcher account sign-in`.",
   "The Founder Set is yours.": "דער גרינדער שטעלן איז דײַנער."
 }
