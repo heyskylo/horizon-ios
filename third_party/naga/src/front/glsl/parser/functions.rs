@@ -626,9 +626,21 @@ impl ParsingContext<'_> {
             return Ok(());
         }
 
+        // A precision qualifier (`highp vec2 p`), before or after the parameter qualifier:
+        // it changes nothing here, as in every other declaration.
+        let skip_precision = |parser: &mut Self, frontend: &mut Frontend| {
+            while parser
+                .peek(frontend)
+                .is_some_and(|t| matches!(t.value, TokenValue::PrecisionQualifier(_)))
+            {
+                let _ = parser.bump(frontend);
+            }
+        };
         loop {
+            skip_precision(self, frontend);
             if self.peek_type_name(frontend) || self.peek_parameter_qualifier(frontend) {
                 let qualifier = self.parse_parameter_qualifier(frontend);
+                skip_precision(self, frontend);
                 let mut ty = self.parse_type_non_void(frontend, ctx)?.0;
 
                 match self.expect_peek(frontend)?.value {

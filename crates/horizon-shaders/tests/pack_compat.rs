@@ -89,6 +89,39 @@ fn global_constant_reads_a_member_of_an_array_element() {
 }
 
 #[test]
+fn an_empty_declaration_after_a_function_is_skipped() {
+    // DrDestens: a macro writes a function, and the call site ends with `;`.
+    assert_terrain_translates(
+        "#version 150\n#define DECLARE(name) float name(float x) { return x * 2.0; }\n\
+         DECLARE(twice);\nDECLARE(doubled);;\n\
+         void main() { gl_FragData[0] = vec4(twice(0.25), doubled(0.5), 0.0, 1.0); }\n",
+    );
+}
+
+#[test]
+fn a_parameter_may_have_a_precision_qualifier() {
+    // TrailerShaders: `float rand(highp vec2 coord)`.
+    assert_terrain_translates(
+        "#version 120\nfloat rand(highp vec2 coord) { return fract(sin(dot(coord, vec2(12.9898, 78.233)))); }\n\
+         float scale(in mediump float x, lowp out float y) { y = x; return x; }\n\
+         void main() { float y; gl_FragData[0] = vec4(rand(vec2(0.5)), scale(0.5, y), y, 1.0); }\n",
+    );
+}
+
+#[test]
+fn a_local_constant_that_divides_by_a_zero_constant_runs_at_run_time() {
+    // Epoch's tonemap at its defaults: `const float tm = toeY * pow(1.0 / toeX, toePower)` with
+    // `toeX` 0. GL drivers give the infinity and NaN; a literal can hold neither.
+    assert_terrain_translates(
+        "#version 330\nfloat curve(float x) {\n\
+         const float toeX = 0.0 * 0.0 / 2.0;\nconst float toeY = 0.0;\n\
+         const float tm = toeY * pow(1.0 / toeX, 1.0);\n\
+         return x > toeX ? x : tm;\n}\n\
+         void main() { gl_FragData[0] = vec4(curve(0.5)); }\n",
+    );
+}
+
+#[test]
 fn integer_samplers_read_through_the_float_sampling_functions() {
     // Mello, Voyager, Exposa, Reverie: `uint mask = texture(colortex3, uv).r` on a usampler2D.
     let module = assert_terrain_translates(
